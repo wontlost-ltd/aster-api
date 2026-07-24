@@ -1972,6 +1972,28 @@
       "disable": "Disable",
       "saving": "Saving…"
     },
+    "runnerParity": {
+      "title": "Runner parity (shadow check)",
+      "description": "Controls the cloud→launcher shadow comparison. Log-only — it never gates any policy decision, only records match/divergent signals.",
+      "modeLabel": "Trigger mode",
+      "badge": {
+        "off": "Off",
+        "sampled": "Sampled",
+        "every": "Every",
+        "manual": "Manual"
+      },
+      "mode": {
+        "off": "Off — never run",
+        "sampled": "Sampled — run on a percentage of executions",
+        "every": "Every — run on every execution",
+        "manual": "Manual — only via the verify-parity API"
+      },
+      "sampleLabel": "Sample percentage",
+      "sampleHint": "Share of executions to check, 0–100. Only applies in Sampled mode.",
+      "saving": "Saving…",
+      "saved": "Saved",
+      "saveFailed": "Could not save. Reverted."
+    },
     "structuralAliasGrants": {
       "title": "Structural alias grants",
       "description": "Users allowed to define structural keyword aliases (advanced; use with care).",

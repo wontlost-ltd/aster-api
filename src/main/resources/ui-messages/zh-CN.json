@@ -1972,6 +1972,28 @@
       "disable": "关闭",
       "saving": "保存中…"
     },
+    "runnerParity": {
+      "title": "Runner 一致性校验（影子比对）",
+      "description": "控制 cloud→launcher 的影子比对。仅记录——绝不干预任何策略决策，只记录一致/分叉信号。",
+      "modeLabel": "触发模式",
+      "badge": {
+        "off": "关闭",
+        "sampled": "采样",
+        "every": "每次",
+        "manual": "手动"
+      },
+      "mode": {
+        "off": "关闭——从不运行",
+        "sampled": "采样——按比例抽取执行运行",
+        "every": "每次——每次执行都运行",
+        "manual": "手动——仅通过 verify-parity 接口触发"
+      },
+      "sampleLabel": "采样百分比",
+      "sampleHint": "抽取校验的执行占比，0–100。仅在采样模式下生效。",
+      "saving": "保存中…",
+      "saved": "已保存",
+      "saveFailed": "保存失败，已还原。"
+    },
     "structuralAliasGrants": {
       "title": "结构词别名授权",
       "description": "允许定义结构词关键字别名的用户（高级功能，请谨慎授权）。",
