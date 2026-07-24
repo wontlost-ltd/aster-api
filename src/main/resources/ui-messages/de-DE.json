@@ -1972,6 +1972,28 @@
       "disable": "Deaktivieren",
       "saving": "Wird gespeichert…"
     },
+    "runnerParity": {
+      "title": "Runner-Parität (Schattenprüfung)",
+      "description": "Steuert den cloud→launcher-Schattenvergleich. Nur zur Protokollierung – blockiert niemals eine Richtlinienentscheidung, erfasst lediglich Übereinstimmungs-/Abweichungssignale.",
+      "modeLabel": "Auslösemodus",
+      "badge": {
+        "off": "Aus",
+        "sampled": "Stichprobe",
+        "every": "Immer",
+        "manual": "Manuell"
+      },
+      "mode": {
+        "off": "Aus – nie ausführen",
+        "sampled": "Stichprobe – für einen Prozentsatz der Ausführungen ausführen",
+        "every": "Immer – bei jeder Ausführung ausführen",
+        "manual": "Manuell – nur über die verify-parity-API"
+      },
+      "sampleLabel": "Stichprobenanteil",
+      "sampleHint": "Anteil der zu prüfenden Ausführungen, 0–100. Gilt nur im Stichprobenmodus.",
+      "saving": "Wird gespeichert…",
+      "saved": "Gespeichert",
+      "saveFailed": "Speichern fehlgeschlagen. Zurückgesetzt."
+    },
     "structuralAliasGrants": {
       "title": "Berechtigungen für strukturelle Aliase",
       "description": "Benutzer, die strukturelle Schlüsselwort-Aliase definieren dürfen (fortgeschritten; mit Bedacht verwenden).",
