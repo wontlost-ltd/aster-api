@@ -58,9 +58,17 @@ public class PromptTemplateRegistry {
         });
     }
 
+    /** 合法 locale 短码字符集（安全白名单）：仅小写字母 + 数字，杜绝 {@code / . \} 等路径穿越字符。 */
+    private static final java.util.regex.Pattern LOCALE_SHORT_PATTERN =
+        java.util.regex.Pattern.compile("[a-z0-9]+");
+
     /**
      * 将 locale 代码简化为短形式
      * zh-CN / zh → zh, en-US / en → en, de-DE / de → de
+     *
+     * <p><b>安全</b>：locale 源自用户请求 DTO，会拼进 classpath 资源路径（见 {@link #loadResource}）。
+     * 归一化后必须落在白名单字符集 {@code [a-z0-9]+} 内，否则视为非法 locale 回退默认值 ——
+     * 从源头消除 {@code ../} 路径穿越（java/path-injection）。合法短码（zh/en/de/hi…）不受影响。
      */
     private String normalizeLocale(String locale) {
         if (locale == null || locale.isBlank()) {
@@ -68,10 +76,15 @@ public class PromptTemplateRegistry {
         }
         // 取 locale 前缀
         String lower = locale.toLowerCase();
-        if (lower.contains("-") || lower.contains("_")) {
-            return lower.split("[-_]")[0];
+        String prefix = (lower.contains("-") || lower.contains("_"))
+            ? lower.split("[-_]")[0]
+            : lower;
+        // 非法 locale（空前缀或含路径穿越字符）→ 回退默认 locale，绝不拼入原始输入。
+        if (!LOCALE_SHORT_PATTERN.matcher(prefix).matches()) {
+            LOG.warnf("非法 locale 短码，回退默认 locale: %s", locale);
+            return config.prompt().defaultLocale();
         }
-        return lower;
+        return prefix;
     }
 
     private String loadResource(String path) {

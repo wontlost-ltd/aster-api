@@ -59,6 +59,15 @@ public class UiMessagesService {
     private static final String RESOURCE_PREFIX = "ui-messages/";
 
     /**
+     * 合法 locale id 字符集（安全白名单）：仅字母、数字、连字符、下划线（如 {@code en-US} /
+     * {@code zh-CN} / {@code hi-IN}）。locale 源自 URL 路径参数 / Redis pub/sub 事件，会拼进
+     * classpath 资源路径（{@link #loadFromClasspath}）——白名单从源头杜绝 {@code / . \}
+     * 路径穿越（java/path-injection）。合法 locale 不受影响。
+     */
+    private static final java.util.regex.Pattern LOCALE_ID_PATTERN =
+        java.util.regex.Pattern.compile("[A-Za-z0-9_-]+");
+
+    /**
      * Redis 运行时文案覆盖层 key 前缀（ADR 0021 方案 A）。admin 改的文案存这里，
      * 是 classpath 基线之上的运行时增量。掉电回退 classpath（不丢显示能力，只丢增量）。
      */
@@ -128,6 +137,11 @@ public class UiMessagesService {
      * 资源缺失 → empty（不抛，便于 P1 未发版时优雅降级）。
      */
     private Optional<MessagesEntry> loadFromClasspath(String locale) {
+        // 安全校验：locale 拼进 classpath 资源路径前必须落在白名单字符集，
+        // 非法输入（含 / . \ 等）直接 empty（与"资源缺失"同款优雅降级），杜绝路径穿越。
+        if (locale == null || !LOCALE_ID_PATTERN.matcher(locale).matches()) {
+            return Optional.empty();
+        }
         String resource = RESOURCE_PREFIX + locale + ".json";
         ClassLoader cl = Thread.currentThread().getContextClassLoader();
         try (InputStream is = cl.getResourceAsStream(resource)) {
