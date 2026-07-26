@@ -24,7 +24,7 @@ dependencies {
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.22.0'
 
     // 版本与 aster-api 根 build.gradle 的 quarkus-bom 3.37.2 管理版本对齐（本模块无 BOM，需显式声明）。
-    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.1'
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     // S2-1a-1：executor/parser 运行所需（core 无 Quarkus BOM，全显式声明，不靠 aster-api transitive）。
