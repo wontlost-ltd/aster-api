@@ -217,6 +217,11 @@ jobs:
     # 前置（人工，见 k3s SETUP.md）：本仓需配 vars.IMAGE_PIN_APP_CLIENT_ID +
     # secrets.IMAGE_PIN_APP_PRIVATE_KEY（image-pin App 的私钥）。未配置则本 job skip。
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.IMAGE_PIN_APP_CLIENT_ID != '' }}
+    permissions:
+      # 最小权限：本 job 仅 checkout 读源码取共享脚本 + https git ls-remote 查 tip。
+      # 跨 org 开 PR 到 k3s 用独立 GitHub App token（create-github-app-token），非 GITHUB_TOKEN，
+      # 故 GITHUB_TOKEN 无需任何写权限。
+      contents: read
     runs-on: ubuntu-latest
     concurrency:
       group: image-pin-pr-aster-replay-runner   # per-image：不与 aster-api/aster-cloud 的 job 互相取消
