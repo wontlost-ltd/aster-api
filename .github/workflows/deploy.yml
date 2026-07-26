@@ -15,6 +15,13 @@ concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
+# 顶层最小权限默认（缺省时 GitHub 授予宽泛读写 token）：本 workflow 大多数 job 仅需
+# checkout 读源码。build-and-test 只 build+test；image-pin-pr 用独立 GitHub App token（非
+# GITHUB_TOKEN）跨 org 开 PR 到 k3s，且用 https git ls-remote 查 tip，均不需 GITHUB_TOKEN 写权限。
+# deploy job 需 id-token: write 做 cosign keyless 签名，在该 job 内单独提权覆盖此默认。
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
