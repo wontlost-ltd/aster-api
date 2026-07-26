@@ -21,7 +21,7 @@ dependencies {
     implementation asterLibs.runtime
     // 版本与 aster-api 根 build.gradle 的传递依赖对齐（quarkus-bom 3.37.2 管理的
     // jackson-bom:2.22.0）；本模块无 Quarkus BOM，需显式声明版本。
-    implementation 'com.fasterxml.jackson.core:jackson-databind:2.22.0'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.22.1'
 
     // 版本与 aster-api 根 build.gradle 的 quarkus-bom 3.37.2 管理版本对齐（本模块无 BOM，需显式声明）。
     testImplementation 'org.junit.jupiter:junit-jupiter:6.1.1'
