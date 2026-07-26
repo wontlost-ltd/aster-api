@@ -5,7 +5,7 @@ plugins {
     // Keep these two in lockstep — a plugin/BOM skew can pull mismatched
     // codegen vs runtime artifacts.
     id 'io.quarkus' version '3.37.3'
-    id 'io.gatling.gradle' version '3.15.1.1'
+    id 'io.gatling.gradle' version '3.15.1.2'
     id 'org.gradle.test-retry' version '1.6.5'
 }
 
