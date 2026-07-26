@@ -2,7 +2,7 @@
 # ★集群节点 ARM64（OCI Ampere），必须真 arm64（承 runner/Dockerfile arch 断言纪律，防 QEMU 误标）。
 
 # ── builder：编 launcher 静态二进制 ──
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
