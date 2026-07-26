@@ -51,6 +51,27 @@ class UiMessagesServiceTest {
     }
 
     @Test
+    @DisplayName("路径穿越 locale → empty（拒绝越权读任意文件，java/path-injection）")
+    void loadRejectsPathTraversalLocale() throws Exception {
+        UiMessagesService svc = new UiMessagesService();
+        // 各种穿越 payload 都必须被白名单拦下 → empty（不触达 classpath 资源）。
+        assertThat(loadViaReflection(svc, "../../../etc/passwd")).isNull();
+        assertThat(loadViaReflection(svc, "../en-US")).isNull();
+        assertThat(loadViaReflection(svc, "en-US/../../secret")).isNull();
+        assertThat(loadViaReflection(svc, "en.US")).isNull();      // 点号非法
+        assertThat(loadViaReflection(svc, "en/US")).isNull();      // 斜杠非法
+        assertThat(loadViaReflection(svc, "en\\US")).isNull();     // 反斜杠非法
+        assertThat(loadViaReflection(svc, "")).isNull();
+    }
+
+    @Test
+    @DisplayName("合法 locale（en-US）不受安全校验影响，仍正常加载")
+    void loadValidLocaleStillWorks() throws Exception {
+        UiMessagesService svc = new UiMessagesService();
+        assertThat(loadViaReflection(svc, "en-US")).isNotNull();
+    }
+
+    @Test
     @DisplayName("get(null/空) → empty")
     void getNullOrBlank() {
         UiMessagesService svc = new UiMessagesService();
