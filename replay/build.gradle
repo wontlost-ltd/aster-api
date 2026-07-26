@@ -36,8 +36,8 @@ dependencies {
     implementation 'org.graalvm.sdk:graal-sdk:23.1.2'
     implementation 'org.graalvm.truffle:truffle-api:25.0.3'
     runtimeOnly    'org.graalvm.truffle:truffle-runtime:25.0.3'
-    runtimeOnly    'org.graalvm.truffle:truffle-compiler:25.0.3'
-    runtimeOnly    'org.graalvm.compiler:compiler:25.0.3'
+    runtimeOnly    'org.graalvm.truffle:truffle-compiler:25.0.4'
+    runtimeOnly    'org.graalvm.compiler:compiler:25.0.4'
     implementation 'org.jboss.logging:jboss-logging:3.6.3.Final'
     implementation 'org.antlr:antlr4-runtime:4.13.2'   // parser 直接 import，无条件
     // locale SPI（byte-parity 需全 locale parse；hi 是独立 artifact cloud.aster-lang:aster-lang-hi，
