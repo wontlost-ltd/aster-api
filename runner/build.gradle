@@ -22,7 +22,7 @@ application {
 
 dependencies {
     implementation project(':replay')   // ReplayExecutionCore / DynamicCnlExecutor / records
-    implementation 'com.fasterxml.jackson.core:jackson-databind:2.22.0'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.22.1'
 
     // ★locale SPI：:replay 里是 testRuntimeOnly（不在主运行时 classpath）。runner 必须
     // 提升为真 runtimeOnly，否则非英文 replay 静默分叉（byte-parity 头号陷阱）。四 jar 物理
