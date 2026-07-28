@@ -215,12 +215,11 @@ public class PolicyEvaluationResource {
     @Path("/evaluate")
     public Uni<EvaluationResponse> evaluate(@Valid EvaluationRequest request) {
         enforceApiQuota("/api/v1/policies/evaluate");
-        String tenantId = tenantId();
-        String performedBy = performedBy();
-        // 跨线程预捕获：评估在 worker pool 上完成，回调里 routingContext/
-        // RequestScoped 已失效，必须在进入 Uni 前抓好 apiKeyId，否则 quota/
-        // 计费计数在异步回调里静默丢失（recordApiCall 3-arg 版会读到 null）。
-        String apiKeyId = apiKeyIdFromContext();
+        // 跨线程预捕获，必须在进入 Uni 之前——理由见 RequestIdentity。
+        RequestIdentity identity = captureIdentity();
+        String tenantId = identity.tenantId();
+        String performedBy = identity.performedBy();
+        String apiKeyId = identity.apiKeyId();
         long startTime = System.currentTimeMillis();
         Timer.Sample sample = businessMetrics.startPolicyEvaluation();
         Map<String, Object> metadata = buildEvaluationMetadata(request);
@@ -294,10 +293,11 @@ public class PolicyEvaluationResource {
     @Path("/evaluate-json")
     public Uni<EvaluationResponse> evaluateJson(@Valid JsonPolicyRequest request) {
         enforceApiQuota("/api/v1/policies/evaluate-json");
-        String tenantId = tenantId();
-        String performedBy = performedBy();
-        // 跨线程预捕获 apiKeyId（评估在 worker 上完成，回调里 context 已失效）。
-        String apiKeyId = apiKeyIdFromContext();
+        // 跨线程预捕获，必须在进入 Uni 之前——理由见 RequestIdentity。
+        RequestIdentity identity = captureIdentity();
+        String tenantId = identity.tenantId();
+        String performedBy = identity.performedBy();
+        String apiKeyId = identity.apiKeyId();
         long startTime = System.currentTimeMillis();
         Timer.Sample sample = businessMetrics.startPolicyEvaluation();
 
@@ -469,12 +469,11 @@ public class PolicyEvaluationResource {
                     .build()
             );
         }
-        String tenantId = tenantId();
-        String performedBy = performedBy();
-        // 必须在切到 worker pool 前抓取 apiKeyId — RequestScoped 在 lambda
-        // 内已失效，否则 recordApiCall 会抛 ContextNotActiveException 并
-        // 被 Mutiny drop（quota 计数 silently lost）。
-        String apiKeyIdSnap = apiKeyIdFromContext();
+        // 跨线程预捕获，必须在切到 worker pool 之前——理由见 RequestIdentity。
+        RequestIdentity identity = captureIdentity();
+        String tenantId = identity.tenantId();
+        String performedBy = identity.performedBy();
+        String apiKeyIdSnap = identity.apiKeyId();
         long apiCallStart = System.currentTimeMillis();
         Timer.Sample sample = businessMetrics.startPolicyEvaluation();
 
@@ -927,10 +926,11 @@ public class PolicyEvaluationResource {
     public Uni<BatchEvaluationResponse> evaluateBatch(@Valid BatchEvaluationRequest request) {
         // batch 按"批中每条都算一次调用"扣配额：在 quota 检查之外，结果落地时按条 recordApiCall
         enforceApiQuota("/api/v1/policies/evaluate/batch");
-        String tenantId = tenantId();
-        // 跨线程预捕获：批量评估在 worker 上完成，.map 回调里 context 已失效。
-        String performedBy = performedBy();
-        String apiKeyId = apiKeyIdFromContext();
+        // 跨线程预捕获，必须在进入 Uni 之前——理由见 RequestIdentity。
+        RequestIdentity identity = captureIdentity();
+        String tenantId = identity.tenantId();
+        String performedBy = identity.performedBy();
+        String apiKeyId = identity.apiKeyId();
         long startTime = System.currentTimeMillis();
 
         LOG.infof("Batch evaluating %d policies for tenant %s", request.requests().size(), tenantId);
@@ -1238,6 +1238,34 @@ public class PolicyEvaluationResource {
 
     private Map<String, Object> buildEvaluationMetadata(EvaluationRequest request) {
         return auditPublisher.buildMetadata(request);
+    }
+
+    /**
+     * 一次请求的调用方身份快照（issue #174）。
+     *
+     * <p><b>存在的理由是线程边界，不是"减少重复"。</b>评估在 worker pool 上完成，
+     * 回调里 {@code routingContext} / {@code RequestScoped} 已失效——三者必须在进入
+     * {@code Uni} 之前抓好。漏抓 {@code apiKeyId} 时 {@code recordApiCall} 会读到 null
+     * 或抛 {@code ContextNotActiveException} 并被 Mutiny 静默 drop，表现为**配额与计费
+     * 计数无声丢失**（这个坑已经踩过一次，见各端点原注释）。
+     *
+     * <p>此前 4 个端点各自手抄这三行 + 一段解释注释，抄漏一行不会有任何编译或测试报错。
+     * 收敛成一次 {@link #captureIdentity()} 调用后，"必须预捕获"这条约束由**类型**表达：
+     * 拿不到 {@code RequestIdentity} 就没有 tenantId 可用。
+     *
+     * <p>刻意**不**把 quota/metrics/计时也塞进来——那些各端点确有差异
+     * （如 evaluate-source 还有 permit 闸门与 onTermination 释放），强行统一会抹掉
+     * 端点特有的语义。这里只收敛真正逐字相同的那部分。
+     */
+    private record RequestIdentity(String tenantId, String performedBy, String apiKeyId) {}
+
+    /**
+     * 在**请求线程**上捕获调用方身份，供跨线程回调使用。
+     *
+     * <p>必须在返回 {@code Uni} 之前调用。
+     */
+    private RequestIdentity captureIdentity() {
+        return new RequestIdentity(tenantId(), performedBy(), apiKeyIdFromContext());
     }
 
     /**
