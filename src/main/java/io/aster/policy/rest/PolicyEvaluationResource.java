@@ -5,7 +5,6 @@ import io.aster.monitoring.BusinessMetrics;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.api.model.BatchRequest;
 import io.aster.policy.event.AuditEvent;
-import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.metrics.PolicyMetrics;
 import io.aster.policy.api.convert.NamedContextMapper;
 import io.aster.policy.api.schema.ParameterSchemaExtractor;
@@ -14,9 +13,6 @@ import io.aster.policy.parser.DynamicCnlExecutor;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.policy.replay.ReplayExecutorAdapter;
 import io.aster.policy.rest.model.*;
-import io.aster.policy.service.PolicyVersionService;
-import io.aster.policy.telemetry.NsmEvents;
-import io.aster.policy.telemetry.NsmTelemetry;
 import io.aster.replay.core.ExecutionPhaseResult;
 import io.aster.replay.core.ReplayExecutionCore;
 import io.aster.replay.core.ReplayExecutionRequest;
@@ -155,16 +151,7 @@ public class PolicyEvaluationResource {
     BusinessMetrics businessMetrics;
 
     @Inject
-    PolicyVersionService versionService;
-
-    @Inject
-    Event<AuditEvent> auditEventPublisher;
-
-    @Inject
     PolicyAuditPublisher auditPublisher;
-
-    @Inject
-    NsmTelemetry nsmTelemetry;
 
     @Inject
     ApiQuotaGuard apiQuotaGuard;
@@ -1106,124 +1093,6 @@ public class PolicyEvaluationResource {
         });
     }
 
-    /**
-     * 回滚策略到指定版本
-     *
-     * POST /api/policies/{policyId}/rollback
-     * Headers: X-Tenant-Id (optional, defaults to "default")
-     * Body: { "targetVersion": 1730890123456, "reason": "回滚原因" }
-     */
-    @POST
-    @Path("/{policyId}/rollback")
-    @io.smallrye.common.annotation.Blocking
-    // 红队 P1-E：rollback 是生产突变操作（激活旧版本 = 改变线上决策行为），类级默认
-    // 的 MEMBER 权限偏低。方法级提升到 ADMIN（RoleEnforcementFilter 优先方法注解）。
-    // 结合 P0-A 的租户范围校验：只有本租户的 ADMIN/OWNER 才能回滚本租户策略。
-    @io.aster.policy.security.rbac.RequireRole(io.aster.policy.security.rbac.Role.ADMIN)
-    public Uni<RollbackResponse> rollback(
-        @PathParam("policyId") String policyId,
-        @Valid RollbackRequest request
-    ) {
-        String tenantId = tenantId();
-        String performedBy = performedBy();
-
-        LOG.infof("Rolling back policy %s to version %d for tenant %s",
-            policyId, request.targetVersion(), tenantId);
-
-        return Uni.createFrom().item(() -> {
-            // 获取当前活跃版本（用于审计日志）——租户范围，防跨租户探测（P0-A）
-            PolicyVersion currentVersion = versionService.getActiveVersion(policyId, tenantId);
-            Long fromVersion = currentVersion != null ? currentVersion.version : null;
-
-            // 执行回滚（收敛到正常激活路径：校验 APPROVED + 同步 catalog + 发激活通知）
-            // 传 tenantId：目标版本必须归属当前租户，堵跨租户回滚（P0-A）
-            PolicyVersion rolledBackVersion = versionService.rollbackToVersion(
-                policyId,
-                request.targetVersion(),
-                performedBy,
-                tenantId
-            );
-
-            auditEventPublisher.fireAsync(
-                AuditEvent.rollback(
-                    tenantId,
-                    rolledBackVersion.moduleName,
-                    policyId,
-                    fromVersion,
-                    rolledBackVersion.version,
-                    performedBy,
-                    request.reason()
-                )
-            );
-
-            // NSM 埋点：rule_rolled_back（详见 03-telemetry-spec.md）
-            // days_after_publish 暂留 -1，待 PolicyVersion 加入 publishedAt/activatedAt 后回填精确值
-            long daysAfterPublish = -1L;
-            if (currentVersion != null && currentVersion.activatedAt != null) {
-                daysAfterPublish = java.time.Duration.between(
-                    currentVersion.activatedAt, java.time.Instant.now()
-                ).toDays();
-            }
-            nsmTelemetry.track(
-                performedBy,
-                NsmEvents.RULE_ROLLED_BACK,
-                java.util.Map.of(
-                    "rule_id", policyId,
-                    "from_version", fromVersion != null ? fromVersion : -1,
-                    "to_version", rolledBackVersion.version,
-                    "days_after_publish", daysAfterPublish,
-                    "reason", request.reason() != null ? request.reason() : "",
-                    "tenant_id", tenantId
-                )
-            );
-
-            LOG.infof("Policy %s successfully rolled back to version %d",
-                policyId, rolledBackVersion.version);
-
-            return RollbackResponse.success(rolledBackVersion.version);
-        })
-        .onFailure(IllegalArgumentException.class)
-        .recoverWithItem(throwable -> {
-            LOG.errorf(throwable, "Rollback failed for policy %s", policyId);
-            return RollbackResponse.failure("版本不存在: " + request.targetVersion());
-        })
-        .onFailure().recoverWithItem(throwable -> {
-            LOG.errorf(throwable, "Rollback failed for policy %s", policyId);
-            return RollbackResponse.failure("回滚失败: " + throwable.getMessage());
-        });
-    }
-
-    /**
-     * 获取策略版本历史
-     *
-     * GET /api/policies/{policyId}/versions
-     * Headers: X-Tenant-Id (optional, defaults to "default")
-     */
-    @GET
-    @Path("/{policyId}/versions")
-    @io.smallrye.common.annotation.Blocking
-    public Uni<List<PolicyVersionInfo>> getVersionHistory(@PathParam("policyId") String policyId) {
-        String tenantId = tenantId();
-
-        LOG.infof("Fetching version history for policy %s (tenant: %s)", policyId, tenantId);
-
-        return Uni.createFrom().item(() -> {
-            // 租户范围：只返回当前租户的版本，防跨租户读别租户版本历史（P0-A）
-            List<PolicyVersion> versions = versionService.getAllVersions(policyId, tenantId);
-            return versions.stream()
-                .map(v -> new PolicyVersionInfo(
-                    v.version,
-                    v.active,
-                    v.moduleName,
-                    v.functionName,
-                    v.createdAt,
-                    v.createdBy,
-                    v.notes,
-                    v.sourceKind // G6：导出版本来源（manual/ai_draft/…），审计可见
-                ))
-                .toList();
-        });
-    }
 
     // R31-1：publishPolicyEvaluationEvent + buildEvaluationMetadata 提取到
     // PolicyAuditPublisher。这里保留 thin pass-through 避免一次性改全部 13
