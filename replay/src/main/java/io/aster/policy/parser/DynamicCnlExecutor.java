@@ -164,8 +164,18 @@ public class DynamicCnlExecutor {
         return coreIrCacheKey(source, locale, identifierIndex, aliasSet, aliasesTrusted).key();
     }
 
+    // ── 以下 static execute* 重载仅测试在用（issue #175）───────────────────
+    // 生产入口只有两个：实例方法 executeWithTenantContext（ReplayExecutorAdapter /
+    // StandaloneReplayExecutor）与本类的 executeCoreIrJson（/evaluate-json）。
+    // 这些 static 重载在 src/main 里**零调用方**，却因 public 而看起来像主 API，
+    // 容易误导维护者。保留是因为 34 处测试在用、且它们承载 parity 价值；
+    // 标注于此以免被当成生产路径。新代码请勿使用。
+
     /**
      * 动态执行 CNL 源代码（使用默认 locale）
+     *
+     * <p><b>仅供测试</b>（issue #175）：生产路径见 {@code executeWithTenantContext}
+     * 与 {@link #executeCoreIrJson}。
      *
      * @param source CNL 源代码
      * @param context 评估上下文参数
@@ -243,6 +253,98 @@ public class DynamicCnlExecutor {
         return executeInternal(
             source, context, functionName, locale, true, identifierIndex, legacyEvaluateSentinel,
             null, null, false);
+    }
+
+    /**
+     * 直接执行 <b>Core IR JSON</b>，不经过 CNL 文本管线（issue #172）。
+     *
+     * <p>{@code /evaluate-json} 端点收到的 {@code policy} 本就是 Core IR JSON，此前却先
+     * fork {@code node aster-convert} 把它转成 CNL、再解析回 Core IR。生产运行镜像
+     * （{@code Dockerfile.jvm} = zulu-alpine JRE）**不含 Node**，`ASTER_CLI_PATH` 也从未
+     * 配置，{@code resolveCliPath()} 最终回退到裸 {@code "aster-convert"} 必然
+     * {@code IOException} —— 该端点在生产 100% 不可用。
+     *
+     * <p>这里直接反序列化 Core IR 并复用管线**后半段**（选函数 → 映射命名参数 →
+     * GraalVM 执行）。注意 {@link #compileCoreIr} 本就以
+     * {@code MAPPER.writeValueAsString(coreModule)} 把 Core IR 序列化成 JSON 再喂给
+     * polyglot，故此处只是省掉「JSON → CNL → AST → Core IR → JSON」这一圈往返，
+     * 执行语义与 CNL 路径同源。
+     *
+     * <p>不走 Core IR 缓存：输入本身就是编译产物，重复编译成本已经省掉；缓存键需要
+     * 对整份 JSON 取哈希，收益不抵开销。
+     *
+     * @param coreIrJson Core IR JSON（{@code CoreModel.Module} 的序列化形式）
+     * @param context 评估上下文（命名 Map 或位置数组）
+     * @param functionName 目标函数名；null 时按 @entry / 单 Rule 规则推断
+     */
+    public static ExecutionResult executeCoreIrJson(
+            String coreIrJson, Object context, String functionName) {
+        long startTime = System.currentTimeMillis();
+        try {
+            CoreModel.Module coreModule;
+            try {
+                coreModule = MAPPER.readValue(coreIrJson, CoreModel.Module.class);
+            } catch (Exception e) {
+                throw new DynamicExecutionException(
+                    "Core IR JSON 解析失败: " + e.getMessage(), e);
+            }
+            if (coreModule == null || coreModule.decls == null) {
+                throw new DynamicExecutionException("Core IR JSON 不含任何声明");
+            }
+
+            List<String> functionNames = new java.util.ArrayList<>();
+            String entryFunctionName = null;
+            for (CoreModel.Decl decl : coreModule.decls) {
+                if (decl instanceof CoreModel.Func func) {
+                    functionNames.add(func.name);
+                    if (entryFunctionName == null && isEntryFunc(func)) {
+                        entryFunctionName = func.name;
+                    }
+                }
+            }
+
+            String targetFunction = selectTargetFunction(
+                functionName, functionNames, entryFunctionName, false);
+
+            List<CoreModel.Param> functionParams = findFunctionParams(coreModule, targetFunction);
+            if (functionParams == null) {
+                throw new DynamicExecutionException("未找到函数参数定义: " + targetFunction);
+            }
+            NamedContextMapper.MappingResult mappingResult =
+                NamedContextMapper.mapContext(context, functionParams);
+            if (!mappingResult.success()) {
+                throw new DynamicExecutionException("参数映射失败: " + mappingResult.error());
+            }
+
+            // 重新序列化：入参 JSON 可能含多余空白/字段顺序差异，统一走 MAPPER 产出
+            // 与 CNL 路径**字节同源**的 compact JSON，避免两条路径喂给 polyglot 的
+            // 输入形态不同。
+            String coreJson = MAPPER.writeValueAsString(coreModule);
+            Object result = executeWithPolyglot(coreJson, targetFunction, mappingResult.positionalArgs());
+
+            long executionTime = System.currentTimeMillis() - startTime;
+            String moduleName = coreModule.name == null ? "" : coreModule.name;
+            LOG.infof("Core IR 直接执行完成: %s.%s, 耗时 %dms", moduleName, targetFunction, executionTime);
+            return new ExecutionResult(result, moduleName, targetFunction, executionTime);
+        } catch (DynamicExecutionException e) {
+            throw e;
+        } catch (Exception e) {
+            LOG.errorf(e, "Core IR 直接执行失败: %s", e.getMessage());
+            throw new DynamicExecutionException("Core IR 执行失败: " + e.getMessage(), e);
+        }
+    }
+
+    /** 判断 Func 是否带 @entry 注解（与 CNL 路径的入口判定语义一致）。 */
+    private static boolean isEntryFunc(CoreModel.Func func) {
+        if (func.annotations == null) {
+            return false;
+        }
+        for (var ann : func.annotations) {
+            if (ann != null && "entry".equals(ann.name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

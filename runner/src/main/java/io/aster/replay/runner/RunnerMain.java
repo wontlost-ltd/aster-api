@@ -102,35 +102,21 @@ public final class RunnerMain {
     }
 
     /**
-     * 异常 → 错误 envelope。对齐 aster-api 四类映射（PolicyEvaluationResource 的 catch 分类）：
-     * <ul>
-     *   <li>{@link DynamicCnlExecutor.ModuleExecutionException}→MODULE。★它是
-     *       {@link DynamicCnlExecutor.DynamicExecutionException} 的子类，必须先于父类 catch，
-     *       否则 MODULE 会被误分类为 EXECUTION。诊断消息经 {@code resolutionException()} 解包
-     *       （镜像 PolicyEvaluationResource:618-622：code + message）。</li>
-     *   <li>{@link DynamicCnlExecutor.DynamicExecutionException}（含 AmbiguousEntryException、
-     *       以及内部已把 CnlParseException 包装进来的执行失败）→EXECUTION。</li>
-     *   <li>{@link InProcessCnlParser.CnlParseException}→PARSE（防御性：直解析路径；
-     *       经 executor 时已被包装为 DynamicExecutionException 不会裸达此处）。</li>
-     *   <li>其余 → INTERNAL。</li>
-     * </ul>
-     * ★import 策略在 StandaloneReplayExecutor 的 (null,true) 下：DynamicCnlExecutor.java:444
-     *   因 moduleResolver==null 抛 ModuleResolutionException，被 :402-403 包装为
-     *   ModuleExecutionException——所以 runner 只会见到 ModuleExecutionException，绝不见裸
-     *   ModuleResolutionException。
+     * 异常 → 错误 envelope。
+     *
+     * <p>分类逻辑已抽到 {@link io.aster.replay.core.ErrorClassification}——runner 与
+     * aster-api（{@code PolicyEvaluationResource} 的 catch 链）共用同一份，消除此前
+     * "两处手写 + 注释里引用对方行号"的漂移风险（issue #173）。那套注释引用早已失效：
+     * 行号变了，且两侧分类其实已经不同（API 单独处理 AmbiguousEntryException，
+     * runner 把它并进了 EXECUTION）。
+     *
+     * <p>本方法只负责把分类结果转成 runner 的 envelope 形状；HTTP 语义留在 API 侧。
      */
     private static RunnerEnvelope mapError(Exception e) {
-        if (e instanceof DynamicCnlExecutor.ModuleExecutionException moduleEx) {
-            var moduleError = moduleEx.resolutionException();
-            String message = moduleError.code() + ": " + moduleError.getMessage();
-            return RunnerEnvelope.error("MODULE", message, "execute");
-        }
-        if (e instanceof DynamicCnlExecutor.DynamicExecutionException) {
-            return RunnerEnvelope.error("EXECUTION", String.valueOf(e.getMessage()), "execute");
-        }
-        if (e instanceof InProcessCnlParser.CnlParseException) {
-            return RunnerEnvelope.error("PARSE", String.valueOf(e.getMessage()), "parse");
-        }
-        return RunnerEnvelope.error("INTERNAL", String.valueOf(e.getMessage()), "execute");
+        var classified = io.aster.replay.core.ErrorClassification.classify(e);
+        String phase = classified.kind() == io.aster.replay.core.ErrorClassification.Kind.PARSE
+            ? "parse"
+            : "execute";
+        return RunnerEnvelope.error(classified.kind().name(), classified.message(), phase);
     }
 }
