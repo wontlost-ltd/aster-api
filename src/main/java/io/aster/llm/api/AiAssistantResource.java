@@ -60,6 +60,14 @@ public class AiAssistantResource {
     @Context
     RoutingContext routingContext;
 
+    /**
+     * issue #174：身份解析收敛到共享 resolver。此前本类自写 tenantId()，
+     * **缺 R32 hotfix**（不读 ApiKeyAuthFilter 写入的 ctx property），带有效
+     * API key 但不带 X-Tenant-Id 的请求会误落到 "default" 租户。
+     */
+    @jakarta.inject.Inject
+    io.aster.policy.rest.RequestIdentityResolver identityResolver;
+
     @Context
     jakarta.ws.rs.container.ContainerRequestContext requestContext;
 
@@ -151,11 +159,7 @@ public class AiAssistantResource {
     }
 
     private String tenantId() {
-        if (routingContext == null || routingContext.request() == null) {
-            return "default";
-        }
-        String tenant = routingContext.request().getHeader("X-Tenant-Id");
-        return tenant == null || tenant.isBlank() ? "default" : tenant.trim();
+        return identityResolver.tenantId();
     }
 
     /**

@@ -182,6 +182,13 @@ public class PolicyEvaluationResource {
     @Inject
     io.aster.policy.tenant.TenantContext tenantContext;
 
+    /**
+     * 调用方身份解析（issue #174）：tenant / user / apiKeyId 的单一事实源。
+     * 此前 4 个 resource 各自手写 tenantId()，且已漂移——只有本类带 R32 hotfix。
+     */
+    @Inject
+    RequestIdentityResolver identityResolver;
+
     @Inject
     io.aster.policy.compiler.PolicyCompiler policyCompiler;
 
@@ -1274,30 +1281,7 @@ public class PolicyEvaluationResource {
      * 从 X-Tenant-Id 请求头提取租户ID，如果不存在则返回 "default"
      */
     private String tenantId() {
-        // R29 Codex audit：trial 路径不带 X-Tenant-Id，TenantFilter 已将
-        // TenantContext 设为 "trial"。先查 TenantContext，再回退 header，
-        // 确保 quota/audit/metrics 对 trial 流量记账到 "trial" 而非 "default"。
-        if (tenantContext != null) {
-            String ctxTenant = tenantContext.getCurrentTenant();
-            if (ctxTenant != null && !ctxTenant.isBlank()) {
-                return ctxTenant;
-            }
-        }
-        // R32 hotfix v3: ApiKeyAuthFilter 把 verify 结果写进 ctx.property，
-        // 比 Vert.x routingContext.request().getHeader 更可靠 — filter 改
-        // header 是 JAX-RS 层 mutation，部分 RESTEasy 配置下 Vert.x layer
-        // 看不到。先认 property，再回退 Vert.x header。
-        if (jaxrsCtx != null) {
-            Object tenantProp = jaxrsCtx.getProperty("aster.apikey.tenantId");
-            if (tenantProp instanceof String s && !s.isBlank()) {
-                return s.trim();
-            }
-        }
-        if (routingContext == null || routingContext.request() == null) {
-            return "default";
-        }
-        String tenant = routingContext.request().getHeader("X-Tenant-Id");
-        return tenant == null || tenant.isBlank() ? "default" : tenant.trim();
+        return identityResolver.tenantId();
     }
 
     /**
@@ -1305,35 +1289,11 @@ public class PolicyEvaluationResource {
      * Vert.x header 更可靠。Header 是回退路径（trial endpoint / 老调用方）。
      */
     private String apiKeyIdFromContext() {
-        if (jaxrsCtx != null) {
-            Object p = jaxrsCtx.getProperty("aster.apikey.apiKeyId");
-            if (p instanceof String s && !s.isBlank()) return s.trim();
-        }
-        if (routingContext == null || routingContext.request() == null) return null;
-        String h = routingContext.request().getHeader("X-Api-Key-Id");
-        return h == null || h.isBlank() ? null : h.trim();
+        return identityResolver.apiKeyId();
     }
 
     private String performedBy() {
-        // R29: trial 流量统一记账 performedBy=trial-anonymous，与租户 "trial"
-        // 配对。审计/metrics 才能把 marketing playground 流量从普通 anonymous
-        // 中分离出来。
-        if (tenantContext != null && "trial".equals(tenantContext.getCurrentTenant())) {
-            return "trial-anonymous";
-        }
-        // R32 hotfix v3: 优先用 filter 写入的 ctx.property（authoritative，
-        // 来自 ApiKeyVerifyResult.userId()），再回退 Vert.x header。详见 tenantId()。
-        if (jaxrsCtx != null) {
-            Object userProp = jaxrsCtx.getProperty("aster.apikey.userId");
-            if (userProp instanceof String s && !s.isBlank()) {
-                return s.trim();
-            }
-        }
-        if (routingContext == null || routingContext.request() == null) {
-            return "anonymous";
-        }
-        String user = routingContext.request().getHeader("X-User-Id");
-        return user == null || user.isBlank() ? "anonymous" : user.trim();
+        return identityResolver.performedBy();
     }
 
     /**

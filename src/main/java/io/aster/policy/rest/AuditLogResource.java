@@ -4,7 +4,6 @@ import io.aster.audit.chain.AuditChainVerifier;
 import io.aster.audit.chain.ChainVerificationResult;
 import io.aster.policy.entity.AuditLog;
 import io.smallrye.mutiny.Uni;
-import io.vertx.ext.web.RoutingContext;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
 import jakarta.inject.Inject;
@@ -38,11 +37,13 @@ public class AuditLogResource {
 
     private static final Logger LOG = Logger.getLogger(AuditLogResource.class);
 
-    @Context
-    RoutingContext routingContext;
-
-    @Inject
-    io.aster.policy.tenant.TenantContext tenantContext;
+    /**
+     * issue #174：身份解析收敛到共享 resolver。此前本类自写 tenantId()，
+     * **缺 R32 hotfix**（不读 ApiKeyAuthFilter 写入的 ctx property），带有效
+     * API key 但不带 X-Tenant-Id 的请求会误落到 "default" 租户。
+     */
+    @jakarta.inject.Inject
+    io.aster.policy.rest.RequestIdentityResolver identityResolver;
 
     @Inject
     AuditChainVerifier chainVerifier;
@@ -235,20 +236,6 @@ public class AuditLogResource {
      * 从 X-Tenant-Id 请求头提取租户ID，如果不存在则返回 "default"
      */
     private String tenantId() {
-        // 优先读 TenantContext（TenantFilter 已从 ApiKeyAuthFilter 覆盖后的
-        // 权威 X-Tenant-Id 填充）。直接读 Vert.x 原始 header 不可靠：filter 对
-        // header 的 mutation 是 JAX-RS 层，未必同步到 Vert.x layer，会让带有效
-        // key 但不带 X-Tenant-Id 的请求落到 "default"，绕过租户隔离。
-        if (tenantContext != null) {
-            String ctxTenant = tenantContext.getCurrentTenant();
-            if (ctxTenant != null && !ctxTenant.isBlank()) {
-                return ctxTenant;
-            }
-        }
-        if (routingContext == null || routingContext.request() == null) {
-            return "default";
-        }
-        String tenant = routingContext.request().getHeader("X-Tenant-Id");
-        return tenant == null || tenant.isBlank() ? "default" : tenant.trim();
+        return identityResolver.tenantId();
     }
 }

@@ -57,6 +57,15 @@ class PolicyEvaluationResourceTrialIdentityTest {
         if (jaxrsCtx != null) {
             setField(r, "jaxrsCtx", jaxrsCtx);
         }
+        // issue #174：身份解析已收敛到 RequestIdentityResolver（4 个 resource 共用，
+        // 消除已漂移的 4 份手写副本）。手工构造 resource 时必须一并装配它——
+        // 生产由 CDI 注入。这里用同一组 mock 装配，保持与被测 resource 看到的
+        // context 完全一致。
+        RequestIdentityResolver resolver = new RequestIdentityResolver();
+        setResolverField(resolver, "tenantContext", tenantContext);
+        setResolverField(resolver, "routingContext", routingContext);
+        setResolverField(resolver, "jaxrsCtx", jaxrsCtx);
+        setField(r, "identityResolver", resolver);
         return r;
     }
 
@@ -71,6 +80,12 @@ class PolicyEvaluationResourceTrialIdentityTest {
 
     private static void setField(Object target, String name, Object value) throws Exception {
         Field f = PolicyEvaluationResource.class.getDeclaredField(name);
+        f.setAccessible(true);
+        f.set(target, value);
+    }
+
+    private static void setResolverField(Object target, String name, Object value) throws Exception {
+        Field f = RequestIdentityResolver.class.getDeclaredField(name);
         f.setAccessible(true);
         f.set(target, value);
     }
