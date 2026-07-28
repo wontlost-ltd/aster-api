@@ -90,6 +90,79 @@ class PolicyEvaluationResourceTrialIdentityTest {
     // （比反射调用 private 方法更贴近真实公开契约）。本类不再持有该方法，反射调用
     // 会因 NoSuchMethodException 失败，故整体删除，不留死测试。
 
+    // ── captureIdentity（issue #174）───────────────────────────────────
+    // 4 个端点原先各自手抄 tenantId()/performedBy()/apiKeyIdFromContext() 三行 +
+    // 一段"必须在进入 Uni 前预捕获"的注释。抄漏一行不会有任何编译或测试报错，
+    // 却会让 quota/计费计数在异步回调里静默丢失。收敛成 captureIdentity() 后，
+    // 这几条断言锁住它与逐个调用等价。
+
+    @Test
+    @DisplayName("#174: captureIdentity() 与逐个调用三个 helper 等价")
+    void captureIdentityMatchesIndividualHelpers() throws Exception {
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("acme");
+
+        RoutingContext rctx = mock(RoutingContext.class);
+        HttpServerRequest req = mock(HttpServerRequest.class);
+        when(rctx.request()).thenReturn(req);
+        when(req.getHeader("X-Tenant-Id")).thenReturn("acme");
+        when(req.getHeader("X-Api-Key-Id")).thenReturn("key-abc");
+
+        PolicyEvaluationResource r = newResource(mock(ApiQuotaGuard.class), tc, rctx);
+
+        Object identity = invoke(r, "captureIdentity", new Class<?>[]{});
+        assertEquals(invoke(r, "tenantId", new Class<?>[]{}),
+            recordComponent(identity, "tenantId"), "tenantId 必须一致");
+        assertEquals(invoke(r, "performedBy", new Class<?>[]{}),
+            recordComponent(identity, "performedBy"), "performedBy 必须一致");
+        assertEquals(invoke(r, "apiKeyIdFromContext", new Class<?>[]{}),
+            recordComponent(identity, "apiKeyId"), "apiKeyId 必须一致");
+    }
+
+    @Test
+    @DisplayName("#174: captureIdentity() 捕获 apiKeyId —— 漏抓会让配额计数静默丢失")
+    void captureIdentityCapturesApiKeyId() throws Exception {
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("acme");
+
+        RoutingContext rctx = mock(RoutingContext.class);
+        HttpServerRequest req = mock(HttpServerRequest.class);
+        when(rctx.request()).thenReturn(req);
+        when(req.getHeader("X-Api-Key-Id")).thenReturn("key-xyz");
+
+        PolicyEvaluationResource r = newResource(mock(ApiQuotaGuard.class), tc, rctx);
+
+        Object identity = invoke(r, "captureIdentity", new Class<?>[]{});
+        assertEquals("key-xyz", recordComponent(identity, "apiKeyId"),
+            "apiKeyId 必须在请求线程上被抓取——回调里 RequestScoped 已失效");
+    }
+
+    @Test
+    @DisplayName("#174: trial 流量的 captureIdentity() 保持 trial 身份契约")
+    void captureIdentityPreservesTrialContract() throws Exception {
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("trial");
+
+        RoutingContext rctx = mock(RoutingContext.class);
+        HttpServerRequest req = mock(HttpServerRequest.class);
+        when(rctx.request()).thenReturn(req);
+        when(req.getHeader("X-Tenant-Id")).thenReturn("default");
+
+        PolicyEvaluationResource r = newResource(mock(ApiQuotaGuard.class), tc, rctx);
+
+        Object identity = invoke(r, "captureIdentity", new Class<?>[]{});
+        assertEquals("trial", recordComponent(identity, "tenantId"));
+        assertEquals("trial-anonymous", recordComponent(identity, "performedBy"),
+            "trial 流量必须记为 trial-anonymous（R29 契约不得被本次重构改变）");
+    }
+
+    /** 读取 RequestIdentity record 的某个分量（该 record 是 private）。 */
+    private static Object recordComponent(Object rec, String name) throws Exception {
+        Method m = rec.getClass().getDeclaredMethod(name);
+        m.setAccessible(true);
+        return m.invoke(rec);
+    }
+
     @Test
     @DisplayName("R29: tenantId() 读 TenantContext.trial，跳过 header fallback")
     void tenantIdPrefersContextOverHeader() throws Exception {
