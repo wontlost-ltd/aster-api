@@ -165,12 +165,43 @@ class PublicApiContractTest {
 
     /**
      * 在 HTTP 注解后到方法体 '{' 之前的注解区里找 @Path（避免误抓下一个方法的）。
+     *
+     * <p>★定位方法体起点时必须**跳过字符串字面量内的花括号**。原实现取
+     * {@code window.indexOf('{')}，而 {@code @Path("/{policyId}/rollback")} 里的
+     * {@code '{'} 先出现，注解区被截断成 {@code @Path("/}，正则匹配不到——于是
+     * **所有带路径参数的端点都从契约里静默消失**（实测 28 个，跨 13 个 resource 类，
+     * 含 ADMIN 变更与 internal 接口）。契约文件因此长期少了这批端点，改动它们不会
+     * 触发任何 breaking-change 告警。
      */
     private static String nearestMethodPath(String window) {
-        int body = window.indexOf('{');
+        int body = methodBodyStart(window);
         String anns = body >= 0 ? window.substring(0, body) : window;
         Matcher m = PATH_ANN.matcher(anns);
         return m.find() ? m.group(1) : null;
+    }
+
+    /**
+     * 找方法体 '{' 的下标，忽略字符串字面量内的花括号（如 {@code @Path("/{id}")}）。
+     *
+     * @return 方法体起始下标；找不到返回 -1
+     */
+    private static int methodBodyStart(String window) {
+        boolean inString = false;
+        for (int i = 0; i < window.length(); i++) {
+            char c = window.charAt(i);
+            if (inString) {
+                if (c == '\\') {
+                    i++; // 跳过转义字符
+                } else if (c == '"') {
+                    inString = false;
+                }
+            } else if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static int firstClassDeclIndex(String src) {
