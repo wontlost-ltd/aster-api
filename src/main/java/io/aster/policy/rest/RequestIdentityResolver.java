@@ -100,17 +100,17 @@ public class RequestIdentityResolver {
         if (prop != null) {
             return prop;
         }
-        // ⚠️ 与 apiKeyId() 不同，此处**保留** header 回退，但要清楚它意味着什么：
-        // X-User-Id 的唯一合法写入者同样是 ApiKeyAuthFilter:143，在 shouldProtect
-        // 未覆盖的路径（如 evaluate-source）上，这里读到的可能是客户端自称的值。
+        // ★这里**有意**回退读 header，与 apiKeyId() 的严格化是两种不同的语义，不要
+        // 「顺手统一」：
         //
-        // 之所以没有像 apiKeyId() 那样直接去掉：performedBy 是**审计标签**而非
-        // 记账键，且有 anonymous 兜底；MessagesAdminResource:104/128 等处还各自
-        // 直接读同一个头。贸然收紧会改变多处审计归属的既有行为，应作为独立改动
-        // 连同那些直读点一起处理。
+        //   apiKeyId 是**记账键**——限流桶键与计费归属，必须是已验证身份，
+        //             否则攻击者可把用量记到他人账上。
+        //   performedBy 是**操作者标签**——策略可被分享，允许未登录用户执行，
+        //             此时本就没有已验证身份可用，anonymous 是正确的终态。
         //
-        // ★因此：审计记录里的 performedBy 在无 API key 认证的路径上**不是可信身份**，
-        // 不得作为「谁做了这件事」的唯一凭据。见审计报告 2026-07-29。
+        // 因此调用方应把 performedBy 当作「尽力而为的操作者标注」：它对已认证流量
+        // 是准确的（ApiKeyAuthFilter:143 会覆盖客户端传值），对匿名/分享流量则是
+        // 自述值或 anonymous。授权判断一律不得依赖它——授权走 tenantId + RBAC。
         String header = header("X-User-Id");
         return header != null ? header : ANONYMOUS_USER;
     }

@@ -1,5 +1,6 @@
 package io.aster.security.apikey;
 
+import io.aster.security.internal.InternalCallSigner;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import io.aster.billing.PlanGateConfig;
@@ -362,12 +363,17 @@ public class ApiKeyVerifierService {
         String path = "/api/internal/apikey/verify";
         URI fullUri = baseUri.resolve(path);
 
-        long timestamp = System.currentTimeMillis() / 1000;
-        String signature = config.hmacKey()
-            .map(k -> sign(k, "POST\n" + path + "\n" + timestamp))
-            .orElse("");
-
         String bodyJson = new JsonObject().put("keyHash", keyHash).encode();
+
+        // v2 签名：绑定 nonce + bodyHash（见 InternalCallSigner）。旧 3 字段 canonical
+        // 不绑 body——攻击者拿到一次签名即可换 keyHash 枚举其他 key。
+        // ★body 必须先构造再签名，顺序不可颠倒。
+        var signed = config.hmacKey()
+            .map(k -> InternalCallSigner.sign(k, "POST", path, bodyJson))
+            .orElse(new InternalCallSigner.Signed(
+                String.valueOf(System.currentTimeMillis() / 1000), "", ""));
+        String timestamp = signed.timestamp();
+        String signature = signed.signature();
         // R32 hotfix v3: verify timeout 收紧到 2s — cf 正常 ~200ms，2s 已留足缓冲。
         // 共用 SharedHttpClient 实例保持 keep-alive + TLS 会话复用，hot path 实测 <50ms。
         Duration timeout = Duration.ofSeconds(2);
@@ -377,6 +383,7 @@ public class ApiKeyVerifierService {
             .timeout(timeout)
             .header("X-Aster-Timestamp", String.valueOf(timestamp))
             .header("X-Aster-Signature", signature)
+                .header("X-Aster-Nonce", signed.nonce())
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(bodyJson, StandardCharsets.UTF_8))
             .build();
