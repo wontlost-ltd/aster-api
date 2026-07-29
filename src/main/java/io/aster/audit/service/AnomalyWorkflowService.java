@@ -267,8 +267,9 @@ public class AnomalyWorkflowService {
                 return Uni.createFrom().nullItem();
             }
 
-            // Step 2: 查找目标版本
-            Long targetVersion = findPreviousVersion(anomaly.policyId, currentVersion.version);
+            // Step 2: 查找目标版本（必须限定租户，见 findPreviousVersion 注释）
+            Long targetVersion =
+                findPreviousVersion(anomaly.policyId, currentVersion.version, anomaly.tenantId);
             if (targetVersion == null) {
                 Log.warnf("异常 %d 无历史版本可回滚，跳过 AUTO_ROLLBACK", anomaly.id);
                 return Uni.createFrom().nullItem();
@@ -313,17 +314,33 @@ public class AnomalyWorkflowService {
      *
      * 查询指定策略的上一个版本（version < currentVersion）
      *
+     * <p>★<b>必须限定租户</b>：{@code policyId} 是 {@code module.function} 形式，
+     * <b>不含租户命名空间</b>——两个租户可以有同名模块与函数。用无租户范围的
+     * {@code findAllVersions(policyId)} 会把别的租户的版本历史一并扫进来，于是
+     * A 租户的 CRITICAL 异常可能选中 B 租户时间线上的版本号写进 AUTO_ROLLBACK
+     * payload。后续 {@code performAutoRollback} 是租户范围解析的（它带 C1 IDOR
+     * 修复注释），结果要么把 A 回滚到一个由 B 的历史决定的版本号，要么
+     * {@code findByVersion} 返回 null 使应急回滚静默失败（表现为「版本漂移」）。
+     *
+     * <p>即：下游已加固，**上游的选择步**漏了——这是同一次修复没做完。
+     *
      * @param policyId       策略 ID
      * @param currentVersion 当前版本号
+     * @param tenantId       租户 ID；为 null 时直接放弃回滚（拒绝跨租户兜底）
      * @return 上一个版本号，如果不存在则返回 null
      */
-    private Long findPreviousVersion(String policyId, Long currentVersion) {
+    private Long findPreviousVersion(String policyId, Long currentVersion, String tenantId) {
         if (policyId == null || currentVersion == null) {
             return null;
         }
+        if (tenantId == null || tenantId.isBlank()) {
+            // 宁可不回滚，也不做跨租户扫描：拿不到租户就无法保证目标版本归属。
+            Log.warnf("policyId=%s 缺少 tenantId，跳过自动回滚目标选择", policyId);
+            return null;
+        }
 
-        // 查询所有版本，按 version 降序（PolicyVersion.findAllVersions 已排序）
-        List<PolicyVersion> versions = PolicyVersion.findAllVersions(policyId);
+        // 查询该租户下的所有版本，按 version 降序（findAllVersions 已排序）
+        List<PolicyVersion> versions = PolicyVersion.findAllVersions(policyId, tenantId);
 
         // 找到第一个小于 currentVersion 且【已审批】的版本（last known good）。
         // 自动回滚的目标必须是曾经审批通过的版本——回滚到一个未审批的历史草稿
