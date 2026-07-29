@@ -48,25 +48,37 @@ public class ApiKeyCacheResource {
         @HeaderParam("X-Aster-Timestamp") String timestamp,
         @HeaderParam("X-Aster-Signature") String signature
     ) {
-        if (hmacKey.isPresent()) {
-            if (timestamp == null || signature == null) {
-                return Response.status(401).entity("missing signature headers").build();
-            }
-            long ts;
-            try {
-                ts = Long.parseLong(timestamp);
-            } catch (NumberFormatException e) {
-                return Response.status(401).entity("invalid timestamp").build();
-            }
-            long now = System.currentTimeMillis() / 1000;
-            if (Math.abs(now - ts) > 300) {
-                return Response.status(401).entity("stale timestamp").build();
-            }
-            String path = "/api/internal/apikey-cache/" + userId;
-            String expected = sign(hmacKey.get(), "DELETE\n" + path + "\n" + ts);
-            if (!constantTimeEquals(expected, signature)) {
-                return Response.status(401).entity("invalid signature").build();
-            }
+        // ★2026-07-29 审计修复：原为 `if (hmacKey.isPresent())`——**缺密钥即关闭鉴权**
+        // 而非拒绝。aster.plan-gate.hmac-key 未配、或 pod 先于 secret 挂载启动时，
+        // DELETE /api/internal/apikey-cache/{userId} 完全无鉴权：/api/internal/* 已被
+        // RequestSignatureFilter:42 与 TenantFilter:124 双双豁免，没有任何其他层兜底。
+        // 反复刷缓存会把每个请求打成一次 cloud verify 往返；cloud 不可达时
+        // doSlowPathVerify 返回 verify_unavailable → 该用户的合法 key 全部 401。
+        //
+        // 同仓所有同类校验器在同一配置下都是 fail-closed（InternalCallerFilter:295、
+        // AdminHmacVerifier:76），本处是唯一的例外，现予对齐。
+        if (hmacKey.isEmpty()) {
+            LOG.warn("apikey-cache invalidate called without HMAC key configured; rejecting");
+            return Response.status(403).entity("hmac_not_configured").build();
+        }
+
+        if (timestamp == null || signature == null) {
+            return Response.status(401).entity("missing signature headers").build();
+        }
+        long ts;
+        try {
+            ts = Long.parseLong(timestamp);
+        } catch (NumberFormatException e) {
+            return Response.status(401).entity("invalid timestamp").build();
+        }
+        long now = System.currentTimeMillis() / 1000;
+        if (Math.abs(now - ts) > 300) {
+            return Response.status(401).entity("stale timestamp").build();
+        }
+        String path = "/api/internal/apikey-cache/" + userId;
+        String expected = sign(hmacKey.get(), "DELETE\n" + path + "\n" + ts);
+        if (!constantTimeEquals(expected, signature)) {
+            return Response.status(401).entity("invalid signature").build();
         }
 
         int n = verifier.invalidateForUser(userId);

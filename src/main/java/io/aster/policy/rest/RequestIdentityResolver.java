@@ -100,6 +100,17 @@ public class RequestIdentityResolver {
         if (prop != null) {
             return prop;
         }
+        // ⚠️ 与 apiKeyId() 不同，此处**保留** header 回退，但要清楚它意味着什么：
+        // X-User-Id 的唯一合法写入者同样是 ApiKeyAuthFilter:143，在 shouldProtect
+        // 未覆盖的路径（如 evaluate-source）上，这里读到的可能是客户端自称的值。
+        //
+        // 之所以没有像 apiKeyId() 那样直接去掉：performedBy 是**审计标签**而非
+        // 记账键，且有 anonymous 兜底；MessagesAdminResource:104/128 等处还各自
+        // 直接读同一个头。贸然收紧会改变多处审计归属的既有行为，应作为独立改动
+        // 连同那些直读点一起处理。
+        //
+        // ★因此：审计记录里的 performedBy 在无 API key 认证的路径上**不是可信身份**，
+        // 不得作为「谁做了这件事」的唯一凭据。见审计报告 2026-07-29。
         String header = header("X-User-Id");
         return header != null ? header : ANONYMOUS_USER;
     }
@@ -113,11 +124,21 @@ public class RequestIdentityResolver {
      * 无声丢失。
      */
     public String apiKeyId() {
-        String prop = jaxrsProperty(PROP_API_KEY_ID);
-        if (prop != null) {
-            return prop;
-        }
-        return header("X-Api-Key-Id");
+        // ★只信任 ApiKeyAuthFilter 验证后写入的 ctx property，**不回退读客户端头**
+        //（2026-07-29 审计修复）。
+        //
+        // X-Api-Key-Id 这个头只有一个合法写入者：ApiKeyAuthFilter:146，它在验签通过后
+        // 覆盖客户端传值。但该 filter 的 shouldProtect() **显式排除 evaluate-source**
+        // （改由 InternalCallerFilter 守护），那条路径上 property 与 header 都不会被设置
+        // → 回退读 header 等于直接采信客户端自称的 key id。
+        //
+        // 后果不是信息泄露而是**记账串号**：PolicyEvaluationResource 拿它做
+        // apiQuotaGuard.checkRate(tenantId, apiKeyId) 的限流桶键与 recordAsync 的
+        // 计费归属，攻击者填别人的 apiKeyId 即可消耗他人速率预算、把调用记到他人账上。
+        //
+        // 拿不到已验证身份时返回 null（无 key 的请求本就返回 null），调用方据此按
+        // 「无 API key」处理，而不是按一个伪造的 key 处理。
+        return jaxrsProperty(PROP_API_KEY_ID);
     }
 
     /**
