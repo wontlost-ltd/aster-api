@@ -3,7 +3,7 @@ name: Nightly (fresh-container IT + chaos)
 on:
   # UTC 03:00 = 北京 11:00（避开夜间维护窗口又比上班早 → 出问题马上能看到）
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '0 3 * * 1-5'   # 工作日跑（Actions 配额）：周末无提交
   workflow_dispatch:
 
 permissions:
