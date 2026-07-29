@@ -143,9 +143,15 @@ class PolicyEvaluationResourceTrialIdentityTest {
         RoutingContext rctx = mock(RoutingContext.class);
         HttpServerRequest req = mock(HttpServerRequest.class);
         when(rctx.request()).thenReturn(req);
-        when(req.getHeader("X-Api-Key-Id")).thenReturn("key-xyz");
 
-        PolicyEvaluationResource r = newResource(mock(ApiQuotaGuard.class), tc, rctx);
+        // 2026-07-29 审计后：apiKeyId 只认 ApiKeyAuthFilter 验证后写入的 ctx property，
+        // 不再回退读客户端的 X-Api-Key-Id 头（那条回退让攻击者可把调用记到他人账上）。
+        // 本用例关心的是「是否在请求线程上抓取」这一跨线程契约，与取值来源无关，
+        // 故改用已验证的 property 作桩，断言意图不变。
+        ContainerRequestContext jaxrsCtx = mock(ContainerRequestContext.class);
+        when(jaxrsCtx.getProperty("aster.apikey.apiKeyId")).thenReturn("key-xyz");
+
+        PolicyEvaluationResource r = newResource(mock(ApiQuotaGuard.class), tc, rctx, jaxrsCtx);
 
         Object identity = invoke(r, "captureIdentity", new Class<?>[]{});
         assertEquals("key-xyz", recordComponent(identity, "apiKeyId"),

@@ -159,4 +159,22 @@ class RequestIdentityResolverTest {
         var r = resolver(new TenantContext(), mock(ContainerRequestContext.class), null);
         assertNull(r.apiKeyId());
     }
+
+    @Test
+    @DisplayName("★客户端伪造 X-Api-Key-Id 不被采信——无已验证 property 时必须为 null")
+    void apiKeyIdIgnoresClientHeader() throws Exception {
+        // ApiKeyAuthFilter.shouldProtect() 显式排除 evaluate-source（改由
+        // InternalCallerFilter 守护），那条路径上 property 与 header 都不会被
+        // filter 写入 → 若回退读 header，就是直接采信客户端自称的 key id。
+        //
+        // 这不是信息泄露而是**记账串号**：apiKeyId 是 apiQuotaGuard.checkRate 的
+        // 限流桶键、也是 recordAsync 的计费归属，填别人的 id 即可消耗他人速率
+        // 预算并把调用记到他人账上。
+        var r = resolver(new TenantContext(),
+            mock(ContainerRequestContext.class),          // 无已验证 property
+            rctxWith("X-Api-Key-Id", "victim-key-id"));   // 攻击者自带的头
+
+        assertNull(r.apiKeyId(),
+            "未经 ApiKeyAuthFilter 验证的 X-Api-Key-Id 头不得被采信");
+    }
 }
