@@ -177,6 +177,20 @@ public class WorkflowStateEntity extends PanacheEntityBase {
     }
 
     /**
+     * 查询指定状态的 workflow 列表（**租户范围**）。
+     *
+     * <p>对外查询一律用本重载。无租户参数的 {@link #findByStatus(String)} 只允许
+     * 调度器等系统内部路径使用——它跨租户返回，暴露给 REST 即为跨租户泄露。
+     *
+     * @param status   状态类型
+     * @param tenantId 租户 ID，不可为 null
+     * @return 该租户下的 workflow 状态列表
+     */
+    public static List<WorkflowStateEntity> findByStatus(String status, String tenantId) {
+        return find("status = ?1 AND tenantId = ?2", status, tenantId).list();
+    }
+
+    /**
      * 查询就绪可调度的 workflow（支持 SELECT FOR UPDATE SKIP LOCKED）
      *
      * @param limit 最大返回数量
@@ -197,6 +211,29 @@ public class WorkflowStateEntity extends PanacheEntityBase {
      */
     public static long countByStatus(String status) {
         return count("status", status);
+    }
+
+    /**
+     * 统计指定状态的 workflow 数量（**租户范围**）。
+     *
+     * @param status   状态类型
+     * @param tenantId 租户 ID，不可为 null
+     * @return 该租户下的数量
+     */
+    public static long countByStatus(String status, String tenantId) {
+        return count("status = ?1 AND tenantId = ?2", status, tenantId);
+    }
+
+    /**
+     * 判断某 workflow 是否属于给定租户。
+     *
+     * <p>事件表（workflow_events）没有 tenant 列，事件查询只能借 workflow_state
+     * 的归属来判定，故单列此方法供 REST 层做前置校验。
+     *
+     * @return 属于该租户返回 true；workflow 不存在或属于他人返回 false
+     */
+    public static boolean belongsToTenant(UUID workflowId, String tenantId) {
+        return count("workflowId = ?1 AND tenantId = ?2", workflowId, tenantId) > 0;
     }
 
     /**

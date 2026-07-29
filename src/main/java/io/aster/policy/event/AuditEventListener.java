@@ -88,6 +88,8 @@ public class AuditEventListener {
                 log.currentHash
             );
         } catch (Exception e) {
+            // 计数后再记日志：审计记录丢失必须在指标上可见，不能只躺在日志里。
+            businessMetrics.recordAuditLogWriteFailure();
             Log.errorf(
                 e,
                 "Failed to persist audit event: type=%s, tenant=%s",
@@ -217,10 +219,24 @@ public class AuditEventListener {
                 log.currentHash.substring(0, 8) + "..."
             );
         } catch (Exception e) {
-            Log.errorf(e, "Failed to compute hash chain for tenant=%s", log.tenantId);
-            // 哈希计算失败不影响审计记录持久化
-            log.prevHash = null;
-            log.currentHash = null;
+            // ★不能把 hash 置 null 后照常持久化（2026-07-29 审计修复）。
+            //
+            // 原实现在任何异常（连接抖动、锁超时、死锁牺牲者）下都把 prevHash/currentHash
+            // 置 null 再 persist。而验证器对 currentHash==null 的行是 `continue` 跳过
+            // （AuditChainVerifier:95,247，本意是兼容哈希链上线前的 legacy 记录），
+            // 同时**下一条记录的 prevHash 仍指向最后一条有哈希的行**——于是链校验照常
+            // 报 VALID，那条记录却完全游离在完整性检查之外。
+            //
+            // 后果：只要制造一次数据库抖动，就能得到一条「可写入且不被任何完整性检查
+            // 覆盖」的审计记录。这正是哈希链本身要防的事。
+            //
+            // 验证器无法区分「legacy 无哈希」与「新记录算哈希失败」，所以必须在写入侧
+            // 保证不变量：**新记录要么带完整哈希，要么不进表**。抛出后由外层 catch
+            // 记 error 日志并丢弃该条——记录丢失会体现在审计写入指标上，是可观测的失败；
+            // 而无哈希记录是不可观测的失败，后者严重得多。
+            throw new IllegalStateException(
+                "Hash chain computation failed for tenant=" + log.tenantId
+                    + "; refusing to persist an unverifiable audit record", e);
         }
     }
 }
