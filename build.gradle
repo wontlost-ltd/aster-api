@@ -101,7 +101,7 @@ dependencies {
 
     // GraalVM Polyglot SDK (用于动态 CNL 执行)
     implementation 'org.graalvm.polyglot:polyglot:25.0.3'
-    implementation 'org.graalvm.sdk:graal-sdk:25.0.3'
+    implementation 'org.graalvm.sdk:graal-sdk:25.2.4'
     // truffle-api 需要作为 implementation 以便访问 VirtualFrame（DynamicCnlExecutor 需要）
     implementation 'org.graalvm.truffle:truffle-api:25.0.3'
     runtimeOnly 'org.graalvm.truffle:truffle-runtime:25.0.3'
