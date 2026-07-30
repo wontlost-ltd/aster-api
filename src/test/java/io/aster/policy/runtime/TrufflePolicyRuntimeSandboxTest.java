@@ -37,11 +37,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * language interpreter. Existing {@link TrufflePolicyRuntimeTest} validates
  * the interpreter happy path.
  */
-@org.junit.jupiter.api.condition.DisabledIfSystemProperty(
-    named = "aster.truffle.tests.skip",
-    matches = "true",
-    disabledReason = "Aster 语言运行时未完全配置"
-)
 class TrufflePolicyRuntimeSandboxTest {
 
     private TrufflePolicyRuntime runtime;
@@ -86,6 +81,12 @@ class TrufflePolicyRuntimeSandboxTest {
         }
     }
 
+    @org.junit.jupiter.api.condition.DisabledIfSystemProperty(
+        named = "aster.truffle.tests.skip",
+        matches = "true",
+        disabledReason = "本用例断言 result.success()，确实需要 aster 语言解释器可用；"
+            + "其余用例只验锁定契约，不依赖解释器（见类 javadoc）"
+    )
     @Test
     @DisplayName("R21 happy path: pure arithmetic policy still runs through locked-down runtime")
     void shouldExecuteArithmeticUnderLockdown() {
