@@ -1,5 +1,6 @@
 package io.aster.llm.usage;
 
+import io.aster.security.internal.InternalCallSigner;
 import io.aster.billing.PlanGateConfig;
 import io.aster.llm.model.LlmUsage;
 import io.vertx.core.json.JsonObject;
@@ -71,10 +72,13 @@ public class AiUsageReporter {
                 .put("status", "success")
                 .put("requestId", requestId);
 
-            long timestamp = System.currentTimeMillis() / 1000;
-            String signature = config.hmacKey()
-                .map(key -> sign(key, "POST\n" + path + "\n" + timestamp))
-                .orElse("");
+            // v2 签名：绑定 nonce + bodyHash（见 InternalCallSigner）
+            var signed = config.hmacKey()
+                .map(k -> InternalCallSigner.sign(k, "POST", path, body.encode()))
+                .orElse(new InternalCallSigner.Signed(
+                    String.valueOf(System.currentTimeMillis() / 1000), "", ""));
+            String timestamp = signed.timestamp();
+            String signature = signed.signature();
 
             getClient()
                 .post(port, baseUri.getHost(), path)
@@ -82,6 +86,7 @@ public class AiUsageReporter {
                 .timeout(config.requestTimeout().toMillis())
                 .putHeader("X-Aster-Timestamp", String.valueOf(timestamp))
                 .putHeader("X-Aster-Signature", signature)
+                .putHeader("X-Aster-Nonce", signed.nonce())
                 .putHeader("Content-Type", "application/json")
                 .sendBuffer(body.toBuffer())
                 .onFailure(err -> LOG.warnf(

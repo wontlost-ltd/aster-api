@@ -1,5 +1,6 @@
 package io.aster.billing;
 
+import io.aster.security.internal.InternalCallSigner;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import io.opentelemetry.api.trace.Span;
@@ -289,16 +290,21 @@ public class ApiQuotaGuard {
                 .put("plan", plan)
                 .encode();
 
-            long timestamp = System.currentTimeMillis() / 1000;
-            String signature = config.hmacKey()
-                .map(k -> sign(k, "POST\n" + path + "\n" + timestamp))
-                .orElse("");
+            // v2 签名：绑定 nonce + bodyHash（见 InternalCallSigner）。
+            // 旧 3 字段 canonical 不绑 body，一次签名即可换 body 无限重放。
+            var signed = config.hmacKey()
+                .map(k -> InternalCallSigner.sign(k, "POST", path, bodyJson))
+                .orElse(new InternalCallSigner.Signed(
+                    String.valueOf(System.currentTimeMillis() / 1000), "", ""));
+            String timestamp = signed.timestamp();
+            String signature = signed.signature();
 
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(fullUri)
                 .timeout(Duration.ofMillis(700))
                 .header("X-Aster-Timestamp", String.valueOf(timestamp))
                 .header("X-Aster-Signature", signature)
+                .header("X-Aster-Nonce", signed.nonce())
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(bodyJson, StandardCharsets.UTF_8))
                 .build();
@@ -358,10 +364,13 @@ public class ApiQuotaGuard {
                 .put("status", status)
                 .put("latencyMs", latencyMs);
 
-            long timestamp = System.currentTimeMillis() / 1000;
-            String signature = config.hmacKey()
-                .map(k -> sign(k, "POST\n" + path + "\n" + timestamp))
-                .orElse("");
+            // v2 签名：绑定 nonce + bodyHash（见 InternalCallSigner）
+            var signed = config.hmacKey()
+                .map(k -> InternalCallSigner.sign(k, "POST", path, body.encode()))
+                .orElse(new InternalCallSigner.Signed(
+                    String.valueOf(System.currentTimeMillis() / 1000), "", ""));
+            String timestamp = signed.timestamp();
+            String signature = signed.signature();
 
             getClient()
                 .post(port, baseUri.getHost(), path)
@@ -369,6 +378,7 @@ public class ApiQuotaGuard {
                 .timeout(config.requestTimeout().toMillis())
                 .putHeader("X-Aster-Timestamp", String.valueOf(timestamp))
                 .putHeader("X-Aster-Signature", signature)
+                .putHeader("X-Aster-Nonce", signed.nonce())
                 .putHeader("Content-Type", "application/json")
                 .sendBuffer(body.toBuffer())
                 .onFailure(err -> LOG.warnf("api usage record failed: user=%s, err=%s",
@@ -434,16 +444,21 @@ public class ApiQuotaGuard {
         String query = "userId=" + urlEncode(userId == null ? "" : userId);
         URI fullUri = baseUri.resolve(path + "?" + query);
 
-        long timestamp = System.currentTimeMillis() / 1000;
-        String signature = config.hmacKey()
-            .map(k -> sign(k, "GET\n" + path + "\n" + timestamp))
-            .orElse("");
+        // v2 签名：GET 无 body，bodyHash 取空串的 SHA-256——「没有 body」本身也被签名
+        // 覆盖，不能被替换成带 body 的请求。
+        var signed = config.hmacKey()
+            .map(k -> InternalCallSigner.sign(k, "GET", path, ""))
+            .orElse(new InternalCallSigner.Signed(
+                String.valueOf(System.currentTimeMillis() / 1000), "", ""));
+        String timestamp = signed.timestamp();
+        String signature = signed.signature();
 
         HttpRequest request = HttpRequest.newBuilder()
             .uri(fullUri)
             .timeout(PRECHECK_TIMEOUT)
             .header("X-Aster-Timestamp", String.valueOf(timestamp))
             .header("X-Aster-Signature", signature)
+                .header("X-Aster-Nonce", signed.nonce())
             .GET()
             .build();
 

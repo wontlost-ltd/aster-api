@@ -71,6 +71,9 @@ class NonDeterminismSourceTest {
         // - GenericOutboxScheduler: 生成 outbox claim 的 lease token (issue #119)——每次领取一个
         //   随机租约令牌用于区分 attempt 归属（防拆分事务后 reclaim 重投递的 ABA 覆盖），随机性正是
         //   诉求且不入 workflow 重放状态，不影响确定性
+        // - InternalCallSigner: 生成 HMAC v2 canonical 的 nonce（2026-07-29 审计）——
+        //   nonce 的**不可预测性正是安全诉求**（防重放），它只进 HTTP 头、不入 workflow
+        //   重放状态，与确定性无关。若改成可重放的确定值，重放防护即失效。
         Assertions.assertThat(uuidMatches.keySet())
                 .containsExactlyInAnyOrder(
                         "src/main/java/io/aster/policy/service/PolicyStorageService.java",
@@ -78,7 +81,8 @@ class NonDeterminismSourceTest {
                         "src/main/java/io/aster/api/workflow/TimerSchedulerService.java",
                         "src/main/java/io/aster/policy/exception/GlobalExceptionMapper.java",
                         "src/main/java/io/aster/policy/rest/LexiconAdminResource.java",
-                        "src/main/java/io/aster/audit/outbox/GenericOutboxScheduler.java"
+                        "src/main/java/io/aster/audit/outbox/GenericOutboxScheduler.java",
+                        "src/main/java/io/aster/security/internal/InternalCallSigner.java"
                 );
 
         Map<String, List<Integer>> nanoMatches = scanPattern(
