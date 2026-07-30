@@ -176,6 +176,13 @@ while true; do
   podman machine ssh "$MACHINE" "sudo podman rm -f ${CONTAINER} >/dev/null 2>&1; \
     sudo podman run --rm --name ${CONTAINER} \
       --security-opt label=disable \
+      `# ★--network host 必需（2026-07-30 实测）：services: 容器由宿主 podman 以` \
+      `# -p 5432:5432 启动，端口发布在 **VM** 的网络命名空间。托管 runner 的 job` \
+      `# 直接跑在 VM 上故 localhost:5432 可达；而本 runner 若用默认 bridge 模式`  \
+      `# 会有自己的 netns，localhost 指向容器自身 → 连不上 service，DB 测试全红`  \
+      `# （实测 bridge=no response / host=accepting connections）。共享 VM 网络后`  \
+      `# localhost 语义与托管 runner 一致。` \
+      --network host \
       -v ${SOCK}:/var/run/docker.sock \
       -e ORG_NAME='${ORG}' \
       -e RUNNER_GROUP='${GROUP}' \
