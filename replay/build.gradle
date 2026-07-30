@@ -32,7 +32,7 @@ dependencies {
     // graal-sdk 在 aster-api 实际按版本对齐规则从 25.0.3 降到 23.1.2（构建约束胜出的有效版本），
     // 其余坐标（polyglot/truffle-api/truffle-runtime/truffle-compiler/compiler/antlr4-runtime/jboss-logging）
     // 实测与预期一致。
-    implementation 'org.graalvm.polyglot:polyglot:25.0.3'
+    implementation 'org.graalvm.polyglot:polyglot:25.2.4'
     implementation 'org.graalvm.sdk:graal-sdk:23.1.2'
     implementation 'org.graalvm.truffle:truffle-api:25.0.3'
     runtimeOnly    'org.graalvm.truffle:truffle-runtime:25.0.3'
