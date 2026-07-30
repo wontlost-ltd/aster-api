@@ -10,7 +10,7 @@ name: cleanup-old-runs
 
 on:
   schedule:
-    - cron: '0 3 * * *'   # 每天 03:00 UTC
+    - cron: '0 3 * * 1'   # 每周一（Actions 配额）：清理无需每日   # 每天 03:00 UTC
   workflow_dispatch:
     inputs:
       retention_days:

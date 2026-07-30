@@ -8,7 +8,7 @@ name: Nightly perf benchmark (k6)
 
 on:
   schedule:
-    - cron: '0 4 * * *'   # UTC 04:00, 紧接 nightly IT
+    - cron: '0 4 * * 1-5'   # 工作日跑（Actions 配额）：周末无提交   # UTC 04:00, 紧接 nightly IT
   workflow_dispatch:
 
 permissions:
