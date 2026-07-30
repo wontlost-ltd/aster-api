@@ -35,8 +35,8 @@ dependencies {
     // GraalVM/Truffle 运行时（:replay 已 api/implementation 传递 core/truffle；此处补 runner 自身
     // 运行所需 runtime artifacts，与 :replay/build.gradle 版本对齐）。
     runtimeOnly 'org.graalvm.truffle:truffle-runtime:25.0.3'
-    runtimeOnly 'org.graalvm.truffle:truffle-compiler:25.0.4'
-    runtimeOnly 'org.graalvm.compiler:compiler:25.0.4'
+    runtimeOnly 'org.graalvm.truffle:truffle-compiler:25.2.4'
+    runtimeOnly 'org.graalvm.compiler:compiler:25.2.4'
 
     testImplementation 'org.junit.jupiter:junit-jupiter:6.1.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
