@@ -105,9 +105,19 @@ export RUNNER_PAT=<有 admin:org 的 PAT>   # 只用于换取短时注册令牌�
 ```bash
 cd .github/self-hosted-runner
 
-# 1) 把 PAT 存进 login keychain（需 admin:org；仅用于换取短时注册令牌，不落盘明文）
-security add-generic-password -a "$USER" -s aster-runner-pat -w
-#    回车后交互式输入，不会回显、不进 shell 历史
+# 1) 把 PAT 存进 login keychain（需 admin:org；仅用于换取短时注册令牌）
+read -rs "P?粘贴 PAT: " && echo && printf '长度=%s\n' "${#P}" && \
+  security add-generic-password -a "$USER" -s aster-runner-pat -U -w "$P" && \
+  unset P
+#    ★先打印长度再写入：确认粘贴真的生效。
+#    ★不要用裸 `security add-generic-password ... -w`（不带值）——它会连续打印
+#      "password data for new item: retype password for new item:" 挤在同一行，
+#      极易误以为已输入而实际存进**空值**；此时 keychain 项存在、读取 exit=0、
+#      但值长度为 0，守护脚本只能报"拿不到 PAT"。实测踩过一次。
+#    ★也不要用管道（`printf ... | security ... -w`）——`-w` 不读 stdin，仍走交互
+#      两次确认，管道内容只被当作第一次输入，报 "passwords don't match"。
+#      唯一可靠的非交互写法是 `-w "$VALUE"` 把值作为参数（代价：短暂出现在 ps 里）。
+#    重存/覆盖用 -U。
 
 # 2) 安装 LaunchAgent
 cp com.wontlost.aster-runner.plist ~/Library/LaunchAgents/

@@ -96,7 +96,16 @@ while true; do
 
   pat="$(get_pat)"
   if [[ -z "$pat" ]]; then
-    log "错误：keychain 里没有 '${KEYCHAIN_SERVICE}'。先跑：security add-generic-password -a \"\$USER\" -s ${KEYCHAIN_SERVICE} -w"
+    # ★区分"项不存在"与"项存在但值为空"——后者是 add-generic-password 交互式输入时
+    #   没粘贴成功造成的（提示串会挤在一行，容易误以为已输入）。两种情况都会让
+    #   get_pat 返回空，但修复动作不同：前者要新增，后者要用 -U 覆盖。
+    if security find-generic-password -a "$USER" -s "$KEYCHAIN_SERVICE" >/dev/null 2>&1; then
+      log "错误：keychain 项 '${KEYCHAIN_SERVICE}' 存在但**值为空**（很可能交互式输入时没粘上）。"
+      log "  用 -U 覆盖重存：security add-generic-password -a \"\$USER\" -s ${KEYCHAIN_SERVICE} -U -w"
+      log "  或用非交互方式（避免提示串挤一行）：printf '%s' '<PAT>' | security add-generic-password -a \"\$USER\" -s ${KEYCHAIN_SERVICE} -U -w"
+    else
+      log "错误：keychain 里没有 '${KEYCHAIN_SERVICE}'。先跑：security add-generic-password -a \"\$USER\" -s ${KEYCHAIN_SERVICE} -w"
+    fi
     sleep 60; continue
   fi
 
