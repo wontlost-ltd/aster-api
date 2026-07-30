@@ -19,8 +19,17 @@ ARG RUNNER_VERSION=2.336.0
 # 官方发布的 linux-arm64 校验和（已与 actions/runner release body 公布值逐字比对一致）
 ARG RUNNER_SHA256=58b758e420b87093fbd4bfddd368074960053e2f1388f01848c82624b90f27d1
 
+# ★LANG/LC_ALL 必须设成 UTF-8（2026-07-30 实测）：Ubuntu 精简镜像默认 LANG 为空、
+#   LC_CTYPE=POSIX，JVM 因此按 ASCII 处理文件名。本仓有大量中文测试方法名
+#   （如 parseError_应返回ERROR_且脱敏不回显provider_message），Gradle 写 HTML 测试报告时
+#   会报 `Malformed input or input contains unmappable characters` 并让 :test 任务失败——
+#   注意失败发生在**报告生成阶段**，测试本身已跑完，极具迷惑性（日志里看不到任何
+#   FAILED 用例，只有 "Task :test FAILED"）。托管 runner 默认 C.UTF-8 故无此问题。
+#   镜像内已有 C.utf8（locale -a 可见），直接用它，无需装 locales 包。
 ENV DEBIAN_FRONTEND=noninteractive \
     RUNNER_ALLOW_RUNASROOT=1 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
     DOCKER_HOST=unix:///var/run/docker.sock
 
 # runner 自身依赖 + workflow 常用工具。
