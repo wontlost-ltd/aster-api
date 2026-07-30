@@ -34,8 +34,8 @@ dependencies {
     // 实测与预期一致。
     implementation 'org.graalvm.polyglot:polyglot:25.0.3'
     implementation 'org.graalvm.sdk:graal-sdk:23.1.2'
-    implementation 'org.graalvm.truffle:truffle-api:25.0.3'
-    runtimeOnly    'org.graalvm.truffle:truffle-runtime:25.0.3'
+    implementation 'org.graalvm.truffle:truffle-api:25.2.4'
+    runtimeOnly    'org.graalvm.truffle:truffle-runtime:25.2.4'
     runtimeOnly    'org.graalvm.truffle:truffle-compiler:25.0.4'
     runtimeOnly    'org.graalvm.compiler:compiler:25.0.4'
     implementation 'org.jboss.logging:jboss-logging:3.6.3.Final'
