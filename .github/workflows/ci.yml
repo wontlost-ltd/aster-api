@@ -6,32 +6,35 @@ on:
     paths-ignore:
       - '**.md'
       - '.claude/**'
-  # ★★转 public 前必读（审计 2026-07-30）：本 workflow 在 pull_request 触发下会把
-  #   secrets.CROSS_REPO_TOKEN（可访问 7 个私有兄弟仓的跨仓 PAT）注入同一个 job，
-  #   而该 job 随后在 **PR 可控的** build.gradle / gradlew / wrapper jar 上执行
-  #   ./gradlew test。仓库当前为 private，GitHub 默认不向 fork PR 下发 secret，故风险
-  #   为**潜伏**而非活跃；但一旦仓库转 public（或有人开启 "Send secrets to workflows
-  #   from fork pull requests"），任意外部人员即可提 PR 窃取该 PAT。
+  # ★本 workflow **刻意不注入 secrets.CROSS_REPO_TOKEN**（审计 2026-07-30 P0 结构性修复）。
   #
-  #   已做的收敛：composite action 的 7 个 checkout 全部 persist-credentials: false，
-  #   凭据不再落盘到 .git/config（此前会，任何后续步骤都能读）。
+  #   原风险：pull_request 触发下把跨仓 PAT 注入同一 job，而该 job 随后在 **PR 可控的**
+  #   build.gradle / gradlew / wrapper jar 上执行 ./gradlew test。仓库转 public 后，
+  #   任意外部人员提 PR 即可尝试窃取该 PAT（GitHub 默认不向 fork PR 下发 secret，但
+  #   这是"靠平台默认设置兜底"，不是结构性保证）。
   #
-  #   转 public 前仍必须完成（本次未做，需产品决策）：
-  #     1. 拆分本 workflow——需要 PAT 的作业只在 push/非 fork 触发下运行，fork PR 走
-  #        不需要跨仓凭据的降级路径（或改用 GitHub App 短时 token / 发布制品替代源码
-  #        includeBuild）；
-  #     2. 打开 "Require approval for all external contributors"；
-  #     3. 轮换 CROSS_REPO_TOKEN；
-  #     4. 去掉下面的 checks: write（仅 dorny/test-reporter 需要，fork PR 下可放弃）。
-  #   另注：本仓转 public 后 fork PR 拿不到 PAT，私有兄弟仓 checkout 会失败——外部
-  #   贡献者的 CI 本就跑不通，这也是上面第 1 条必须做的原因。
+  #   修法（治本，非收窄）：**CI 不再需要该 PAT**——7 个兄弟仓（platform/core/runtime/
+  #   truffle/validation/locales/hi）现均为 public，github.token 甚至完全无凭据即可
+  #   checkout（已实测无凭据 git clone 成功）。故这里不传 cross-repo-token，composite
+  #   action 回退 github.token。job 里再没有可窃取的跨仓凭据 = 攻击面消失，而不是被条件
+  #   语句挡住。
+  #
+  #   ★若将来任一兄弟仓转回 private：本 workflow 的 checkout 会失败（fail 而非静默降级，
+  #   因下方 require-cross-repo-token 未设 true 时 action 会用 github.token 尝试并失败），
+  #   届时必须改用 GitHub App 短时 token 或发布制品替代源码 includeBuild，**不要**简单地
+  #   把 PAT 加回 pull_request 路径。
+  #
+  #   deploy/nightly/perf/replay-runner 仍传 PAT 且 require-cross-repo-token: "true"——
+  #   它们不由 fork PR 触发（push/schedule/dispatch），受控凭据策略保持不变。
   pull_request:
     branches: [main]
   workflow_dispatch:
 
+# 最小权限：仅读内容。★不要 checks: write——它此前只为 dorny/test-reporter 而存在，
+# 而在 public 仓的 fork PR 场景下，写 check 的权限意味着可伪造绿色检查结论。
+# 测试结果改由 job 自身的成败 + Upload Test Results 制品表达。
 permissions:
   contents: read
-  checks: write
 
 # 同一 ref 上新 push 到来时取消尚在跑的过时 CI（PR 连续 push 常见）——省算力，且过时
 # 提交的绿/红没有意义。按 github.ref 分组：PR 是 refs/pull/<n>/merge（同一 PR 的连续 push
@@ -89,15 +92,12 @@ jobs:
         run: |
           PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE aster_test;" || true
 
+      # ★刻意不传 cross-repo-token（见文件顶部 on.pull_request 注释）：7 个兄弟仓均为
+      #   public，composite action 回退 github.token 即可 checkout。fork PR 的 job 里
+      #   因此不存在任何跨仓凭据可窃取——这是结构性消除攻击面，不是靠条件语句遮挡。
+      #   同理不设 require-cross-repo-token（那会要求 PAT 非空而立即 fail）。
       - name: Setup Aster build (siblings + JDK + version catalog)
         uses: ./aster-api/.github/actions/setup-aster-build
-        with:
-          cross-repo-token: ${{ secrets.CROSS_REPO_TOKEN }}
-          # fail-closed（与 deploy/nightly/perf/replay-runner 对齐）：兄弟仓是受控私有源，
-          # 凭据缺失时必须**显式失败**，而不是静默回退 github.token 去拉私有仓——那会
-          # 在"取依赖源码"这一步把受控凭据策略降级成"能拉到就行"，且失败信号被掩盖成
-          # 难查的构建错误。此前只有 ci.yml 漏设本项（另 6 处均已设）。
-          require-cross-repo-token: "true"
 
       # Testcontainers 复用：CI 内单 job 多 test class 重用容器，加速集成测试
       # 安全：CI 容器在 job 结束自动销毁，reuse 仅限 job 生命周期内
@@ -171,23 +171,16 @@ jobs:
       # signal — they catch slow-burn regressions better when run daily on main
       # than on every push. Run locally on demand: ./gradlew testChaos
 
-      - name: Publish JUnit Report
+      # ★原 dorny/test-reporter 步已移除（审计 2026-07-30）：它是本 workflow 唯一需要
+      #   `checks: write` 的步骤，而在 public 仓 + fork PR 场景下，把写 check 的权限
+      #   交给运行 PR 可控代码的 job = 可伪造绿色检查结论。相比"报告好看"，去掉写权限
+      #   更重要。
+      #   替代：失败摘要直接打进 job 日志（下面这步），完整 XML 仍在 test-results 制品里。
+      - name: Summarize failed tests (no checks:write needed)
         if: always()
-        uses: dorny/test-reporter@v3
-        with:
-          name: JUnit Test Results
-          path: build/test-results/**/*.xml
-          reporter: java-junit
-          fail-on-error: false
-          working-directory: aster-api
-          # Aster's test suite is large (~2k JUnit cases); the default
-          # full listing routinely exceeds the GitHub Checks API 65535
-          # byte body limit and gets trimmed. Only list failed suites
-          # and tests so the published report stays under the cap and
-          # remains useful (passing cases are still in the artifact).
-          list-suites: failed
-          list-tests: failed
-          max-annotations: 50
+        working-directory: aster-api
+        continue-on-error: true
+        run: python3 scripts/ci/summarize-failed-tests.py build/test-results >> "$GITHUB_STEP_SUMMARY"
 
       # 诊断制品：组织级 Actions 存储配额是全 repo 共享的，配额耗尽时
       # upload-artifact 会硬失败（"Artifact storage quota has been hit"）并
