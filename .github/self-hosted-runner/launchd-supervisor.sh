@@ -77,6 +77,55 @@ mint_token() {
     | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])' 2>/dev/null
 }
 
+# 清理同名的 offline 陈旧 runner 记录。
+#
+# 为什么必需：--ephemeral 正常跑完会自我注销，但容器被**强杀**（podman rm -f、
+# 宿主断电、machine 崩）时来不及注销，GitHub 侧会留下一条 offline 记录且其 session
+# 仍被视为活跃。此时用同一 RUNNER_NAME 重新注册会报
+#   `A session for this runner already exists.` + `Runner connect error: Conflict`
+# 并无限重试——实测过：容器每轮都能重建，但永远连不上，表现为"守护在跑却始终 offline"。
+#
+# ★删**所有**同名记录，不分 online/offline。
+#
+# 为何不能只删 offline（初版就是这么写的，实测不работ）：容器被强杀后 GitHub 侧的
+# 心跳超时约 1 分钟才把记录转成 offline。守护循环几秒内就重启并 reap，此刻记录仍是
+# online → 被跳过 → 随后注册撞上仍然活跃的 session → `A session for this runner
+# already exists` + `Conflict` 无限重试。实测表现为"容器每轮都重建、守护在跑，
+# 但 runner 永远连不上"，且日志里 Conflict 反复出现。
+#
+# 按名字删是安全的：RUNNER_NAME 唯一标识**本机这一个** runner（默认 pang-linux-podman）。
+# 本机同时只跑一个实例，故同名记录必然是自己的前身，不会误删别的机器
+# （别的机器用不同 RUNNER_NAME；真要多机共用同名才需要改这里）。
+reap_stale_runner() {
+  local pat="$1" ids
+  ids="$(curl -fsSL \
+      -H "Authorization: Bearer ${pat}" \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/orgs/${ORG}/actions/runners?per_page=100" 2>/dev/null \
+    | RUNNER_NAME="$RUNNER_NAME" python3 -c '
+import json, os, sys
+name = os.environ["RUNNER_NAME"]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+for r in data.get("runners", []):
+    if r.get("name") == name:
+        print(r.get("id"), r.get("status"))
+' 2>/dev/null)"
+  [[ -z "$ids" ]] && return 0
+  local id status
+  while read -r id status; do
+    [[ -z "$id" ]] && continue
+    log "清理同名 runner 记录 id=${id}（status=${status}）——避免注册时 session Conflict"
+    curl -fsSL -X DELETE \
+      -H "Authorization: Bearer ${pat}" \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/orgs/${ORG}/actions/runners/${id}" >/dev/null 2>&1 \
+      || log "  警告：删除 id=${id} 失败（权限不足？），可能仍会 Conflict"
+  done <<< "$ids"
+}
+
 cleanup() {
   log "收到退出信号，清理 runner 容器…"
   podman machine ssh "$MACHINE" "sudo podman rm -f ${CONTAINER}" >/dev/null 2>&1
@@ -108,6 +157,9 @@ while true; do
     fi
     sleep 60; continue
   fi
+
+  # 先清陈旧同名记录，再取令牌注册（顺序重要：注册时若旧 session 还在就会 Conflict）。
+  reap_stale_runner "$pat"
 
   tok="$(mint_token "$pat")"
   unset pat
