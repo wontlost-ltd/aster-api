@@ -31,6 +31,11 @@ permissions:
 jobs:
   build:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
+    # ★纵深防护：即便 pick-runner 判断失误（或 runner group 策略变化导致本地 runner
+    #   接不到 job），也不能让 CI 挂到 GitHub 默认的 24h 才超时。实测本仓 build 约
+    #   12-13 分钟，40 分钟给足余量又能在半小时级别暴露"排不进队列"的问题，
+    #   随后由 build-hosted 回落接手。
+    timeout-minutes: 40
     # 真实 PostgreSQL service，固定在 localhost:5432。部分 @QuarkusTest DB 测试
     # （AuditHashChain/Idempotency/Prisma/Timer 等）连 application.properties 的
     # 默认 ${DB_JDBC_URL:...localhost:5432}，而 PostgresTestResource 的

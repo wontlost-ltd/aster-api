@@ -46,6 +46,7 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         ORG: ${{ inputs.org }}
         WANT_LABELS: ${{ inputs.labels }}
+        REPO_VISIBILITY: ${{ github.event.repository.visibility }}
       run: |
         set -uo pipefail
 
@@ -54,6 +55,19 @@ runs:
           echo ">> 回落 GitHub 托管 runner：$1"
           exit 0
         }
+
+        # ★public 仓一律走托管（2026-07-31 实测踩坑）：
+        #   self-hosted runner group `local-mac` 设了 allows_public_repositories=false
+        #   （安全要求：public 仓的 fork PR 不得在开发机上执行代码）。但 GitHub 在这种
+        #   情况下**不会报错**——job 只是永远排不进队列。而本仓的 build-local 没有
+        #   timeout-minutes，所以会一路挂到默认 24h 才超时，CI 形同卡死。
+        #   故在探测阶段就按可见性短路：public → hosted。仓库转私后自动恢复用本地 runner，
+        #   无需再改这里。
+        if [[ "${REPO_VISIBILITY}" == "public" ]]; then
+          echo "target=hosted" >> "$GITHUB_OUTPUT"
+          echo ">> 仓库为 public → 直接走 GitHub 托管（self-hosted 组不接 public 仓的 job）"
+          exit 0
+        fi
 
         [[ -n "${GH_TOKEN}" ]] || fallback "未提供 token（无法查 runner 状态）"
 
