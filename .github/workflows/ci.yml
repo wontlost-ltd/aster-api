@@ -6,6 +6,25 @@ on:
     paths-ignore:
       - '**.md'
       - '.claude/**'
+  # ★★转 public 前必读（审计 2026-07-30）：本 workflow 在 pull_request 触发下会把
+  #   secrets.CROSS_REPO_TOKEN（可访问 7 个私有兄弟仓的跨仓 PAT）注入同一个 job，
+  #   而该 job 随后在 **PR 可控的** build.gradle / gradlew / wrapper jar 上执行
+  #   ./gradlew test。仓库当前为 private，GitHub 默认不向 fork PR 下发 secret，故风险
+  #   为**潜伏**而非活跃；但一旦仓库转 public（或有人开启 "Send secrets to workflows
+  #   from fork pull requests"），任意外部人员即可提 PR 窃取该 PAT。
+  #
+  #   已做的收敛：composite action 的 7 个 checkout 全部 persist-credentials: false，
+  #   凭据不再落盘到 .git/config（此前会，任何后续步骤都能读）。
+  #
+  #   转 public 前仍必须完成（本次未做，需产品决策）：
+  #     1. 拆分本 workflow——需要 PAT 的作业只在 push/非 fork 触发下运行，fork PR 走
+  #        不需要跨仓凭据的降级路径（或改用 GitHub App 短时 token / 发布制品替代源码
+  #        includeBuild）；
+  #     2. 打开 "Require approval for all external contributors"；
+  #     3. 轮换 CROSS_REPO_TOKEN；
+  #     4. 去掉下面的 checks: write（仅 dorny/test-reporter 需要，fork PR 下可放弃）。
+  #   另注：本仓转 public 后 fork PR 拿不到 PAT，私有兄弟仓 checkout 会失败——外部
+  #   贡献者的 CI 本就跑不通，这也是上面第 1 条必须做的原因。
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -74,6 +93,11 @@ jobs:
         uses: ./aster-api/.github/actions/setup-aster-build
         with:
           cross-repo-token: ${{ secrets.CROSS_REPO_TOKEN }}
+          # fail-closed（与 deploy/nightly/perf/replay-runner 对齐）：兄弟仓是受控私有源，
+          # 凭据缺失时必须**显式失败**，而不是静默回退 github.token 去拉私有仓——那会
+          # 在"取依赖源码"这一步把受控凭据策略降级成"能拉到就行"，且失败信号被掩盖成
+          # 难查的构建错误。此前只有 ci.yml 漏设本项（另 6 处均已设）。
+          require-cross-repo-token: "true"
 
       # Testcontainers 复用：CI 内单 job 多 test class 重用容器，加速集成测试
       # 安全：CI 容器在 job 结束自动销毁，reuse 仅限 job 生命周期内

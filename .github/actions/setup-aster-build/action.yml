@@ -64,6 +64,10 @@ runs:
         repository: aster-cloud/aster-lang-platform
         path: aster-lang-platform
         token: ${{ inputs.cross-repo-token || github.token }}
+        # 不把凭据写进 .git/config：checkout 默认会持久化 token 供后续 git 操作，
+        # 于是本 job 里任何后续步骤（含 Gradle 构建脚本）都能读到这个跨仓 PAT。
+        # 本 action 只需要一次性拉源码，不需要后续 git 操作 → 关掉持久化。
+        persist-credentials: false
 
     # composite includeBuild 引用的兄弟仓（见 aster-api/settings.gradle）：源码参与构建，
     # 替换掉 cloud.aster-lang:* 的已发布制品。加/删仓在此一处维护即可。
@@ -72,24 +76,40 @@ runs:
         repository: aster-cloud/aster-lang-core
         path: aster-lang-core
         token: ${{ inputs.cross-repo-token || github.token }}
+        # 不把凭据写进 .git/config：checkout 默认会持久化 token 供后续 git 操作，
+        # 于是本 job 里任何后续步骤（含 Gradle 构建脚本）都能读到这个跨仓 PAT。
+        # 本 action 只需要一次性拉源码，不需要后续 git 操作 → 关掉持久化。
+        persist-credentials: false
 
     - uses: actions/checkout@v7
       with:
         repository: aster-cloud/aster-lang-runtime
         path: aster-lang-runtime
         token: ${{ inputs.cross-repo-token || github.token }}
+        # 不把凭据写进 .git/config：checkout 默认会持久化 token 供后续 git 操作，
+        # 于是本 job 里任何后续步骤（含 Gradle 构建脚本）都能读到这个跨仓 PAT。
+        # 本 action 只需要一次性拉源码，不需要后续 git 操作 → 关掉持久化。
+        persist-credentials: false
 
     - uses: actions/checkout@v7
       with:
         repository: aster-cloud/aster-lang-truffle
         path: aster-lang-truffle
         token: ${{ inputs.cross-repo-token || github.token }}
+        # 不把凭据写进 .git/config：checkout 默认会持久化 token 供后续 git 操作，
+        # 于是本 job 里任何后续步骤（含 Gradle 构建脚本）都能读到这个跨仓 PAT。
+        # 本 action 只需要一次性拉源码，不需要后续 git 操作 → 关掉持久化。
+        persist-credentials: false
 
     - uses: actions/checkout@v7
       with:
         repository: aster-cloud/aster-lang-validation
         path: aster-lang-validation
         token: ${{ inputs.cross-repo-token || github.token }}
+        # 不把凭据写进 .git/config：checkout 默认会持久化 token 供后续 git 操作，
+        # 于是本 job 里任何后续步骤（含 Gradle 构建脚本）都能读到这个跨仓 PAT。
+        # 本 action 只需要一次性拉源码，不需要后续 git 操作 → 关掉持久化。
+        persist-credentials: false
 
     # en/zh/de lexicon SPI 包源：aster-lang-locales（多模块，新坐标
     # aster-lang-locales-{en,zh,de}）。旧独立 en/zh/de 仓已归档。
@@ -98,6 +118,10 @@ runs:
         repository: aster-cloud/aster-lang-locales
         path: aster-lang-locales
         token: ${{ inputs.cross-repo-token || github.token }}
+        # 不把凭据写进 .git/config：checkout 默认会持久化 token 供后续 git 操作，
+        # 于是本 job 里任何后续步骤（含 Gradle 构建脚本）都能读到这个跨仓 PAT。
+        # 本 action 只需要一次性拉源码，不需要后续 git 操作 → 关掉持久化。
+        persist-credentials: false
 
     # Hindi (hi-IN) 独立 SPI 包（从 core builtins 拆出），aster-api 经 composite
     # includeBuild + runtimeOnly asterLibs.hi 依赖，故其源码必须在场。
@@ -106,6 +130,10 @@ runs:
         repository: aster-cloud/aster-lang-hi
         path: aster-lang-hi
         token: ${{ inputs.cross-repo-token || github.token }}
+        # 不把凭据写进 .git/config：checkout 默认会持久化 token 供后续 git 操作，
+        # 于是本 job 里任何后续步骤（含 Gradle 构建脚本）都能读到这个跨仓 PAT。
+        # 本 action 只需要一次性拉源码，不需要后续 git 操作 → 关掉持久化。
+        persist-credentials: false
 
     - uses: actions/setup-java@v5
       with:
