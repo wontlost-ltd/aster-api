@@ -23,25 +23,29 @@ public class WaadrMetricsService {
     /**
      * 查询某 tenant 最近 N 周的 WAADR 数据
      *
-     * @param tenantId 租户 ID；传 null 表示跨租户聚合（仅 PLATFORM_ADMIN 应使用）
+     * <p>★租户谓词无条件拼接（fail-closed）：此前 {@code tenantId == null} 会**省掉**
+     * {@code AND tenant_id} 从而退化成跨租户全表聚合，是越权读的下半段。现在 null/空白
+     * 直接抛错——宁可 500 也不返回别人的数据。调用方必须传服务端解析出的真实租户 ID。
+     *
+     * @param tenantId 租户 ID，必需；null 或空白抛 {@link IllegalArgumentException}
      * @param weeks    查询窗口（1–52）
      */
     @SuppressWarnings("unchecked")
     public List<WaadrPoint> fetchWeeklyWaadr(String tenantId, int weeks) {
-        StringBuilder sql = new StringBuilder()
-            .append("SELECT week, tenant_id, author_role, waadr FROM pm_weekly_waadr WHERE week >= :since");
-        if (tenantId != null) {
-            sql.append(" AND tenant_id = :tenantId");
+        if (tenantId == null || tenantId.isBlank()) {
+            throw new IllegalArgumentException(
+                "tenantId 必需：WAADR 查询不支持跨租户聚合（防越权读）");
         }
-        sql.append(" ORDER BY week DESC, tenant_id ASC, author_role ASC");
+        String sql =
+            "SELECT week, tenant_id, author_role, waadr FROM pm_weekly_waadr"
+            + " WHERE week >= :since AND tenant_id = :tenantId"
+            + " ORDER BY week DESC, tenant_id ASC, author_role ASC";
 
         Instant since = Instant.now().minusSeconds((long) weeks * 7 * 24 * 3600);
 
-        Query q = entityManager.createNativeQuery(sql.toString())
-            .setParameter("since", Timestamp.from(since));
-        if (tenantId != null) {
-            q.setParameter("tenantId", tenantId);
-        }
+        Query q = entityManager.createNativeQuery(sql)
+            .setParameter("since", Timestamp.from(since))
+            .setParameter("tenantId", tenantId);
 
         List<Object[]> rows = q.getResultList();
         List<WaadrPoint> result = new ArrayList<>(rows.size());

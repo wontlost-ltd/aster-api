@@ -141,4 +141,88 @@ class WaadrMetricsResourceIT {
             .statusCode(200);
         // body 内容由前面测试的状态决定，这里仅断言端点返回 200
     }
+
+    /**
+     * 越权读回归：service 层拒绝空租户。
+     *
+     * <p>此前 tenantId==null 会省掉 {@code AND tenant_id} 谓词退化为跨租户全表聚合。
+     * 现在 fail-closed 抛错。
+     */
+    @Test
+    @Order(4)
+    void nullOrBlankTenant_isRejected_notSilentlyCrossTenant() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+            () -> service.fetchWeeklyWaadr(null, 12),
+            "tenantId=null 必须抛错，绝不能退化成跨租户聚合");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+            () -> service.fetchWeeklyWaadr("  ", 12),
+            "tenantId 空白必须抛错");
+    }
+
+    /**
+     * 越权读回归（端点层）：tenant=* 不再是提权后门。
+     *
+     * <p>此前 {@code @RequireRole(ADMIN)} + {@code tenant=*} 意在"仅平台管理员跨租户"，
+     * 但 Role 只有租户内四级（无 PLATFORM_ADMIN），故任意租户 admin 都能拉全平台数据。
+     * 现在该参数已删除：即便显式传入也必须只看到自己租户的数据。
+     *
+     * <p>本测试种入两个租户各自的 WAADR 行，然后以 tenant-a 身份带 {@code tenant=*}
+     * 请求，断言响应中**不含** tenant-b。
+     */
+    @Test
+    @Order(5)
+    void tenantWildcardParam_cannotEscalateToCrossTenantRead() {
+        seedWaadrRow("tenant-a", "it-waadr-iso-a");
+        seedWaadrRow("tenant-b", "it-waadr-iso-b");
+        refreshView();
+
+        // 前提校验：两个租户各自都真的有数据（否则下面的"看不到 b"会假通过）
+        org.junit.jupiter.api.Assertions.assertFalse(
+            service.fetchWeeklyWaadr("tenant-b", 12).isEmpty(),
+            "前提：tenant-b 必须有数据，否则跨租户断言无意义（防假通过）");
+
+        given()
+            .header("X-Tenant-Id", "tenant-a")
+            .header("X-User-Id", "tester-admin")
+            .header("X-Role", "ADMIN")
+            .queryParam("weeks", "12")
+            .queryParam("tenant", "*")   // 曾经的提权后门
+            .when()
+            .get("/api/v1/metrics/waadr")
+            .then()
+            .statusCode(200)
+            .body("findAll { it.tenantId == 'tenant-b' }", hasSize(0))
+            .body("findAll { it.tenantId != 'tenant-a' }", hasSize(0));
+    }
+
+    @Transactional
+    void seedWaadrRow(String tenantId, String policyId) {
+        Instant week = LocalDate.now(ZoneOffset.UTC)
+            .with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+            .atStartOfDay(ZoneOffset.UTC)
+            .toInstant();
+        PolicyVersion v = new PolicyVersion(
+            policyId,
+            "aster.test",
+            "iso_fn",
+            "Module aster.test.\nRule iso_fn given x: Return x.",
+            "tester",
+            null
+        );
+        v.tenantId = tenantId;
+        v.sourceKind = "ai_draft_edited";
+        v.authorRole = "business_expert";
+        v.status = VersionStatus.APPROVED;
+        v.activatedAt = week.plusSeconds(3600L);
+        v.activatedBy = "approver";
+        v.approvedBy = "approver";
+        v.approvedAt = v.activatedAt;
+        v.locale = "zh";
+        v.persist();
+    }
+
+    @Transactional
+    void refreshView() {
+        em.createNativeQuery("REFRESH MATERIALIZED VIEW pm_weekly_waadr").executeUpdate();
+    }
 }
