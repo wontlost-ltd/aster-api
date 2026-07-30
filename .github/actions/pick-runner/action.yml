@@ -1,0 +1,76 @@
+name: Pick runner (local-first, hosted fallback)
+description: >-
+  探测本地 self-hosted runner 是否可用，输出 runs-on 该用的目标。可用则走本地
+  （省托管额度），不可用则回落 GitHub 托管（保证 CI 不因本地机器离线而卡死）。
+
+# 为什么需要这个 action：GitHub 没有原生的"本地优先否则托管"。
+#   * 只写 `runs-on: [self-hosted, …]`：runner 离线时 job **无限排队**（默认 24h 超时），
+#     不会自动回落——不满足"不可用时启用 GitHub 自带 runner"。
+#   * 只用 `if: failure()` 兜底：离线排队不算 failure，仍要卡到 timeout 才回落。
+#   故先用一个几秒的托管 probe job 查 runner 实况，再由调用方把结果喂给
+#   `runs-on: ${{ ... && fromJSON(…) || fromJSON(…) }}`（已实测该动态表达式两个分支
+#   都能正确路由：local→pang-linux-podman/local-mac，hosted→GitHub Actions）。
+#
+# 成本：probe 自身跑在托管 runner 上，但只有几秒；按分钟向上取整即每次 1 min，
+# 相对被它调度走的 12 分钟 job 完全值得。
+
+inputs:
+  org:
+    description: 组织名（查 org 级 runner）
+    required: false
+    default: wontlost-ltd
+  labels:
+    description: >-
+      本地 runner 必须**同时**具备的标签（逗号分隔）。只有存在 online 且非 busy
+      且标签全覆盖的 runner 时才判定 local 可用。
+    required: false
+    default: self-hosted,linux,ARM64,local-linux
+  token:
+    description: >-
+      查 runner 状态用的 token（需 admin:org 或 fine-grained 的 runners 读权限）。
+      缺省或无权限时**保守回落 hosted**——宁可花额度也不要让 CI 卡死。
+    required: false
+    default: ""
+
+outputs:
+  target:
+    description: local | hosted
+    value: ${{ steps.probe.outputs.target }}
+
+runs:
+  using: composite
+  steps:
+    - id: probe
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        ORG: ${{ inputs.org }}
+        WANT_LABELS: ${{ inputs.labels }}
+      run: |
+        set -uo pipefail
+
+        fallback() {
+          echo "target=hosted" >> "$GITHUB_OUTPUT"
+          echo ">> 回落 GitHub 托管 runner：$1"
+          exit 0
+        }
+
+        [[ -n "${GH_TOKEN}" ]] || fallback "未提供 token（无法查 runner 状态）"
+
+        # 查 org runner 列表；任何错误都回落，不让 probe 本身成为故障点。
+        resp="$(gh api "/orgs/${ORG}/actions/runners" --paginate 2>/dev/null)" \
+          || fallback "查询 runner 失败（无权限或 API 错误）"
+
+        # 判定逻辑放在与本 action 同目录的 pick_runner.py（不内联 heredoc——
+        # heredoc 体必须顶格，会破坏 YAML 块标量缩进，已踩过一次）。
+        target="$(printf '%s' "$resp" \
+          | WANT="$WANT_LABELS" python3 "${GITHUB_ACTION_PATH}/pick_runner.py")" \
+          || fallback "解析 runner 列表失败"
+
+        if [[ "$target" == "local" ]]; then
+          echo "target=local" >> "$GITHUB_OUTPUT"
+          echo ">> 本地 runner 可用（标签: ${WANT_LABELS}）→ 走 self-hosted"
+        else
+          echo "target=hosted" >> "$GITHUB_OUTPUT"
+          echo ">> 无 online 且空闲的匹配 runner → 走 GitHub 托管"
+        fi

@@ -44,152 +44,70 @@ permissions:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
-  build:
+  # ── 1. 选 runner：本地优先，不可用则托管 ──────────────────────────────
+  # ★GitHub 没有原生的"本地优先否则托管"：只写 runs-on: [self-hosted,…] 时，runner
+  #   离线会让 job **无限排队**（默认 24h 超时）而不回落，不满足"不可用时启用 GitHub
+  #   自带 runner"。故先用一个几秒的托管 probe 查 runner 实况。
+  #   probe 自身按分钟取整算 1 min，相对它调度走的 ~12 分钟 build 完全值得。
+  pick-runner:
     runs-on: ubuntu-latest
-    # 真实 PostgreSQL service，固定在 localhost:5432。部分 @QuarkusTest DB 测试
-    # （AuditHashChain/Idempotency/Prisma/Timer 等）连 application.properties 的
-    # 默认 ${DB_JDBC_URL:...localhost:5432}，而 PostgresTestResource 的
-    # testcontainer 端口注入对它们不可靠（Flyway 早期解析时序）。提供固定 5432
-    # 的 service 让这些测试稳定可用；Testcontainers 仍服务于 integrationTest。
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: aster_policy
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-      # 固定 localhost:6379 Redis。用 MockProfile 的 IT（MixpanelClientIT /
-      # PlanGateServiceIT 等）不走 RedisTestResource，redis 配置取
-      # application.properties 默认 localhost:6379；无此 service 时它们报
-      # `redis read failed: Connection refused localhost:6379` 噪声。
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+    outputs:
+      target: ${{ steps.pick.outputs.target }}
     steps:
-      # 先检出 aster-api 本体（拿到下面的 local composite action 文件），再由该 action
-      # 检出全部兄弟仓 + JDK + 发布版本目录。去重了原来逐字重复的 9×checkout + setup-java。
       - uses: actions/checkout@v7
         with:
-          path: aster-api
-
-      # PrismaDatabaseE2ETest 用独立的 aster_test 库（其 profile 指向它）。
-      - name: Create aster_test database
-        run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE aster_test;" || true
-
-      # ★刻意不传 cross-repo-token（见文件顶部 on.pull_request 注释）：7 个兄弟仓均为
-      #   public，composite action 回退 github.token 即可 checkout。fork PR 的 job 里
-      #   因此不存在任何跨仓凭据可窃取——这是结构性消除攻击面，不是靠条件语句遮挡。
-      #   同理不设 require-cross-repo-token（那会要求 PAT 非空而立即 fail）。
-      - name: Setup Aster build (siblings + JDK + version catalog)
-        uses: ./aster-api/.github/actions/setup-aster-build
-
-      # Testcontainers 复用：CI 内单 job 多 test class 重用容器，加速集成测试
-      # 安全：CI 容器在 job 结束自动销毁，reuse 仅限 job 生命周期内
-      - name: Configure Testcontainers reuse
-        run: |
-          mkdir -p $HOME
-          cat > $HOME/.testcontainers.properties <<EOF
-          testcontainers.reuse.enable=true
-          checks.disable=true
-          ryuk.disabled=true
-          EOF
-
-      # 预拉镜像让 Testcontainers 启动更稳；postgres:17-alpine 与 PostgresTestResource.java 一致
-      - name: Pre-pull test images
-        run: |
-          docker pull postgres:17-alpine &
-          docker pull redis:7-alpine &
-          wait
-
-      # 测试分层：先跑快测拿到反馈，再跑慢测做完整覆盖
-      - name: Unit Tests (fast feedback)
-        working-directory: aster-api
-        run: ./gradlew test --build-cache
-        env:
-          TESTCONTAINERS_RYUK_DISABLED: "true"
-          # 指向上面的 postgres service，让连默认 localhost:5432 的 @QuarkusTest
-          # DB 测试稳定可用。integrationTest 步骤不设这些（它走 Testcontainers）。
-          DB_JDBC_URL: "jdbc:postgresql://localhost:5432/aster_policy"
-          DB_REACTIVE_URL: "postgresql://localhost:5432/aster_policy"
-          DB_USERNAME: "postgres"
-          DB_PASSWORD: "postgres"
-
-      - name: Integration Tests (Testcontainers)
-        working-directory: aster-api
-        run: ./gradlew integrationTest --build-cache
-        env:
-          TESTCONTAINERS_RYUK_DISABLED: "true"
-
-      # 聚合 test + integrationTest 的覆盖率，verification 在指定包上做强约束。
-      # ★-x test -x integrationTest（时长优化）：jacocoTestReport dependsOn 'test'，此步是
-      # 独立 gradle 调用，不排除的话 Gradle 会重跑 test（上游步骤已跑过一遍）——实测 CI 此步
-      # 340s 几乎全是冗余 test 重跑。jacocoReport 只需读上游产出的 build/jacoco/*.exec，
-      # 显式排除 test/integrationTest 后仅做聚合，本地实测从 340s → 1s。
-      # ★fail-closed 前置（Codex 审 Medium）：-x test 依赖上游步骤已产出 exec。若上游 test
-      # 因 build-cache 命中被跳过且未恢复 exec，coverage 可能用旧/空数据让门禁假过。故先断言
-      # 两个 exec 存在且非空（-s），缺失即 fail，把「覆盖率门禁基于真实本次数据」变成硬约束。
-      - name: Coverage Report + Verification
-        working-directory: aster-api
-        run: |
-          test -s build/jacoco/test.exec || { echo "::error::build/jacoco/test.exec 缺失/为空——上游 Unit Tests 未产出覆盖率数据，拒绝聚合（避免门禁假过）"; exit 1; }
-          test -s build/jacoco/integrationTest.exec || { echo "::error::build/jacoco/integrationTest.exec 缺失/为空——上游 Integration Tests 未产出覆盖率数据"; exit 1; }
-          ./gradlew jacocoTestReport jacocoCoverageVerification -x test -x integrationTest
-          test -s build/reports/jacoco/test/jacocoTestReport.xml || { echo "::error::jacoco 报告未生成"; exit 1; }
-
-      - name: Upload coverage to Codecov
-        if: always()
-        uses: codecov/codecov-action@v7
+          persist-credentials: false
+      - id: pick
+        uses: ./.github/actions/pick-runner
         with:
-          files: aster-api/build/reports/jacoco/test/jacocoTestReport.xml
-          flags: backend
-          fail_ci_if_error: false
-        continue-on-error: true
+          labels: self-hosted,linux,ARM64,local-linux
+          # 只读 runner 状态的最小权限 token。未配置/无权限/API 出错时，action 一律
+          # 保守回落 hosted（四条路径均已本地实测）——探测器绝不能成为 CI 故障点。
+          token: ${{ secrets.RUNNER_PROBE_TOKEN }}
 
-      - name: Build (assemble + check)
-        working-directory: aster-api
-        # check 已包含 integrationTest，但前面单独跑过 → 这一步主要做 assemble
-        run: ./gradlew build --build-cache --parallel -x test -x integrationTest
+  # ── 2. 首选：本地 self-hosted（省托管额度）────────────────────────────
+  # 只在 probe 判定 local 时运行。步骤定义在 ci-build.yml，与下面的 hosted 回落
+  # 共用同一份（不复制 12 个步骤——本仓多次踩过"复制后两边发散"的坑）。
+  build-local:
+    needs: pick-runner
+    if: needs.pick-runner.outputs.target == 'local'
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      runs-on: '["self-hosted","linux","ARM64","local-linux"]'
 
-      # Chaos tests moved to nightly.yml (see "Chaos Tests" step there).
-      # Rationale: 24 chaos scenarios add ~minutes to every PR for low marginal
-      # signal — they catch slow-burn regressions better when run daily on main
-      # than on every push. Run locally on demand: ./gradlew testChaos
+  # ── 3. 回落：GitHub 托管 ──────────────────────────────────────────────
+  # 两种情况都会跑：
+  #   (a) probe 判定本地不可用（离线/busy/无 token）→ build-local 被 skip；
+  #   (b) 本地 runner 在线但 job 真的失败/被取消（磁盘满、socket 挂等）。
+  # ★用 always() + result 判断而非 failure()：skipped 不是 failure，只写
+  #   failure() 会导致情况 (a) 两个 job 都不跑 = CI 静默不执行（假绿）。
+  build-hosted:
+    needs: [pick-runner, build-local]
+    if: always() && needs.build-local.result != 'success'
+    uses: ./.github/workflows/ci-build.yml
+    with:
+      runs-on: '["ubuntu-latest"]'
 
-      # ★原 dorny/test-reporter 步已移除（审计 2026-07-30）：它是本 workflow 唯一需要
-      #   `checks: write` 的步骤，而在 public 仓 + fork PR 场景下，把写 check 的权限
-      #   交给运行 PR 可控代码的 job = 可伪造绿色检查结论。相比"报告好看"，去掉写权限
-      #   更重要。
-      #   替代：失败摘要直接打进 job 日志（下面这步），完整 XML 仍在 test-results 制品里。
-      - name: Summarize failed tests (no checks:write needed)
-        if: always()
-        working-directory: aster-api
-        continue-on-error: true
-        run: python3 scripts/ci/summarize-failed-tests.py build/test-results >> "$GITHUB_STEP_SUMMARY"
-
-      # 诊断制品：组织级 Actions 存储配额是全 repo 共享的，配额耗尽时
-      # upload-artifact 会硬失败（"Artifact storage quota has been hit"）并
-      # 把整个 job 拖挂。test-results 仅供查阅，门禁由上面的测试步骤本身把守，
-      # 故上传降级为非致命。
-      - name: Upload Test Results
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-results
-          path: aster-api/build/test-results
+  # ── 4. 汇总门禁：给分支保护用的单一必需检查 ────────────────────────────
+  # ★必需：build-local / build-hosted 互为条件分支，任一都可能 skipped，无法直接
+  #   作为 required check（skipped 会被当成"未运行"而卡住合并）。故用本 job 收敛成
+  #   一个确定结论：只要有任意一条路径成功就绿，两条都没成功就红（fail-closed）。
+  ci-result:
+    needs: [build-local, build-hosted]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 判定 CI 结论
+        env:
+          LOCAL: ${{ needs.build-local.result }}
+          HOSTED: ${{ needs.build-hosted.result }}
+        run: |
+          set -euo pipefail
+          echo "build-local=$LOCAL  build-hosted=$HOSTED"
+          if [[ "$LOCAL" == "success" || "$HOSTED" == "success" ]]; then
+            echo "✅ CI 通过（至少一条路径成功）"
+            exit 0
+          fi
+          echo "::error::CI 失败——本地与托管两条路径均未成功（local=$LOCAL hosted=$HOSTED）"
+          exit 1
