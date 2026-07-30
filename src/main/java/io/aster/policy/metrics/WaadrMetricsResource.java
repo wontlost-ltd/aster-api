@@ -19,8 +19,15 @@ import java.util.List;
 /**
  * WAADR 北极星指标查询端点
  *
- * 默认仅返回当前 X-Tenant-Id 的数据；传 tenant=* 可跨租户聚合（仅 PLATFORM_ADMIN，
- * 当前实现为 ADMIN 角色 + 显式参数，后续如有 PLATFORM_ADMIN 角色可收紧）。
+ * <p>始终且只返回当前 X-Tenant-Id 的数据。★不提供跨租户聚合：{@link Role} 只有
+ * OWNER/ADMIN/MEMBER/VIEWER 四级，全部是**租户内**角色（镜像 aster-cloud 的 TeamRole），
+ * 代码库中不存在 PLATFORM_ADMIN 平台级角色。此前 {@code tenant=*} 参数配合
+ * {@code @RequireRole(ADMIN)} 意在"仅平台管理员可跨租户"，但由于 ADMIN 实际是租户内
+ * 角色，任何租户自己的 admin 用自己的合法凭据即可拉到全平台租户名单及各租户的
+ * 周度规则采纳量（按作者角色维度）——跨租户越权读。
+ *
+ * <p>若将来确需平台级聚合，必须先引入独立的平台角色（而非复用租户内 ADMIN），
+ * 再由该角色显式授权；在此之前本端点不接受任何跨租户参数。
  */
 @Path("/api/v1/metrics/waadr")
 @Produces(MediaType.APPLICATION_JSON)
@@ -39,15 +46,11 @@ public class WaadrMetricsResource {
     @GET
     @Blocking
     public List<WaadrPoint> getWeeklyWaadr(
-        @QueryParam("weeks") @DefaultValue("12") int weeks,
-        @QueryParam("tenant") String tenantParam
+        @QueryParam("weeks") @DefaultValue("12") int weeks
     ) {
         int safeWeeks = Math.max(1, Math.min(weeks, 52));
-        String requestTenantId = currentTenantId();
-
-        // tenant=* 表示跨租户聚合，传 null 给 service 即可
-        String filterTenantId = "*".equals(tenantParam) ? null : requestTenantId;
-        return service.fetchWeeklyWaadr(filterTenantId, safeWeeks);
+        // 租户 ID 只取自服务端 TenantContext，不接受任何客户端传入的租户参数。
+        return service.fetchWeeklyWaadr(currentTenantId(), safeWeeks);
     }
 
     private String currentTenantId() {

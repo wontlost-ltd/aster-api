@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd LaunchAgent：开机（用户登录）后自动拉起本地 Linux self-hosted runner。
+
+  安装：
+      cp com.wontlost.aster-runner.plist ~/Library/LaunchAgents/
+      # 把 PROJECT_DIR 占位符替换成本仓实际路径
+      /usr/bin/sed -i '' "s#__SUPERVISOR__#$PWD/launchd-supervisor.sh#" \
+        ~/Library/LaunchAgents/com.wontlost.aster-runner.plist
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wontlost.aster-runner.plist
+
+  卸载：
+      launchctl bootout gui/$(id -u)/com.wontlost.aster-runner
+      rm ~/Library/LaunchAgents/com.wontlost.aster-runner.plist
+
+  查看状态 / 日志：
+      launchctl print gui/$(id -u)/com.wontlost.aster-runner | head -30
+      tail -f ~/Library/Logs/aster-runner.log
+
+  ★用 LaunchAgent（gui/<uid>）而非 LaunchDaemon（system）：podman machine 是
+    **用户级**资源（VM 与 socket 都在 ~/.local/share/containers 下），以 root 跑
+    LaunchDaemon 看不到当前用户的 machine。代价是需要用户登录后才启动——对开发机
+    上的 runner 是可接受的（也更安全：不给 root）。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wontlost.aster-runner</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__SUPERVISOR__</string>
+  </array>
+
+  <!-- 登录后自动启动 -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- 守护脚本本身是死循环；若它异常退出（如 podman 缺失后 exit 1），让 launchd 重启。
+       配合脚本内部的指数退避，避免疯狂重试。 -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- 至少间隔 30s 再重启，防止启动失败时刷爆日志 -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/rpang/Library/Logs/aster-runner.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/rpang/Library/Logs/aster-runner.log</string>
+
+  <!-- 工作目录设为脚本所在目录，便于相对引用 -->
+  <key>WorkingDirectory</key>
+  <string>/Users/rpang/IdeaProjects/aster-api/.github/self-hosted-runner</string>
+
+  <!-- launchd 默认 PATH 极窄。脚本内部也会重设并断言，这里再给一层。
+       ★/opt/podman/bin 是本机实测的 podman 位置（Podman.app 安装器），不是 Homebrew。 -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/podman/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <!-- 不设 UserName：LaunchAgent 天然以当前登录用户运行，需要它才能访问用户级
+       podman machine 与 keychain（PAT 存在 login keychain 里）。 -->
+</dict>
+</plist>
