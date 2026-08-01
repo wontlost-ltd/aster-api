@@ -53,7 +53,16 @@ public class AuditEventListener {
             if (tenant == null || tenant.isBlank()) {
                 tenant = "system";
             }
-            log.tenantId = redact(tenant);
+            // ★tenantId 绝不能脱敏——它是哈希链的**分区键**，不是用户 PII：
+            //   1) tenantId 同时是哈希链的**分区键**（见下方 acquireTenantChainLock /
+            //      findLatestHash / 哈希输入），写入侧改写而读取侧
+            //      （RequestIdentityResolver）不改写 → 键永久不匹配；
+            //   2) 后果是 verifyChain 查到 0 条记录却返回 valid=true，
+            //      即"防篡改链完好"的**假绿**，且审计列表对该租户返回空。
+            //   实测受损：CREDIT_CARD_PATTERN 会吃掉任何「4 组 4 位数字用 - 分隔」的串，
+            //   形如 `…-1234-5678-9012-3456` 的 UUID 尾部被替成 `****-****-****-****`。
+            //   生产 3430 条中已有 1272 条（37%）键被改写。
+            log.tenantId = tenant;
             log.policyModule = redact(event.policyModule());
             log.policyFunction = redact(event.policyFunction());
             log.policyId = redact(event.policyId());
