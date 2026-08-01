@@ -53,7 +53,7 @@ public class AuditEventListener {
             if (tenant == null || tenant.isBlank()) {
                 tenant = "system";
             }
-            // ★tenantId 与 performedBy 是**系统标识符，不是用户 PII**，绝不能脱敏：
+            // ★tenantId 绝不能脱敏——它是哈希链的**分区键**，不是用户 PII：
             //   1) tenantId 同时是哈希链的**分区键**（见下方 acquireTenantChainLock /
             //      findLatestHash / 哈希输入），写入侧改写而读取侧
             //      （RequestIdentityResolver）不改写 → 键永久不匹配；
@@ -68,7 +68,7 @@ public class AuditEventListener {
             log.policyId = redact(event.policyId());
             log.fromVersion = event.fromVersion();
             log.toVersion = event.toVersion();
-            log.performedBy = event.performedBy();
+            log.performedBy = redact(event.performedBy());
             log.success = event.success();
             log.executionTimeMs = event.executionTimeMs();
             log.errorMessage = event.errorMessage();

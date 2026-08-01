@@ -11,10 +11,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * 回归：审计链的**标识符字段绝不能经过 PII 脱敏**。
+ * 回归：审计链的**分区键 {@code tenantId} 绝不能经过 PII 脱敏**。
  *
- * <p>2026-08-01 事故：{@code AuditEventListener} 曾对 {@code tenantId} 与
- * {@code performedBy} 调用 {@code redact()}。而 {@code tenantId} 同时是哈希链的
+ * <p>2026-08-01 事故：{@code AuditEventListener} 曾对 {@code tenantId}
+ * 调用 {@code redact()}。而 {@code tenantId} 同时是哈希链的
  * <b>分区键</b>（加锁、查前序哈希、参与哈希计算都用它），读取侧
  * {@code RequestIdentityResolver} 又完全不脱敏 —— 键因此永久不匹配。
  *
@@ -73,8 +73,11 @@ class AuditIdentifierRedactionTest {
         assertFalse(
                 src.contains("log.tenantId = redact("),
                 "禁止对 tenantId 脱敏——会造成 verifyChain 对 0 条记录返回 valid=true");
-        assertFalse(
+        // ★performedBy **保持脱敏**：它可能是 email（AuditLogComplianceTest
+        //   testPIIRedactionInDatabase 钉死了 "***@***.***" 契约），是真实 PII。
+        //   它不是链的分区键，脱敏不会造成读写失配。
+        assertTrue(
                 src.contains("log.performedBy = redact("),
-                "禁止对 performedBy 脱敏——它是审计追责的标识符，非 PII");
+                "performedBy 必须继续脱敏——它可能是 email，且不是链分区键");
     }
 }
