@@ -45,8 +45,16 @@ GROUP="${RUNNER_GROUP:-local-mac}"
 RUNNER_NAME="${RUNNER_NAME:-pang-linux-podman}"
 LABELS="${RUNNER_LABELS:-self-hosted,linux,ARM64,podman,local-linux}"
 CONTAINER="${CONTAINER_NAME:-aster-linux-runner}"
+# ★容器内存上限：多 runner 并行时必须设，否则一个 job 的 OOM 会波及另一个。
+#   实测单个 aster-api job 峰值约 6GiB（java 进程 anon-rss 4.45GiB +
+#   Testcontainers 的 postgres/redis + Gradle daemon），故默认 8g 留余量。
+#   ★VM 总内存需 ≥ 2×MEMORY + 4GiB（buff/cache 与 VM 自身）。
+MEMORY="${RUNNER_MEMORY:-8g}"
 SOCK="${PODMAN_SOCKET:-/run/podman/podman.sock}"
 KEYCHAIN_SERVICE="${KEYCHAIN_SERVICE:-aster-runner-pat}"
+# 记录本实例上一轮注册到的 runner id（防 reap 误删自己）。按 RUNNER_NAME 区分，
+# 使多实例互不干扰。
+SELF_ID_FILE="${TMPDIR:-/tmp}/aster-runner-self-id-${RUNNER_NAME}"
 
 # launchd 的默认 PATH 极窄（/usr/bin:/bin:/usr/sbin:/sbin），不含任何第三方安装位置。
 # ★本机 podman 实测在 /opt/podman/bin（Podman.app 安装器路径），**不是** Homebrew 的
@@ -99,52 +107,69 @@ mint_token() {
     | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])' 2>/dev/null
 }
 
-# 清理同名的 offline 陈旧 runner 记录。
+# 清理**本实例**遗留的陈旧 runner 记录。
 #
-# 为什么必需：--ephemeral 正常跑完会自我注销，但容器被**强杀**（podman rm -f、
-# 宿主断电、machine 崩）时来不及注销，GitHub 侧会留下一条 offline 记录且其 session
-# 仍被视为活跃。此时用同一 RUNNER_NAME 重新注册会报
+# 背景：--ephemeral 正常跑完会自我注销；但容器被强杀（podman rm -f、断电、
+# machine 崩）时来不及注销，GitHub 侧会残留一条记录，其 session 短时间内仍被
+# 视为活跃，导致新容器报
 #   `A session for this runner already exists.` + `Runner connect error: Conflict`
-# 并无限重试——实测过：容器每轮都能重建，但永远连不上，表现为"守护在跑却始终 offline"。
 #
-# ★删**所有**同名记录，不分 online/offline。
+# ★但实测（2026-08-02）该 Conflict **会自愈**：runner 自带重试，约 98 秒后
+#   `Runner reconnected` → `Listening for Jobs`。且 entrypoint.sh 用了
+#   `config.sh --replace`，注册层的同名冲突由 CLI 自己处理
+#   （日志可见 "A runner exists with the same name" → "Successfully replaced"）。
+#   所以 reap 不是必需品，只是加速收敛的优化。
 #
-# 为何不能只删 offline（初版就是这么写的，实测不работ）：容器被强杀后 GitHub 侧的
-# 心跳超时约 1 分钟才把记录转成 offline。守护循环几秒内就重启并 reap，此刻记录仍是
-# online → 被跳过 → 随后注册撞上仍然活跃的 session → `A session for this runner
-# already exists` + `Conflict` 无限重试。实测表现为"容器每轮都重建、守护在跑，
-# 但 runner 永远连不上"，且日志里 Conflict 反复出现。
+# ★★为何必须限定"只删比本轮更早的记录"（2026-08-02 多实例事故）：
+#   初版无条件删所有同名记录。跑第二个 supervisor 后出现**幽灵 runner**——
+#   s1 删掉 id=277 → 拉起容器 → 容器注册并重连 → s1 下一轮又删同名记录，
+#   这次删掉的是**自己刚注册的那条**。结果：容器认为自己 "Listening for Jobs"，
+#   而 GitHub 侧已无该记录，永远收不到 job，且没有任何报错。
+#   （实测：容器 Up、日志正常，`gh api .../runners` 里却查无此 runner。）
 #
-# 按名字删是安全的：RUNNER_NAME 唯一标识**本机这一个** runner（默认 pang-linux-podman）。
-# 本机同时只跑一个实例，故同名记录必然是自己的前身，不会误删别的机器
-# （别的机器用不同 RUNNER_NAME；真要多机共用同名才需要改这里）。
+#   修法：GitHub 的 runners API **不返回任何时间字段**（只有 busy/id/labels/
+#   name/os/status/version，已实测），故无法按时间过滤。改用两道防线：
+#     (1) 跳过 busy=true 的记录——那是正在跑 job 的实例，删它会让 job 失去 runner；
+#     (2) 记住**上一轮拉起容器后观察到的自己的 id**，本轮不再删它
+#         （LAST_SELF_ID）。这样"删掉自己刚注册的记录"这条路径被堵死。
+#   同名不同机本就不该发生（RUNNER_NAME 唯一标识一个实例）。
 reap_stale_runner() {
   local pat="$1" ids
   ids="$(curl -fsSL \
       -H "Authorization: Bearer ${pat}" \
       -H "Accept: application/vnd.github+json" \
       "https://api.github.com/orgs/${ORG}/actions/runners?per_page=100" 2>/dev/null \
-    | RUNNER_NAME="$RUNNER_NAME" python3 -c '
+    | RUNNER_NAME="$RUNNER_NAME" SELF_ID="${LAST_SELF_ID:-}" python3 -c '
 import json, os, sys
 name = os.environ["RUNNER_NAME"]
+self_id = os.environ.get("SELF_ID", "").strip()
 try:
     data = json.load(sys.stdin)
 except Exception:
     raise SystemExit
 for r in data.get("runners", []):
-    if r.get("name") == name:
-        print(r.get("id"), r.get("status"))
+    if r.get("name") != name:
+        continue
+    # busy 的记录一律不动：那是**正在跑 job** 的实例（可能就是自己），
+    # 删掉会让运行中的 job 失去 runner。
+    if r.get("busy"):
+        continue
+    # 不删上一轮确认属于自己的那条——否则会把刚注册好的记录抹掉，
+    # 造成"容器在监听但 GitHub 查无此 runner"的幽灵状态。
+    if self_id and str(r.get("id")) == self_id:
+        continue
+    print(r.get("id"), r.get("status"))
 ' 2>/dev/null)"
   [[ -z "$ids" ]] && return 0
   local id status
   while read -r id status; do
     [[ -z "$id" ]] && continue
-    log "清理同名 runner 记录 id=${id}（status=${status}）——避免注册时 session Conflict"
+    log "清理本实例陈旧记录 id=${id}（status=${status}）——加速 session 收敛"
     curl -fsSL -X DELETE \
       -H "Authorization: Bearer ${pat}" \
       -H "Accept: application/vnd.github+json" \
       "https://api.github.com/orgs/${ORG}/actions/runners/${id}" >/dev/null 2>&1 \
-      || log "  警告：删除 id=${id} 失败（权限不足？），可能仍会 Conflict"
+      || log "  警告：删除 id=${id} 失败（权限不足？）；Conflict 仍会自愈，只是慢些"
   done <<< "$ids"
 }
 
@@ -181,6 +206,7 @@ while true; do
   fi
 
   # 先清陈旧同名记录，再取令牌注册（顺序重要：注册时若旧 session 还在就会 Conflict）。
+  LAST_SELF_ID="$(cat "$SELF_ID_FILE" 2>/dev/null || true)"
   reap_stale_runner "$pat"
 
   tok="$(mint_token "$pat")"
@@ -191,6 +217,28 @@ while true; do
   fi
 
   backoff=5   # 成功取到令牌即重置退避
+
+  # 后台记录本轮容器注册到的 id：容器起来后约 10-20s 会出现在 API 里。
+  # 记住它，下一轮 reap 就不会误删自己（见 reap_stale_runner 的说明）。
+  (
+    sleep 25
+    LAST_SELF_ID="$(curl -fsSL \
+        -H "Authorization: Bearer $(get_pat)" \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/orgs/${ORG}/actions/runners?per_page=100" 2>/dev/null \
+      | RUNNER_NAME="$RUNNER_NAME" python3 -c '
+import json, os, sys
+name = os.environ["RUNNER_NAME"]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+for r in data.get("runners", []):
+    if r.get("name") == name:
+        print(r.get("id")); break
+' 2>/dev/null)"
+    [[ -n "$LAST_SELF_ID" ]] && echo "$LAST_SELF_ID" > "$SELF_ID_FILE"
+  ) &
 
   log "拉起 ephemeral runner 容器…"
   # --rm + --ephemeral：跑完一个 job 即注销退出，下一轮拉起全新实例，
@@ -205,6 +253,8 @@ while true; do
       `# （实测 bridge=no response / host=accepting connections）。共享 VM 网络后`  \
       `# localhost 语义与托管 runner 一致。` \
       --network host \
+      `# 内存上限：防止一个 runner 的 job 撑爆 VM 波及另一个（多 runner 场景必需）。` \
+      --memory ${MEMORY} \
       -v ${SOCK}:/var/run/docker.sock \
       -e ORG_NAME='${ORG}' \
       -e RUNNER_GROUP='${GROUP}' \
