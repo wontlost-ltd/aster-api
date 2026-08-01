@@ -153,3 +153,5 @@ rm ~/Library/LaunchAgents/com.wontlost.aster-runner.plist
 - **指数退避封顶 300s**：连续失败时逐步拉长间隔（10→20→…→300），避免开机瞬间或
   GitHub API 故障时疯狂重试刷爆日志/触发限流。
 - 缺 keychain 项时日志给出**可直接复制的修复命令**，而不是含糊报错。
+
+<!-- build-local 验证触发：2026-08-01（aster-api 转私后首次实测本地 runner 路径） -->
