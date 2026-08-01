@@ -36,8 +36,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # ★docker-cli（非 daemon）：workflow 里的 docker build/run 经挂载的宿主 socket 执行。
 # ★postgresql-client：ci.yml 有 `psql -h localhost` 建 aster_test 库的步骤。
 # ★jq/yq 由各 workflow 自行按 pin 安装，这里不预置以免版本漂移。
+# ★zstd：aster-cloud 的 ci.yml 用 `tar --use-compress-program='zstd -1'` 打包
+#   standalone 产物，其注释写着"ubuntu-latest 自带 zstd"——但**本镜像不是
+#   ubuntu-latest**，不预装就会失败（2026-08-02 实测：build 步骤 23 报错）。
+#   凡 workflow 里假设"托管镜像自带"的工具，本镜像都要显式补齐。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git jq sudo unzip zip tar gzip xz-utils \
+        ca-certificates curl git jq sudo unzip zip tar gzip xz-utils zstd \
         build-essential libicu74 libssl3 \
         python3 python3-venv \
         postgresql-client \
