@@ -235,7 +235,7 @@ jobs:
       # 优化范围内。当前注释如实描述现状，不再声称"全链 by-digest"。
       - name: Install cosign
         if: ${{ steps.staleguard.outputs.stale != 'true' }}
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Sign pushed image digest (keyless)
         if: ${{ steps.staleguard.outputs.stale != 'true' }}
