@@ -153,3 +153,40 @@ rm ~/Library/LaunchAgents/com.wontlost.aster-runner.plist
 - **指数退避封顶 300s**：连续失败时逐步拉长间隔（10→20→…→300），避免开机瞬间或
   GitHub API 故障时疯狂重试刷爆日志/触发限流。
 - 缺 keychain 项时日志给出**可直接复制的修复命令**，而不是含糊报错。
+
+## ★ podman machine 必须 ≥ 8GiB 内存
+
+`podman machine init` 默认只给 **2GiB**，实测**不足以跑 build-local**：
+Gradle daemon + Testcontainers + services 里的 postgres/redis 全在同一个 VM 里，
+会触发 OOM，表现为
+
+```
+FAILURE: Build failed with an exception.
+* What went wrong:
+Gradle build daemon disappeared unexpectedly (it may have been killed or may have crashed)
+```
+
+这条报错**不会说自己是 OOM**，容易被误判成 Gradle 或测试的问题。
+确认方法：`podman machine ssh <name> "sudo dmesg | grep -ci 'out of memory\|oom-kill'"`
+（2026-08-01 实测为 3）。
+
+设置（会重启 VM，镜像不丢）：
+
+```bash
+podman machine stop podman-machine-default
+podman machine set podman-machine-default --memory 8192
+podman machine start podman-machine-default
+```
+
+调到 8GiB 后 build-local 14 步全绿（含 Unit + Integration + Coverage）。
+
+## ★ 端口冲突：本机测试容器会占用 services 端口
+
+`ci-build.yml` 的 `services:` 会在同一 VM 内起 `postgres:17-alpine`（5432）。
+若你为本地调试起过占用 5432/6379 的容器，会失败于
+
+```
+Error response from daemon: cannot bind tcp port :5432: address already in use
+```
+
+跑 CI 前先 `podman ps` 确认端口空闲。
