@@ -45,6 +45,11 @@ GROUP="${RUNNER_GROUP:-local-mac}"
 RUNNER_NAME="${RUNNER_NAME:-pang-linux-podman}"
 LABELS="${RUNNER_LABELS:-self-hosted,linux,ARM64,podman,local-linux}"
 CONTAINER="${CONTAINER_NAME:-aster-linux-runner}"
+# ★容器内存上限：多 runner 并行时必须设，否则一个 job 的 OOM 会波及另一个。
+#   实测单个 aster-api job 峰值约 6GiB（java 进程 anon-rss 4.45GiB +
+#   Testcontainers 的 postgres/redis + Gradle daemon），故默认 8g 留余量。
+#   ★VM 总内存需 ≥ 2×MEMORY + 4GiB（buff/cache 与 VM 自身）。
+MEMORY="${RUNNER_MEMORY:-8g}"
 SOCK="${PODMAN_SOCKET:-/run/podman/podman.sock}"
 KEYCHAIN_SERVICE="${KEYCHAIN_SERVICE:-aster-runner-pat}"
 
@@ -205,6 +210,8 @@ while true; do
       `# （实测 bridge=no response / host=accepting connections）。共享 VM 网络后`  \
       `# localhost 语义与托管 runner 一致。` \
       --network host \
+      `# 内存上限：防止一个 runner 的 job 撑爆 VM 波及另一个（多 runner 场景必需）。` \
+      --memory ${MEMORY} \
       -v ${SOCK}:/var/run/docker.sock \
       -e ORG_NAME='${ORG}' \
       -e RUNNER_GROUP='${GROUP}' \

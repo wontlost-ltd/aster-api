@@ -154,7 +154,7 @@ rm ~/Library/LaunchAgents/com.wontlost.aster-runner.plist
   GitHub API 故障时疯狂重试刷爆日志/触发限流。
 - 缺 keychain 项时日志给出**可直接复制的修复命令**，而不是含糊报错。
 
-## ★ podman machine 必须 ≥ 12GiB 内存
+## ★ podman machine 内存：单 runner ≥ 12GiB，双 runner ≥ 20GiB
 
 `podman machine init` 默认只给 **2GiB**，实测**不足以跑 build-local**：
 Gradle daemon + Testcontainers + services 里的 postgres/redis 全在同一个 VM 里，
@@ -214,3 +214,54 @@ Error response from daemon: cannot bind tcp port :5432: address already in use
 ```
 
 跑 CI 前先 `podman ps` 确认端口空闲。
+
+
+## 跑第二个 runner
+
+本机可同时跑两个 ephemeral runner，让 aster-api 与 aster-cloud **并行**走本地。
+
+```bash
+D=~/IdeaProjects/aster-api/.github/self-hosted-runner
+sed "s|__SUPERVISOR__|$D/launchd-supervisor.sh|" \
+  "$D/com.wontlost.aster-runner-2.plist" > ~/Library/LaunchAgents/com.wontlost.aster-runner-2.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.wontlost.aster-runner-2.plist
+```
+
+### ★为什么必须用**不同标签**，不能让两个 runner 都接同样的活
+
+两个容器都用 `network=host`（这是 `services:` 端口可达的前提），因此**共享 VM 的
+单一网络命名空间**。若两个 runner 都能接 aster-api 的 job，两个 postgres service
+会同时抢 5432：
+
+```
+cannot bind tcp port :5432: address already in use
+```
+
+那等于把「排队等待」这个无害问题，换成「间歇性红」的坏问题。故按用途隔离：
+
+| 标签 | runner | 服务的仓 | 依据 |
+|---|---|---|---|
+| `local-linux` | `pang-linux-podman` | aster-api | `ci-build.yml` 有 `services: postgres` |
+| `local-node` | `pang-linux-podman-2` | aster-cloud | 零 `services:`，纯 Node/pnpm |
+
+代价：两个 runner 不再互为备份；某个仓的 runner 忙时直接回落 hosted。
+
+### ★两个实例必须区分的三个变量
+
+`reap_stale_runner` **按 name 精确匹配删除同名记录**，同名会互相清掉对方：
+
+- `RUNNER_NAME`（GitHub 侧标识）
+- `CONTAINER_NAME`（podman 容器名）
+- `RUNNER_LABELS`（决定接什么活）
+
+### 内存
+
+每个容器由 `RUNNER_MEMORY`（默认 `8g`）限制，防止一个 job OOM 波及另一个。
+**VM 总量需 ≥ 2×8 + 4 = 20GiB**。验证实际生效（`HostConfig.Memory` 会显示 0，
+不可信，要看 cgroup）：
+
+```bash
+podman machine ssh podman-machine-default \
+  "sudo podman exec aster-linux-runner cat /sys/fs/cgroup/memory.max"
+# 期望 8589934592（8GiB），而非 max
+```
