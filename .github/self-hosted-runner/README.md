@@ -154,7 +154,7 @@ rm ~/Library/LaunchAgents/com.wontlost.aster-runner.plist
   GitHub API 故障时疯狂重试刷爆日志/触发限流。
 - 缺 keychain 项时日志给出**可直接复制的修复命令**，而不是含糊报错。
 
-## ★ podman machine 必须 ≥ 8GiB 内存
+## ★ podman machine 必须 ≥ 12GiB 内存
 
 `podman machine init` 默认只给 **2GiB**，实测**不足以跑 build-local**：
 Gradle daemon + Testcontainers + services 里的 postgres/redis 全在同一个 VM 里，
@@ -178,7 +178,31 @@ podman machine set podman-machine-default --memory 8192
 podman machine start podman-machine-default
 ```
 
-调到 8GiB 后 build-local 14 步全绿（含 Unit + Integration + Coverage）。
+### 为什么是 12GiB 而不是 8GiB
+
+8GiB 能跑完 Unit Tests，但 **Integration Tests 仍会 OOM**（2026-08-02 实测）：
+
+```
+Process 'Gradle Test Executor 7' finished with non-zero exit value 137
+```
+
+★ **exit 137 = SIGKILL = 被 OOM killer 杀**，Gradle 只会说「unexpected problem」，
+不会说是内存。dmesg 才有真相：
+
+```
+Out of memory: Killed process (java) total-vm:8392468kB, anon-rss:4450932kB
+```
+
+单个 Java 测试进程峰值 **4.45GiB RSS**，加上 Testcontainers 起的
+postgres/redis（约 0.5-1GiB）与 Gradle daemon 自身，峰值约 6-6.5GiB —— 8GiB
+扣掉 buff/cache 后余量不足。
+
+调到 12GiB 后 build-local 全绿、`dmesg` 零 OOM 事件。
+
+### 判别方法
+
+同一个 commit **hosted 过而 local 挂**，基本可断定是本地资源问题而非代码回归。
+确认：`podman machine ssh <name> "sudo dmesg -T | grep -i oom-kill"`。
 
 ## ★ 端口冲突：本机测试容器会占用 services 端口
 
