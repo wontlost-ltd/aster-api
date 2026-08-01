@@ -16,7 +16,29 @@
 
 set -uo pipefail
 
-MACHINE="${PODMAN_MACHINE:-podman-machine}"
+# ★不要写死 machine 名：`podman machine init` 默认创建的是
+#   **podman-machine-default**，而此处原先默认 `podman-machine`。
+#   名字对不上时 `podman machine inspect` 恒返回空 → 状态判定为 unknown →
+#   supervisor 卡在「启动超时 → 重试」的死循环里，**runner 永远起不来**，
+#   而 launchctl 看到的进程是活的（exit 0），从表面看不出问题。
+#   （2026-08-01 实测：日志里连续数十次「podman machine 'podman-machine'
+#     状态=unknown」，而实际存在的是 podman-machine-default。）
+#   改为：显式指定 > 唯一存在的 machine > 传统默认名。
+_detect_machine() {
+  [[ -n "${PODMAN_MACHINE:-}" ]] && { echo "$PODMAN_MACHINE"; return; }
+  local names
+  names="$(podman machine list --format '{{.Name}}' 2>/dev/null)"
+  # 仅有一个 machine 时直接用它，避免名字约定漂移
+  if [[ "$(echo "$names" | grep -c . )" == "1" ]]; then
+    echo "$names"; return
+  fi
+  # 多个时优先官方默认名
+  if echo "$names" | grep -qx 'podman-machine-default'; then
+    echo 'podman-machine-default'; return
+  fi
+  echo 'podman-machine'
+}
+MACHINE="$(_detect_machine)"
 IMAGE="${RUNNER_IMAGE:-localhost/aster-runner:2.336.0}"
 ORG="${ORG_NAME:-wontlost-ltd}"
 GROUP="${RUNNER_GROUP:-local-mac}"
