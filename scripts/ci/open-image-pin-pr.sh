@@ -221,6 +221,28 @@ else
   echo "复用 open PR #$pr"
 fi
 # enable auto-merge 失败必须 fail-loud（PR 开着不合＝发布链断）。
+#
+# ★但要先等 GitHub 侧 PR 的 headRefOid 追上刚 force-push 的 commit：
+#   实测 push 完成(47.38s) → enable auto-merge(48.62s) 仅隔 1.2 秒，
+#   GitHub 尚未刷新 PR head，于是报
+#     Failed to add PR #N: expected head oid does not match the current head oid
+#   （enablePullRequestAutoMerge）。PR 本身已正确开好/更新，纯属复制延迟，
+#   但 job 会因此变红 —— 是**假红**，会掩盖真实的发布链故障。
+#
+#   故轮询等待 headRefOid == 本地 head_sha 再 enable。
+#   ★不去掉 --match-head-commit：它是防「auto-merge 意外合并了别人后推的
+#     commit」的关键防线，去掉换来的"稳定"是拿安全性换的。
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  remote_oid="$(gh pr view "$pr" -R "$K3S_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+  [[ "$remote_oid" == "$head_sha" ]] && break
+  echo "  等待 PR #${pr} head 刷新（尝试 ${attempt}/10；远端=${remote_oid:-?} 期望=${head_sha}）"
+  sleep 3
+done
+if [[ "$remote_oid" != "$head_sha" ]]; then
+  echo "::error::PR #${pr} 的 head 在 30s 内未刷新到 ${head_sha}（远端=${remote_oid:-?}）"
+  echo "::error::  不降级为无 --match-head-commit 的 enable —— 那会放任 auto-merge 合并非本 run 的 commit。"
+  exit 1
+fi
 gh pr merge "$pr" -R "$K3S_REPO" --auto --squash --delete-branch --match-head-commit "$head_sha"
 echo "image-pin PR #${pr} 就绪 (auto-merge enabled, head=${head_sha})"
 # 本次确有 digest 变更 + 开/复用了 PR → 下游必须等待迁移应用。
