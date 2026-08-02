@@ -387,7 +387,8 @@
       "closeMenu": "Close menu"
     },
     "userMenu": {
-      "profile": "User menu"
+      "profile": "User menu",
+      "help": "Help"
     },
     "commandPalette": {
       "placeholder": "Search or jump to…",
@@ -407,7 +408,17 @@
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
     "apiKeys": "API keys",
-    "aiKeys": "AI keys"
+    "aiKeys": "AI keys",
+    "about": {
+      "title": "About Aster Cloud",
+      "version": "Version",
+      "build": "Build",
+      "engine": "Engine",
+      "messages": "Message pack",
+      "apiVersion": "Backend API",
+      "unavailable": "Unavailable",
+      "close": "Close"
+    }
   },
   "teams": {
     "title": "Teams",
