@@ -115,6 +115,9 @@ jobs:
       # 仅 push 事件把关；workflow_dispatch 手动部署允许部署任意点。
       - name: Stale-commit guard (skip push+deploy if main moved ahead)
         id: staleguard
+        env:
+          # gh api 需要 GH_TOKEN；本 job 的 permissions 已是 contents: read
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "${{ github.event_name }}" != "push" ]; then
             echo "非 push 事件（${{ github.event_name }}），跳过 stale 闸门。"
@@ -297,10 +300,18 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Final stale gate (再确认 github.sha 仍是 origin/main tip)
+        env:
+          # gh api 需要 GH_TOKEN；本 job 的 permissions 已是 contents: read
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # 减少 k3s 端 freshness fail-closed 噪音：开 PR 前再查一次，已过时则不开（下次 push 重建）。
-          tip="$(git ls-remote https://github.com/${{ github.repository }}.git refs/heads/main | cut -f1)"
+          # ★转私后必须带凭据：匿名 `git ls-remote https://github.com/...` 在私有仓上
+          #   会提示输入用户名 → `fatal: could not read Username` → exit 128
+          #   （2026-08-02 实测：aster-api 转私后三个 deploy workflow 全中）。
+          #   改用 gh api（本 job 已有 contents: read 的 GITHUB_TOKEN），
+          #   顺带避免把 token 写进 URL（不出现在进程列表/git 配置里）。
+          tip="$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)"
           echo "this run: ${GITHUB_SHA}  origin/main tip: ${tip}"
           if [ "${GITHUB_SHA}" != "${tip}" ]; then
             echo "::notice::main 已前进，本 run 过时 → 跳过 image-pin PR（下次 push 重建固定分支）"
