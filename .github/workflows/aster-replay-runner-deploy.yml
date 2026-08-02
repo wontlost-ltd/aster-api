@@ -116,6 +116,17 @@ jobs:
       contents: read
     steps:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # ★必须显式 pin cosign 版本，不能只 pin installer。
+          #   installer 从 @v3 升到 v4.1.2 时，其**默认 cosign-release 由 v2.5.2
+          #   变成 v3.0.6**，而 cosign v3 把 `--new-bundle-format` 设为默认：
+          #   签名改存为 OCI 1.1 referring artifact，旧路径找不到 → `no signatures found`
+          #   （2026-08-01 实测：三个 deploy workflow 同时开始失败，exit code 10）。
+          #   生产验签方是 policy-controller，其内置 cosign 版本未知，且已部署镜像
+          #   全部是 v2 attached 格式——贸然切 v3 可能让**准入拒绝所有新镜像**，
+          #   比 CI 红严重得多。故固定回已验证可用的 v2.5.2。
+          #   升级到 v3 需要单独评估：先确认 policy-controller 支持新 bundle 格式。
+          cosign-release: 'v2.5.2'
       # ★sign 是独立 job——须自己 docker login（cosign 对私有/rate-limited registry 拉 manifest 需认证）。
       - uses: docker/login-action@v4
         with:
