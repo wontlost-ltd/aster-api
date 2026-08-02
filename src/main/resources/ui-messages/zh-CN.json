@@ -387,7 +387,8 @@
       "closeMenu": "关闭菜单"
     },
     "userMenu": {
-      "profile": "用户菜单"
+      "profile": "用户菜单",
+      "help": "帮助"
     },
     "commandPalette": {
       "placeholder": "搜索或跳转…",
@@ -407,7 +408,17 @@
     "collapseSidebar": "收起侧栏",
     "expandSidebar": "展开侧栏",
     "apiKeys": "API 密钥",
-    "aiKeys": "AI 密钥"
+    "aiKeys": "AI 密钥",
+    "about": {
+      "title": "关于 Aster Cloud",
+      "version": "版本",
+      "build": "构建",
+      "engine": "引擎",
+      "messages": "文案包",
+      "apiVersion": "后端 API",
+      "unavailable": "不可用",
+      "close": "关闭"
+    }
   },
   "teams": {
     "title": "团队",

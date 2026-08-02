@@ -387,7 +387,8 @@
       "closeMenu": "Menü schließen"
     },
     "userMenu": {
-      "profile": "Benutzermenü"
+      "profile": "Benutzermenü",
+      "help": "Hilfe"
     },
     "commandPalette": {
       "placeholder": "Suchen oder springen…",
@@ -407,7 +408,17 @@
     "collapseSidebar": "Seitenleiste einklappen",
     "expandSidebar": "Seitenleiste ausklappen",
     "apiKeys": "API-Schlüssel",
-    "aiKeys": "KI-Schlüssel"
+    "aiKeys": "KI-Schlüssel",
+    "about": {
+      "title": "Über Aster Cloud",
+      "version": "Version",
+      "build": "Build",
+      "engine": "Engine",
+      "messages": "Textpaket",
+      "apiVersion": "Backend-API",
+      "unavailable": "Nicht verfügbar",
+      "close": "Schließen"
+    }
   },
   "teams": {
     "title": "Teams",

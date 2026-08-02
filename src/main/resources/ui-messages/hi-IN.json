@@ -72,7 +72,8 @@
       "closeMenu": "मेन्यू बंद करें"
     },
     "userMenu": {
-      "profile": "उपयोगकर्ता मेन्यू"
+      "profile": "उपयोगकर्ता मेन्यू",
+      "help": "सहायता"
     },
     "commandPalette": {
       "placeholder": "खोजें या जाएँ…",
@@ -92,7 +93,17 @@
     "collapseSidebar": "साइडबार समेटें",
     "expandSidebar": "साइडबार विस्तृत करें",
     "apiKeys": "API कुंजियाँ",
-    "aiKeys": "AI कुंजियाँ"
+    "aiKeys": "AI कुंजियाँ",
+    "about": {
+      "title": "Aster Cloud के बारे में",
+      "version": "संस्करण",
+      "build": "बिल्ड",
+      "engine": "इंजन",
+      "messages": "संदेश पैक",
+      "apiVersion": "बैकएंड API",
+      "unavailable": "अनुपलब्ध",
+      "close": "बंद करें"
+    }
   },
   "features": {
     "title": "क्रेडिट-जोखिम निर्णयन के लिए निर्मित",

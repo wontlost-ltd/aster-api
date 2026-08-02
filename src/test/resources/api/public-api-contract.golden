@@ -27,6 +27,7 @@ GET /api/v1/messages/{locale}
 GET /api/v1/metrics/waadr
 GET /api/v1/modules/catalog
 GET /api/v1/policies/{policyId}/versions
+GET /api/v1/version
 GET /api/v1/workflows/by-status/{status}
 GET /api/v1/workflows/metrics
 GET /api/v1/workflows/{workflowId}/events
