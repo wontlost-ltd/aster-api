@@ -3117,5 +3117,24 @@
       "env": "Konfiguration",
       "dynamic": "Dynamisch"
     }
+  },
+  "assistant": {
+    "title": "Aster-Assistent",
+    "open": "Aster-Assistent öffnen",
+    "close": "Schließen",
+    "placeholder": "Dokumentation durchsuchen oder zu einer Seite springen…",
+    "intro": "Stellen Sie eine Frage — ich zeige Ihnen passende Dokumente und Seiten dieser Website.",
+    "introNote": "Durchsucht nur diese Website — kein Internet, keine KI-Generierung, kein Zugriff auf Ihre Daten.",
+    "noResults": "Keine Treffer auf dieser Website. Formulieren Sie anders oder durchsuchen Sie die Dokumentation.",
+    "resultsLabel": "Ergebnisse",
+    "kindDoc": "Doku",
+    "kindAction": "Seite",
+    "disabledTitle": "Assistent ist aus",
+    "disabledBody": "Unter Einstellungen → Assistent wieder aktivieren.",
+    "settingsLabel": "Aster-Assistent",
+    "settingsHint": "Ein seitenweiter Helfer für Dokumente und Seiten. Durchsucht nur diese Website — kein Internet, keine KI-Generierung.",
+    "settingsOn": "Ein",
+    "settingsOff": "Aus",
+    "answerFallback": "Assistenzdienst nicht erreichbar — unten die Suchergebnisse der Website."
   }
 }
