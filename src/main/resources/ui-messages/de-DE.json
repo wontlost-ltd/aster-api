@@ -1011,6 +1011,8 @@
       "panelTitle": "Versionen",
       "compare": "Versionen vergleichen",
       "createdOn": "Erstellt {date}",
+      "deprecatedOn": "Verworfen am {date}",
+      "archivedOn": "Archiviert am {date}",
       "viewSource": "Quelle anzeigen",
       "submitForApproval": "Zur Freigabe einreichen",
       "submitDialogTitle": "Version {n} zur Freigabe einreichen",
@@ -1099,6 +1101,48 @@
         "APPROVED": "Freigegeben",
         "REJECTED": "Abgelehnt",
         "REQUESTED_CHANGES": "Änderungen angefordert"
+      },
+      "detail": {
+        "tabs": {
+          "source": "Quellcode",
+          "metadata": "Metadaten",
+          "approvals": "Genehmigungen ({count})"
+        },
+        "meta": {
+          "versionId": "Versions-ID",
+          "versionNumber": "Version",
+          "status": "Status",
+          "isDefault": "Standard",
+          "yes": "Ja",
+          "no": "Nein",
+          "sourceHash": "Quell-Hash",
+          "prevHash": "Vorheriger Hash",
+          "aliasSet": "Schlüsselwort-Aliase",
+          "none": "Keine",
+          "createdBy": "Erstellt von",
+          "createdAt": "Erstellt am",
+          "deprecatedBy": "Verworfen von",
+          "deprecatedAt": "Verworfen am",
+          "archivedBy": "Archiviert von",
+          "archivedAt": "Archiviert am",
+          "unknownActor": "Unbekannt"
+        },
+        "alias": {
+          "banner": "Diese Version verwendet Schlüsselwort-Aliase. Die Formulierung im Quellcode wird vor dem Kompilieren auf die untenstehende Struktur normalisiert — bitte prüfen.",
+          "mapTitle": "Normalisierte Strukturzuordnung (Genehmigungsgrundlage)",
+          "structuralWarning": "Diese Version verwendet Aliase für Strukturschlüsselwörter. Prüfen Sie jede Zeile rechts auf Übereinstimmung mit der Quellabsicht, bevor Sie genehmigen.",
+          "colPhrase": "Alias-Formulierung (im Quellcode)",
+          "colCanonical": "Tatsächliche Struktur",
+          "structuralBadge": "Strukturwort"
+        },
+        "approvals": {
+          "empty": "Keine Genehmigungsdatensätze",
+          "approver": "Genehmiger"
+        },
+        "errors": {
+          "fetchFailed": "Versionsdetails konnten nicht geladen werden",
+          "unknown": "Unbekannter Fehler"
+        }
       }
     },
     "deleteDialog": {
