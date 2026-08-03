@@ -1011,6 +1011,8 @@
       "panelTitle": "版本管理",
       "compare": "版本对比",
       "createdOn": "创建于 {date}",
+      "deprecatedOn": "废弃于 {date}",
+      "archivedOn": "归档于 {date}",
       "viewSource": "查看源码",
       "submitForApproval": "提交审批",
       "submitDialogTitle": "提交 v{n} 审批",
@@ -1099,6 +1101,48 @@
         "APPROVED": "已批准",
         "REJECTED": "已拒绝",
         "REQUESTED_CHANGES": "请求修改"
+      },
+      "detail": {
+        "tabs": {
+          "source": "源码",
+          "metadata": "元数据",
+          "approvals": "审批记录 ({count})"
+        },
+        "meta": {
+          "versionId": "版本 ID",
+          "versionNumber": "版本号",
+          "status": "状态",
+          "isDefault": "是否默认",
+          "yes": "是",
+          "no": "否",
+          "sourceHash": "源码哈希",
+          "prevHash": "前一版本哈希",
+          "aliasSet": "关键词别名",
+          "none": "无",
+          "createdBy": "创建者",
+          "createdAt": "创建时间",
+          "deprecatedBy": "废弃者",
+          "deprecatedAt": "废弃时间",
+          "archivedBy": "归档者",
+          "archivedAt": "归档时间",
+          "unknownActor": "未知"
+        },
+        "alias": {
+          "banner": "此版本使用了关键词别名。源码中的措辞经下表归一到真实结构后再编译执行——请对照确认。",
+          "mapTitle": "规范化结构对照（审批依据）",
+          "structuralWarning": "本版本对结构关键词使用了别名。请逐条确认下表右列的规范结构与源码意图一致后再批准。",
+          "colPhrase": "别名短语（源码中所见）",
+          "colCanonical": "实际规范结构",
+          "structuralBadge": "结构词"
+        },
+        "approvals": {
+          "empty": "暂无审批记录",
+          "approver": "审批人"
+        },
+        "errors": {
+          "fetchFailed": "获取版本详情失败",
+          "unknown": "未知错误"
+        }
       }
     },
     "deleteDialog": {

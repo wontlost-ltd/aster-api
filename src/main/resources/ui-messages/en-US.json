@@ -1011,6 +1011,8 @@
       "panelTitle": "Versions",
       "compare": "Compare versions",
       "createdOn": "Created {date}",
+      "deprecatedOn": "Deprecated {date}",
+      "archivedOn": "Archived {date}",
       "viewSource": "View source",
       "submitForApproval": "Submit for approval",
       "submitDialogTitle": "Submit version {n} for approval",
@@ -1099,6 +1101,48 @@
         "APPROVED": "Approved",
         "REJECTED": "Rejected",
         "REQUESTED_CHANGES": "Requested changes"
+      },
+      "detail": {
+        "tabs": {
+          "source": "Source",
+          "metadata": "Metadata",
+          "approvals": "Approvals ({count})"
+        },
+        "meta": {
+          "versionId": "Version ID",
+          "versionNumber": "Version",
+          "status": "Status",
+          "isDefault": "Default",
+          "yes": "Yes",
+          "no": "No",
+          "sourceHash": "Source hash",
+          "prevHash": "Previous hash",
+          "aliasSet": "Keyword aliases",
+          "none": "None",
+          "createdBy": "Created by",
+          "createdAt": "Created at",
+          "deprecatedBy": "Deprecated by",
+          "deprecatedAt": "Deprecated at",
+          "archivedBy": "Archived by",
+          "archivedAt": "Archived at",
+          "unknownActor": "Unknown"
+        },
+        "alias": {
+          "banner": "This version uses keyword aliases. The wording in the source is normalized to the real structure below before compiling — please review.",
+          "mapTitle": "Normalized structure map (approval basis)",
+          "structuralWarning": "This version aliases structural keywords. Confirm each row on the right matches the source intent before approving.",
+          "colPhrase": "Alias phrase (as seen in source)",
+          "colCanonical": "Actual structure",
+          "structuralBadge": "Structural"
+        },
+        "approvals": {
+          "empty": "No approval records",
+          "approver": "Approver"
+        },
+        "errors": {
+          "fetchFailed": "Failed to load version detail",
+          "unknown": "Unknown error"
+        }
       }
     },
     "deleteDialog": {

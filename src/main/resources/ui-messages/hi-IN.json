@@ -2066,6 +2066,8 @@
       "panelTitle": "संस्करण",
       "compare": "संस्करणों की तुलना करें",
       "createdOn": "{date} को बनाया गया",
+      "deprecatedOn": "{date} को अप्रचलित",
+      "archivedOn": "{date} को संग्रहीत",
       "viewSource": "स्रोत देखें",
       "submitForApproval": "अनुमोदन के लिए प्रस्तुत करें",
       "submitDialogTitle": "संस्करण {n} को अनुमोदन के लिए प्रस्तुत करें",
@@ -2154,6 +2156,48 @@
         "APPROVED": "अनुमोदित",
         "REJECTED": "अस्वीकृत",
         "REQUESTED_CHANGES": "परिवर्तन अनुरोधित"
+      },
+      "detail": {
+        "tabs": {
+          "source": "स्रोत",
+          "metadata": "मेटाडेटा",
+          "approvals": "अनुमोदन ({count})"
+        },
+        "meta": {
+          "versionId": "संस्करण ID",
+          "versionNumber": "संस्करण",
+          "status": "स्थिति",
+          "isDefault": "डिफ़ॉल्ट",
+          "yes": "हाँ",
+          "no": "नहीं",
+          "sourceHash": "स्रोत हैश",
+          "prevHash": "पिछला हैश",
+          "aliasSet": "कीवर्ड उपनाम",
+          "none": "कोई नहीं",
+          "createdBy": "निर्माता",
+          "createdAt": "निर्माण समय",
+          "deprecatedBy": "अप्रचलित करने वाला",
+          "deprecatedAt": "अप्रचलन समय",
+          "archivedBy": "संग्रहकर्ता",
+          "archivedAt": "संग्रह समय",
+          "unknownActor": "अज्ञात"
+        },
+        "alias": {
+          "banner": "इस संस्करण में कीवर्ड उपनाम प्रयुक्त हैं। स्रोत की शब्दावली संकलन से पहले नीचे दी गई वास्तविक संरचना में सामान्यीकृत होती है — कृपया मिलान करें।",
+          "mapTitle": "सामान्यीकृत संरचना तालिका (अनुमोदन आधार)",
+          "structuralWarning": "इस संस्करण में संरचनात्मक कीवर्ड के उपनाम हैं। अनुमोदन से पहले दाईं ओर की प्रत्येक पंक्ति की स्रोत मंशा से पुष्टि करें।",
+          "colPhrase": "उपनाम वाक्यांश (स्रोत में)",
+          "colCanonical": "वास्तविक संरचना",
+          "structuralBadge": "संरचना शब्द"
+        },
+        "approvals": {
+          "empty": "कोई अनुमोदन रिकॉर्ड नहीं",
+          "approver": "अनुमोदक"
+        },
+        "errors": {
+          "fetchFailed": "संस्करण विवरण लोड करने में विफल",
+          "unknown": "अज्ञात त्रुटि"
+        }
       }
     },
     "deleteDialog": {
