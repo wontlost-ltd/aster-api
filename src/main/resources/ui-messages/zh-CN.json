@@ -3117,5 +3117,24 @@
       "env": "配置",
       "dynamic": "动态"
     }
+  },
+  "assistant": {
+    "title": "Aster 助手",
+    "open": "打开 Aster 助手",
+    "close": "关闭",
+    "placeholder": "问问文档，或跳转到某个页面…",
+    "intro": "提个问题，我会指给你站内对应的文档和页面。",
+    "introNote": "仅检索本站内容——不联网、不生成 AI 回答、不读取你的数据。",
+    "noResults": "站内没有找到相关内容。换个说法，或直接浏览文档。",
+    "resultsLabel": "结果",
+    "kindDoc": "文档",
+    "kindAction": "页面",
+    "disabledTitle": "助手已关闭",
+    "disabledBody": "可在「设置 → 助手」中重新激活。",
+    "settingsLabel": "Aster 助手",
+    "settingsHint": "全站辅助工具，帮你查找文档与页面。仅检索本站内容——不联网、不生成 AI 回答。",
+    "settingsOn": "已开启",
+    "settingsOff": "已关闭",
+    "answerFallback": "未能连接助手服务——以下为站内检索结果。"
   }
 }

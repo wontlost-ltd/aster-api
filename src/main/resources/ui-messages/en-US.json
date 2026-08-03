@@ -3117,5 +3117,24 @@
       "env": "Config",
       "dynamic": "Dynamic"
     }
+  },
+  "assistant": {
+    "title": "Aster Assistant",
+    "open": "Open Aster Assistant",
+    "close": "Close",
+    "placeholder": "Ask about docs or jump to a page…",
+    "intro": "Ask a question and I will point you to the matching docs and pages on this site.",
+    "introNote": "Searches this site only — no internet, no AI generation, no access to your data.",
+    "noResults": "No matches on this site. Try different wording, or browse the docs.",
+    "resultsLabel": "Results",
+    "kindDoc": "Doc",
+    "kindAction": "Page",
+    "disabledTitle": "Assistant is off",
+    "disabledBody": "Turn it back on in Settings → Assistant.",
+    "settingsLabel": "Aster Assistant",
+    "settingsHint": "A site-wide helper that finds docs and pages. Searches this site only — no internet and no AI generation.",
+    "settingsOn": "On",
+    "settingsOff": "Off",
+    "answerFallback": "Couldn't reach the assistant service — showing site search results below."
   }
 }
