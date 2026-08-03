@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
   checks: write
+  issues: write   # ui-messages-drift 漂移时开/关 issue
 
 jobs:
   fresh-it:
@@ -242,3 +243,58 @@ jobs:
           name: nightly-chaos-results
           path: aster-api/build/test-results
           if-no-files-found: error
+
+  # ── ui-messages classpath 副本漂移守卫 ────────────────────────────────
+  # 仓内已有 UiMessagesClasspathSiblingParityTest 守同一不变式，但它只在
+  # **aster-api 有 PR** 时才跑。真实漏洞正是「改了语言包却根本不碰 aster-api」
+  # ——没有 PR，守门没机会执行（2026-08-03 实测：线上因此显示裸 key）。
+  # 本 job 从时间维度补缺口：每晚主动比对，漂移即开 issue。
+  # 只读 + 开 issue，不改任何仓代码，故只需内置 GITHUB_TOKEN。
+  ui-messages-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: aster-api
+      - uses: actions/checkout@v6
+        with:
+          repository: aster-cloud/aster-lang-locales
+          path: aster-lang-locales
+      - uses: actions/checkout@v6
+        with:
+          repository: aster-cloud/aster-lang-hi
+          path: aster-lang-hi
+
+      - name: Detect drift
+        id: drift
+        shell: bash
+        run: |
+          set -uo pipefail
+          if out=$(python3 aster-api/scripts/ci/check-ui-messages-drift.py .); then
+            echo "$out"
+            echo "drifted=false" >> "$GITHUB_OUTPUT"
+          else
+            rc=$?
+            echo "$out"
+            [ "$rc" = "1" ] || { echo "::error::检测脚本异常退出 rc=$rc"; exit "$rc"; }
+            echo "::error::ui-messages classpath 副本与语言包源漂移"
+            echo "drifted=true" >> "$GITHUB_OUTPUT"
+            { echo "detail<<DRIFT_EOF"; echo "$out"; echo "DRIFT_EOF"; } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update drift issue
+        if: steps.drift.outputs.drifted == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DETAIL: ${{ steps.drift.outputs.detail }}
+          TITLE: ui-messages classpath 副本与语言包源漂移
+        shell: bash
+        run: bash aster-api/scripts/ci/report-ui-messages-drift.sh open
+
+      - name: Close drift issue when back in sync
+        if: steps.drift.outputs.drifted == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ui-messages classpath 副本与语言包源漂移
+        shell: bash
+        run: bash aster-api/scripts/ci/report-ui-messages-drift.sh close
