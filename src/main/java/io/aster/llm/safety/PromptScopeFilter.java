@@ -32,10 +32,15 @@ public class PromptScopeFilter {
         Pattern.compile("\\b(translate|translation)\\s+(to|into|from)\\b", Pattern.CASE_INSENSITIVE),
         Pattern.compile("\\b(write|generate)\\s+(some\\s+|a\\s+)?(python|javascript|java|typescript|golang|c\\+\\+|c#|ruby|php|rust)\\s+code\\b", Pattern.CASE_INSENSITIVE),
         Pattern.compile("\\bexplain\\s+(this\\s+)?(python|javascript|java|typescript|golang|c\\+\\+|ruby)\\s+code\\b", Pattern.CASE_INSENSITIVE),
-        Pattern.compile("写(一|首|个)?(小说|诗|歌|笑话|文章|故事|散文)"),
+        // ★量词允许多个：原来是 (一|首|个)? 只许**一个**，导致「写一首诗」
+        //   「写一个故事」「写一篇文章」这些最自然的说法全部漏过（只能拦住
+        //   「写诗」「写首诗」这种简写）。改成量词序列 + 补全量词字表。
+        Pattern.compile("写[一二三两]?[首个篇段部本]?(小说|诗|诗歌|歌|笑话|文章|故事|散文|作文)"),
         Pattern.compile("(翻译|翻成)(成|为)?(中文|英文|英语|日文|日语|德文|德语|法文|法语)"),
-        Pattern.compile("(讲|说)(一个|个)?(笑话|故事|段子)"),
-        Pattern.compile("(写|生成)(一段|一些|一个)?(Python|JavaScript|Java|TypeScript|Go|C\\+\\+|Ruby|PHP|Rust)\\s*代码", Pattern.CASE_INSENSITIVE)
+        Pattern.compile("(讲|说)[一二两]?[个则段]?(笑话|故事|段子)"),
+        // ★量词与语言名之间允许空格：「写一段 Python 代码」这种最常见的中英混排
+        //   写法原来漏过（只能拦住无空格的「写一段Python代码」）。
+        Pattern.compile("(写|生成)\\s*(一段|一些|一个|几行)?\\s*(Python|JavaScript|Java|TypeScript|Go|C\\+\\+|Ruby|PHP|Rust)\\s*代码", Pattern.CASE_INSENSITIVE)
     );
 
     /**
@@ -64,11 +69,12 @@ public class PromptScopeFilter {
                 "输入超过最大长度（" + MAX_LENGTH + " 字节）"
             );
         }
-        if (strictness == Strictness.LENIENT) {
-            return SafetyVerdict.allow();
-        }
-
-        // 黑名单（不分严格度都跑）
+        // 黑名单：**所有严格度都跑**（含 LENIENT）。
+        //
+        // ★此前 LENIENT 在这之前就 return allow()，与本段"不分严格度都跑"的注释
+        //   自相矛盾——写小说/翻译/写 Python 代码这类明显越权的请求，在 LENIENT
+        //   路径上是放行的，等于把端点当免费 LLM 用。注释声称的行为才是本意，
+        //   故把早退移到黑名单之后。
         for (Pattern p : OFF_TOPIC_DENY) {
             if (p.matcher(prompt).find()) {
                 return SafetyVerdict.block(
@@ -76,6 +82,13 @@ public class PromptScopeFilter {
                     "请求与 aster-lang policy 无关，已拒绝"
                 );
             }
+        }
+
+        // LENIENT 只豁免"必须命中领域白名单"这一条：
+        // complete 是补全用户已在写的内容、assistant 是文档问答，
+        // 都不该要求问句本身含 policy 关键词。
+        if (strictness == Strictness.LENIENT) {
+            return SafetyVerdict.allow();
         }
 
         // 白名单：MEDIUM 与 STRICT 都要求命中

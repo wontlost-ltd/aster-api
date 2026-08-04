@@ -128,6 +128,44 @@ class PromptScopeFilterTest {
             assertThat(v.blocked()).isTrue();
             assertThat(v.ruleId()).isEqualTo("too-long");
         }
+
+        @Test
+        @DisplayName("★黑名单在 LENIENT 下同样生效（否则端点=免费 LLM）")
+        void denylistStillAppliesUnderLenient() {
+            // 修复前 LENIENT 在黑名单之前就 return allow()，这些明显越权的请求
+            // 会被放行——与该段"不分严格度都跑"的注释自相矛盾。
+            for (String abuse : new String[]{
+                "写一首诗",
+                "讲个笑话",
+                "翻译成英文",
+                "写一段 Python 代码",
+                "write a novel about pirates",
+                "translate into Japanese"
+            }) {
+                SafetyVerdict v = filter.check(abuse, Strictness.LENIENT);
+                assertThat(v.blocked())
+                    .as("LENIENT 应拦截越权请求: %s", abuse)
+                    .isTrue();
+                assertThat(v.ruleId()).isEqualTo("off-topic-denylist");
+            }
+        }
+
+        @Test
+        @DisplayName("★文档问答类问句放行（助手的核心用例）")
+        void docsQuestionsAllowed() {
+            // 这些是最该被回答的入门问题，却一个 policy 白名单词都不含。
+            // MEDIUM 会判 off-topic 拒掉；LENIENT 必须放行。
+            for (String q : new String[]{
+                "我能用这个网址干什么？",
+                "如何开始第一个策略的编写",
+                "安全监控",
+                "怎么导出报告"
+            }) {
+                assertThat(filter.check(q, Strictness.LENIENT).blocked())
+                    .as("助手应能回答: %s", q)
+                    .isFalse();
+            }
+        }
     }
 
     @Nested
