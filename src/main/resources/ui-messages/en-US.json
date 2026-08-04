@@ -3157,6 +3157,7 @@
     "settingsHint": "A site-wide helper that finds docs and pages. Searches this site only — no internet and no AI generation.",
     "settingsOn": "On",
     "settingsOff": "Off",
-    "answerFallback": "Couldn't reach the assistant service — showing site search results below."
+    "answerFallback": "Couldn't reach the assistant service — showing site search results below.",
+    "kindExternal": "Ref"
   }
 }

@@ -3157,6 +3157,7 @@
     "settingsHint": "Ein seitenweiter Helfer für Dokumente und Seiten. Durchsucht nur diese Website — kein Internet, keine KI-Generierung.",
     "settingsOn": "Ein",
     "settingsOff": "Aus",
-    "answerFallback": "Assistenzdienst nicht erreichbar — unten die Suchergebnisse der Website."
+    "answerFallback": "Assistenzdienst nicht erreichbar — unten die Suchergebnisse der Website.",
+    "kindExternal": "Referenz"
   }
 }
