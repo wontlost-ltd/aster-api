@@ -1,5 +1,6 @@
 package io.aster.llm.api;
 
+import io.aster.llm.api.dto.AssistantRequest;
 import io.aster.llm.api.dto.CompleteRequest;
 import io.aster.llm.api.dto.CompleteResponse;
 import io.aster.llm.api.dto.GeneratePolicyRequest;
@@ -119,6 +120,35 @@ public class AiAssistantResource {
         }
         LOG.infof("AI 优化建议请求: tenant=%s, locale=%s", tenantId, request.getLocaleOrDefault());
         return llmProxyService.streamSuggest(tenantId, request, parseByok(),
+            byokParser.parseRequestId(requestContext));
+    }
+
+    /**
+     * 站内助手 RAG 问答（流式）
+     *
+     * POST /api/v1/ai/assistant
+     *
+     * <p>浏览器端已做站内检索，把命中条目作为 groundingHits 送来；模型只依据
+     * 这些条目作答。护栏顺序与 suggest 一致：开关 → 租户 → 内容安全 → 转发。
+     *
+     * <p>安全过滤用 {@code query} 而非整个请求体：groundingHits 是**站内**内容
+     * （文档标题/摘要），不是用户输入，拿它跑注入检测只会产生误报。
+     */
+    @POST
+    @Path("/assistant")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.SERVER_SENT_EVENTS)
+    @RestStreamElementType(MediaType.TEXT_PLAIN)
+    public Multi<String> assistant(@Valid AssistantRequest request) {
+        checkEnabled();
+        String tenantId = tenantId();
+        SafetyVerdict v = guard(request.query(), PromptScopeFilter.Strictness.MEDIUM, tenantId, "assistant");
+        if (v.blocked()) {
+            return refusalStream(v);
+        }
+        LOG.infof("站内助手问答: tenant=%s, locale=%s, hits=%d",
+            tenantId, request.getLocaleOrDefault(), request.hitsOrEmpty().size());
+        return llmProxyService.streamAssistant(tenantId, request, parseByok(),
             byokParser.parseRequestId(requestContext));
     }
 
