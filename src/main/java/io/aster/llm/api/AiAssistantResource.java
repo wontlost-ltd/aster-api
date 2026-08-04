@@ -133,6 +133,16 @@ public class AiAssistantResource {
      *
      * <p>安全过滤用 {@code query} 而非整个请求体：groundingHits 是**站内**内容
      * （文档标题/摘要），不是用户输入，拿它跑注入检测只会产生误报。
+     *
+     * <p><b>★用 LENIENT 而非 MEDIUM</b>：MEDIUM 要求问句命中 policy 领域白名单，
+     * 但助手是**文档问答**，用户问的是"我能用这个网址干什么""怎么开始"
+     * ——这些恰恰是最该被回答的入门问题，却一个白名单词都不含，会被判 off-topic
+     * 拒掉。用 generate/suggest 的口径衡量问路的人，是把工具的用途搞反了。
+     *
+     * <p>LENIENT 仍保留 8KB 长度上限（防撑爆 context 后塞越狱指令）；越权风险
+     * 由更硬的机制兜底：答复只能基于 groundingHits（站内内容），配额与熔断照常。
+     * 与 {@code complete} 用 LENIENT 同理——那里也是"补全用户已在写的东西"，
+     * 不该用领域白名单卡。
      */
     @POST
     @Path("/assistant")
@@ -142,7 +152,7 @@ public class AiAssistantResource {
     public Multi<String> assistant(@Valid AssistantRequest request) {
         checkEnabled();
         String tenantId = tenantId();
-        SafetyVerdict v = guard(request.query(), PromptScopeFilter.Strictness.MEDIUM, tenantId, "assistant");
+        SafetyVerdict v = guard(request.query(), PromptScopeFilter.Strictness.LENIENT, tenantId, "assistant");
         if (v.blocked()) {
             return refusalStream(v);
         }
