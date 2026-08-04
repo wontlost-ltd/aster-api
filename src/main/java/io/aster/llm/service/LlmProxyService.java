@@ -1,5 +1,6 @@
 package io.aster.llm.service;
 
+import io.aster.llm.api.dto.AssistantRequest;
 import io.aster.llm.api.dto.CompleteRequest;
 import io.aster.llm.api.dto.CompleteResponse;
 import io.aster.llm.api.dto.GeneratePolicyEvent;
@@ -228,6 +229,43 @@ public class LlmProxyService {
             // 会被 data: 行首空格规则 / 多行拆分吞掉 → 前端拼出的代码丢空格
             // （"Return resource" → "Returnresource"）。JSON 把内容包成字符串值，
             // 前端 JSON.parse 后原样还原，空格/换行全保留。
+            .map(event -> toJson(GeneratePolicyEvent.delta(event.delta())));
+    }
+
+    /**
+     * 站内助手 RAG 问答（流式）。
+     *
+     * <p>与 {@link #streamSuggest} 同结构：BYOK 解析 → 无 key 即拒 → 组 prompt →
+     * 流式转发 → USAGE 累加回填。计量口径记为 "assistant"，便于和
+     * generate/suggest 分开看用量与成本。
+     */
+    public Multi<String> streamAssistant(String tenantId, AssistantRequest req, ByokOverride byok,
+                                         String requestId) {
+        LlmRuntimeOptions options;
+        try {
+            options = optionsResolver.resolve(tenantId, byok);
+        } catch (IllegalArgumentException e) {
+            return Multi.createFrom().item(toJson(GeneratePolicyEvent.error("BYOK 凭证无效: " + e.getMessage())));
+        }
+        if (options.apiKey() == null || options.apiKey().isBlank()) {
+            return Multi.createFrom().item(toJson(GeneratePolicyEvent.error("未配置 LLM API Key")));
+        }
+
+        PromptContext ctx = promptComposer.buildAssistantContext(tenantId, req);
+        String model = req.model() != null ? req.model() : config.model();
+        boolean usedByok = options.usedByok();
+        AtomicReference<LlmUsage> usageAcc = new AtomicReference<>(LlmUsage.ZERO);
+
+        return llmClient.streamChat(ctx.toLlmRequest(), options)
+            .onItem().invoke(event -> {
+                if (event.type() == LlmStreamEvent.Type.USAGE && event.usage() != null) {
+                    usageAcc.updateAndGet(u -> u.max(event.usage()));
+                }
+            })
+            .onCompletion().invoke(() ->
+                usageReporter.reportUsage(tenantId, "assistant", model, usageAcc.get(), usedByok, requestId))
+            .filter(event -> event.type() == LlmStreamEvent.Type.DELTA && event.delta() != null)
+            // 同 suggest：发 JSON delta 而非裸文本，避免 SSE 逐帧传输吞掉空格/换行。
             .map(event -> toJson(GeneratePolicyEvent.delta(event.delta())));
     }
 
