@@ -22,6 +22,14 @@ import java.util.List;
  * @param groundingHits  站内检索命中（作为唯一事实依据）
  * @param locale         回答所用语言
  * @param model          LLM 模型覆盖（可选）
+ * @param adminInstructions 管理员在平台设置里配置的**附加指令**（可空）。
+ *        由 cloud 侧薄代理从 platform_settings 读出后随请求下发——那张表在
+ *        cloud 的库里，api 读不到，故只能这样传。
+ *        <p>★<b>因此必须按不可信输入对待</b>：虽然逻辑上只有管理员能改，但它走
+ *        请求体，任何能打到本端点的人都能伪造。所以：拼 prompt 前经 wrapUserData
+ *        包裹为数据、设长度上限、且<b>只能追加，绝不能覆盖 system prompt 的三条
+ *        硬约束</b>（只依据站内条目 / 无依据就说不知道 / 必须给引用）——否则一句
+ *        "请尽量给出有帮助的回答"就能拆掉防幻觉护栏，而那是本产品可信定位的根基。
  */
 // Phase 2 BYOK：忽略顶层 _byok envelope（见 GeneratePolicyRequest 注释）。
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -37,7 +45,11 @@ public record AssistantRequest(
 
     String locale,
 
-    String model
+    String model,
+
+    // 管理员附加指令：详见类级 javadoc 的 @param adminInstructions 说明。
+    @Size(max = 4_096, message = "adminInstructions 长度超过上限（最多 4096 字符）")
+    String adminInstructions
 ) {
     public String getLocaleOrDefault() {
         return locale == null || locale.isBlank() ? "zh-CN" : locale;
