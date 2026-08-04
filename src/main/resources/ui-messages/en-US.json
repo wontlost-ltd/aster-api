@@ -1690,6 +1690,11 @@
         "description": "Configure SAML / OIDC for your organization.",
         "cta": "Configure SSO",
         "comingSoon": "Coming soon"
+      },
+      "assistantCard": {
+        "title": "Site Assistant",
+        "description": "Toggle assistant answers and add site-specific guidance.",
+        "cta": "Open assistant settings"
       }
     },
     "license": {
@@ -2062,6 +2067,23 @@
       "pageOf": "Page {page} of {totalPages} · {total} users",
       "prev": "Previous",
       "next": "Next"
+    },
+    "assistant": {
+      "title": "Site Assistant",
+      "subtitle": "Control the in-app assistant and add site-specific guidance to its answers.",
+      "enabledLabel": "Enable assistant answers",
+      "enabledHint": "On — signed-in users get AI answers grounded in your site's docs.",
+      "disabledHint": "Off — the panel still works, but only shows site search results (no AI answers).",
+      "instructionsLabel": "Additional guidance",
+      "instructionsHint": "Appended to the assistant's instructions. Use it to set tone, add a disclaimer, or steer certain topics.",
+      "instructionsPlaceholder": "e.g. When pricing comes up, point the user to the sales team.",
+      "constraintsNotice": "This guidance can refine tone and emphasis, but it cannot override the assistant's core rules: it always answers only from your site's content, says it doesn't know when the content doesn't cover a question, and cites the pages it used.",
+      "save": "Save",
+      "saving": "Saving…",
+      "saved": "Saved",
+      "saveFailed": "Could not save",
+      "tooLong": "too long",
+      "cacheNotice": "Changes take effect within about a minute."
     }
   },
   "renewal": {

@@ -1690,6 +1690,11 @@
         "description": "SAML / OIDC für Ihre Organisation konfigurieren.",
         "cta": "SSO konfigurieren",
         "comingSoon": "Demnächst verfügbar"
+      },
+      "assistantCard": {
+        "title": "Website-Assistent",
+        "description": "Assistenten-Antworten schalten und Hinweise ergänzen.",
+        "cta": "Assistent-Einstellungen öffnen"
       }
     },
     "license": {
@@ -2062,6 +2067,23 @@
       "pageOf": "Seite {page} von {totalPages} · {total} Benutzer",
       "prev": "Zurück",
       "next": "Weiter"
+    },
+    "assistant": {
+      "title": "Website-Assistent",
+      "subtitle": "Steuern Sie den Assistenten und ergänzen Sie seine Antworten um website-spezifische Hinweise.",
+      "enabledLabel": "Assistenten-Antworten aktivieren",
+      "enabledHint": "Ein — angemeldete Nutzer erhalten KI-Antworten auf Basis Ihrer Dokumentation.",
+      "disabledHint": "Aus — das Panel funktioniert weiterhin, zeigt aber nur Suchergebnisse (keine KI-Antworten).",
+      "instructionsLabel": "Zusätzliche Hinweise",
+      "instructionsHint": "Wird den Anweisungen des Assistenten angehängt. Für Tonfall, Haftungsausschluss oder die Lenkung bestimmter Themen.",
+      "instructionsPlaceholder": "z. B. Verweisen Sie bei Preisfragen auf das Vertriebsteam.",
+      "constraintsNotice": "Diese Hinweise können Tonfall und Schwerpunkte anpassen, aber nicht die Kernregeln des Assistenten außer Kraft setzen: Er antwortet stets nur anhand Ihrer Website-Inhalte, sagt bei fehlender Abdeckung, dass er es nicht weiß, und nennt die verwendeten Seiten.",
+      "save": "Speichern",
+      "saving": "Wird gespeichert…",
+      "saved": "Gespeichert",
+      "saveFailed": "Speichern fehlgeschlagen",
+      "tooLong": "zu lang",
+      "cacheNotice": "Änderungen werden innerhalb etwa einer Minute wirksam."
     }
   },
   "renewal": {

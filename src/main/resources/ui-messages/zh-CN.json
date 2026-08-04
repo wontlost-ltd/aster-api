@@ -1690,6 +1690,11 @@
         "description": "为本组织配置 SAML / OIDC。",
         "cta": "配置 SSO",
         "comingSoon": "即将上线"
+      },
+      "assistantCard": {
+        "title": "站内助手",
+        "description": "开关助手回答，并补充站点专属指引。",
+        "cta": "打开助手设置"
       }
     },
     "license": {
@@ -2062,6 +2067,23 @@
       "pageOf": "第 {page} / {totalPages} 页 · 共 {total} 用户",
       "prev": "上一页",
       "next": "下一页"
+    },
+    "assistant": {
+      "title": "站内助手",
+      "subtitle": "控制站内助手，并为它的回答补充站点专属指引。",
+      "enabledLabel": "启用助手回答",
+      "enabledHint": "已开启——登录用户可获得基于站内文档的 AI 回答。",
+      "disabledHint": "已关闭——面板仍可使用，但只显示站内检索结果（无 AI 回答）。",
+      "instructionsLabel": "附加指引",
+      "instructionsHint": "会追加到助手的指令中。可用来设定语气、添加免责声明，或引导特定话题。",
+      "instructionsPlaceholder": "例如：提到价格时，引导用户联系销售团队。",
+      "constraintsNotice": "此指引可以调整语气与侧重，但无法覆盖助手的核心规则：它始终只依据站内内容作答，站内没有涵盖时会明确说不知道，并给出所引用的页面链接。",
+      "save": "保存",
+      "saving": "保存中…",
+      "saved": "已保存",
+      "saveFailed": "保存失败",
+      "tooLong": "超出长度上限",
+      "cacheNotice": "改动约一分钟内生效。"
     }
   },
   "renewal": {
