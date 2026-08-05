@@ -237,4 +237,31 @@ class RuleConflictAnalyzerTest {
         assertEquals(1, f.size(), "安全范围内的矛盾仍应报出，实际: " + f);
         assertEquals(RuleConflictAnalyzer.Finding.Kind.ALWAYS_FALSE, f.get(0).kind());
     }
+
+    // ★第二轮审查复现的误报：恒假分支早退，跳过了 else 的写传播。
+    @Test
+    void 关键_then恒假时else的写仍须失效约束() {
+        // 运行时 x=101 必走 else 把 x 设为 0，故 line 9 的 x < 50 恒真。
+        // 旧实现在 line 5 判恒假后直接 return，跳过 else 遍历与写失效，
+        // 导致 line 9 沿用已失效的 x > 100 被误报为 ALWAYS_FALSE。
+        var f = analyze("""
+              If x is greater than 100:
+                If x is less than 50:
+                  Return 9.
+                Otherwise:
+                  Set x to 0.
+                If x is less than 50:
+                  Return 1.
+                Return 2.
+              Return 0.
+            """);
+        // line 5 那条是**真**恒假，应当报出；但只应有这一条。
+        assertEquals(1, f.size(), "只应报内层真恒假那一条，实际: " + f);
+        assertEquals(5, f.get(0).line(), "报错行应为真正恒假的那行，实际: " + f);
+    }
+
+    // Match / Workflow 分支内写操作的失效逻辑已在 collectWrites 中实现（见该方法
+    // 的 switch），但**尚无 CNL 层测试覆盖**——本仓 Match 的具体表面语法未确认，
+    // 用错语法只会得到 parse 错误而非有效断言。这是**已知的测试缺口**，
+    // 不是「已验证通过」。补测需先确认 Match 的 CNL 写法。
 }

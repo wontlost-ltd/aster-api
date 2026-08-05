@@ -127,6 +127,10 @@ public final class RuleConflictAnalyzer {
 
         Map<String, ConditionInterval> thenConstraints = new HashMap<>(constraints);
 
+        // then 分支是否已被证明不可达。恒假时**不再往里分析**（里面的一切都是
+        // 不可达的，继续分析只会产生一堆同源噪音），但**状态传播照做**——见下方。
+        boolean thenUnreachable = false;
+
         if (maybe.isPresent()) {
             ConditionInterval iv = maybe.get();
             ConditionInterval existing = constraints.get(iv.variable());
@@ -138,23 +142,24 @@ public final class RuleConflictAnalyzer {
                         Finding.Kind.ALWAYS_FALSE, fnName, lineOf(ifs),
                         "这个条件与外层条件矛盾，永远不会成立（外层已限定 "
                             + existing.describe() + "）"));
-                    // 矛盾分支内部不再往下分析——里面的一切都是不可达的，
-                    // 继续分析只会产生一堆同源的噪音提示。
-                    return;
+                    thenUnreachable = true;
+                } else {
+                    if (impliedBy(existing, iv)) {
+                        out.add(new Finding(
+                            Finding.Kind.REDUNDANT, fnName, lineOf(ifs),
+                            "这个条件是多余的，外层条件（" + existing.describe()
+                                + "）已经保证它成立"));
+                    }
+                    thenConstraints.put(iv.variable(), merged);
                 }
-                if (impliedBy(existing, iv)) {
-                    out.add(new Finding(
-                        Finding.Kind.REDUNDANT, fnName, lineOf(ifs),
-                        "这个条件是多余的，外层条件（" + existing.describe()
-                            + "）已经保证它成立"));
-                }
-                thenConstraints.put(iv.variable(), merged);
             } else {
                 thenConstraints.put(iv.variable(), iv);
             }
         }
 
-        walk(ifs.thenBlock(), thenConstraints, fnName, out);
+        if (!thenUnreachable) {
+            walk(ifs.thenBlock(), thenConstraints, fnName, out);
+        }
         // else 分支的约束是条件的补集——补集通常非凸（如 !(5<x<10)），
         // 区间表示不了。故 else 分支只用外层约束继续分析，不加新约束（保守，不误报）。
         walk(ifs.elseBlock(), new HashMap<>(constraints), fnName, out);
@@ -162,6 +167,15 @@ public final class RuleConflictAnalyzer {
         // ★分支内部的写操作必须传播到 If 之后：分支执行与否在静态分析期未知，
         // 只要**任一**分支可能改写某变量，If 之后就不能再沿用它的旧约束。
         // walk 收的是副本，故这里单独扫描分支体，把被写过的变量从当前作用域移除。
+        //
+        // ★★即便 then 恒假也必须传播（这是第二轮审查抓到的误报根因）：
+        // 「不进去分析」和「不传播状态」是两件事。then 恒假时运行时**必走 else**，
+        // else 里的写操作是**确定会发生**的——反例：
+        //   If x > 100:
+        //     If x < 50: Return 9.        ← 恒假，正确报出
+        //     Otherwise: Set x to 0.      ← 必然执行
+        //     If x < 50: Return 1.        ← 实际恒真，旧代码却报恒假
+        // 早退会跳过 else 遍历与下面的写失效，让后续条件沿用已失效的约束。
         for (String w : variablesWrittenIn(ifs.thenBlock())) constraints.remove(w);
         for (String w : variablesWrittenIn(ifs.elseBlock())) constraints.remove(w);
     }
@@ -181,9 +195,31 @@ public final class RuleConflictAnalyzer {
         if (block == null || block.statements() == null) return;
         for (Stmt s : block.statements()) {
             acc.addAll(writtenVariable(s));
-            if (s instanceof Stmt.If nested) {
-                collectWrites(nested.thenBlock(), acc);
-                collectWrites(nested.elseBlock(), acc);
+            // ★必须覆盖**所有**带子块的语句类型：漏掉任何一种，其中的写操作就不会
+            // 让约束失效，进而产生误报。这里宁可多收集（多丢约束只会少报）。
+            switch (s) {
+                case Stmt.If nested -> {
+                    collectWrites(nested.thenBlock(), acc);
+                    collectWrites(nested.elseBlock(), acc);
+                }
+                case Stmt.Match m -> {
+                    if (m.cases() != null) {
+                        for (Stmt.Case c : m.cases()) {
+                            // Case 体是 Return 或 Block（sealed CaseBody）
+                            if (c != null && c.body() instanceof Block b) collectWrites(b, acc);
+                        }
+                    }
+                }
+                case Stmt.Workflow w -> {
+                    if (w.steps() != null) {
+                        for (Stmt.WorkflowStep st : w.steps()) {
+                            if (st == null) continue;
+                            collectWrites(st.body(), acc);
+                            collectWrites(st.compensate(), acc);
+                        }
+                    }
+                }
+                default -> { /* 其余语句无子块 */ }
             }
         }
     }
