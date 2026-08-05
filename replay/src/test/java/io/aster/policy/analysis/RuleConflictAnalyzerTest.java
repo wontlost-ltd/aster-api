@@ -264,4 +264,39 @@ class RuleConflictAnalyzerTest {
     // 的 switch），但**尚无 CNL 层测试覆盖**——本仓 Match 的具体表面语法未确认，
     // 用错语法只会得到 parse 错误而非有效断言。这是**已知的测试缺口**，
     // 不是「已验证通过」。补测需先确认 Match 的 CNL 写法。
+
+    // ★第三轮审查复现的两条「不可达代码里的噪音告警」。
+    // 二者同源：可达性只对 then 建模，没做成对称的通用规则。
+
+    @Test
+    void 关键_Return之后的语句不再分析() {
+        // line 6 从不执行，旧实现却把它报成「与外层矛盾、永远不成立」——
+        // 错误分类 + 同源噪音。不可达代码应由独立检查负责。
+        var f = analyze("""
+              If x is greater than 100:
+                Return 1.
+                If x is less than 50:
+                  Return 2.
+              Return 0.
+            """);
+        assertTrue(f.isEmpty(), "Return 之后不应产生任何告警，实际: " + f);
+    }
+
+    @Test
+    void 关键_恒真条件的Otherwise不再分析() {
+        // 内层 x > 50 被外层 x > 100 蕴含 ⇒ 恒真 ⇒ 其 Otherwise 永远走不到，
+        // 里面的 x < 50 不该再报恒假。只应保留 REDUNDANT 那一条。
+        var f = analyze("""
+              If x is greater than 100:
+                If x is greater than 50:
+                  Return 1.
+                Otherwise:
+                  If x is less than 50:
+                    Return 2.
+                Return 3.
+              Return 0.
+            """);
+        assertEquals(1, f.size(), "只应报 REDUNDANT 一条，实际: " + f);
+        assertEquals(RuleConflictAnalyzer.Finding.Kind.REDUNDANT, f.get(0).kind());
+    }
 }

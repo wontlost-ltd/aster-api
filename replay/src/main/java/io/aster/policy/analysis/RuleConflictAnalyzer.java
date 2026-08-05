@@ -82,6 +82,18 @@ public final class RuleConflictAnalyzer {
                              String fnName, List<Finding> out) {
         if (block == null || block.statements() == null) return;
         for (Stmt s : block.statements()) {
+            // ★Return 之后的语句不可达，必须停止分析。
+            //
+            // 否则会把不可达代码里的条件当成正常路径来判，产出**错误分类**的告警：
+            //   If x > 100:
+            //     Return 1.
+            //     If x < 50: Return 2.   ← 从不执行，却被报「与外层矛盾、永远不成立」
+            // 这类提示既没解释清楚真正的问题（这段代码根本走不到），
+            // 又给业务人员制造同源噪音。不可达代码是另一类问题，
+            // 该由独立的 UNREACHABLE 检查负责，不是本方法的职责。
+            if (s instanceof Stmt.Return) {
+                return;
+            }
             if (s instanceof Stmt.If ifs) {
                 handleIf(ifs, constraints, fnName, out);
                 continue;
@@ -127,9 +139,14 @@ public final class RuleConflictAnalyzer {
 
         Map<String, ConditionInterval> thenConstraints = new HashMap<>(constraints);
 
-        // then 分支是否已被证明不可达。恒假时**不再往里分析**（里面的一切都是
-        // 不可达的，继续分析只会产生一堆同源噪音），但**状态传播照做**——见下方。
+        // 两个分支各自是否已被证明不可达。不可达时**不再往里分析**（里面的一切
+        // 都走不到，继续分析只会产生一堆同源噪音），但**状态传播照做**——见下方。
+        //
+        //   · 条件恒假 ⇒ then 不可达
+        //   · 条件恒真（被外层完全蕴含）⇒ else 不可达
+        // 两者必须对称处理：只给 then 加标志是局部补丁，会在恒真那侧漏出噪音。
         boolean thenUnreachable = false;
+        boolean elseUnreachable = false;
 
         if (maybe.isPresent()) {
             ConditionInterval iv = maybe.get();
@@ -149,6 +166,8 @@ public final class RuleConflictAnalyzer {
                             Finding.Kind.REDUNDANT, fnName, lineOf(ifs),
                             "这个条件是多余的，外层条件（" + existing.describe()
                                 + "）已经保证它成立"));
+                        // 条件恒真 ⇒ Otherwise 永远走不到
+                        elseUnreachable = true;
                     }
                     thenConstraints.put(iv.variable(), merged);
                 }
@@ -162,7 +181,9 @@ public final class RuleConflictAnalyzer {
         }
         // else 分支的约束是条件的补集——补集通常非凸（如 !(5<x<10)），
         // 区间表示不了。故 else 分支只用外层约束继续分析，不加新约束（保守，不误报）。
-        walk(ifs.elseBlock(), new HashMap<>(constraints), fnName, out);
+        if (!elseUnreachable) {
+            walk(ifs.elseBlock(), new HashMap<>(constraints), fnName, out);
+        }
 
         // ★分支内部的写操作必须传播到 If 之后：分支执行与否在静态分析期未知，
         // 只要**任一**分支可能改写某变量，If 之后就不能再沿用它的旧约束。
@@ -219,6 +240,9 @@ public final class RuleConflictAnalyzer {
                         }
                     }
                 }
+                // Stmt 允许直接嵌套 Block（见 aster.core.ast.Stmt），漏掉它
+                // 同样会让其中的写操作不失效
+                case Block b -> collectWrites(b, acc);
                 default -> { /* 其余语句无子块 */ }
             }
         }
