@@ -34,7 +34,9 @@
 | 语法校验 | ✅ 已上线 | `POST /validate`（`PolicyEvaluationResource:1009`） |
 | 单次执行可回放性判定 | ✅ 已上线 | `ReplayMetadata`（REPLAYABLE / NON_REPLAYABLE + reasons） |
 | canonical hash 三件套 | ✅ 已上线 | `canonicalInputHash` / `canonicalOutputHash` / `traceHash` |
-| 步骤级 trace | ✅ 已上线 | `traceJson`（M2.1b） |
+| 步骤级 trace（引擎侧） | ✅ 已上线 | `DecisionTrace.TraceStep(expression, result, matched, children)` |
+| **trace 落库** | ❌ **列存在但无人写** | `traceJson` 等 4 字段在 aster-cloud 全仓 schema.ts 之外**零引用**；aster-api 侧亦无写入方 |
+| **trace 默认开启** | ❌ **默认关** | `/evaluate` 的 `@QueryParam("trace") @DefaultValue("false")` |
 | 双引擎 parity | ✅ 已上线 | `runnerParityStatus` |
 | 版本 + 审批治理 | ✅ 已上线 | policy versions / approval workflow |
 | 历史执行留存 | ✅ 已上线 | `Execution` 表 40+ 字段 |
@@ -89,74 +91,180 @@
 
 ---
 
-## 三、分阶段计划
+## 二·五、★ trace-only 路线（PII 零成本的主干）
 
-### Phase 1 — 影响预估（Impact Preview）★ 最高优先级
+### 核心洞察
 
-**为什么排第一**：它直接命中"我不知道这条策略会产生什么影响"这个第二轮提案
-识别出的核心痛点，且**只用平台已有数据**就能诚实交付。
+引擎侧的 `DecisionTrace.TraceStep` 已经携带：
 
-1. 落地已冻结的回归契约（四张表补迁移 + 服务层 + API），复用 `ReplayExecutionCore`
-2. `POST /api/policies/:id/impact-preview`：拿版本 A/B 跑一批历史执行
-3. **业务语言的结果呈现**（不是 trace / AST）：
-
-```
-基于最近 90 天的 3,412 条历史执行（非全量业务数据）
-
-决策会发生变化：        142 条 (4.2%)
-  ├─ 批准 → 拒绝：        38 条
-  └─ 拒绝 → 批准：       104 条
-无法回放（未留存输入）：  891 条 ← 必须显示，不能静默跳过
+```java
+record TraceStep(String expression, Object result, boolean matched, List<TraceStep> children)
 ```
 
-4. 发布前门禁：把 impact-preview 挂进现有审批流
+只要有 `expression` + `matched`，就能算出业务人员要的漏斗：
 
-**验收**：真实策略的两个版本，能列出决策翻转的**具体条目**并下钻到 trace。
+```
+3,412 条执行
+  → 条件「客户是 VIP」命中     2,038 (59.7%)
+  → 条件「连续购买 > 3 次」命中 1,642 (48.1%)
+  → 条件「30 天无退款」命中     1,104 (32.4%)  ← 最终给折扣
+```
 
-**风险**：
-- `replayRetentionEnabled` 默认关 ⇒ 多数租户样本为 0。
-  **必须在 UI 显式提示"开启输入留存才能预估影响"**，否则功能看起来坏了。
-- 批量回放是重计算，需异步任务 + 限流，不能同步阻塞。
+**这一层不需要任何明文输入**——只统计"每个条件被判定为真/假的条数"，是布尔聚合，
+不碰字段值。因此它：
 
-### Phase 2 — 规则冲突与死规则检测
+- ✅ 不受 `replayRetentionEnabled`（default false）限制，对**全部租户**可用
+- ✅ 零明文 PII 留存
+- ✅ 输出天然是业务语言（条件原文 + 命中数），不是 AST/trace 树
 
-**为什么排第二**：第二轮提案里"自动发现冲突、循环和歧义"是**目前完全不存在**的能力，
-且它**不需要任何业务数据**——纯静态分析，对所有租户立即可用（不受 retention 限制）。
+### ★ 但前提不成立：trace 现在没落库
 
-- 重叠条件检测（两条规则同时命中且结论矛盾）
-- 死规则检测（永远不可达的分支）
-- 区间空洞（`>500` 和 `<300` 之间的值无规则覆盖）
+**必须诚实记录**：本文初稿曾断言"trace 数据已有，只缺聚合层"，**该结论是错的**。
+实测：
 
-起点是现有 `/validate` 端点与 Core IR，扩展为语义分析而非仅语法。
+- `traceJson` / `replayabilityStatus` / `canonicalInputHash` / `runnerParityStatus`
+  四个字段在 aster-cloud 全仓（含 `src/services/`）**schema.ts 之外零引用**
+- aster-api 侧无写入方
+- `/evaluate` 的 `trace` 参数 `@DefaultValue("false")`
 
-**这可能是性价比最高的一项**：无数据依赖、无 PII 风险、对业务人员价值直观。
+即：**列已建好，但没有任何代码写入。** 所以 trace-only 路线的第一步不是写聚合查询，
+而是先把 trace 采集打通。工作量比初判大，但路线本身仍成立且仍是 PII 成本最低的一条。
 
-### Phase 3 — 业务结果回传（Outcome Ingestion）
+### PII 风险点（必须处理）
 
-**没有这一步，"预计少收入 $18,240"永远做不了。**
+`TraceStep.result` 是 `Object`——**它会带业务值**（例如 `result=680` 是信用分）。
+所以**不能整棵 trace 原样落库**，否则等于绕过 `replayRetentionEnabled` 偷偷存了明文。
 
-- `POST /api/v1/executions/:id/outcome`（`{outcome, value?, at}`）
-- 新增 `ExecutionOutcome` 表
-- 按策略版本聚合，得出真实转化率/坏账率基线
-
-**这是产品/商务问题多于技术问题**：客户愿不愿意回传业务结果？
-建议在投入开发前先与 2-3 个真实客户确认。
-
-### Phase 4 — What-if 模拟
-
-有了 Phase 1（批量回放）+ Phase 3（outcome）才能诚实回答
-"距离改成 50km 收入变多少"。
-
-**必须标注这是估算**：基于"决策相同则结果相同"的假设。
-该假设在风控（坏账）比在广告（竞价有市场反馈）更成立——宣传时不能一概而论。
-
-### Phase 5 — 优化建议
-
-暂不规划。在没有 outcome 数据时讨论"AI 自动建议更好的策略"是空中楼阁。
+**设计约束**：落库的是**脱敏后的聚合友好结构**，只保留
+`{expression, matched, stepId}`，**丢弃 `result` 值**。
+需要看具体值时，走现有的 `replayPayloadCiphertext`（已加密、受 retention 门控）路径。
 
 ---
 
-## 四、对定位建议的看法
+## 三、分阶段计划（trace-only 为主干）
+
+排序原则：**PII 成本低、不依赖客户配合的先做**。
+
+| Phase | 内容 | PII 成本 | 依赖客户配合 | 覆盖租户 |
+| --- | --- | --- | --- | --- |
+| **0** | trace 采集打通 | 零（脱敏后落库） | 否 | 全部 |
+| **1** | 条件漏斗 + 死分支 | 零 | 否 | 全部 |
+| **2** | 规则冲突静态检测 | 零 | 否 | 全部 |
+| 3 | 决策翻转对比（A/B） | 中（需明文重放） | 需开 retention | 开关已开的 |
+| 4 | outcome 回传 | 高 | **是** | 愿回传的 |
+| 5 | What-if 模拟 | 高 | 是 | 同上 |
+
+---
+
+## 四、详细实施计划
+
+### Phase 0 — trace 采集打通（前置，约 1 个迭代）
+
+**目标**：让每次执行都留下**脱敏的**条件判定记录，为 Phase 1 提供数据。
+
+#### 0.1 定义脱敏 trace 结构（aster-api）
+
+新增 `TraceSkeleton`——只保留聚合所需，**丢弃所有值**：
+
+```java
+record TraceSkeleton(
+    String schemaVersion,          // "trace-skeleton/v1"
+    List<SkeletonStep> steps
+) {
+    record SkeletonStep(
+        String stepId,             // 稳定 id，跨版本可对齐
+        String expression,         // 条件原文（CNL 片段，非用户数据）
+        boolean matched,           // ★只留布尔，不留 result
+        int depth
+    ) {}
+}
+```
+
+★**安全边界**：`expression` 是**策略源码片段**（作者写的规则），不是用户输入，
+故不含 PII。`result` 值一律丢弃。这条必须写进代码注释并加测试锁死——
+一旦有人"顺手"把 `result` 加回来，就等于绕过 `replayRetentionEnabled` 存了明文。
+
+#### 0.2 落库
+
+- `Execution.traceSkeletonJson`（新列，jsonb）—— **不复用 `traceJson`**：
+  那一列的语义是"完整 trace（含值）"，混用会让 PII 边界含糊
+- 写入方：aster-api 执行路径，**默认开启**（与 `trace` 查询参数解耦——
+  后者控制是否**返回**给调用方，前者控制是否**记录**骨架）
+
+#### 0.3 体积与留存
+
+- 单条骨架预估 < 2KB（10-30 个 step × ~60B）
+- 复用现有 `piiRetentionUntil` 清理机制？**不复用**——骨架无 PII，
+  可独立设更长留存（分析价值随样本量上升）。需产品定留存期
+
+**验收**：跑 100 次执行，DB 里能查到 100 条骨架，且 `grep` 不到任何业务值。
+
+**风险**：写入放大。每次执行多一次 jsonb 写。需压测确认对 p99 延迟的影响，
+超阈值则改异步落库（走现有 outbox 模式）。
+
+---
+
+### Phase 1 — 条件漏斗 + 死分支（约 1-2 个迭代）
+
+**目标**：回答"这条策略实际是怎么走的"，用业务语言。
+
+#### 1.1 聚合 API
+
+`GET /api/policies/:id/funnel?version=N&from=...&to=...`
+
+```json
+{
+  "sampleSize": 3412,
+  "sampleNote": "基于平台记录的执行，非客户全量业务数据",
+  "steps": [
+    { "stepId": "s1", "expression": "客户是 VIP", "matched": 2038, "total": 3412 },
+    { "stepId": "s2", "expression": "连续购买超过 3 次", "matched": 1642, "total": 2038 }
+  ],
+  "deadBranches": [
+    { "stepId": "s7", "expression": "订单金额 > 1000000", "matched": 0, "total": 3412 }
+  ]
+}
+```
+
+#### 1.2 UI
+
+- 漏斗图（每步条件原文 + 命中数 + 转化率）
+- **死分支高亮**："这个条件在 3,412 条执行里从未命中过"——
+  这是业务人员最容易理解的价值：*你写的规则可能根本没生效*
+- ★**样本口径必须常驻显示**，不是脚注
+
+#### 1.3 与发布流程结合
+
+在策略发布确认页展示新版本的漏斗预览。
+
+**验收**：拿一条真实策略，能画出漏斗并指出至少一个从未命中的条件。
+
+---
+
+### Phase 2 — 规则冲突静态检测（约 2 个迭代）
+
+**目标**：不跑数据也能发现问题。起点是 Core IR，不是文本。
+
+- **重叠且矛盾**：两条规则条件有交集但结论相反
+- **死规则**：条件恒假（如 `x > 100 且 x < 50`）
+- **区间空洞**：`>500` 与 `<300` 之间无覆盖
+- **遮蔽**：前一条规则完全覆盖后一条
+
+实现路径：Core IR → 条件正规化 → 区间/集合求解。数值区间可用简单
+interval arithmetic 起步，不必上 SMT。
+
+**验收**：构造 4 类问题各一例，检测器全部报出且无误报。
+
+---
+
+### Phase 3-5
+
+见第三节表格。Phase 3 依赖 retention 开关，Phase 4/5 依赖客户回传 outcome——
+**在与真实客户确认前不投入开发**。
+
+---
+
+## 五、对定位建议的看法
 
 ### 同意
 
@@ -179,16 +287,31 @@
 
 ---
 
-## 五、建议的下一步（按顺序，不建议并行）
+## 六、建议的下一步
 
-1. **产品决策：业务数据边界**（第二节三条出路选哪条）—— 决定 Phase 1 的呈现口径，
-   也决定"Business Strategy OS"这个叙事能否成立
-2. **客户验证：outcome 是否可获得** —— 决定 Phase 3/4 是否留在路线图
-3. **开工 Phase 2（冲突检测）** —— 无数据依赖，可与上面两项并行确认
-4. **开工 Phase 1（影响预估）** —— 四张表 schema 已冻结，是最低垂的果实
+### 可以立即开工（无需任何产品/客户决策）
 
-对外文案收敛到当前能兑现的范围：
+1. **Phase 0：trace 采集打通** —— 前置，其余分析能力都依赖它
+2. **Phase 2：规则冲突静态检测** —— 与 Phase 0 完全独立，可并行
+
+这两项都是**零 PII 成本、全租户可用、不需客户配合**。
+
+### 需要你先拍板
+
+3. **骨架 trace 的留存期** —— 它无 PII，是否可比 `piiRetentionUntil` 更长？
+   留得越久分析价值越高
+4. **样本口径的呈现方式** —— 漏斗分母是"平台见过的执行"而非客户全量。
+   接受这个口径并显著标注？还是要走"客户上传数据集"另开一条路？
+
+### 需要客户验证后再决定
+
+5. **outcome 是否可获得** —— 决定 Phase 4/5 是否留在路线图。
+   建议先问 2-3 个真实客户，再投开发
+
+### 对外文案（收敛到能兑现的范围）
+
 - ✅ "Test every strategy before it reaches production"
 - ✅ "让业务人员用自然语言编写、验证策略"
+- ✅ Phase 1 后可加："看到你的策略实际怎么走的"（漏斗/死分支）
 - ❌ "Replay one million decisions in minutes"（批量回放未实现、性能未测）
-- ❌ 任何带具体金额/人数的影响预估（需 Phase 3）
+- ❌ 任何带具体金额/人数的影响预估（需 Phase 4）
