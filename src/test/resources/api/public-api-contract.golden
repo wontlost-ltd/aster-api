@@ -37,6 +37,7 @@ POST /api/v1/admin/byok-allowlist
 POST /api/v1/admin/lexicons
 POST /api/v1/admin/lexicons/{id}/disable
 POST /api/v1/admin/lexicons/{id}/enable
+POST /api/v1/ai/assistant
 POST /api/v1/ai/complete
 POST /api/v1/ai/generate
 POST /api/v1/ai/suggest

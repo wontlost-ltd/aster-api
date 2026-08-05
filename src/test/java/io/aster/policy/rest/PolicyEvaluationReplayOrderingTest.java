@@ -222,12 +222,24 @@ class PolicyEvaluationReplayOrderingTest {
             expectedRm.put("runtimeToolchainId", "TOOLCHAIN_ID_PLACEHOLDER");
             expectedRm.put("traceHash", rm.get("traceHash").asText());
 
+            // traceSkeleton（Phase 0）：与 replayMetadata 同分支产出——只要内部构建了
+            // decisionTrace 就附带脱敏骨架。★它与顶层 decisionTrace 的区别是刻意的：
+            // decisionTrace 含 result 业务值，故仍受 `trace ? decisionTrace : null` 门控；
+            // 骨架**结构上不含任何值**（见 TraceSkeleton 及其测试），故可常态回传，
+            // 这正是它的设计目的——零 PII 成本换分析能力。
+            // 同上：从响应体自身抽取，只钉结构不钉具体条数（条数取决于 CNL 源码分支）。
+            JsonNode sk = node.get("traceSkeleton");
+            assertTrue(sk != null && sk.isObject(),
+                "replayCapture=true 时应附 traceSkeleton（Phase 0）");
+            assertEquals("trace-skeleton/v1", sk.get("schemaVersion").asText());
+
             ObjectNode expected = mapper.createObjectNode();
             expected.putNull("error");
             expected.put("executedFunction", "main");
             expected.put("executionTimeMs", 0);
             expected.set("replayMetadata", expectedRm);
             expected.put("result", 42);
+            expected.set("traceSkeleton", sk.deepCopy());
 
             String expectedGolden = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(expected);
 
