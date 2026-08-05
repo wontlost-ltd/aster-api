@@ -102,13 +102,41 @@ public record ConditionInterval(
         return e instanceof Expr.Name n ? Optional.of(n.name()) : Optional.empty();
     }
 
-    /** 支持 Int / Long / Double / Decimal 四种数值字面量。 */
+    /**
+     * IEEE-754 double 能精确表示的最大整数，2^53 − 1。
+     *
+     * <p>与 {@code ReplayMetadata} 的安全整数边界同源——超出这个范围，double
+     * 相邻整数会折叠成同一个值。
+     */
+    private static final BigDecimal SAFE_INT_MAX = BigDecimal.valueOf(9007199254740991L);
+
+    /**
+     * 支持 Int / Long / Double / Decimal 四种数值字面量。
+     *
+     * <p><b>★非 Decimal 且超出 ±(2^53−1) 时一律放弃分析（返回 empty）。</b>
+     *
+     * <p>原因：本类用 BigDecimal 做**精确**十进制运算，但生产运行时
+     * （Truffle {@code Builtins} 的比较）对**非 Decimal** 数值统一转 double 再比。
+     * 两者在安全整数范围内一致，超出后分叉——例如 {@code 9007199254740992L} 与
+     * {@code 9007199254740993L} 在 double 里是同一个数，运行时判定相等，而精确
+     * 运算判定不等。分析器据此会把实际可达的分支报成 ALWAYS_FALSE，即**误报**。
+     *
+     * <p>Decimal 不受此限：它在运行时走精确路径，与本类语义一致。
+     *
+     * <p>这是「宁可漏报，不可误报」原则的直接落实——放弃这一小撮极端量级的
+     * 分析能力，换取分析器结论与运行时行为不分叉。
+     */
     private static Optional<BigDecimal> numberOf(Expr e) {
         if (e instanceof Expr.Int i) return Optional.of(new BigDecimal(i.value()));
-        if (e instanceof Expr.Long l) return Optional.of(BigDecimal.valueOf(l.value()));
-        if (e instanceof Expr.Double d) return Optional.of(BigDecimal.valueOf(d.value()));
+        if (e instanceof Expr.Long l) return withinDoubleSafeRange(BigDecimal.valueOf(l.value()));
+        if (e instanceof Expr.Double d) return withinDoubleSafeRange(BigDecimal.valueOf(d.value()));
         if (e instanceof Expr.Decimal d) return Optional.of(new BigDecimal(d.value()));
         return Optional.empty();
+    }
+
+    /** 超出 double 安全整数范围则返回 empty（放弃分析），见 {@link #numberOf}。 */
+    private static Optional<BigDecimal> withinDoubleSafeRange(BigDecimal v) {
+        return v.abs().compareTo(SAFE_INT_MAX) <= 0 ? Optional.of(v) : Optional.empty();
     }
 
     /**

@@ -176,4 +176,65 @@ class RuleConflictAnalyzerTest {
         assertEquals(1, f.size(), f.toString());
         assertEquals(RuleConflictAnalyzer.Finding.Kind.ALWAYS_FALSE, f.get(0).kind());
     }
+
+    // ★以下三组来自 Codex 交叉审查复现的**真实误报**（P0/发布阻断）。
+    // 每一条都曾让分析器对实际可达的分支报 ALWAYS_FALSE——直接击穿
+    // 「宁可漏报，不可误报」这条本类最重要的承诺。
+
+    @Test
+    void 关键_Set重绑定后不得沿用旧约束() {
+        // 运行时：x 被改成 0，内层 x < 50 恒真。分析器若沿用外层 x > 100 会误报。
+        var f = analyze("""
+              If x is greater than 100:
+                Set x to 0.
+                If x is less than 50:
+                  Return 1.
+                Return 2.
+              Return 0.
+            """);
+        assertTrue(f.isEmpty(), "Set 重绑定后不得报任何冲突，实际: " + f);
+    }
+
+    @Test
+    void 关键_分支内的写操作要传播到分支之后() {
+        // then 分支改写了 x，If 之后就不能再沿用 x 的旧约束。
+        var f = analyze("""
+              If x is greater than 100:
+                Set x to 0.
+                Return 1.
+              If x is less than 50:
+                Return 2.
+              Return 0.
+            """);
+        assertTrue(f.isEmpty(), "分支内写操作须使后续约束失效，实际: " + f);
+    }
+
+    @Test
+    void 关键_超出double安全整数范围一律放弃分析() {
+        // 生产运行时对非 Decimal 数值统一转 double 比较，2^53 以上相邻整数会折叠成
+        // 同一个值：9007199254740992 与 ...93 在运行时相等，内层分支实际可达。
+        // 本类用精确 BigDecimal，若不放弃分析就会与运行时结论相反。
+        var f = analyze("""
+              If x is equal to 9007199254740992L:
+                If x is equal to 9007199254740993L:
+                  Return 1.
+                Return 2.
+              Return 0.
+            """);
+        assertTrue(f.isEmpty(), "超安全整数范围须放弃分析（宁可漏报），实际: " + f);
+    }
+
+    @Test
+    void 安全整数范围内的矛盾仍要能报出() {
+        // 放弃分析只针对超范围值，不能因此丧失正常量级的检测能力。
+        var f = analyze("""
+              If x is equal to 100:
+                If x is equal to 200:
+                  Return 1.
+                Return 2.
+              Return 0.
+            """);
+        assertEquals(1, f.size(), "安全范围内的矛盾仍应报出，实际: " + f);
+        assertEquals(RuleConflictAnalyzer.Finding.Kind.ALWAYS_FALSE, f.get(0).kind());
+    }
 }

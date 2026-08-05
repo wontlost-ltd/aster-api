@@ -11,6 +11,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.HashSet;
 
 /**
  * 规则冲突与死规则静态检测（Phase 2）。
@@ -82,10 +84,41 @@ public final class RuleConflictAnalyzer {
         for (Stmt s : block.statements()) {
             if (s instanceof Stmt.If ifs) {
                 handleIf(ifs, constraints, fnName, out);
+                continue;
             }
-            // 其它语句类型（Let/Return/Match/…）不影响区间约束，跳过。
+            // ★写操作必须让该变量的旧约束失效，否则会产生**误报**。
+            //
+            // 反例：`If x > 100: Set x to 0. If x < 50: …`
+            // 外层约束 x > 100 在 `Set x to 0` 之后已经不成立，若继续沿用，
+            // 内层 x < 50 会被判成与外层矛盾 → 报 ALWAYS_FALSE，而运行时内层恒真。
+            //
+            // 不去推算新值（那要常量传播，且 `Set x to y + 1` 之类根本算不出）——
+            // 直接丢弃该变量的全部约束，退回「对 x 一无所知」。这是保守方向：
+            // 少一条约束只会少报，不会错报。
+            for (String w : writtenVariable(s)) {
+                constraints.remove(w);
+            }
             // Match 的分支条件不是 Expr 比较，需另做处理，当前不覆盖（宁可漏报）。
         }
+    }
+
+    /**
+     * 该语句写入了哪些变量——这些变量的既有区间约束必须作废。
+     *
+     * <p>覆盖三种绑定语句：{@code Let}（新绑定，可能遮蔽同名外层变量）、
+     * {@code Set}（重赋值）、{@code Start}（async 任务名绑定）。
+     *
+     * <p>注意 {@code Set x to 0} 在 Core lowering 阶段会被规范化成同名 Let，
+     * 且 Truffle 对同名变量复用 slot——即两者在运行时都是真实的重绑定，
+     * 分析器必须一视同仁。
+     *
+     * <p>返回 List 而非单值，是为了将来覆盖多重绑定语句时不必改调用点。
+     */
+    private static List<String> writtenVariable(Stmt s) {
+        if (s instanceof Stmt.Let let && let.name() != null) return List.of(let.name());
+        if (s instanceof Stmt.Set set && set.name() != null) return List.of(set.name());
+        if (s instanceof Stmt.Start st && st.name() != null) return List.of(st.name());
+        return List.of();
     }
 
     private static void handleIf(Stmt.If ifs, Map<String, ConditionInterval> constraints,
@@ -124,7 +157,35 @@ public final class RuleConflictAnalyzer {
         walk(ifs.thenBlock(), thenConstraints, fnName, out);
         // else 分支的约束是条件的补集——补集通常非凸（如 !(5<x<10)），
         // 区间表示不了。故 else 分支只用外层约束继续分析，不加新约束（保守，不误报）。
-        walk(ifs.elseBlock(), constraints, fnName, out);
+        walk(ifs.elseBlock(), new HashMap<>(constraints), fnName, out);
+
+        // ★分支内部的写操作必须传播到 If 之后：分支执行与否在静态分析期未知，
+        // 只要**任一**分支可能改写某变量，If 之后就不能再沿用它的旧约束。
+        // walk 收的是副本，故这里单独扫描分支体，把被写过的变量从当前作用域移除。
+        for (String w : variablesWrittenIn(ifs.thenBlock())) constraints.remove(w);
+        for (String w : variablesWrittenIn(ifs.elseBlock())) constraints.remove(w);
+    }
+
+    /**
+     * 递归收集块内（含嵌套分支）所有被写入的变量名。
+     *
+     * <p>只关心「写了谁」，不关心写成什么——见 {@link #walk} 中丢弃约束的理由。
+     */
+    private static Set<String> variablesWrittenIn(Block block) {
+        Set<String> acc = new HashSet<>();
+        collectWrites(block, acc);
+        return acc;
+    }
+
+    private static void collectWrites(Block block, Set<String> acc) {
+        if (block == null || block.statements() == null) return;
+        for (Stmt s : block.statements()) {
+            acc.addAll(writtenVariable(s));
+            if (s instanceof Stmt.If nested) {
+                collectWrites(nested.thenBlock(), acc);
+                collectWrites(nested.elseBlock(), acc);
+            }
+        }
     }
 
     /**
