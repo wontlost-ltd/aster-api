@@ -585,6 +585,28 @@ public class PolicyEvaluationResource {
                         phase.traceDrainResult());
                     response = response.withReplayMetadata(rm);
                 }
+
+                // 决策骨架（Phase 0）：DecisionTrace 的脱敏投影，供 cloud 落库后做
+                // 条件漏斗 / 死分支聚合。
+                //
+                // ★采集条件与 decisionTrace 的**回传**条件解耦：只要本次构建了
+                // DecisionTrace（trace=true 或 replayCapture），就附带骨架。
+                // 骨架不含任何业务值（见 TraceSkeleton 类注释与其测试），
+                // 故不需要 replayRetentionEnabled 门控——这正是它的价值：
+                // 零 PII 成本，对全部租户可用。
+                //
+                // ★已知局限（Phase 0 不解决）：trace collector 仅在
+                // trace=true || effectiveReplayCapture 时 arm（见 ReplayExecutionCore
+                // 阶段一），两者皆为 false 的普通执行**不会产生骨架**。
+                // 要让漏斗覆盖全量执行，需把 collector 改为常驻——那是有成本的
+                // 决策（每次执行多一次 step 收集 + drain），必须先压测确认对 p99
+                // 的影响，不能在本次顺手改掉。样本口径因此偏向"开了 trace/replay
+                // 的执行"，消费侧（漏斗 UI）必须如实标注，不得声称全量。
+                io.aster.policy.replay.TraceSkeleton skeleton =
+                    io.aster.policy.replay.TraceSkeleton.from(decisionTrace);
+                if (skeleton != null) {
+                    response = response.withTraceSkeleton(skeleton);
+                }
                 return response;
 
             } catch (DynamicCnlExecutor.AmbiguousEntryException e) {
