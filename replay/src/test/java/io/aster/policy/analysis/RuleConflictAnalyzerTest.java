@@ -299,4 +299,22 @@ class RuleConflictAnalyzerTest {
         assertEquals(1, f.size(), "只应报 REDUNDANT 一条，实际: " + f);
         assertEquals(RuleConflictAnalyzer.Finding.Kind.REDUNDANT, f.get(0).kind());
     }
+
+    @Test
+    void 关键_两分支都Return时后续语句不可达() {
+        // 第五轮审查复现：内层 If 的 then/else 都 Return ⇒ 该 If 之后的语句不可达，
+        // 第三个 If 不该被扫描。旧实现只对**直接** Return 终止，没建模
+        // 「两个分支都终止 ⇒ 整块终止」，于是把不可达的 x < 50 报成恒假。
+        var f = analyze("""
+              If x is greater than 100:
+                If x is greater than 200:
+                  Return 1.
+                Otherwise:
+                  Return 2.
+                If x is less than 50:
+                  Return 3.
+              Return 0.
+            """);
+        assertTrue(f.isEmpty(), "两分支都 Return 后不应扫描后续语句，实际: " + f);
+    }
 }

@@ -78,11 +78,11 @@ public final class RuleConflictAnalyzer {
      * <p>{@code constraints} 按变量名分组：进入 then 分支时把该条件并入约束，
      * 退出时恢复——用值传递（每层复制）而非回溯，代码更简单且不会漏恢复。
      */
-    private static void walk(Block block, Map<String, ConditionInterval> constraints,
-                             String fnName, List<Finding> out) {
-        if (block == null || block.statements() == null) return;
+    private static boolean walk(Block block, Map<String, ConditionInterval> constraints,
+                                String fnName, List<Finding> out) {
+        if (block == null || block.statements() == null) return false;
         for (Stmt s : block.statements()) {
-            // ★Return 之后的语句不可达，必须停止分析。
+            // ★控制流终止后，后面的语句不可达，必须停止分析。
             //
             // 否则会把不可达代码里的条件当成正常路径来判，产出**错误分类**的告警：
             //   If x > 100:
@@ -91,11 +91,18 @@ public final class RuleConflictAnalyzer {
             // 这类提示既没解释清楚真正的问题（这段代码根本走不到），
             // 又给业务人员制造同源噪音。不可达代码是另一类问题，
             // 该由独立的 UNREACHABLE 检查负责，不是本方法的职责。
+            //
+            // ★★返回「本块是否终止」而不是就地 return —— 这是第三/四/五轮
+            // 反复被攻破的根因：只判**直接** Return 会漏掉「If 的两个分支都终止
+            // ⇒ 整个 If 之后不可达」。把终止性做成可传播的返回值，
+            // 而不是每发现一种新形态就加一个特判。
             if (s instanceof Stmt.Return) {
-                return;
+                return true;
             }
             if (s instanceof Stmt.If ifs) {
-                handleIf(ifs, constraints, fnName, out);
+                if (handleIf(ifs, constraints, fnName, out)) {
+                    return true;
+                }
                 continue;
             }
             // ★写操作必须让该变量的旧约束失效，否则会产生**误报**。
@@ -111,7 +118,9 @@ public final class RuleConflictAnalyzer {
                 constraints.remove(w);
             }
             // Match 的分支条件不是 Expr 比较，需另做处理，当前不覆盖（宁可漏报）。
+            // 同理不把 Match 视为终止点：保守地当作「可能不终止」，只会少报。
         }
+        return false;
     }
 
     /**
@@ -133,8 +142,12 @@ public final class RuleConflictAnalyzer {
         return List.of();
     }
 
-    private static void handleIf(Stmt.If ifs, Map<String, ConditionInterval> constraints,
-                                 String fnName, List<Finding> out) {
+    /**
+     * @return 这个 If **整体**是否必然终止控制流（两个分支都终止才算）。
+     *         没有 else 分支时恒为 false —— 条件不成立就会走到 If 之后。
+     */
+    private static boolean handleIf(Stmt.If ifs, Map<String, ConditionInterval> constraints,
+                                    String fnName, List<Finding> out) {
         Optional<ConditionInterval> maybe = ConditionInterval.fromComparison(ifs.cond());
 
         Map<String, ConditionInterval> thenConstraints = new HashMap<>(constraints);
@@ -176,13 +189,17 @@ public final class RuleConflictAnalyzer {
             }
         }
 
+        // 不可达的分支不分析，其终止性也不参与判断——它根本不会执行。
+        boolean thenTerminates = false;
         if (!thenUnreachable) {
-            walk(ifs.thenBlock(), thenConstraints, fnName, out);
+            thenTerminates = walk(ifs.thenBlock(), thenConstraints, fnName, out);
         }
         // else 分支的约束是条件的补集——补集通常非凸（如 !(5<x<10)），
         // 区间表示不了。故 else 分支只用外层约束继续分析，不加新约束（保守，不误报）。
+        boolean elseTerminates = false;
+        boolean hasElse = ifs.elseBlock() != null;
         if (!elseUnreachable) {
-            walk(ifs.elseBlock(), new HashMap<>(constraints), fnName, out);
+            elseTerminates = walk(ifs.elseBlock(), new HashMap<>(constraints), fnName, out);
         }
 
         // ★分支内部的写操作必须传播到 If 之后：分支执行与否在静态分析期未知，
@@ -199,6 +216,15 @@ public final class RuleConflictAnalyzer {
         // 早退会跳过 else 遍历与下面的写失效，让后续条件沿用已失效的约束。
         for (String w : variablesWrittenIn(ifs.thenBlock())) constraints.remove(w);
         for (String w : variablesWrittenIn(ifs.elseBlock())) constraints.remove(w);
+
+        // ★整体终止 = 两个分支都终止。缺 else 时恒为 false（条件不成立就落到 If 之后）。
+        //
+        // 不可达分支按「已终止」处理：then 恒假时运行时必走 else，此时 If 的
+        // 终止性完全由 else 决定；反之亦然。这样 `If A: Return. Otherwise: Return.`
+        // 与「A 恒真且 then 终止」都能正确判为终止，无需再加特判。
+        if (thenUnreachable) return elseTerminates;
+        if (elseUnreachable) return thenTerminates;
+        return hasElse && thenTerminates && elseTerminates;
     }
 
     /**
