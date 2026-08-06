@@ -164,4 +164,19 @@ class EvaluateSourceSimulateContractTest {
         }
         return stack.contains(Boolean.TRUE);
     }
+
+    @Test
+    void 并发许可必须在worker结束时归还而非取消时() throws Exception {
+        // ★第十二轮：许可原本挂在 onTermination。HTTP 取消会立刻触发它释放许可，
+        //   而同步的 supplier.get() 仍在 CPU 上跑——反复取消即可让实际并发数
+        //   远超闸门上限，闸门形同虚设（可被当成 DoS 放大器）。
+        //   正确做法是放在 supplier 自己的 finally 里：取消不提前归还。
+        String body = evaluateSourceBody(source());
+        assertThat(body)
+            .as("许可不得再挂在 onTermination 上")
+            .doesNotContain("onTermination().invoke(() -> EVAL_SOURCE_PERMITS.release())");
+        assertThat(body)
+            .as("许可必须在 worker 的 finally 中归还")
+            .contains("} finally {\n                EVAL_SOURCE_PERMITS.release();");
+    }
 }

@@ -494,6 +494,11 @@ public class PolicyEvaluationResource {
 
         // 使用 Uni.createFrom().item() 包装同步执行，避免阻塞主线程
         return Uni.createFrom().item(() -> {
+            // ★许可必须在**worker 真正结束**时归还，不能挂在 onTermination
+            //   （第十二轮）：HTTP 取消会立刻触发 onTermination 释放许可，
+            //   而同步的 supplier.get() 仍在 CPU 上跑——反复取消即可让并发数
+            //   远超闸门上限，闸门形同虚设。放在 finally 里，取消也不会提前归还。
+            try {
             try {
                 // 结构词别名授权口径按调用来源可信度区分（安全边界）：
                 //   - 内部调用方（cloud BFF S2S，带 X-Internal-Caller + HMAC）转发的是**已发布
@@ -713,13 +718,10 @@ public class PolicyEvaluationResource {
                 }
                 return EvaluationResponse.error("CNL 策略执行失败: " + e.getMessage());
             }
-        }).runSubscriptionOn(io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool())
-          // onTermination fires on success, failure, AND cancellation —
-          // covers every exit path of the Uni. Without this, a client
-          // disconnect mid-eval would silently leak a permit and over
-          // hours the limit count would drift down to zero, freezing
-          // all evaluate-source traffic.
-          .onTermination().invoke(() -> EVAL_SOURCE_PERMITS.release());
+            } finally {
+                EVAL_SOURCE_PERMITS.release();
+            }
+        }).runSubscriptionOn(io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool());
     }
 
     /**
