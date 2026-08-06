@@ -117,10 +117,64 @@ public final class RuleConflictAnalyzer {
             for (String w : writtenVariable(s)) {
                 constraints.remove(w);
             }
-            // Match 的分支条件不是 Expr 比较，需另做处理，当前不覆盖（宁可漏报）。
-            // 同理不把 Match 视为终止点：保守地当作「可能不终止」，只会少报。
+            // Match 的**分支条件**不是 Expr 比较，不参与区间分析（宁可漏报）；
+            // 但它的**终止性**必须建模——见 matchTerminates 的注释。
+            if (s instanceof Stmt.Match match && matchTerminates(match, constraints, fnName, out)) {
+                return true;
+            }
         }
         return false;
+    }
+
+    /**
+     * Match 是否必然终止控制流。
+     *
+     * <p><b>成立条件：有兜底 case 且每个 case 都终止。</b>
+     *
+     * <p>兜底 = {@code PatternName}（如 {@code When other}）—— 它是绑定而非
+     * 具体值匹配，任何值都能落进去。没有兜底时，所有 case 都不匹配就会继续
+     * 往下走，此时 Match 之后是**可达**的。
+     *
+     * <p><b>为什么必须建模</b>：原先注释写着「不把 Match 视为终止点只会少报」，
+     * 这是错的。穷尽 Match 之后的语句实际不可达，把它们当正常路径分析会
+     * **多报**——第六轮交叉审查用真实 parser 复现：
+     * <pre>
+     *   If x &gt; 100:
+     *     Match x:
+     *       When 101, Return 1.
+     *       When other, Return 2.   ← 兜底，且全部 case 都 Return
+     *     If x &lt; 50: Return 3.      ← 不可达，却被报 ALWAYS_FALSE
+     * </pre>
+     * 「宁可漏报不可误报」是本类最重要的承诺，这里恰恰在误报。
+     *
+     * <p>顺带遍历 case 体：它们是正常可达代码，其中的嵌套 If 该照常分析。
+     * 每个 case 用独立的约束副本——分支之间互不影响。
+     */
+    private static boolean matchTerminates(Stmt.Match match,
+                                           Map<String, ConditionInterval> constraints,
+                                           String fnName, List<Finding> out) {
+        if (match.cases() == null || match.cases().isEmpty()) return false;
+
+        boolean hasCatchAll = false;
+        boolean allTerminate = true;
+        for (Stmt.Case c : match.cases()) {
+            if (c == null) return false;
+            if (c.pattern() instanceof aster.core.ast.Pattern.PatternName) {
+                hasCatchAll = true;
+            }
+            // CaseBody 是 sealed：Return 或 Block
+            if (c.body() instanceof Stmt.Return) {
+                continue; // 该 case 终止
+            }
+            if (c.body() instanceof Block b) {
+                if (!walk(b, new HashMap<>(constraints), fnName, out)) {
+                    allTerminate = false;
+                }
+            } else {
+                allTerminate = false; // 形态未知，保守当作不终止
+            }
+        }
+        return hasCatchAll && allTerminate;
     }
 
     /**

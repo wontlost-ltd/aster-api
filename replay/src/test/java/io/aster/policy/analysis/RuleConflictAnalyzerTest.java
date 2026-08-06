@@ -317,4 +317,36 @@ class RuleConflictAnalyzerTest {
             """);
         assertTrue(f.isEmpty(), "两分支都 Return 后不应扫描后续语句，实际: " + f);
     }
+
+    @Test
+    void 关键_穷尽Match全部case都Return时后续不可达() {
+        // 第六轮审查复现：Match 有兜底 case（When other）且所有 case 都 Return
+        // ⇒ Match 之后不可达。旧实现把 Match 一律当「可能继续」，
+        // 于是把不可达的 x < 50 报成恒假 —— 注释写的是「只会少报」，
+        // 实际会**多报**，这正是本类最不该犯的错。
+        var f = analyze("""
+              If x is greater than 100:
+                Match x:
+                  When 101, Return 1.
+                  When other, Return 2.
+                If x is less than 50:
+                  Return 3.
+            """);
+        assertTrue(f.isEmpty(), "穷尽 Match 之后不应扫描后续语句，实际: " + f);
+    }
+
+    @Test
+    void 非穷尽Match不得被当作终止() {
+        // 反向保证：没有兜底 case 时 Match 可能不匹配任何分支而继续往下走，
+        // 此时后续语句是可达的，仍应正常分析（这里内层确实与外层矛盾，应报出）。
+        var f = analyze("""
+              If x is greater than 100:
+                Match x:
+                  When 101, Return 1.
+                If x is less than 50:
+                  Return 3.
+            """);
+        assertEquals(1, f.size(), "非穷尽 Match 后仍应分析，实际: " + f);
+    }
+
 }
