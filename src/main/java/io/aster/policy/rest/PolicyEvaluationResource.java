@@ -634,7 +634,10 @@ public class PolicyEvaluationResource {
                 return response;
 
             } catch (DynamicCnlExecutor.AmbiguousEntryException e) {
-                businessMetrics.endPolicyEvaluation(sample);
+                // ★模拟执行的耗时不进业务指标（第十轮）：否则「simulate 不污染指标」不成立
+                if (!effectiveSimulate) {
+                    businessMetrics.endPolicyEvaluation(sample);
+                }
                 LOG.warnf("Dynamic CNL entry point ambiguous: %s", e.getCandidates());
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
@@ -649,7 +652,10 @@ public class PolicyEvaluationResource {
                 );
 
             } catch (DynamicCnlExecutor.ModuleExecutionException e) {
-                businessMetrics.endPolicyEvaluation(sample);
+                // ★模拟执行的耗时不进业务指标（第十轮）：否则「simulate 不污染指标」不成立
+                if (!effectiveSimulate) {
+                    businessMetrics.endPolicyEvaluation(sample);
+                }
                 var moduleError = e.resolutionException();
                 LOG.warnf("Dynamic CNL module resolution failed: code=%s, message=%s",
                     moduleError.code(), moduleError.getMessage());
@@ -669,7 +675,10 @@ public class PolicyEvaluationResource {
                 );
 
             } catch (DynamicCnlExecutor.DynamicExecutionException e) {
-                businessMetrics.endPolicyEvaluation(sample);
+                // ★模拟执行的耗时不进业务指标（第十轮）：否则「simulate 不污染指标」不成立
+                if (!effectiveSimulate) {
+                    businessMetrics.endPolicyEvaluation(sample);
+                }
                 LOG.errorf(e, "Dynamic CNL execution failed: %s", e.getMessage());
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
@@ -679,7 +688,10 @@ public class PolicyEvaluationResource {
                 return EvaluationResponse.error("CNL 动态执行失败: " + e.getMessage());
 
             } catch (InProcessCnlParser.CnlParseException e) {
-                businessMetrics.endPolicyEvaluation(sample);
+                // ★模拟执行的耗时不进业务指标（第十轮）：否则「simulate 不污染指标」不成立
+                if (!effectiveSimulate) {
+                    businessMetrics.endPolicyEvaluation(sample);
+                }
                 LOG.errorf(e, "CNL parsing failed: %s", e.getMessage());
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
@@ -689,7 +701,10 @@ public class PolicyEvaluationResource {
                 return EvaluationResponse.error("CNL 解析失败: " + e.getMessage());
 
             } catch (Exception e) {
-                businessMetrics.endPolicyEvaluation(sample);
+                // ★模拟执行的耗时不进业务指标（第十轮）：否则「simulate 不污染指标」不成立
+                if (!effectiveSimulate) {
+                    businessMetrics.endPolicyEvaluation(sample);
+                }
                 LOG.errorf(e, "Failed to process CNL source: %s", e.getMessage());
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {

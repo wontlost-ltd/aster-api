@@ -112,4 +112,56 @@ class EvaluateSourceSimulateContractTest {
             .as("并发闸门不得被 simulate 跳过")
             .doesNotContain("if (simulate)");
     }
+
+    @Test
+    void 所有业务指标调用都必须被simulate_gate() throws Exception {
+        // ★第十轮：上一轮只 gate 了 recordApiCall，五处
+        //   businessMetrics.endPolicyEvaluation 仍在异常路径无条件执行——
+        //   于是「simulate 不污染指标」这句话不成立。
+        //
+        //   ★用**括号深度**判定而非固定字符窗口：成功路径的调用与它的 gate
+        //   隔着一个多行 recordEvaluation(...)，任何固定窗口都会误判。
+        assertEveryCallIsGated(evaluateSourceBody(source()),
+            "businessMetrics.endPolicyEvaluation(");
+    }
+
+    /**
+     * 断言 body 中每一处 needle 调用都位于某个 `if (!effectiveSimulate) {` 块内。
+     *
+     * <p>做法：从方法开头扫到 needle，维护「当前是否处于 gate 块内」的括号深度。
+     * 比固定字符窗口可靠——调用与 gate 之间隔多少行都不影响判定。
+     */
+    private static void assertEveryCallIsGated(String body, String needle) {
+        int from = 0;
+        int count = 0;
+        while (true) {
+            int idx = body.indexOf(needle, from);
+            if (idx < 0) break;
+            count++;
+            assertThat(isInsideSimulateGate(body, idx))
+                .as("第 " + count + " 处 " + needle + " 未被 effectiveSimulate gate")
+                .isTrue();
+            from = idx + 1;
+        }
+        assertThat(count).as("应存在 " + needle + " 调用点").isGreaterThan(0);
+    }
+
+    /** 扫描 [0, pos) 的括号，判断 pos 是否落在某个 gate 块内。 */
+    private static boolean isInsideSimulateGate(String body, int pos) {
+        final String GATE = "if (!effectiveSimulate) {";
+        java.util.Deque<Boolean> stack = new java.util.ArrayDeque<>();
+        int i = 0;
+        while (i < pos) {
+            if (body.startsWith(GATE, i)) {
+                stack.push(Boolean.TRUE);
+                i += GATE.length();
+                continue;
+            }
+            char c = body.charAt(i);
+            if (c == '{') stack.push(Boolean.FALSE);
+            else if (c == '}' && !stack.isEmpty()) stack.pop();
+            i++;
+        }
+        return stack.contains(Boolean.TRUE);
+    }
 }
