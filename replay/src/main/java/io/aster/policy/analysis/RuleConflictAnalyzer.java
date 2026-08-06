@@ -132,8 +132,18 @@ public final class RuleConflictAnalyzer {
      * <p><b>成立条件：有兜底 case 且每个 case 都终止。</b>
      *
      * <p>兜底 = {@code PatternName}（如 {@code When other}）—— 它是绑定而非
-     * 具体值匹配，任何值都能落进去。没有兜底时，所有 case 都不匹配就会继续
-     * 往下走，此时 Match 之后是**可达**的。
+     * 具体值匹配。没有兜底时，所有 case 都不匹配就会继续往下走，
+     * 此时 Match 之后是**可达**的。
+     *
+     * <p>⚠️ <b>精度限制（第七轮审查指出）</b>：{@code PatternName} 在真实
+     * Truffle 运行时**不匹配 {@code null}**，所以它并非严格意义上的「任何值都
+     * 落得进」。于是被 null 穿过的 Match 实际不终止，而这里判成了终止——
+     * 后续语句会被跳过分析。方向是**保守漏报**（少给提示），不会重新产生
+     * W601 误报，故不阻断；但不能把它说成完全精确的兜底判定。
+     *
+     * <p>另一处已知空白：当前 grammar 生成不出 case body 为 {@code Block} 的
+     * Match，故下面那条 Block 分支尚无 CNL 层覆盖。将来 grammar 放开时
+     * 需重审整个终止集合。
      *
      * <p><b>为什么必须建模</b>：原先注释写着「不把 Match 视为终止点只会少报」，
      * 这是错的。穷尽 Match 之后的语句实际不可达，把它们当正常路径分析会
