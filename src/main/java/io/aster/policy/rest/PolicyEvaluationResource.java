@@ -422,9 +422,22 @@ public class PolicyEvaluationResource {
         // replayMetadata（runtimeToolchainId + canonical input/output hash +
         // traceHash + canonicalizationVersion）。cloud BFF 拿到后写 Execution
         // 新列（本 API 不直写 cloud DB）。hash 由本侧（Java 权威）计算。
-        @QueryParam("replayCapture") @DefaultValue("false") boolean replayCapture
+        @QueryParam("replayCapture") @DefaultValue("false") boolean replayCapture,
+        // ★模拟执行（What-if / ADR 0033）：这不是一次真实业务执行，而是拿历史
+        //   输入在**另一个版本**的源码上重跑，只为得到对照决策。true 时跳过全部
+        //   「这是一次真实执行」的副作用：
+        //     · 配额——查一次估算要重跑上百条，按真实执行计费等于看报表就被扣钱
+        //     · 业务指标（recordEvaluation/recordPolicyEvaluation/recordLoanDecision）
+        //       ——模拟结果混进 KPI 会污染真实经营数据
+        //     · 审计事件——审计链记的是「谁在何时做了什么决策」，模拟没做出任何决策
+        //     · API 调用统计
+        //   并发闸门**不跳过**：模拟同样消耗 CPU，仍需背压保护。
+        @QueryParam("simulate") @DefaultValue("false") boolean simulate
     ) {
-        enforceApiQuota("/api/v1/policies/evaluate-source");
+        // ★模拟执行不计配额：见 simulate 参数注释
+        if (!simulate) {
+            enforceApiQuota("/api/v1/policies/evaluate-source");
+        }
         // Bounded concurrency gate. Acquire before doing any work; if
         // the wait window expires, return 503 with Retry-After so the
         // caller (BFF / playground) backs off instead of piling on.
@@ -517,37 +530,41 @@ public class PolicyEvaluationResource {
                     effectiveReplayCapture);
                 ExecutionPhaseResult phase = replayExecutionCore.execute(execRequest, replayExecutorAdapter);
 
-                // 记录指标
-                policyMetrics.recordEvaluation(
-                    phase.execResult().moduleName(),
-                    phase.execResult().functionName(),
-                    phase.execResult().executionTimeMs(),
-                    true
-                );
-                businessMetrics.recordPolicyEvaluation();
-                businessMetrics.endPolicyEvaluation(sample);
+                // ★模拟执行跳过全部「真实执行」副作用（见 simulate 参数注释）：
+                //   指标会污染真实经营 KPI，审计事件会记录一次并不存在的决策。
+                if (!simulate) {
+                    // 记录指标
+                    policyMetrics.recordEvaluation(
+                        phase.execResult().moduleName(),
+                        phase.execResult().functionName(),
+                        phase.execResult().executionTimeMs(),
+                        true
+                    );
+                    businessMetrics.recordPolicyEvaluation();
+                    businessMetrics.endPolicyEvaluation(sample);
 
-                // 记录业务指标（贷款批准/拒绝）
-                if ("aster.finance.loan".equals(phase.execResult().moduleName())) {
-                    recordLoanDecision(phase.execResult().result());
+                    // 记录业务指标（贷款批准/拒绝）
+                    if ("aster.finance.loan".equals(phase.execResult().moduleName())) {
+                        recordLoanDecision(phase.execResult().result());
+                    }
+
+                    // 发布审计事件
+                    Map<String, Object> metadata = new HashMap<>();
+                    metadata.put("sourceFormat", "cnl");
+                    metadata.put("locale", request.getLocaleOrDefault());
+                    metadata.put("dynamicExecution", true);
+                    metadata.put("namedContext", request.context() instanceof Map);
+
+                    publishPolicyEvaluationEvent(
+                        tenantId,
+                        new EvaluationRequest(phase.execResult().moduleName(), phase.execResult().functionName(), new Object[]{request.context()}),
+                        performedBy,
+                        true,
+                        phase.execResult().executionTimeMs(),
+                        null,
+                        metadata
+                    );
                 }
-
-                // 发布审计事件
-                Map<String, Object> metadata = new HashMap<>();
-                metadata.put("sourceFormat", "cnl");
-                metadata.put("locale", request.getLocaleOrDefault());
-                metadata.put("dynamicExecution", true);
-                metadata.put("namedContext", request.context() instanceof Map);
-
-                publishPolicyEvaluationEvent(
-                    tenantId,
-                    new EvaluationRequest(phase.execResult().moduleName(), phase.execResult().functionName(), new Object[]{request.context()}),
-                    performedBy,
-                    true,
-                    phase.execResult().executionTimeMs(),
-                    null,
-                    metadata
-                );
 
                 LOG.infof("CNL source evaluation completed in %dms: %s.%s",
                     phase.execResult().executionTimeMs(), phase.execResult().moduleName(), phase.execResult().functionName());
@@ -559,8 +576,10 @@ public class PolicyEvaluationResource {
                     replayExecutionCore.buildDecisionTrace(
                         phase.execResult(), phase.traceDrainResult(), trace || effectiveReplayCapture);
 
-                recordApiCall("/api/v1/policies/evaluate-source", "success",
-                    System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                if (!simulate) {
+                    recordApiCall("/api/v1/policies/evaluate-source", "success",
+                        System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                }
 
                 // trace 字段只在客户端显式请求 trace=true 时回传（保持既有契约）；
                 // replayCapture 单独走 replayMetadata，不污染 decisionTrace 字段。

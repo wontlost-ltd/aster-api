@@ -162,7 +162,12 @@ public class NamedContextMapper {
 
             if (contextKey != null && map.containsKey(contextKey)) {
                 positionalArgs[i] = map.get(contextKey);
-                LOG.debugf("参数 '%s' (位置 %d) = %s", paramName, i, positionalArgs[i]);
+                // ★不打印参数**值**：context 是客户的明文业务输入（金额、评分、
+                //   身份字段…）。DEBUG 打开时重跑一批执行就会把成百上千条金融
+                //   数据写进日志，绕过一切 PII 保留策略。只记键名与是否有值——
+                //   排查「参数没映射上」需要的是这两个信息，不是值本身。
+                LOG.debugf("参数 '%s' (位置 %d) 已映射, 空值=%b",
+                    paramName, i, positionalArgs[i] == null);
             } else {
                 // 缺少参数
                 missingParams.add(paramName);
