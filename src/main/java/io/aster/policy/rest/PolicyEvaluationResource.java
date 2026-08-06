@@ -434,8 +434,13 @@ public class PolicyEvaluationResource {
         //   并发闸门**不跳过**：模拟同样消耗 CPU，仍需背压保护。
         @QueryParam("simulate") @DefaultValue("false") boolean simulate
     ) {
-        // ★模拟执行不计配额：见 simulate 参数注释
-        if (!simulate) {
+        // ★simulate 必须绑定 HMAC 内部调用者（与 replayCapture 同门控，第九轮 P0-1b）：
+        //   它是一个**免计费**开关，若信任裸 query boolean，任何外部调用方
+        //   加个 ?simulate=true 就能白嫖配额、且不留 API 调用记录。
+        //   未验证的调用方传了也静默忽略（与 replayCapture 一致，保持 trial 端点宽容）。
+        final boolean effectiveSimulate =
+            simulate && io.aster.security.apikey.InternalCallerFilter.isHmacVerified(jaxrsCtx);
+        if (!effectiveSimulate) {
             enforceApiQuota("/api/v1/policies/evaluate-source");
         }
         // Bounded concurrency gate. Acquire before doing any work; if
@@ -532,7 +537,7 @@ public class PolicyEvaluationResource {
 
                 // ★模拟执行跳过全部「真实执行」副作用（见 simulate 参数注释）：
                 //   指标会污染真实经营 KPI，审计事件会记录一次并不存在的决策。
-                if (!simulate) {
+                if (!effectiveSimulate) {
                     // 记录指标
                     policyMetrics.recordEvaluation(
                         phase.execResult().moduleName(),
@@ -576,7 +581,7 @@ public class PolicyEvaluationResource {
                     replayExecutionCore.buildDecisionTrace(
                         phase.execResult(), phase.traceDrainResult(), trace || effectiveReplayCapture);
 
-                if (!simulate) {
+                if (!effectiveSimulate) {
                     recordApiCall("/api/v1/policies/evaluate-source", "success",
                         System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
                 }
@@ -631,8 +636,11 @@ public class PolicyEvaluationResource {
             } catch (DynamicCnlExecutor.AmbiguousEntryException e) {
                 businessMetrics.endPolicyEvaluation(sample);
                 LOG.warnf("Dynamic CNL entry point ambiguous: %s", e.getCandidates());
-                recordApiCall("/api/v1/policies/evaluate-source", "api_error",
+                // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
+                if (!effectiveSimulate) {
+                    recordApiCall("/api/v1/policies/evaluate-source", "api_error",
                     System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                }
                 throw new WebApplicationException(
                     jakarta.ws.rs.core.Response.status(400)
                         .entity(EvaluationResponse.ambiguous(e.getCandidates()))
@@ -645,8 +653,11 @@ public class PolicyEvaluationResource {
                 var moduleError = e.resolutionException();
                 LOG.warnf("Dynamic CNL module resolution failed: code=%s, message=%s",
                     moduleError.code(), moduleError.getMessage());
-                recordApiCall("/api/v1/policies/evaluate-source", "api_error",
+                // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
+                if (!effectiveSimulate) {
+                    recordApiCall("/api/v1/policies/evaluate-source", "api_error",
                     System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                }
                 throw new WebApplicationException(
                     jakarta.ws.rs.core.Response.status(400)
                         .entity(EvaluationResponse.diagnostic(
@@ -660,22 +671,31 @@ public class PolicyEvaluationResource {
             } catch (DynamicCnlExecutor.DynamicExecutionException e) {
                 businessMetrics.endPolicyEvaluation(sample);
                 LOG.errorf(e, "Dynamic CNL execution failed: %s", e.getMessage());
-                recordApiCall("/api/v1/policies/evaluate-source", "api_error",
+                // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
+                if (!effectiveSimulate) {
+                    recordApiCall("/api/v1/policies/evaluate-source", "api_error",
                     System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                }
                 return EvaluationResponse.error("CNL 动态执行失败: " + e.getMessage());
 
             } catch (InProcessCnlParser.CnlParseException e) {
                 businessMetrics.endPolicyEvaluation(sample);
                 LOG.errorf(e, "CNL parsing failed: %s", e.getMessage());
-                recordApiCall("/api/v1/policies/evaluate-source", "api_error",
+                // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
+                if (!effectiveSimulate) {
+                    recordApiCall("/api/v1/policies/evaluate-source", "api_error",
                     System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                }
                 return EvaluationResponse.error("CNL 解析失败: " + e.getMessage());
 
             } catch (Exception e) {
                 businessMetrics.endPolicyEvaluation(sample);
                 LOG.errorf(e, "Failed to process CNL source: %s", e.getMessage());
-                recordApiCall("/api/v1/policies/evaluate-source", "api_error",
+                // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
+                if (!effectiveSimulate) {
+                    recordApiCall("/api/v1/policies/evaluate-source", "api_error",
                     System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                }
                 return EvaluationResponse.error("CNL 策略执行失败: " + e.getMessage());
             }
         }).runSubscriptionOn(io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool())

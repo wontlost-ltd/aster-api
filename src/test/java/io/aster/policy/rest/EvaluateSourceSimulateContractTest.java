@@ -44,8 +44,39 @@ class EvaluateSourceSimulateContractTest {
     void 配额必须被simulate_gate() throws Exception {
         // 查一次 What-if 会重跑上百条；按真实执行计费 = 看报表就被扣钱
         assertThat(evaluateSourceBody(source()))
-            .as("enforceApiQuota 必须在 if (!simulate) 内")
-            .contains("if (!simulate) {\n            enforceApiQuota(");
+            .as("enforceApiQuota 必须在 if (!effectiveSimulate) 内")
+            .contains("if (!effectiveSimulate) {\n            enforceApiQuota(");
+    }
+
+    @Test
+    void simulate必须绑定HMAC验证() throws Exception {
+        // ★第九轮 P0-1b：simulate 是**免计费**开关。若信任裸 query boolean，
+        //   任何外部调用方加个 ?simulate=true 就能白嫖配额且不留调用记录。
+        //   必须与 replayCapture 同门控（InternalCallerFilter.isHmacVerified）。
+        assertThat(evaluateSourceBody(source()))
+            .as("simulate 必须与 HMAC 验证做与运算，不能直接信任 query 参数")
+            .contains("simulate && io.aster.security.apikey.InternalCallerFilter.isHmacVerified(");
+    }
+
+    @Test
+    void 异常路径的记账同样要被gate() throws Exception {
+        // ★第九轮 P0-1：成功路径 gate 了，异常路径（api_error）仍在记账，
+        //   于是失败的模拟重跑照样计入 API 调用统计。
+        String body = evaluateSourceBody(source());
+        int from = 0;
+        int count = 0;
+        while (true) {
+            int idx = body.indexOf("recordApiCall(\"/api/v1/policies/evaluate-source\", \"api_error\"", from);
+            if (idx < 0) break;
+            count++;
+            // 该调用之前 200 字符内应出现 gate
+            String near = body.substring(Math.max(0, idx - 200), idx);
+            assertThat(near)
+                .as("第 " + count + " 处 api_error 记账未被 effectiveSimulate gate")
+                .contains("if (!effectiveSimulate)");
+            from = idx + 1;
+        }
+        assertThat(count).as("应存在 api_error 记账点").isGreaterThan(0);
     }
 
     @Test
@@ -64,8 +95,8 @@ class EvaluateSourceSimulateContractTest {
             // 该副作用之前最近的 gate 应是 if (!simulate)
             String before = body.substring(0, idx);
             assertThat(before)
-                .as(sideEffect + " 必须位于 if (!simulate) 之后")
-                .contains("if (!simulate)");
+                .as(sideEffect + " 必须位于 if (!effectiveSimulate) 之后")
+                .contains("if (!effectiveSimulate)");
         }
     }
 
