@@ -155,7 +155,8 @@ class CrossCompilerConsistencyTest {
             """;
 
         // 使用 Java InProcessCnlParser 编译
-        PolicyCompiler compiler = new PolicyCompiler(null, new io.aster.policy.stability.StabilityEnforcement());
+        PolicyCompiler compiler = new PolicyCompiler(null, new io.aster.policy.stability.StabilityEnforcement(),
+            new io.aster.policy.analysis.RuleConflictDiagnostics());
         CompilationResult result = compiler.compile(cnlSource, "en-US");
 
         if (!result.isSuccess()) {

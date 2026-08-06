@@ -31,7 +31,8 @@ class PolicyCompilerTest {
 
     @BeforeEach
     void setUp() {
-        policyCompiler = new PolicyCompiler(policySourceRepository, new io.aster.policy.stability.StabilityEnforcement());
+        policyCompiler = new PolicyCompiler(policySourceRepository, new io.aster.policy.stability.StabilityEnforcement(),
+            new io.aster.policy.analysis.RuleConflictDiagnostics());
     }
 
     @Test
@@ -140,5 +141,100 @@ class PolicyCompilerTest {
         artifact.compilerOpts = "{\"functionSignature\":\"evaluate\"}";
         artifact.createdAt = Instant.now();
         return artifact;
+    }
+
+    // ★Phase 2 接线回归：规则冲突分析器必须真的接到编译诊断链上。
+    //
+    // 它此前写完了却**没有任何调用方**（四轮交叉审查指出的交付缺口）。
+    // 一个没人调用的分析器不是功能，是死代码——这几条测试锁住它确实被调用、
+    // 结论确实到达用户，且**永不阻断编译**。
+
+    @Test
+    void 规则冲突提示随编译结果返回() {
+        // 内层 x < 50 与外层 x > 100 矛盾 —— 真恒假，应报出
+        String src = """
+            Module m.
+
+            Rule r given x as Number produce Number:
+              If x is greater than 100:
+                If x is less than 50:
+                  Return 1.
+                Return 2.
+              Return 0.
+            """;
+
+        CompilationResult result = policyCompiler.compile(src, "en");
+
+        assertThat(result.isSuccess()).isTrue();
+        var conflicts = result.getDiagnostics().stream()
+            .filter(d -> io.aster.policy.analysis.RuleConflictDiagnostics.CONFLICT_CODE.equals(d.code()))
+            .toList();
+        assertThat(conflicts).hasSize(1);
+        assertThat(conflicts.get(0).severity()).isEqualTo("warning");
+        // ★永不阻断：曾多次误报的检查不该有权拒绝用户的策略
+        assertThat(conflicts.get(0).blocking()).isFalse();
+        assertThat(conflicts.get(0).line()).isGreaterThan(0);
+    }
+
+    @Test
+    void 正常策略不产生规则冲突提示() {
+        // 负向断言同等重要：误报会让整个功能被业务人员忽略
+        String src = """
+            Module m.
+
+            Rule r given x as Number produce Number:
+              If x is greater than 100:
+                Return 1.
+              Return 0.
+            """;
+
+        CompilationResult result = policyCompiler.compile(src, "en");
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getDiagnostics().stream()
+            .filter(d -> io.aster.policy.analysis.RuleConflictDiagnostics.CONFLICT_CODE.equals(d.code())))
+            .isEmpty();
+    }
+
+    @Test
+    void 有冲突时编译仍然成功() {
+        // 分析器只提示不夺决策权 —— coreJson 必须照常产出
+        String src = """
+            Module m.
+
+            Rule r given x as Number produce Number:
+              If x is greater than 100:
+                If x is less than 50:
+                  Return 1.
+                Return 2.
+              Return 0.
+            """;
+
+        CompilationResult result = policyCompiler.compile(src, "en");
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getCoreJson()).isNotBlank();
+        assertThat(result.getErrors()).isEmpty();
+    }
+
+    @Test
+    void 诊断在_enUS_locale_下同样产出() {
+        // REST 端点传的是 en-US（不是 en）——若 locale 影响解析，接线会在生产路径上失效
+        String src = String.join("\n",
+            "Module M.",
+            "",
+            "Rule r given x as Number produce Number:",
+            "  If x is greater than 100:",
+            "    If x is less than 50:",
+            "      Return 1.",
+            "    Return 2.",
+            "  Return 0.");
+
+        CompilationResult result = policyCompiler.compile(src, "en-US", null);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getDiagnostics().stream()
+            .filter(d -> io.aster.policy.analysis.RuleConflictDiagnostics.CONFLICT_CODE.equals(d.code())))
+            .hasSize(1);
     }
 }

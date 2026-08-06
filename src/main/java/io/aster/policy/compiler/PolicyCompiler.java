@@ -39,12 +39,15 @@ public class PolicyCompiler {
 
     private final PolicySourceRepository policySourceRepository;
     private final io.aster.policy.stability.StabilityEnforcement stabilityEnforcement;
+    private final io.aster.policy.analysis.RuleConflictDiagnostics ruleConflictDiagnostics;
 
     @Inject
     public PolicyCompiler(PolicySourceRepository policySourceRepository,
-                          io.aster.policy.stability.StabilityEnforcement stabilityEnforcement) {
+                          io.aster.policy.stability.StabilityEnforcement stabilityEnforcement,
+                          io.aster.policy.analysis.RuleConflictDiagnostics ruleConflictDiagnostics) {
         this.policySourceRepository = policySourceRepository;
         this.stabilityEnforcement = stabilityEnforcement;
+        this.ruleConflictDiagnostics = ruleConflictDiagnostics;
     }
 
     /**
@@ -96,6 +99,12 @@ public class PolicyCompiler {
             //     approve/activate（StabilityEnforcement.enforceVersion），保存路径按 regulated。
             var stability = stabilityEnforcement.scan(coreModule, false);
 
+            // 3c. 规则冲突静态检测（Phase 2）：纯 AST 分析，不需要执行数据，故对全部
+            //     租户立即可用。恒 warning、永不阻断——见 RuleConflictDiagnostics 类注释。
+            //     ★扫 AST 而非 Core IR：分析器要读 Stmt.If 的 span 拿行号，
+            //     Core IR 的 Origin 目前不进序列化（见 ADR 0032）。
+            var conflicts = ruleConflictDiagnostics.scan(astModule);
+
             // 4. 提取元数据
             CompilationMetadata metadata = new CompilationMetadata(
                 null,
@@ -103,7 +112,12 @@ public class PolicyCompiler {
                 null
             );
 
-            return CompilationResult.success(coreJson, metadata, stability.diagnostics());
+            // 两类诊断合流走同一 diagnostics 通道（与 ADR 0031 W600 同构，非平行字段）
+            List<CompilationResult.Diagnostic> allDiagnostics =
+                new java.util.ArrayList<>(stability.diagnostics());
+            allDiagnostics.addAll(conflicts);
+
+            return CompilationResult.success(coreJson, metadata, allDiagnostics);
 
         } catch (InProcessCnlParser.CnlParseException e) {
             String message = "CNL 解析失败: " + e.getMessage();
