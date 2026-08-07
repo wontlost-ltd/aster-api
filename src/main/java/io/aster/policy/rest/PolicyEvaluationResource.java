@@ -484,19 +484,40 @@ public class PolicyEvaluationResource {
                     .build()
             );
         }
-        // 跨线程预捕获，必须在切到 worker pool 之前——理由见 RequestIdentity。
-        RequestIdentity identity = captureIdentity();
-        String tenantId = identity.tenantId();
-        String performedBy = identity.performedBy();
-        String apiKeyIdSnap = identity.apiKeyId();
-        long apiCallStart = System.currentTimeMillis();
-        Timer.Sample sample = businessMetrics.startPolicyEvaluation();
+        // ★许可归还的所有权在此交接（第十三轮）。
+        //   许可已经拿到，但 supplier 还没开始跑；这中间的任何一步抛出，
+        //   或订阅本身被拒（worker 线程池饱和 → supplier 永不执行），
+        //   都会让许可**永远不还**，闸门被逐个吃空直到全站 503。
+        //   用一次性标志把归还责任交给 supplier：只要 supplier 真的跑起来，
+        //   由它的 finally 负责；否则由下面的 catch 兜底。两条路径互斥。
+        final java.util.concurrent.atomic.AtomicBoolean permitOwnedByWorker =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+        final RequestIdentity identity;
+        final String tenantId;
+        final String performedBy;
+        final String apiKeyIdSnap;
+        final long apiCallStart;
+        final Timer.Sample sample;
+        try {
+            // 跨线程预捕获，必须在切到 worker pool 之前——理由见 RequestIdentity。
+            identity = captureIdentity();
+            tenantId = identity.tenantId();
+            performedBy = identity.performedBy();
+            apiKeyIdSnap = identity.apiKeyId();
+            apiCallStart = System.currentTimeMillis();
+            sample = businessMetrics.startPolicyEvaluation();
 
-        LOG.infof("Evaluating CNL source for tenant %s (locale=%s, function=%s)",
-            tenantId, request.getLocaleOrDefault(), request.getFunctionNameOrDefault());
+            LOG.infof("Evaluating CNL source for tenant %s (locale=%s, function=%s)",
+                tenantId, request.getLocaleOrDefault(), request.getFunctionNameOrDefault());
+        } catch (RuntimeException | Error setupFailure) {
+            EVAL_SOURCE_PERMITS.release();
+            throw setupFailure;
+        }
 
         // 使用 Uni.createFrom().item() 包装同步执行，避免阻塞主线程
+        try {
         return Uni.createFrom().item(() -> {
+            permitOwnedByWorker.set(true);
             // ★许可必须在**worker 真正结束**时归还，不能挂在 onTermination
             //   （第十二轮）：HTTP 取消会立刻触发 onTermination 释放许可，
             //   而同步的 supplier.get() 仍在 CPU 上跑——反复取消即可让并发数
@@ -725,6 +746,14 @@ public class PolicyEvaluationResource {
                 EVAL_SOURCE_PERMITS.release();
             }
         }).runSubscriptionOn(io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool());
+        } catch (RuntimeException | Error dispatchFailure) {
+            // 订阅装配/调度失败（如 worker 线程池饱和拒绝）：supplier 永不执行，
+            // 它的 finally 也就永不触发。此处兜底归还，避免许可被吃掉。
+            if (!permitOwnedByWorker.get()) {
+                EVAL_SOURCE_PERMITS.release();
+            }
+            throw dispatchFailure;
+        }
     }
 
     /**

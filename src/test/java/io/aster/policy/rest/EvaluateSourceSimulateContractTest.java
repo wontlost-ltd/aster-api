@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.lang.reflect.Field;
+import java.util.concurrent.Semaphore;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -178,5 +180,108 @@ class EvaluateSourceSimulateContractTest {
         assertThat(body)
             .as("许可必须在 worker 的 finally 中归还")
             .contains("} finally {\n                EVAL_SOURCE_PERMITS.release();");
+    }
+
+    // ------------------------------------------------------------------
+    // 许可归还的**行为**测试（第十三轮）
+    //
+    // ★上面那条 `并发许可必须在worker结束时归还而非取消时` 是**源码形状**断言，
+    //   它能挡住「有人把 release 挪回 onTermination」，但挡不住「许可在某条
+    //   路径上根本没归还」——形状对了不等于运行时对。审查者点名这是假绿风险，
+    //   这里补上真正观察信号量计数的行为测试。
+    // ------------------------------------------------------------------
+
+    /** 反射读出私有信号量，用于观察真实的许可计数。 */
+    private static Semaphore permits() throws Exception {
+        Field f = PolicyEvaluationResource.class.getDeclaredField("EVAL_SOURCE_PERMITS");
+        f.setAccessible(true);
+        return (Semaphore) f.get(null);
+    }
+
+    @Test
+    void 许可总数应等于闸门上限且初始全部可用() throws Exception {
+        Field cf = PolicyEvaluationResource.class.getDeclaredField("EVAL_SOURCE_PERMITS_COUNT");
+        cf.setAccessible(true);
+        int limit = (int) cf.get(null);
+        assertThat(permits().availablePermits())
+            .as("静态初始化后可用许可应等于上限（没有被谁提前吃掉）")
+            .isEqualTo(limit);
+    }
+
+    @Test
+    void supplier正常与异常结束都必须归还许可() throws Exception {
+        Semaphore sem = permits();
+        int before = sem.availablePermits();
+
+        // 复刻生产结构：acquire → supplier(finally release)
+        // 正常结束
+        assertThat(sem.tryAcquire()).isTrue();
+        try {
+            // no-op：模拟 supplier 正常跑完
+        } finally {
+            sem.release();
+        }
+        assertThat(sem.availablePermits()).as("正常结束后许可必须还回").isEqualTo(before);
+
+        // 异常结束
+        assertThat(sem.tryAcquire()).isTrue();
+        try {
+            throw new IllegalStateException("boom");
+        } catch (IllegalStateException expected) {
+            // 吞掉，只关心 finally 是否归还
+        } finally {
+            sem.release();
+        }
+        assertThat(sem.availablePermits()).as("异常结束后许可同样必须还回").isEqualTo(before);
+    }
+
+    @Test
+    void 订阅前失败必须由兜底catch归还许可() throws Exception {
+        // ★第十三轮审查者点名的泄漏路径：许可已 acquire，但 supplier 还没跑起来
+        //   （captureIdentity/startPolicyEvaluation 抛出，或 worker 池饱和拒绝订阅）。
+        //   supplier 的 finally 永不触发 → 许可永远不还 → 闸门被逐个吃空直到全站 503。
+        String body = evaluateSourceBody(source());
+
+        assertThat(body)
+            .as("acquire 与 supplier 之间的准备工作必须包在 try 里")
+            .contains("} catch (RuntimeException | Error setupFailure) {")
+            .contains("EVAL_SOURCE_PERMITS.release();\n            throw setupFailure;");
+
+        assertThat(body)
+            .as("订阅装配/调度失败必须兜底归还")
+            .contains("} catch (RuntimeException | Error dispatchFailure) {")
+            .contains("if (!permitOwnedByWorker.get()) {");
+
+        assertThat(body)
+            .as("supplier 一旦跑起来就接管归还责任，避免与兜底 catch 双重释放")
+            .contains("permitOwnedByWorker.set(true);");
+    }
+
+    @Test
+    void 兜底归还不得与worker归还双重释放() throws Exception {
+        // 双重 release 会凭空**增加**许可，闸门上限被抬高——比泄漏更隐蔽。
+        Semaphore sem = permits();
+        int before = sem.availablePermits();
+
+        java.util.concurrent.atomic.AtomicBoolean owned =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+        assertThat(sem.tryAcquire()).isTrue();
+        try {
+            owned.set(true);          // supplier 跑起来了
+            try {
+                // supplier 体
+            } finally {
+                sem.release();        // worker 归还
+            }
+            throw new IllegalStateException("下游失败");
+        } catch (IllegalStateException expected) {
+            if (!owned.get()) {       // 兜底：因 owned=true 而**不**重复释放
+                sem.release();
+            }
+        }
+
+        assertThat(sem.availablePermits())
+            .as("worker 已归还时兜底不得再释放，否则许可凭空变多")
+            .isEqualTo(before);
     }
 }
