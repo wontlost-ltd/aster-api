@@ -446,9 +446,12 @@ public class PolicyEvaluationResource {
         // Bounded concurrency gate. Acquire before doing any work; if
         // the wait window expires, return 503 with Retry-After so the
         // caller (BFF / playground) backs off instead of piling on.
-        // Release is wired into Uni.onTermination so it fires on
-        // success, failure, AND subscriber cancellation — never leak
-        // a permit.
+        // Release happens in the worker's own finally block — NOT in
+        // Uni.onTermination. onTermination fires on cancellation, which
+        // would hand the permit back while the synchronous worker is
+        // still burning CPU; repeated start-then-cancel would then push
+        // real concurrency past this gate. The finally covers both
+        // normal return and exceptions, so no permit leaks either.
         final boolean acquired;
         try {
             acquired = EVAL_SOURCE_PERMITS.tryAcquire(
