@@ -167,6 +167,12 @@ class EvaluateSourceSimulateContractTest {
     /** 扫描 [0, pos) 的括号，判断 pos 是否落在某个 gate 块内。 */
     private static boolean isInsideSimulateGate(String body, int pos) {
         final String GATE = "if (!effectiveSimulate) {";
+        // ★注释掉的 gate 不算数（第十四轮审查者的探针实证）：
+        //   把 `if (!effectiveSimulate) {` 改成 `// 维护提示: if (!effectiveSimulate) {`
+        //   会让副作用实际脱离 gate，而纯文本匹配仍然认为它被包住。
+        //   先剥掉行注释再做括号分析。块注释同理。
+        body = stripComments(body);
+        pos = Math.min(pos, body.length());
         java.util.Deque<Boolean> stack = new java.util.ArrayDeque<>();
         int i = 0;
         while (i < pos) {
@@ -357,5 +363,32 @@ class EvaluateSourceSimulateContractTest {
             allowFinish.countDown();
             pool.shutdownNow();
         }
+    }
+
+    /**
+     * 把行注释与块注释替换成等长空格。
+     *
+     * <p>保持长度不变，这样调用方基于原文算出的 pos 仍然对齐；
+     * 被注释掉的 gate/副作用因此不再参与括号深度判定。
+     */
+    private static String stripComments(String src) {
+        char[] out = src.toCharArray();
+        boolean inLine = false, inBlock = false, inStr = false;
+        for (int i = 0; i < out.length; i++) {
+            char c = out[i];
+            char n = i + 1 < out.length ? out[i + 1] : '\0';
+            if (inLine) {
+                if (c == '\n') inLine = false; else out[i] = ' ';
+            } else if (inBlock) {
+                if (c == '*' && n == '/') { out[i] = ' '; out[i + 1] = ' '; i++; inBlock = false; }
+                else if (c != '\n') out[i] = ' ';
+            } else if (inStr) {
+                if (c == '\\') i++;                       // 跳过转义
+                else if (c == '"') inStr = false;
+            } else if (c == '/' && n == '/') { inLine = true; out[i] = ' '; }
+            else if (c == '/' && n == '*') { inBlock = true; out[i] = ' '; }
+            else if (c == '"') inStr = true;
+        }
+        return new String(out);
     }
 }
