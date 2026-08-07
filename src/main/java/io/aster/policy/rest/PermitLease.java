@@ -30,6 +30,18 @@ import java.util.function.Supplier;
  * 所以任何写在 REST 方法里的同步 {@code catch} 都<b>不可能</b>收到它。
  * 后果比取消绕过更糟：单向累积、不可恢复，最终整站 503。
  *
+ * <h2>已知无法覆盖的一条：executor 接受后丢弃</h2>
+ *
+ * <p>若 {@code executor.execute} **成功返回**（没抛 RejectedExecutionException），
+ * 但线程池随后 {@code shutdownNow()} 把排队中的任务丢弃，则 supplier 不执行、
+ * {@code finally} 不触发、Uni 既无 item 也无 failure —— {@code onFailure} 同样不触发，
+ * 许可**永久不还**。这不是本类的实现缺陷：Mutiny 层面没有任何信号可供挂钩。
+ *
+ * <p>实测确认过这条路径（丢弃 1 个任务后 {@code availablePermits()} 停在 0）。
+ * 风险窗口只在**优雅关闭/重启**期的在途请求，且 Quarkus 关停会先 drain HTTP，
+ * 进程随后退出、许可随 JVM 一起消失，因此不做 TTL 兜底（那要给每个请求挂一个定时器）。
+ * <b>但注释必须说实话</b>：下面的"三条路径"是**已覆盖**的三条，不是全部。
+ *
  * <h2>为什么是 onFailure 而不是 onTermination</h2>
  *
  * <p>{@code onTermination} 在**取消**时也触发，而取消时 supplier 往往仍在烧 CPU。
@@ -46,6 +58,8 @@ final class PermitLease {
 
     private final Semaphore permits;
     private final AtomicBoolean released = new AtomicBoolean(false);
+    /** 一次性约束：租约只能被消费一次，复用会静默泄漏第二个许可。 */
+    private final AtomicBoolean consumed = new AtomicBoolean(false);
 
     private PermitLease(Semaphore permits) {
         this.permits = permits;
@@ -90,6 +104,14 @@ final class PermitLease {
      * @param executor worker 线程池
      */
     <T> Uni<T> guardAsync(Supplier<T> work, java.util.concurrent.Executor executor) {
+        // ★一次性约束必须在**装配期**检查（这一行在 Uni 之外）：
+        //   放进 supplier 里的话，对同一个 Uni 重复订阅仍会绕过。
+        //   租约只对应一个许可；复用会让第二个许可永远回不来——
+        //   而 CAS 会把这个错误**静默**吞掉，所以必须让它响亮地失败。
+        if (!consumed.compareAndSet(false, true)) {
+            throw new IllegalStateException(
+                "PermitLease 是一次性的，不可复用——每个请求必须新建一个");
+        }
         return Uni.createFrom().<T>item(() -> {
             try {
                 return work.get();

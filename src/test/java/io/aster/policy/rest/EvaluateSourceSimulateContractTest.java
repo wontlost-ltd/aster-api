@@ -338,17 +338,26 @@ class EvaluateSourceSimulateContractTest {
     }
 
     @Test
-    void 许可归还必须走PermitLease而非内联裸release() throws Exception {
-        // 结构护栏（补充，不作为验收证据）：真正的行为由上面几条驱动
-        // PermitLease 的测试保证。这条只防「有人把归还逻辑抄回 REST 方法里」
-        // ——那样就回到了「测试只能手写副本」的老路。
-        String body = evaluateSourceBody(source());
-        assertThat(stripComments(body))
-            .as("REST 方法内不得出现裸 EVAL_SOURCE_PERMITS.release()")
-            .doesNotContain("EVAL_SOURCE_PERMITS.release()");
+    void 许可生命周期必须全部委托给PermitLease() throws Exception {
+        // ★审计实证：上一版只断言「含 PermitLease.of 且不含裸 EVAL_SOURCE_PERMITS.release()」
+        //   ——而当时生产**手写**了一份 guardSetup/guardAsync 的等价逻辑，
+        //   把两条归还路径全删掉这条断言照样过，13 条测试全绿。
+        //   副本没被消灭，只是从测试文件搬进了生产文件。
+        //   所以必须断言生产**真的调用了** lease 的方法。
+        String body = stripComments(evaluateSourceBody(source()));
         assertThat(body)
-            .as("必须通过 PermitLease 归还")
-            .contains("PermitLease.of(EVAL_SOURCE_PERMITS)");
+            .as("准备阶段必须走 lease.guardSetup（否则 acquire 后抛出会泄漏）")
+            .contains("lease.guardSetup(");
+        assertThat(body)
+            .as("异步执行必须走 lease.guardAsync（否则归还逻辑无测试覆盖）")
+            .contains("lease.guardAsync(");
+        assertThat(body)
+            .as("REST 方法内不得手写归还——归还只能发生在 PermitLease 内部")
+            .doesNotContain("EVAL_SOURCE_PERMITS.release()")
+            .doesNotContain("lease.release()");
+        assertThat(body)
+            .as("不得手写 Uni 链绕过 guardAsync")
+            .doesNotContain("runSubscriptionOn");
     }
 
     @Test
@@ -390,4 +399,33 @@ class EvaluateSourceSimulateContractTest {
         return new String(out);
     }
 
+
+    @Test
+    void 租约复用必须响亮失败而非静默泄漏() {
+        // ★审计实证：租约只对应一个许可，复用会让第二个许可**永远回不来**，
+        //   而 CAS 会把这个错误静默吞掉（permits 2→1，无任何报错）。
+        //   当前生产是每请求新建一个，但那是**约定**不是**约束**。
+        Semaphore sem = new Semaphore(2);
+        PermitLease lease = leased(sem);
+        lease.guardAsync(() -> "first", Runnable::run).await().indefinitely();
+
+        assertThat(sem.tryAcquire()).isTrue();   // 第二个许可
+        assertThatThrownBy(() -> lease.guardAsync(() -> "second", Runnable::run))
+            .as("复用租约必须抛出，而不是静默泄漏第二个许可")
+            .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void 重复订阅同一个Uni必须被拒() {
+        // 一次性检查若写在 supplier 内部，重复订阅会绕过它——所以必须在装配期。
+        Semaphore sem = new Semaphore(1);
+        PermitLease lease = leased(sem);
+        var uni = lease.guardAsync(() -> "x", Runnable::run);
+        uni.await().indefinitely();
+        // 同一个 Uni 再订阅一次：业务体会重跑，但许可已归还——闸门形同虚设
+        uni.await().indefinitely();
+        assertThat(sem.availablePermits())
+            .as("重复订阅不得让许可凭空变多")
+            .isEqualTo(1);
+    }
 }

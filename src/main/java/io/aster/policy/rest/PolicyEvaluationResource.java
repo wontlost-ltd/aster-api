@@ -51,6 +51,10 @@ import java.util.concurrent.TimeUnit;
 @RequireRole(Role.MEMBER)
 public class PolicyEvaluationResource {
 
+    /** guardSetup 的返回载体：把 acquire 后、worker 前捕获的几项打包带出。 */
+    private record EvalSetup(RequestIdentity identity, long apiCallStart, Timer.Sample sample) { }
+
+
     private static final Logger LOG = Logger.getLogger(PolicyEvaluationResource.class);
 
     /**
@@ -500,35 +504,29 @@ public class PolicyEvaluationResource {
         // 能被纯 JUnit 覆盖：内联在本方法里时，测试只能手写副本，
         // 生产逻辑整条失效也不报红。
         final PermitLease lease = PermitLease.of(EVAL_SOURCE_PERMITS);
-        final RequestIdentity identity;
-        final String tenantId;
-        final String performedBy;
-        final String apiKeyIdSnap;
-        final long apiCallStart;
-        final Timer.Sample sample;
-        try {
+        // ★经 lease.guardSetup 执行：acquire 之后、切到 worker 之前的任何抛出
+        //   都必须归还许可。用 lease 的方法而不是在这里手写 try/catch——
+        //   手写副本正是上一版的问题：生产逻辑改坏了测试也不报红。
+        final EvalSetup setup = lease.guardSetup(() -> {
             // 跨线程预捕获，必须在切到 worker pool 之前——理由见 RequestIdentity。
-            identity = captureIdentity();
-            tenantId = identity.tenantId();
-            performedBy = identity.performedBy();
-            apiKeyIdSnap = identity.apiKeyId();
-            apiCallStart = System.currentTimeMillis();
-            sample = businessMetrics.startPolicyEvaluation();
-
+            RequestIdentity id = captureIdentity();
+            Timer.Sample s0 = businessMetrics.startPolicyEvaluation();
             LOG.infof("Evaluating CNL source for tenant %s (locale=%s, function=%s)",
-                tenantId, request.getLocaleOrDefault(), request.getFunctionNameOrDefault());
-        } catch (RuntimeException | Error setupFailure) {
-            lease.release();
-            throw setupFailure;
-        }
+                id.tenantId(), request.getLocaleOrDefault(), request.getFunctionNameOrDefault());
+            return new EvalSetup(id, System.currentTimeMillis(), s0);
+        });
+        final RequestIdentity identity = setup.identity();
+        final String tenantId = identity.tenantId();
+        final String performedBy = identity.performedBy();
+        final String apiKeyIdSnap = identity.apiKeyId();
+        final long apiCallStart = setup.apiCallStart();
+        final Timer.Sample sample = setup.sample();
 
         // 使用 Uni.createFrom().item() 包装同步执行，避免阻塞主线程
-        return Uni.createFrom().item(() -> {
-            // ★许可必须在**worker 真正结束**时归还，不能挂在 onTermination
-            //   （第十二轮）：HTTP 取消会立刻触发 onTermination 释放许可，
-            //   而同步的 supplier.get() 仍在 CPU 上跑——反复取消即可让并发数
-            //   远超闸门上限，闸门形同虚设。放在 finally 里，取消也不会提前归还。
-            try {
+        // ★经 lease.guardAsync 执行：worker 结束（finally）与调度被拒（onFailure）
+        //   两条归还路径都在 PermitLease 里，取消不提前归还的语义也在那里。
+        //   不在这里手写 Uni 链——手写副本正是上一版的问题。
+        return lease.guardAsync(() -> {
             try {
                 // 结构词别名授权口径按调用来源可信度区分（安全边界）：
                 //   - 内部调用方（cloud BFF S2S，带 X-Internal-Caller + HMAC）转发的是**已发布
@@ -748,22 +746,7 @@ public class PolicyEvaluationResource {
                 }
                 return EvaluationResponse.error("CNL 策略执行失败: " + e.getMessage());
             }
-            } finally {
-                // 路径2：worker 真正跑完（正常或异常）。取消**不会**提前触发这里——
-                // 这正是第十二轮要的语义：不归还一个仍在烧 CPU 的 worker 的许可。
-                lease.release();
-            }
-        }).runSubscriptionOn(io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool())
-            // 路径3：订阅阶段调度被拒 → supplier 永不执行 → 上面的 finally 永不触发。
-            // Mutiny 把拒绝转成 Uni failure（UniRunSubscribeOn#subscribe 内部捕获），
-            // 只能在这里收到；写在资源方法里的同步 catch 不可达。
-            //
-            // ★只挂 onFailure，**绝不能**用 onTermination（第十三轮实测教训）：
-            //   onTermination 在**取消**时也会触发，而取消时 supplier 往往仍在
-            //   烧 CPU——那正是第十二轮修掉的绕过路径，用它兜底等于把 bug 放回来。
-            //   onFailure 只在真失败时触发：调度被拒时 supplier 没跑，CAS 由这里
-            //   拿下；supplier 跑过再失败时 CAS 已被 finally 拿走，这里是 no-op。
-            .onFailure().invoke(t -> lease.release());
+        }, io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool());
     }
 
     /**
