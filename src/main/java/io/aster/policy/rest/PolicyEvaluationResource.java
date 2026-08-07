@@ -494,31 +494,12 @@ public class PolicyEvaluationResource {
                     .build()
             );
         }
-        // ★许可归还收敛为一个 CAS 保护的一次性 lease（第十三轮）。
-        //
-        //   许可在**请求线程**取得，却要在 **worker 线程**归还，中间隔着
-        //   Mutiny 的惰性订阅边界。归还必须"恰好一次"，而可能触发它的路径有三条：
-        //     1. acquire 后、supplier 前的准备工作抛出（同步）
-        //     2. supplier 真正跑完/抛异常（worker 线程，finally）
-        //     3. 订阅阶段调度被拒——worker 池饱和，supplier **永不执行**
-        //
-        //   第 3 条是之前修漏的：runSubscriptionOn 只是**装配** Uni，真正的
-        //   executor.execute 发生在稍后的订阅阶段，那时本方法早已返回。
-        //   Mutiny 自己捕获拒绝并转成 Uni failure（UniRunSubscribeOn#subscribe），
-        //   所以任何写在本方法里的同步 catch 都**不可能**收到它。
-        //   后果比取消绕过更糟：单向累积、不可恢复，最终整站 503。
-        //
-        //   用 AtomicBoolean 的 CAS 做 release-once：三条路径调用同一个
-        //   releaseOnce，谁先到谁释放，后到的 CAS 失败直接跳过。
-        //   既不泄漏，也不会双重释放（双重 release 会凭空增加许可，
-        //   把闸门上限悄悄抬高，比泄漏更隐蔽）。
-        final java.util.concurrent.atomic.AtomicBoolean permitReleased =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
-        final Runnable releaseOnce = () -> {
-            if (permitReleased.compareAndSet(false, true)) {
-                EVAL_SOURCE_PERMITS.release();
-            }
-        };
+        // 许可归还的三条路径（准备失败 / worker 结束 / 调度被拒）与「恰好一次」
+        // 的 CAS 保证都在 PermitLease 里——那里也写清了为什么第 3 条必须靠
+        // onFailure 兜底、以及为什么不能用 onTermination。抽成独立类是为了让它
+        // 能被纯 JUnit 覆盖：内联在本方法里时，测试只能手写副本，
+        // 生产逻辑整条失效也不报红。
+        final PermitLease lease = PermitLease.of(EVAL_SOURCE_PERMITS);
         final RequestIdentity identity;
         final String tenantId;
         final String performedBy;
@@ -537,7 +518,7 @@ public class PolicyEvaluationResource {
             LOG.infof("Evaluating CNL source for tenant %s (locale=%s, function=%s)",
                 tenantId, request.getLocaleOrDefault(), request.getFunctionNameOrDefault());
         } catch (RuntimeException | Error setupFailure) {
-            releaseOnce.run();
+            lease.release();
             throw setupFailure;
         }
 
@@ -770,7 +751,7 @@ public class PolicyEvaluationResource {
             } finally {
                 // 路径2：worker 真正跑完（正常或异常）。取消**不会**提前触发这里——
                 // 这正是第十二轮要的语义：不归还一个仍在烧 CPU 的 worker 的许可。
-                releaseOnce.run();
+                lease.release();
             }
         }).runSubscriptionOn(io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool())
             // 路径3：订阅阶段调度被拒 → supplier 永不执行 → 上面的 finally 永不触发。
@@ -782,7 +763,7 @@ public class PolicyEvaluationResource {
             //   烧 CPU——那正是第十二轮修掉的绕过路径，用它兜底等于把 bug 放回来。
             //   onFailure 只在真失败时触发：调度被拒时 supplier 没跑，CAS 由这里
             //   拿下；supplier 跑过再失败时 CAS 已被 finally 拿走，这里是 no-op。
-            .onFailure().invoke(t -> releaseOnce.run());
+            .onFailure().invoke(t -> lease.release());
     }
 
     /**

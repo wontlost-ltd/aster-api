@@ -218,44 +218,33 @@ class EvaluateSourceSimulateContractTest {
     //   同步 catch **永远收不到它**。下面用 rejecting executor 直接复现。
     // ==================================================================
 
-    /** 复刻生产的许可 lease 结构：CAS release-once + 三条归还路径。 */
-    private static Uni<String> leasedUni(Semaphore sem, Executor executor,
-                                         AtomicBoolean workerRan, boolean workerThrows) {
-        AtomicBoolean released = new AtomicBoolean(false);
-        Runnable releaseOnce = () -> {
-            if (released.compareAndSet(false, true)) {
-                sem.release();
-            }
-        };
-        return Uni.createFrom().<String>item(() -> {
-            workerRan.set(true);
-            try {
-                if (workerThrows) {
-                    throw new IllegalStateException("worker boom");
-                }
-                return "ok";
-            } finally {
-                releaseOnce.run();
-            }
-        }).runSubscriptionOn(executor)
-            .onFailure().invoke(t -> releaseOnce.run());
+    // ★这些测试现在跑的是**生产的** PermitLease（src/main/.../PermitLease.java），
+    //   不再是测试里手写的副本。审计实证：此前 leasedUni 在测试内复刻了一遍
+    //   CAS+finally+onFailure，于是把生产的归还逻辑整条改坏（保留全部文本）
+    //   13 条测试照样全绿。抽出 PermitLease 后生产与测试共用同一份实现。
+
+    private static PermitLease leased(Semaphore sem) {
+        assertThat(sem.tryAcquire()).as("前置：应能取到许可").isTrue();
+        return PermitLease.of(sem);
     }
+
 
     @Test
     void 调度被拒时许可必须归还_supplier根本没跑() {
-        // ★这就是同步 catch 收不到、因而曾经永久泄漏的那条路径。
+        // ★同步 catch 收不到、因而曾经永久泄漏的那条路径。
+        //   runSubscriptionOn 只是装配，executor.execute 在订阅阶段才发生。
         Semaphore sem = new Semaphore(1);
-        assertThat(sem.tryAcquire()).isTrue();
+        PermitLease lease = leased(sem);
         assertThat(sem.availablePermits()).isZero();
 
+        AtomicBoolean workerRan = new AtomicBoolean(false);
         Executor rejecting = task -> {
             throw new RejectedExecutionException("worker pool saturated");
         };
-        AtomicBoolean workerRan = new AtomicBoolean(false);
 
         assertThatThrownBy(() ->
-            leasedUni(sem, rejecting, workerRan, false).await().indefinitely())
-            .as("调度拒绝应沿 Uni failure 通道抛出")
+            lease.guardAsync(() -> { workerRan.set(true); return "x"; }, rejecting)
+                .await().indefinitely())
             .isInstanceOf(RejectedExecutionException.class);
 
         assertThat(workerRan).as("supplier 根本不该跑起来").isFalse();
@@ -267,49 +256,99 @@ class EvaluateSourceSimulateContractTest {
     @Test
     void worker正常结束许可恰好归还一次() {
         Semaphore sem = new Semaphore(1);
-        assertThat(sem.tryAcquire()).isTrue();
-        AtomicBoolean ran = new AtomicBoolean(false);
+        PermitLease lease = leased(sem);
 
-        String r = leasedUni(sem, Runnable::run, ran, false).await().indefinitely();
+        String r = lease.guardAsync(() -> "ok", Runnable::run).await().indefinitely();
 
         assertThat(r).isEqualTo("ok");
-        assertThat(ran).isTrue();
-        // ★恰好一次：多释放会让许可 >1，把闸门上限悄悄抬高（比泄漏更隐蔽）
-        assertThat(sem.availablePermits())
-            .as("worker finally 与 onTermination 都会调 releaseOnce，CAS 必须去重")
-            .isEqualTo(1);
+        // 恰好一次：多释放会让许可 >1，把闸门上限悄悄抬高（比泄漏更隐蔽）
+        assertThat(sem.availablePermits()).isEqualTo(1);
     }
 
     @Test
     void worker抛异常时许可恰好归还一次() {
+        // finally 先释放，onFailure 后到——CAS 必须让后到者成为 no-op
         Semaphore sem = new Semaphore(1);
-        assertThat(sem.tryAcquire()).isTrue();
-        AtomicBoolean ran = new AtomicBoolean(false);
+        PermitLease lease = leased(sem);
 
         assertThatThrownBy(() ->
-            leasedUni(sem, Runnable::run, ran, true).await().indefinitely())
+            lease.guardAsync(() -> { throw new IllegalStateException("boom"); }, Runnable::run)
+                .await().indefinitely())
             .isInstanceOf(IllegalStateException.class);
 
-        assertThat(ran).isTrue();
         assertThat(sem.availablePermits())
-            .as("异常路径同样恰好一次：finally 释放后 onTermination 必须 no-op")
+            .as("异常路径恰好一次：finally 释放后 onFailure 必须 no-op")
             .isEqualTo(1);
     }
 
     @Test
-    void 生产代码必须用CAS_release_once且三条路径共用() throws Exception {
-        // 结构护栏（补充，不作为验收证据）：锁住 lease 形状，
-        // 防止有人把某条路径改回裸 release 而绕开 CAS 去重。
+    void 准备阶段抛出时许可必须归还() {
+        Semaphore sem = new Semaphore(1);
+        PermitLease lease = leased(sem);
+
+        assertThatThrownBy(() ->
+            lease.guardSetup(() -> { throw new IllegalStateException("captureIdentity 失败"); }))
+            .isInstanceOf(IllegalStateException.class);
+
+        assertThat(sem.availablePermits())
+            .as("acquire 之后、supplier 之前抛出，许可必须归还")
+            .isEqualTo(1);
+    }
+
+    @Test
+    void 取消不得归还仍在运行的worker的许可() throws Exception {
+        // ★第十二轮修的正是这条：许可挂 onTermination 时，取消会立刻归还，
+        //   而 supplier 仍在烧 CPU——反复「发起再取消」即可绕过闸门。
+        //   第十三轮为兜住调度拒绝又加了异步 hook，所以必须证明取消**不会**误放。
+        Semaphore sem = new Semaphore(1);
+        PermitLease lease = leased(sem);
+
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch allowFinish = new CountDownLatch(1);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            var sub = lease.guardAsync(() -> {
+                started.countDown();
+                try {
+                    allowFinish.await(5, TimeUnit.SECONDS);
+                    return "ok";
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return "interrupted";
+                }
+            }, pool).subscribe().with(x -> { }, t -> { });
+
+            assertThat(started.await(5, TimeUnit.SECONDS)).as("worker 应已开始").isTrue();
+            sub.cancel();
+
+            Thread.sleep(200);
+            assertThat(sem.availablePermits())
+                .as("★取消时 worker 仍在跑，许可绝不能提前归还——否则闸门可被绕过")
+                .isZero();
+
+            allowFinish.countDown();
+            Thread.sleep(300);
+            assertThat(sem.availablePermits())
+                .as("worker 真正结束后才归还，且恰好一次")
+                .isEqualTo(1);
+        } finally {
+            allowFinish.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void 许可归还必须走PermitLease而非内联裸release() throws Exception {
+        // 结构护栏（补充，不作为验收证据）：真正的行为由上面几条驱动
+        // PermitLease 的测试保证。这条只防「有人把归还逻辑抄回 REST 方法里」
+        // ——那样就回到了「测试只能手写副本」的老路。
         String body = evaluateSourceBody(source());
+        assertThat(stripComments(body))
+            .as("REST 方法内不得出现裸 EVAL_SOURCE_PERMITS.release()")
+            .doesNotContain("EVAL_SOURCE_PERMITS.release()");
         assertThat(body)
-            .as("必须用 CAS 保护的一次性归还")
-            .contains("permitReleased.compareAndSet(false, true)");
-        assertThat(body)
-            .as("路径3：调度拒绝只能靠异步 onFailure 兜底；用 onTermination 会在取消时误放")
-            .contains(".onFailure().invoke(t -> releaseOnce.run())");
-        assertThat(body)
-            .as("除 lease 内部外，不得再出现裸 release")
-            .containsOnlyOnce("EVAL_SOURCE_PERMITS.release();");
+            .as("必须通过 PermitLease 归还")
+            .contains("PermitLease.of(EVAL_SOURCE_PERMITS)");
     }
 
     @Test
@@ -323,62 +362,6 @@ class EvaluateSourceSimulateContractTest {
             .isEqualTo((int) cf.get(null));
     }
 
-    @Test
-    void 取消不得归还仍在运行的worker的许可() throws Exception {
-        // ★第十二轮修的正是这条：许可挂 onTermination 时，HTTP 取消会立刻归还，
-        //   而同步 supplier 仍在烧 CPU——反复「发起再取消」即可让实际并发远超闸门。
-        //   第十三轮我又把 onTermination 加了回来（为了兜住调度拒绝），
-        //   所以必须证明**取消不会**让许可提前归还，否则那个 bug 就复活了。
-        Semaphore sem = new Semaphore(1);
-        assertThat(sem.tryAcquire()).isTrue();
-
-        CountDownLatch workerStarted = new CountDownLatch(1);
-        CountDownLatch allowFinish = new CountDownLatch(1);
-        AtomicBoolean released = new AtomicBoolean(false);
-        Runnable releaseOnce = () -> {
-            if (released.compareAndSet(false, true)) {
-                sem.release();
-            }
-        };
-
-        ExecutorService pool = Executors.newSingleThreadExecutor();
-        try {
-            Uni<String> uni = Uni.createFrom().<String>item(() -> {
-                workerStarted.countDown();
-                try {
-                    allowFinish.await(5, TimeUnit.SECONDS);   // 模拟仍在烧 CPU
-                    return "ok";
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    return "interrupted";
-                } finally {
-                    releaseOnce.run();
-                }
-            }).runSubscriptionOn(pool)
-                .onFailure().invoke(t -> releaseOnce.run());
-
-            var sub = uni.subscribe().with(x -> { }, t -> { });
-            assertThat(workerStarted.await(5, TimeUnit.SECONDS))
-                .as("worker 应已开始").isTrue();
-
-            sub.cancel();   // ★HTTP 客户端断连
-
-            // 取消后短暂等待：若 onTermination 抢先归还，这里就会看到许可回到 1
-            Thread.sleep(200);
-            assertThat(sem.availablePermits())
-                .as("★取消时 worker 仍在跑，许可绝不能提前归还——否则闸门可被绕过")
-                .isZero();
-
-            allowFinish.countDown();                 // 放 worker 跑完
-            Thread.sleep(300);
-            assertThat(sem.availablePermits())
-                .as("worker 真正结束后才归还，且恰好一次")
-                .isEqualTo(1);
-        } finally {
-            allowFinish.countDown();
-            pool.shutdownNow();
-        }
-    }
 
     /**
      * 把行注释与块注释替换成等长空格。
