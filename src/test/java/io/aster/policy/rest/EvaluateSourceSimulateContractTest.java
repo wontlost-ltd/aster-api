@@ -10,6 +10,10 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import io.smallrye.mutiny.Uni;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -213,7 +217,7 @@ class EvaluateSourceSimulateContractTest {
                 releaseOnce.run();
             }
         }).runSubscriptionOn(executor)
-            .onTermination().invoke(releaseOnce);
+            .onFailure().invoke(t -> releaseOnce.run());
     }
 
     @Test
@@ -280,8 +284,8 @@ class EvaluateSourceSimulateContractTest {
             .as("必须用 CAS 保护的一次性归还")
             .contains("permitReleased.compareAndSet(false, true)");
         assertThat(body)
-            .as("路径3：调度拒绝只能靠异步 onTermination 兜底，同步 catch 不可达")
-            .contains(".onTermination().invoke(releaseOnce)");
+            .as("路径3：调度拒绝只能靠异步 onFailure 兜底；用 onTermination 会在取消时误放")
+            .contains(".onFailure().invoke(t -> releaseOnce.run())");
         assertThat(body)
             .as("除 lease 内部外，不得再出现裸 release")
             .containsOnlyOnce("EVAL_SOURCE_PERMITS.release();");
@@ -296,5 +300,62 @@ class EvaluateSourceSimulateContractTest {
         assertThat(((Semaphore) pf.get(null)).availablePermits())
             .as("静态初始化后可用许可应等于上限（没有被谁提前吃掉）")
             .isEqualTo((int) cf.get(null));
+    }
+
+    @Test
+    void 取消不得归还仍在运行的worker的许可() throws Exception {
+        // ★第十二轮修的正是这条：许可挂 onTermination 时，HTTP 取消会立刻归还，
+        //   而同步 supplier 仍在烧 CPU——反复「发起再取消」即可让实际并发远超闸门。
+        //   第十三轮我又把 onTermination 加了回来（为了兜住调度拒绝），
+        //   所以必须证明**取消不会**让许可提前归还，否则那个 bug 就复活了。
+        Semaphore sem = new Semaphore(1);
+        assertThat(sem.tryAcquire()).isTrue();
+
+        CountDownLatch workerStarted = new CountDownLatch(1);
+        CountDownLatch allowFinish = new CountDownLatch(1);
+        AtomicBoolean released = new AtomicBoolean(false);
+        Runnable releaseOnce = () -> {
+            if (released.compareAndSet(false, true)) {
+                sem.release();
+            }
+        };
+
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Uni<String> uni = Uni.createFrom().<String>item(() -> {
+                workerStarted.countDown();
+                try {
+                    allowFinish.await(5, TimeUnit.SECONDS);   // 模拟仍在烧 CPU
+                    return "ok";
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return "interrupted";
+                } finally {
+                    releaseOnce.run();
+                }
+            }).runSubscriptionOn(pool)
+                .onFailure().invoke(t -> releaseOnce.run());
+
+            var sub = uni.subscribe().with(x -> { }, t -> { });
+            assertThat(workerStarted.await(5, TimeUnit.SECONDS))
+                .as("worker 应已开始").isTrue();
+
+            sub.cancel();   // ★HTTP 客户端断连
+
+            // 取消后短暂等待：若 onTermination 抢先归还，这里就会看到许可回到 1
+            Thread.sleep(200);
+            assertThat(sem.availablePermits())
+                .as("★取消时 worker 仍在跑，许可绝不能提前归还——否则闸门可被绕过")
+                .isZero();
+
+            allowFinish.countDown();                 // 放 worker 跑完
+            Thread.sleep(300);
+            assertThat(sem.availablePermits())
+                .as("worker 真正结束后才归还，且恰好一次")
+                .isEqualTo(1);
+        } finally {
+            allowFinish.countDown();
+            pool.shutdownNow();
+        }
     }
 }

@@ -432,6 +432,16 @@ public class PolicyEvaluationResource {
         //     · 审计事件——审计链记的是「谁在何时做了什么决策」，模拟没做出任何决策
         //     · API 调用统计
         //   并发闸门**不跳过**：模拟同样消耗 CPU，仍需背压保护。
+        //
+        //   ★当前状态：**无生产调用方**。Phase 4 的动态 What-if 已于第十二轮
+        //     撤下（选择偏差，见 ADR 0033），本参数因此暂时无人使用。
+        //     保留理由：它表达的「模拟执行不该按真实执行记账」是一条独立且
+        //     正确的语义，与 Phase 4 具体做法无关，重做时可直接复用。
+        //   ★启用条件：只对 HMAC 已验证的内部调用方生效
+        //     （simulate && InternalCallerFilter.isHmacVerified）——免计费开关
+        //     不能信任裸 query boolean，否则任何外部调用方都能白嫖配额。
+        //   ★owner：policy-runtime；复核期限：若 Phase 4 重做方案在 2026-11 前
+        //     仍未落地，应连同本参数与其契约测试一并删除，避免长期空转。
         @QueryParam("simulate") @DefaultValue("false") boolean simulate
     ) {
         // ★simulate 必须绑定 HMAC 内部调用者（与 replayCapture 同门控，第九轮 P0-1b）：
@@ -766,9 +776,13 @@ public class PolicyEvaluationResource {
             // 路径3：订阅阶段调度被拒 → supplier 永不执行 → 上面的 finally 永不触发。
             // Mutiny 把拒绝转成 Uni failure（UniRunSubscribeOn#subscribe 内部捕获），
             // 只能在这里收到；写在资源方法里的同步 catch 不可达。
-            // onTermination 覆盖 failure/cancel/success：前两者兜底，
-            // success 时 CAS 已被 worker 拿走，这里是 no-op。
-            .onTermination().invoke(releaseOnce);
+            //
+            // ★只挂 onFailure，**绝不能**用 onTermination（第十三轮实测教训）：
+            //   onTermination 在**取消**时也会触发，而取消时 supplier 往往仍在
+            //   烧 CPU——那正是第十二轮修掉的绕过路径，用它兜底等于把 bug 放回来。
+            //   onFailure 只在真失败时触发：调度被拒时 supplier 没跑，CAS 由这里
+            //   拿下；supplier 跑过再失败时 CAS 已被 finally 拿走，这里是 no-op。
+            .onFailure().invoke(t -> releaseOnce.run());
     }
 
     /**
