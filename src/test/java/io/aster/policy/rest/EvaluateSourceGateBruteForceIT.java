@@ -125,14 +125,27 @@ class EvaluateSourceGateBruteForceIT {
     @Test
     void 并发打满闸门后许可必须精确归位() throws Exception {
         final int limit = limit();
-        final int total = 400;
+        final int total = 3000;
         assertThat(permits().availablePermits())
             .as("前置：闸门应处于空闲态").isEqualTo(limit);
 
-        ExecutorService pool = Executors.newFixedThreadPool(32);
+        ExecutorService pool = Executors.newFixedThreadPool(128);
         AtomicInteger ok = new AtomicInteger();
         AtomicInteger busy503 = new AtomicInteger();
         AtomicInteger other = new AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger minSeen =
+            new java.util.concurrent.atomic.AtomicInteger(Integer.MAX_VALUE);
+        Thread sampler = new Thread(() -> {
+            try {
+                while (!Thread.currentThread().isInterrupted()) {
+                    int a = permits().availablePermits();
+                    minSeen.updateAndGet(m -> Math.min(m, a));
+                    Thread.sleep(1);
+                }
+            } catch (Exception ignored) { }
+        });
+        sampler.setDaemon(true);
+        sampler.start();
         try {
             List<Future<?>> fs = new java.util.ArrayList<>();
             for (int i = 0; i < total; i++) {
@@ -162,14 +175,21 @@ class EvaluateSourceGateBruteForceIT {
             pool.awaitTermination(60, TimeUnit.SECONDS);
         }
 
+        sampler.interrupt();
         awaitDrain(limit, 30_000);
 
-        System.out.printf("  [闸门暴力] 上限=%d 总请求=%d 200=%d 503=%d 其他=%d%n",
-            limit, total, ok.get(), busy503.get(), other.get());
+        System.out.printf("  [闸门暴力] 上限=%d 总请求=%d 200=%d 503=%d 其他=%d 峰值占用=%d%n",
+            limit, total, ok.get(), busy503.get(), other.get(), limit - minSeen.get());
 
         assertThat(ok.get() + busy503.get())
             .as("请求应当么成功、么被闸门拒绝——不该有第三种结局")
             .isEqualTo(total - other.get());
+
+        // ★闸门必须真的被打满过——否则「许可归位」只是「负载太轻没触发」的假通过。
+        //   峰值占用由 1ms 采样线程观测，实测能稳定打到 20/20。
+        assertThat(limit - minSeen.get())
+            .as("闸门未被打满，本次负载不足以证明任何事——调高 total 或线程数")
+            .isEqualTo(limit);
 
         // ★核心断言
         assertThat(permits().availablePermits())
