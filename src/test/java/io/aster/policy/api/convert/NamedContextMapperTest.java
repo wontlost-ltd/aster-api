@@ -9,6 +9,11 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.concurrent.CopyOnWriteArrayList;
+
 /**
  * 命名参数上下文映射器测试
  */
@@ -170,5 +175,63 @@ class NamedContextMapperTest {
         assertTrue(result.success());
         assertTrue(result.wasNamedFormat());
         assertEquals(2, result.positionalArgs().length);
+    }
+
+    /**
+     * PII 脱敏：参数**值**不得进日志。
+     *
+     * <p><b>为什么必须有这条</b>：脱敏修复此前**全仓零断言**——把日志改回打印
+     * {@code positionalArgs[i]} 本体，所有测试照样全绿。而 DEBUG 打开时重跑一批
+     * 执行就会把成百上千条客户金融数据写进日志，绕过一切 PII 保留策略。
+     *
+     * <p>做法：挂一个 in-memory Handler 到 JUL 根 logger（JBoss LogManager 底层
+     * 走 JUL），把级别提到 FINE（对应 JBoss DEBUG），跑一次含哨兵值的映射，
+     * 断言产出的日志里**不含值**、但**含键名**（键名是排查所需，且非客户数据）。
+     */
+    @Test
+    void 参数值不得写入日志_只记键名() {
+        final String SENTINEL = "SECRET-金额-8675309";
+        List<LogRecord> captured = new CopyOnWriteArrayList<>();
+        Handler probe = new Handler() {
+            @Override public void publish(LogRecord r) { captured.add(r); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+
+        java.util.logging.Logger root = java.util.logging.LogManager.getLogManager().getLogger("");
+        Level originalLevel = root.getLevel();
+        root.addHandler(probe);
+        root.setLevel(Level.ALL);
+        java.util.logging.Logger target =
+            java.util.logging.Logger.getLogger("io.aster.policy.api.convert.NamedContextMapper");
+        Level targetOriginal = target.getLevel();
+        target.setLevel(Level.ALL);
+        try {
+            Map<String, Object> ctx = new HashMap<>();
+            ctx.put("amount", SENTINEL);
+            NamedContextMapper.mapContext(ctx, createParams("amount"));
+
+            String all = captured.stream()
+                .map(r -> {
+                    String m = r.getMessage() == null ? "" : r.getMessage();
+                    Object[] ps = r.getParameters();
+                    if (ps != null) {
+                        for (Object o : ps) {
+                            m = m + " " + o;
+                        }
+                    }
+                    return m;
+                })
+                .reduce("", (a, b) -> a + "\n" + b);
+
+            assertFalse(all.contains(SENTINEL),
+                "★参数值泄漏进日志——DEBUG 打开时会把客户明文金融数据成批写盘。实际日志: " + all);
+            assertTrue(all.contains("amount"),
+                "键名应保留：排查『参数没映射上』需要它，且键名不是客户数据。实际日志: " + all);
+        } finally {
+            root.removeHandler(probe);
+            root.setLevel(originalLevel);
+            target.setLevel(targetOriginal);
+        }
     }
 }
