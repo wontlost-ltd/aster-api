@@ -53,10 +53,11 @@ class EvaluateSourceSimulateContractTest {
 
     @Test
     void 配额必须被simulate_gate() throws Exception {
-        // 查一次 What-if 会重跑上百条；按真实执行计费 = 看报表就被扣钱
-        assertThat(evaluateSourceBody(source()))
-            .as("enforceApiQuota 必须在 if (!effectiveSimulate) 内")
-            .contains("if (!effectiveSimulate) {\n            enforceApiQuota(");
+        // 查一次 What-if 会重跑上百条；按真实执行计费 = 看报表就被扣钱。
+        // ★原实现只 contains 一段含硬编码缩进的字面量——只证明「存在一处被 gate 的
+        //   调用」，挡不住别处还有未 gate 的同名调用（审计实证：在其后无条件再调
+        //   一次 enforceApiQuota，测试照样全绿）。改为遍历每一处 + 括号深度判定。
+        assertEveryCallIsGated(evaluateSourceBody(source()), "enforceApiQuota(");
     }
 
     @Test
@@ -64,30 +65,34 @@ class EvaluateSourceSimulateContractTest {
         // ★第九轮 P0-1b：simulate 是**免计费**开关。若信任裸 query boolean，
         //   任何外部调用方加个 ?simulate=true 就能白嫖配额且不留调用记录。
         //   必须与 replayCapture 同门控（InternalCallerFilter.isHmacVerified）。
-        assertThat(evaluateSourceBody(source()))
-            .as("simulate 必须与 HMAC 验证做与运算，不能直接信任 query 参数")
-            .contains("simulate && io.aster.security.apikey.InternalCallerFilter.isHmacVerified(");
+        //
+        // ★原实现只 contains 那个表达式的文本。审计实证：把它整体挪进
+        //   `if (false) { boolean unused = ...; }` 死分支、effectiveSimulate 改为
+        //   裸 simulate —— 文本仍在，测试全绿，而免计费开关已被架空。
+        //   所以必须断言这个表达式**真的赋给了 effectiveSimulate**。
+        String body = stripComments(evaluateSourceBody(source()));
+        String flat = body.replaceAll("\\s+", " ");
+
+        assertThat(flat)
+            .as("effectiveSimulate 必须由 simulate 与 HMAC 验证的与运算赋值")
+            .contains("final boolean effectiveSimulate = simulate "
+                + "&& io.aster.security.apikey.InternalCallerFilter.isHmacVerified(");
+
+        // 不得存在把 effectiveSimulate 直接赋成裸 simulate 的写法
+        assertThat(flat)
+            .as("effectiveSimulate 不得直接采信 query 参数")
+            .doesNotContain("effectiveSimulate = simulate;");
     }
 
     @Test
     void 异常路径的记账同样要被gate() throws Exception {
         // ★第九轮 P0-1：成功路径 gate 了，异常路径（api_error）仍在记账，
         //   于是失败的模拟重跑照样计入 API 调用统计。
-        String body = evaluateSourceBody(source());
-        int from = 0;
-        int count = 0;
-        while (true) {
-            int idx = body.indexOf("recordApiCall(\"/api/v1/policies/evaluate-source\", \"api_error\"", from);
-            if (idx < 0) break;
-            count++;
-            // 该调用之前 200 字符内应出现 gate
-            String near = body.substring(Math.max(0, idx - 200), idx);
-            assertThat(near)
-                .as("第 " + count + " 处 api_error 记账未被 effectiveSimulate gate")
-                .contains("if (!effectiveSimulate)");
-            from = idx + 1;
-        }
-        assertThat(count).as("应存在 api_error 记账点").isGreaterThan(0);
+        // ★原实现用固定 200 字符窗口判定 gate——本文件别处早已因「窗口会被多行
+        //   调用撑爆而误判」换成括号深度，这条漏改了。现统一。
+        assertEveryCallIsGated(
+            evaluateSourceBody(source()),
+            "recordApiCall(\"/api/v1/policies/evaluate-source\", \"api_error\"");
     }
 
     @Test
@@ -120,15 +125,25 @@ class EvaluateSourceSimulateContractTest {
 
     @Test
     void 并发闸门不得被simulate跳过() throws Exception {
-        // 模拟同样消耗 CPU，仍需背压保护——只跳记账，不跳资源保护
+        // 模拟同样消耗 CPU，仍需背压保护——只跳记账，不跳资源保护。
+        //
+        // ★原实现是**空测试**（审计实证）：它断言 body 前缀不含 "if (simulate)"，
+        //   而生产变量叫 effectiveSimulate，这个串根本不可能出现；算出的
+        //   firstSimulateGate 还是个从未被断言的死变量。真的让 simulate 跳过闸门
+        //   （把 tryAcquire 包进 gate）时，测试照样全绿。
         String body = evaluateSourceBody(source());
-        int gate = body.indexOf("acquired");
-        int firstSimulateGate = body.indexOf("if (!simulate)");
-        assertThat(gate).as("找不到并发闸门").isGreaterThan(0);
-        // 闸门代码不应包在 simulate 分支里：它在第一个 gate 之后但属于主流程
-        assertThat(body.substring(0, gate))
-            .as("并发闸门不得被 simulate 跳过")
-            .doesNotContain("if (simulate)");
+        String stripped = stripComments(body);
+
+        int acquire = stripped.indexOf("EVAL_SOURCE_PERMITS.tryAcquire(");
+        assertThat(acquire).as("找不到并发闸门 tryAcquire").isGreaterThan(0);
+
+        // ★闸门必须在主流程上：不得落在任何 simulate 相关分支内
+        assertThat(isInsideSimulateGate(body, acquire))
+            .as("并发闸门不得被包在 if (!effectiveSimulate) 内——模拟同样要背压")
+            .isFalse();
+        assertThat(stripped.substring(0, acquire))
+            .as("闸门之前不得出现 simulate 短路（提前 return / 直接置 acquired）")
+            .doesNotContain("if (effectiveSimulate)");
     }
 
     @Test
@@ -391,4 +406,5 @@ class EvaluateSourceSimulateContractTest {
         }
         return new String(out);
     }
+
 }
