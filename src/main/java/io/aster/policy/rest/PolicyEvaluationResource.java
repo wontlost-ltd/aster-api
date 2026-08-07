@@ -454,6 +454,12 @@ public class PolicyEvaluationResource {
         //   未验证的调用方传了也静默忽略（与 replayCapture 一致，保持 trial 端点宽容）。
         final boolean effectiveSimulate =
             simulate && io.aster.security.apikey.InternalCallerFilter.isHmacVerified(jaxrsCtx);
+        if (simulate && !effectiveSimulate) {
+            // 静默降级本身是**安全**的（外部调用方拿到的只是一次正常计费的执行），
+            // 但对合法内部调用方来说无声无息：HMAC 配置漂移（key 轮换失配、少带一个头）
+            // 会让 simulate 悄悄失效并开始扣真实配额，排查时零线索。
+            LOG.debugf("simulate=true 被忽略：调用方未通过 HMAC 验证，按真实执行计费");
+        }
         if (!effectiveSimulate) {
             enforceApiQuota("/api/v1/policies/evaluate-source");
         }
