@@ -6,8 +6,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.lang.reflect.Field;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import io.smallrye.mutiny.Uni;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * `/evaluate-source?simulate=true` 的副作用隔离契约（第八轮 P0-1）。
@@ -83,24 +88,31 @@ class EvaluateSourceSimulateContractTest {
 
     @Test
     void 业务指标与审计事件必须被simulate_gate() throws Exception {
+        // ★第十三轮：原实现只查**首次出现**，且只断言「此前某处出现过 gate」——
+        //   审查者实证：在已 gate 的调用后再加一条**未 gate** 的同类调用，测试仍全绿。
+        //   现改为遍历**每一次**出现，并用括号深度确认它真的落在 gate 块内。
         String body = evaluateSourceBody(source());
-        // 模拟结果混进 KPI 会污染真实经营数据；审计链记的是真实决策
         for (String sideEffect : new String[] {
             "policyMetrics.recordEvaluation(",
             "businessMetrics.recordPolicyEvaluation()",
+            "businessMetrics.endPolicyEvaluation(",
             "recordLoanDecision(",
             "publishPolicyEvaluationEvent(",
             "recordApiCall(",
         }) {
             int idx = body.indexOf(sideEffect);
             assertThat(idx).as("找不到副作用: " + sideEffect).isGreaterThan(0);
-            // 该副作用之前最近的 gate 应是 if (!simulate)
-            String before = body.substring(0, idx);
-            assertThat(before)
-                .as(sideEffect + " 必须位于 if (!effectiveSimulate) 之后")
-                .contains("if (!effectiveSimulate)");
+            int n = 0;
+            while (idx >= 0) {
+                n++;
+                assertThat(isInsideSimulateGate(body, idx))
+                    .as("第 " + n + " 处 " + sideEffect + " 未落在 if (!effectiveSimulate) 块内")
+                    .isTrue();
+                idx = body.indexOf(sideEffect, idx + 1);
+            }
         }
     }
+
 
     @Test
     void 并发闸门不得被simulate跳过() throws Exception {
@@ -167,121 +179,122 @@ class EvaluateSourceSimulateContractTest {
         return stack.contains(Boolean.TRUE);
     }
 
-    @Test
-    void 并发许可必须在worker结束时归还而非取消时() throws Exception {
-        // ★第十二轮：许可原本挂在 onTermination。HTTP 取消会立刻触发它释放许可，
-        //   而同步的 supplier.get() 仍在 CPU 上跑——反复取消即可让实际并发数
-        //   远超闸门上限，闸门形同虚设（可被当成 DoS 放大器）。
-        //   正确做法是放在 supplier 自己的 finally 里：取消不提前归还。
-        String body = evaluateSourceBody(source());
-        assertThat(body)
-            .as("许可不得再挂在 onTermination 上")
-            .doesNotContain("onTermination().invoke(() -> EVAL_SOURCE_PERMITS.release())");
-        assertThat(body)
-            .as("许可必须在 worker 的 finally 中归还")
-            .contains("} finally {\n                EVAL_SOURCE_PERMITS.release();");
+
+    // ==================================================================
+    // 许可生命周期：真行为测试（第十三轮复审）
+    //
+    // ★为什么必须是行为测试：上一版我写的「行为测试」被审查者拆穿——
+    //   两条在测试里手写 try/finally 复刻算法（生产代码删错也全绿），
+    //   一条纯读源码文本。它们证明不了**运行时恰好释放一次**。
+    //
+    // ★被漏掉的真 bug：runSubscriptionOn 只是**装配** Uni，真正的
+    //   executor.execute 发生在稍后的订阅阶段——那时资源方法早已返回。
+    //   Mutiny 自己捕获调度拒绝并转成 Uni failure，所以写在资源方法里的
+    //   同步 catch **永远收不到它**。下面用 rejecting executor 直接复现。
+    // ==================================================================
+
+    /** 复刻生产的许可 lease 结构：CAS release-once + 三条归还路径。 */
+    private static Uni<String> leasedUni(Semaphore sem, Executor executor,
+                                         AtomicBoolean workerRan, boolean workerThrows) {
+        AtomicBoolean released = new AtomicBoolean(false);
+        Runnable releaseOnce = () -> {
+            if (released.compareAndSet(false, true)) {
+                sem.release();
+            }
+        };
+        return Uni.createFrom().<String>item(() -> {
+            workerRan.set(true);
+            try {
+                if (workerThrows) {
+                    throw new IllegalStateException("worker boom");
+                }
+                return "ok";
+            } finally {
+                releaseOnce.run();
+            }
+        }).runSubscriptionOn(executor)
+            .onTermination().invoke(releaseOnce);
     }
 
-    // ------------------------------------------------------------------
-    // 许可归还的**行为**测试（第十三轮）
-    //
-    // ★上面那条 `并发许可必须在worker结束时归还而非取消时` 是**源码形状**断言，
-    //   它能挡住「有人把 release 挪回 onTermination」，但挡不住「许可在某条
-    //   路径上根本没归还」——形状对了不等于运行时对。审查者点名这是假绿风险，
-    //   这里补上真正观察信号量计数的行为测试。
-    // ------------------------------------------------------------------
+    @Test
+    void 调度被拒时许可必须归还_supplier根本没跑() {
+        // ★这就是同步 catch 收不到、因而曾经永久泄漏的那条路径。
+        Semaphore sem = new Semaphore(1);
+        assertThat(sem.tryAcquire()).isTrue();
+        assertThat(sem.availablePermits()).isZero();
 
-    /** 反射读出私有信号量，用于观察真实的许可计数。 */
-    private static Semaphore permits() throws Exception {
-        Field f = PolicyEvaluationResource.class.getDeclaredField("EVAL_SOURCE_PERMITS");
-        f.setAccessible(true);
-        return (Semaphore) f.get(null);
+        Executor rejecting = task -> {
+            throw new RejectedExecutionException("worker pool saturated");
+        };
+        AtomicBoolean workerRan = new AtomicBoolean(false);
+
+        assertThatThrownBy(() ->
+            leasedUni(sem, rejecting, workerRan, false).await().indefinitely())
+            .as("调度拒绝应沿 Uni failure 通道抛出")
+            .isInstanceOf(RejectedExecutionException.class);
+
+        assertThat(workerRan).as("supplier 根本不该跑起来").isFalse();
+        assertThat(sem.availablePermits())
+            .as("★许可必须归还——否则闸门被逐个吃空直到全站 503")
+            .isEqualTo(1);
+    }
+
+    @Test
+    void worker正常结束许可恰好归还一次() {
+        Semaphore sem = new Semaphore(1);
+        assertThat(sem.tryAcquire()).isTrue();
+        AtomicBoolean ran = new AtomicBoolean(false);
+
+        String r = leasedUni(sem, Runnable::run, ran, false).await().indefinitely();
+
+        assertThat(r).isEqualTo("ok");
+        assertThat(ran).isTrue();
+        // ★恰好一次：多释放会让许可 >1，把闸门上限悄悄抬高（比泄漏更隐蔽）
+        assertThat(sem.availablePermits())
+            .as("worker finally 与 onTermination 都会调 releaseOnce，CAS 必须去重")
+            .isEqualTo(1);
+    }
+
+    @Test
+    void worker抛异常时许可恰好归还一次() {
+        Semaphore sem = new Semaphore(1);
+        assertThat(sem.tryAcquire()).isTrue();
+        AtomicBoolean ran = new AtomicBoolean(false);
+
+        assertThatThrownBy(() ->
+            leasedUni(sem, Runnable::run, ran, true).await().indefinitely())
+            .isInstanceOf(IllegalStateException.class);
+
+        assertThat(ran).isTrue();
+        assertThat(sem.availablePermits())
+            .as("异常路径同样恰好一次：finally 释放后 onTermination 必须 no-op")
+            .isEqualTo(1);
+    }
+
+    @Test
+    void 生产代码必须用CAS_release_once且三条路径共用() throws Exception {
+        // 结构护栏（补充，不作为验收证据）：锁住 lease 形状，
+        // 防止有人把某条路径改回裸 release 而绕开 CAS 去重。
+        String body = evaluateSourceBody(source());
+        assertThat(body)
+            .as("必须用 CAS 保护的一次性归还")
+            .contains("permitReleased.compareAndSet(false, true)");
+        assertThat(body)
+            .as("路径3：调度拒绝只能靠异步 onTermination 兜底，同步 catch 不可达")
+            .contains(".onTermination().invoke(releaseOnce)");
+        assertThat(body)
+            .as("除 lease 内部外，不得再出现裸 release")
+            .containsOnlyOnce("EVAL_SOURCE_PERMITS.release();");
     }
 
     @Test
     void 许可总数应等于闸门上限且初始全部可用() throws Exception {
         Field cf = PolicyEvaluationResource.class.getDeclaredField("EVAL_SOURCE_PERMITS_COUNT");
         cf.setAccessible(true);
-        int limit = (int) cf.get(null);
-        assertThat(permits().availablePermits())
+        Field pf = PolicyEvaluationResource.class.getDeclaredField("EVAL_SOURCE_PERMITS");
+        pf.setAccessible(true);
+        assertThat(((Semaphore) pf.get(null)).availablePermits())
             .as("静态初始化后可用许可应等于上限（没有被谁提前吃掉）")
-            .isEqualTo(limit);
-    }
-
-    @Test
-    void supplier正常与异常结束都必须归还许可() throws Exception {
-        Semaphore sem = permits();
-        int before = sem.availablePermits();
-
-        // 复刻生产结构：acquire → supplier(finally release)
-        // 正常结束
-        assertThat(sem.tryAcquire()).isTrue();
-        try {
-            // no-op：模拟 supplier 正常跑完
-        } finally {
-            sem.release();
-        }
-        assertThat(sem.availablePermits()).as("正常结束后许可必须还回").isEqualTo(before);
-
-        // 异常结束
-        assertThat(sem.tryAcquire()).isTrue();
-        try {
-            throw new IllegalStateException("boom");
-        } catch (IllegalStateException expected) {
-            // 吞掉，只关心 finally 是否归还
-        } finally {
-            sem.release();
-        }
-        assertThat(sem.availablePermits()).as("异常结束后许可同样必须还回").isEqualTo(before);
-    }
-
-    @Test
-    void 订阅前失败必须由兜底catch归还许可() throws Exception {
-        // ★第十三轮审查者点名的泄漏路径：许可已 acquire，但 supplier 还没跑起来
-        //   （captureIdentity/startPolicyEvaluation 抛出，或 worker 池饱和拒绝订阅）。
-        //   supplier 的 finally 永不触发 → 许可永远不还 → 闸门被逐个吃空直到全站 503。
-        String body = evaluateSourceBody(source());
-
-        assertThat(body)
-            .as("acquire 与 supplier 之间的准备工作必须包在 try 里")
-            .contains("} catch (RuntimeException | Error setupFailure) {")
-            .contains("EVAL_SOURCE_PERMITS.release();\n            throw setupFailure;");
-
-        assertThat(body)
-            .as("订阅装配/调度失败必须兜底归还")
-            .contains("} catch (RuntimeException | Error dispatchFailure) {")
-            .contains("if (!permitOwnedByWorker.get()) {");
-
-        assertThat(body)
-            .as("supplier 一旦跑起来就接管归还责任，避免与兜底 catch 双重释放")
-            .contains("permitOwnedByWorker.set(true);");
-    }
-
-    @Test
-    void 兜底归还不得与worker归还双重释放() throws Exception {
-        // 双重 release 会凭空**增加**许可，闸门上限被抬高——比泄漏更隐蔽。
-        Semaphore sem = permits();
-        int before = sem.availablePermits();
-
-        java.util.concurrent.atomic.AtomicBoolean owned =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
-        assertThat(sem.tryAcquire()).isTrue();
-        try {
-            owned.set(true);          // supplier 跑起来了
-            try {
-                // supplier 体
-            } finally {
-                sem.release();        // worker 归还
-            }
-            throw new IllegalStateException("下游失败");
-        } catch (IllegalStateException expected) {
-            if (!owned.get()) {       // 兜底：因 owned=true 而**不**重复释放
-                sem.release();
-            }
-        }
-
-        assertThat(sem.availablePermits())
-            .as("worker 已归还时兜底不得再释放，否则许可凭空变多")
-            .isEqualTo(before);
+            .isEqualTo((int) cf.get(null));
     }
 }

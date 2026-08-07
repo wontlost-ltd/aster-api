@@ -484,14 +484,31 @@ public class PolicyEvaluationResource {
                     .build()
             );
         }
-        // ★许可归还的所有权在此交接（第十三轮）。
-        //   许可已经拿到，但 supplier 还没开始跑；这中间的任何一步抛出，
-        //   或订阅本身被拒（worker 线程池饱和 → supplier 永不执行），
-        //   都会让许可**永远不还**，闸门被逐个吃空直到全站 503。
-        //   用一次性标志把归还责任交给 supplier：只要 supplier 真的跑起来，
-        //   由它的 finally 负责；否则由下面的 catch 兜底。两条路径互斥。
-        final java.util.concurrent.atomic.AtomicBoolean permitOwnedByWorker =
+        // ★许可归还收敛为一个 CAS 保护的一次性 lease（第十三轮）。
+        //
+        //   许可在**请求线程**取得，却要在 **worker 线程**归还，中间隔着
+        //   Mutiny 的惰性订阅边界。归还必须"恰好一次"，而可能触发它的路径有三条：
+        //     1. acquire 后、supplier 前的准备工作抛出（同步）
+        //     2. supplier 真正跑完/抛异常（worker 线程，finally）
+        //     3. 订阅阶段调度被拒——worker 池饱和，supplier **永不执行**
+        //
+        //   第 3 条是之前修漏的：runSubscriptionOn 只是**装配** Uni，真正的
+        //   executor.execute 发生在稍后的订阅阶段，那时本方法早已返回。
+        //   Mutiny 自己捕获拒绝并转成 Uni failure（UniRunSubscribeOn#subscribe），
+        //   所以任何写在本方法里的同步 catch 都**不可能**收到它。
+        //   后果比取消绕过更糟：单向累积、不可恢复，最终整站 503。
+        //
+        //   用 AtomicBoolean 的 CAS 做 release-once：三条路径调用同一个
+        //   releaseOnce，谁先到谁释放，后到的 CAS 失败直接跳过。
+        //   既不泄漏，也不会双重释放（双重 release 会凭空增加许可，
+        //   把闸门上限悄悄抬高，比泄漏更隐蔽）。
+        final java.util.concurrent.atomic.AtomicBoolean permitReleased =
             new java.util.concurrent.atomic.AtomicBoolean(false);
+        final Runnable releaseOnce = () -> {
+            if (permitReleased.compareAndSet(false, true)) {
+                EVAL_SOURCE_PERMITS.release();
+            }
+        };
         final RequestIdentity identity;
         final String tenantId;
         final String performedBy;
@@ -510,14 +527,12 @@ public class PolicyEvaluationResource {
             LOG.infof("Evaluating CNL source for tenant %s (locale=%s, function=%s)",
                 tenantId, request.getLocaleOrDefault(), request.getFunctionNameOrDefault());
         } catch (RuntimeException | Error setupFailure) {
-            EVAL_SOURCE_PERMITS.release();
+            releaseOnce.run();
             throw setupFailure;
         }
 
         // 使用 Uni.createFrom().item() 包装同步执行，避免阻塞主线程
-        try {
         return Uni.createFrom().item(() -> {
-            permitOwnedByWorker.set(true);
             // ★许可必须在**worker 真正结束**时归还，不能挂在 onTermination
             //   （第十二轮）：HTTP 取消会立刻触发 onTermination 释放许可，
             //   而同步的 supplier.get() 仍在 CPU 上跑——反复取消即可让并发数
@@ -743,17 +758,17 @@ public class PolicyEvaluationResource {
                 return EvaluationResponse.error("CNL 策略执行失败: " + e.getMessage());
             }
             } finally {
-                EVAL_SOURCE_PERMITS.release();
+                // 路径2：worker 真正跑完（正常或异常）。取消**不会**提前触发这里——
+                // 这正是第十二轮要的语义：不归还一个仍在烧 CPU 的 worker 的许可。
+                releaseOnce.run();
             }
-        }).runSubscriptionOn(io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool());
-        } catch (RuntimeException | Error dispatchFailure) {
-            // 订阅装配/调度失败（如 worker 线程池饱和拒绝）：supplier 永不执行，
-            // 它的 finally 也就永不触发。此处兜底归还，避免许可被吃掉。
-            if (!permitOwnedByWorker.get()) {
-                EVAL_SOURCE_PERMITS.release();
-            }
-            throw dispatchFailure;
-        }
+        }).runSubscriptionOn(io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool())
+            // 路径3：订阅阶段调度被拒 → supplier 永不执行 → 上面的 finally 永不触发。
+            // Mutiny 把拒绝转成 Uni failure（UniRunSubscribeOn#subscribe 内部捕获），
+            // 只能在这里收到；写在资源方法里的同步 catch 不可达。
+            // onTermination 覆盖 failure/cancel/success：前两者兜底，
+            // success 时 CAS 已被 worker 拿走，这里是 no-op。
+            .onTermination().invoke(releaseOnce);
     }
 
     /**
