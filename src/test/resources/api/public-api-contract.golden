@@ -27,6 +27,7 @@ GET /api/v1/messages/{locale}
 GET /api/v1/metrics/waadr
 GET /api/v1/modules/catalog
 GET /api/v1/policies/{policyId}/versions
+GET /api/v1/policies/{policyId}/whatif-batches
 GET /api/v1/version
 GET /api/v1/workflows/by-status/{status}
 GET /api/v1/workflows/metrics
@@ -50,4 +51,5 @@ POST /api/v1/policies/evaluate/batch
 POST /api/v1/policies/schema
 POST /api/v1/policies/validate
 POST /api/v1/policies/{policyId}/rollback
+POST /api/v1/policies/{policyId}/whatif-batches
 PUT /api/v1/admin/messages/{locale}
