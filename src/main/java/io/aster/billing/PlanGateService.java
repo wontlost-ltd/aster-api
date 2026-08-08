@@ -178,15 +178,23 @@ public class PlanGateService {
         //   而 lookupPlan 失败会 fail-open 成 pro 档，于是**权益判定静默放行**，
         //   没有异常、没有告警（issue #231，已用真 cloud 实例实测确认）。
         //   签名的 path **只含 pathname 不含 query**，与 cloud 的 url.pathname 对齐。
-        var signed = io.aster.security.internal.InternalCallSigner.sign(
-            config.hmacKey().orElse(""), "GET", path, "");
+        // ★key 缺失时保持旧行为（发空签名，由服务端拒绝），而不是抛异常。
+        //   InternalCallSigner.sign 用 SecretKeySpec，空 key 会抛
+        //   IllegalArgumentException——那会让 lookup 失败并 fail-open 成 pro 档，
+        //   把「没配密钥」这个配置问题伪装成「权益放行」。
+        //   （PlanGateServiceIT 的 profile 就没配 key，这条是它抓出来的。）
+        var signed = config.hmacKey()
+            .filter(k -> !k.isBlank())
+            .map(k -> io.aster.security.internal.InternalCallSigner.sign(k, "GET", path, ""))
+            .orElse(null);
 
         HttpRequest request = HttpRequest.newBuilder()
             .uri(fullUri)
             .timeout(LOOKUP_TIMEOUT)
-            .header("X-Aster-Timestamp", signed.timestamp())
-            .header("X-Aster-Nonce", signed.nonce())
-            .header("X-Aster-Signature", signed.signature())
+            .header("X-Aster-Timestamp",
+                signed != null ? signed.timestamp() : String.valueOf(System.currentTimeMillis() / 1000))
+            .header("X-Aster-Nonce", signed != null ? signed.nonce() : "")
+            .header("X-Aster-Signature", signed != null ? signed.signature() : "")
             .GET()
             .build();
 

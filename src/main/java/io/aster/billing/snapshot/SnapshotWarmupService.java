@@ -199,17 +199,22 @@ public class SnapshotWarmupService {
         //   Redis 配额快照可能长期为空或陈旧（issue #231，真实例实测确认）。
         //   ★签名只用 pathname，**不含 query**——本方法的 cursor/limit 在 query 里，
         //   把它们签进去会与 cloud 的 url.pathname 对不上。
-        var signed = io.aster.security.internal.InternalCallSigner.sign(
-            config.hmacKey().orElse(""), "GET", path, "");
+        // ★同 PlanGateService：key 缺失时发空签名而非抛异常，
+        //   否则「没配密钥」会以别的形态（预热失败）冒出来，更难定位。
+        var signed = config.hmacKey()
+            .filter(k -> !k.isBlank())
+            .map(k -> io.aster.security.internal.InternalCallSigner.sign(k, "GET", path, ""))
+            .orElse(null);
 
         CompletableFuture<JsonObject> future = new CompletableFuture<>();
         getClient()
             .get(port, baseUri.getHost(), path + "?" + query)
             .ssl(ssl)
             .timeout(10_000) // 全量拉相对慢，给 10s
-            .putHeader("X-Aster-Timestamp", signed.timestamp())
-            .putHeader("X-Aster-Nonce", signed.nonce())
-            .putHeader("X-Aster-Signature", signed.signature())
+            .putHeader("X-Aster-Timestamp",
+                signed != null ? signed.timestamp() : String.valueOf(System.currentTimeMillis() / 1000))
+            .putHeader("X-Aster-Nonce", signed != null ? signed.nonce() : "")
+            .putHeader("X-Aster-Signature", signed != null ? signed.signature() : "")
             .send()
             .onSuccess(resp -> {
                 if (resp.statusCode() != 200) {
