@@ -10,14 +10,11 @@ import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.HexFormat;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -175,16 +172,21 @@ public class PlanGateService {
         String path = "/api/internal/tenant/" + encodedTenant + "/plan";
         URI fullUri = baseUri.resolve(path);
 
-        long timestamp = System.currentTimeMillis() / 1000;
-        String signature = config.hmacKey()
-            .map(key -> sign(key, "GET\n" + path + "\n" + timestamp))
-            .orElse("");
+        // ★必须 v2 canonical（nonce + bodySha256）：cloud 侧已于 2026-08-01
+        //   关闭 v1 兼容窗口（v1 不绑 body/nonce，300s 时钟窗内可原样重放）。
+        //   此前这里手写 v1，被 cloud 以 invalid_signature 401 拒——
+        //   而 lookupPlan 失败会 fail-open 成 pro 档，于是**权益判定静默放行**，
+        //   没有异常、没有告警（issue #231，已用真 cloud 实例实测确认）。
+        //   签名的 path **只含 pathname 不含 query**，与 cloud 的 url.pathname 对齐。
+        var signed = io.aster.security.internal.InternalCallSigner.sign(
+            config.hmacKey().orElse(""), "GET", path, "");
 
         HttpRequest request = HttpRequest.newBuilder()
             .uri(fullUri)
             .timeout(LOOKUP_TIMEOUT)
-            .header("X-Aster-Timestamp", String.valueOf(timestamp))
-            .header("X-Aster-Signature", signature)
+            .header("X-Aster-Timestamp", signed.timestamp())
+            .header("X-Aster-Nonce", signed.nonce())
+            .header("X-Aster-Signature", signed.signature())
             .GET()
             .build();
 
@@ -229,13 +231,4 @@ public class PlanGateService {
         );
     }
 
-    private static String sign(String key, String message) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            return HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException("HMAC 签名失败", e);
-        }
-    }
 }
