@@ -221,7 +221,11 @@ public class PlanGateService {
             json.getBoolean("allowsApproval", false),
             json.getInteger("maxTeamMembers", 1),
             json.getLong("evaluationsLimit", 0L),
-            json.getLong("apiCallsLimit", 0L)
+            json.getLong("apiCallsLimit", 0L),
+            // ★缺省 0 = fail-closed（ADR 0034 §7.2）。
+            //   plan-gate 尚未下发该字段时（部署顺序、旧版本），按「无此能力」处理，
+            //   而不是猜一个宽松值——猜错的代价是免费开放付费能力。
+            json.getInteger("concurrentReplayBatches", 0)
         );
     }
 
