@@ -9,6 +9,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import io.smallrye.mutiny.Uni;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -410,20 +411,33 @@ class EvaluateSourceSimulateContractTest {
         lease.guardAsync(() -> "first", Runnable::run).await().indefinitely();
 
         assertThat(sem.tryAcquire()).isTrue();   // 第二个许可
-        assertThatThrownBy(() -> lease.guardAsync(() -> "second", Runnable::run))
-            .as("复用租约必须抛出，而不是静默泄漏第二个许可")
+        // 一次性检查在**订阅期**，所以失败以 Uni failure 呈现而非装配期抛出
+        assertThatThrownBy(
+            () -> lease.guardAsync(() -> "second", Runnable::run).await().indefinitely())
+            .as("复用租约必须失败，而不是静默泄漏第二个许可")
             .isInstanceOf(IllegalStateException.class);
     }
 
     @Test
     void 重复订阅同一个Uni必须被拒() {
-        // 一次性检查若写在 supplier 内部，重复订阅会绕过它——所以必须在装配期。
+        // ★这条测试此前是**假绿**：名字说「必须被拒」，却让第二次订阅正常通过，
+        //   只断言许可数没变多。实测复现过绕过：runs=2 而 permits=1——
+        //   业务体在**不持有许可**的情况下重跑，即并发闸门失效。
+        //   一次性检查因此从装配期移到订阅期（Uni.createFrom().deferred）。
         Semaphore sem = new Semaphore(1);
-        PermitLease lease = leased(sem);
-        var uni = lease.guardAsync(() -> "x", Runnable::run);
+        PermitLease lease = leased(sem);         // leased() 内部已 tryAcquire 唯一许可
+        AtomicInteger runs = new AtomicInteger();
+
+        var uni = lease.guardAsync(() -> { runs.incrementAndGet(); return "x"; }, Runnable::run);
         uni.await().indefinitely();
-        // 同一个 Uni 再订阅一次：业务体会重跑，但许可已归还——闸门形同虚设
-        uni.await().indefinitely();
+
+        assertThatThrownBy(() -> uni.await().indefinitely())
+            .as("★同一个 Uni 第二次订阅必须失败——否则业务体会无许可重跑")
+            .isInstanceOf(IllegalStateException.class);
+
+        assertThat(runs.get())
+            .as("★业务体只能执行一次；执行两次即闸门被绕过")
+            .isEqualTo(1);
         assertThat(sem.availablePermits())
             .as("重复订阅不得让许可凭空变多")
             .isEqualTo(1);

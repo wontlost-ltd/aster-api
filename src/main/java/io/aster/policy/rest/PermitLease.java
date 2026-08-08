@@ -38,8 +38,12 @@ import java.util.function.Supplier;
  * 许可**永久不还**。这不是本类的实现缺陷：Mutiny 层面没有任何信号可供挂钩。
  *
  * <p>实测确认过这条路径（丢弃 1 个任务后 {@code availablePermits()} 停在 0）。
- * 风险窗口只在**优雅关闭/重启**期的在途请求，且 Quarkus 关停会先 drain HTTP，
- * 进程随后退出、许可随 JVM 一起消失，因此不做 TTL 兜底（那要给每个请求挂一个定时器）。
+ * 风险窗口只在**关闭/重启**期的在途请求：本仓<b>未配置</b>
+ * {@code quarkus.shutdown.timeout}，而 Quarkus 在未配置时**立即退出**，
+ * 不等待在途请求；许可随 JVM 一起消失，不存在「继续服务但闸门永久变窄」的窗口。
+ * 若将来注入了该配置，graceful filter 会先等在途 HTTP 结束，反而**缩小**
+ * 这条路径的窗口。两种情形都不需要 TTL 兜底——而 TTL 会提前归还仍在运行的
+ * worker 的许可，重新引入闸门绕过。
  * <b>但注释必须说实话</b>：下面的"三条路径"是**已覆盖**的三条，不是全部。
  *
  * <h2>为什么是 onFailure 而不是 onTermination</h2>
@@ -104,25 +108,32 @@ final class PermitLease {
      * @param executor worker 线程池
      */
     <T> Uni<T> guardAsync(Supplier<T> work, java.util.concurrent.Executor executor) {
-        // ★一次性约束必须在**装配期**检查（这一行在 Uni 之外）：
-        //   放进 supplier 里的话，对同一个 Uni 重复订阅仍会绕过。
-        //   租约只对应一个许可；复用会让第二个许可永远回不来——
-        //   而 CAS 会把这个错误**静默**吞掉，所以必须让它响亮地失败。
-        if (!consumed.compareAndSet(false, true)) {
-            throw new IllegalStateException(
-                "PermitLease 是一次性的，不可复用——每个请求必须新建一个");
-        }
-        return Uni.createFrom().<T>item(() -> {
-            try {
-                return work.get();
-            } finally {
-                // 路径2：worker 真正跑完（正常或异常）。
-                // 取消**不会**触发这里——不归还一个仍在烧 CPU 的 worker 的许可。
-                release();
+        return Uni.createFrom().<T>deferred(() -> {
+            // ★一次性约束必须在**订阅期**检查，而不是装配期。
+            //   装配期只跑一次（每次 guardAsync 调用一次），拦不住对**同一个**
+            //   cold Uni 的重复订阅——那会让业务体在**不持有许可**的情况下重跑，
+            //   即闸门被绕过。实测：runs=2 而 permits=1。
+            //   放在 deferred 里则每次订阅都过一遍 CAS，第二次直接失败。
+            if (!consumed.compareAndSet(false, true)) {
+                return Uni.createFrom().failure(new IllegalStateException(
+                    "PermitLease 是一次性的，不可重复订阅——每个请求必须新建一个"));
             }
+            return Uni.createFrom().<T>item(() -> {
+                try {
+                    return work.get();
+                } finally {
+                    // 路径2：worker 真正跑完（正常或异常）。
+                    // 取消**不会**触发这里——不归还一个仍在烧 CPU 的 worker 的许可。
+                    release();
+                }
+            });
         }).runSubscriptionOn(executor)
             // 路径3：调度被拒时 supplier 永不执行，上面的 finally 永不触发。
             // 只能在这里兜底。用 onFailure 而非 onTermination：后者在取消时也会触发。
+            //
+            // ★这里也会收到上面「重复订阅」的 failure。此时**必须**归还许可吗？
+            //   不——重复订阅从未取得第二个许可，release() 的 CAS 保证首次订阅
+            //   的归还只发生一次，第二次是 no-op。既不泄漏也不虚增。
             .onFailure().invoke(t -> release());
     }
 }
