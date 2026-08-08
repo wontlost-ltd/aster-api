@@ -14,7 +14,17 @@ public record PlanInfo(
     boolean allowsApproval,
     int maxTeamMembers,
     long evaluationsLimit,
-    long apiCallsLimit
+    long apiCallsLimit,
+    /**
+     * What-If 并发批次上限（ADR 0034 §7.2）。
+     *
+     * <p>语义：{@code 0} = **无此功能**（free 档）、{@code -1} = 不限（enterprise 按合同）、
+     * 正数 = 同时允许的 PENDING/RUNNING 批次数。
+     *
+     * <p>★ 注意 {@code 0} 与「限流为 0」不是一回事：它表示租户**没有买这个能力**，
+     * 调用方应返回 403 而非 409。两者是不同的事，见 {@link #allowsReplayBatch()}。
+     */
+    int concurrentReplayBatches
 ) {
 
     /**
@@ -22,7 +32,22 @@ public record PlanInfo(
      * 注意：仅在 plan-gate 服务不可达且 failOpen=true 时使用
      */
     public static PlanInfo failOpen() {
-        return new PlanInfo("pro", null, true, -1, 50_000L, 5_000L);
+        // ★concurrentReplayBatches 刻意取 0 而非 pro 档的 1（ADR 0034 §7.2）。
+        //   failOpen 的设计意图是「plan-gate 抖动时不阻塞**既有**业务」，对读类操作合理；
+        //   但 What-If 批次是**新发起的、消耗计算资源的付费能力**——
+        //   在这里 fail-open 等于「plan-gate 一抖动，free 租户就能免费跑批」。
+        //   故此项 fail-closed，与本记录其余字段的宽松取向刻意不一致。
+        return new PlanInfo("pro", null, true, -1, 50_000L, 5_000L, 0);
+    }
+
+    /** 是否**拥有** What-If 能力（与「当前能否再开一个」无关）。 */
+    public boolean allowsReplayBatch() {
+        return concurrentReplayBatches != 0;
+    }
+
+    /** 并发上限是否不受限。 */
+    public boolean hasUnlimitedReplayBatches() {
+        return concurrentReplayBatches < 0;
     }
 
     public boolean isFreePlan() {
