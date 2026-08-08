@@ -8,14 +8,11 @@ import io.vertx.ext.web.client.WebClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.List;
 
 /**
@@ -142,17 +139,21 @@ public class ExecutionWindowClient {
             q.append("&cursor=").append(enc(cursor));
         }
 
-        long ts = System.currentTimeMillis() / 1000;
-        String sig = config.hmacKey()
-            .map(k -> sign(k, "GET\n" + path + "\n" + ts))
-            .orElse("");
+        // ★必须用 v2 canonical（nonce + bodySha256）：cloud 侧已于 2026-08-01
+        //   关闭 v1 兼容窗口（v1 不绑 body/nonce，300s 时钟窗内可原样重放）。
+        //   手写 v1 签名会被 cloud 以 invalid_signature 拒绝——这是端到端验证抓到的，
+        //   单测测不出来，因为它是**跨服务契约**。
+        //   故走共享的 InternalCallSigner，不各自手写。
+        var signed = io.aster.security.internal.InternalCallSigner.sign(
+            config.hmacKey().orElse(""), "GET", path, "");
 
         var resp = sharedWebClient.client()
             .get(port, baseUri.getHost(), path + "?" + q)
             .ssl(ssl)
             .timeout(15_000)
-            .putHeader("X-Aster-Timestamp", String.valueOf(ts))
-            .putHeader("X-Aster-Signature", sig)
+            .putHeader("X-Aster-Timestamp", signed.timestamp())
+            .putHeader("X-Aster-Nonce", signed.nonce())
+            .putHeader("X-Aster-Signature", signed.signature())
             .send()
             .toCompletionStage().toCompletableFuture().join();
 
@@ -168,13 +169,4 @@ public class ExecutionWindowClient {
         return URLEncoder.encode(s, StandardCharsets.UTF_8);
     }
 
-    private static String sign(String key, String message) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            return HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new IllegalStateException("HMAC 签名失败", e);
-        }
-    }
 }

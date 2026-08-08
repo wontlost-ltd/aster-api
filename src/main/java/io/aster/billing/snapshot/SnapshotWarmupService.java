@@ -13,11 +13,8 @@ import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.HexFormat;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -197,18 +194,27 @@ public class SnapshotWarmupService {
             query.append("&cursor=").append(java.net.URLEncoder.encode(cursor, StandardCharsets.UTF_8));
         }
 
-        long timestamp = System.currentTimeMillis() / 1000;
-        String signature = config.hmacKey()
-            .map(k -> sign(k, "GET\n" + path + "\n" + timestamp))
-            .orElse("");
+        // ★必须 v2 canonical（nonce + bodySha256）：cloud 已关闭 v1 兼容窗口。
+        //   此前手写 v1 → 401 → 启动预热与 1h 对账**全部失败**，
+        //   Redis 配额快照可能长期为空或陈旧（issue #231，真实例实测确认）。
+        //   ★签名只用 pathname，**不含 query**——本方法的 cursor/limit 在 query 里，
+        //   把它们签进去会与 cloud 的 url.pathname 对不上。
+        // ★同 PlanGateService：key 缺失时发空签名而非抛异常，
+        //   否则「没配密钥」会以别的形态（预热失败）冒出来，更难定位。
+        var signed = config.hmacKey()
+            .filter(k -> !k.isBlank())
+            .map(k -> io.aster.security.internal.InternalCallSigner.sign(k, "GET", path, ""))
+            .orElse(null);
 
         CompletableFuture<JsonObject> future = new CompletableFuture<>();
         getClient()
             .get(port, baseUri.getHost(), path + "?" + query)
             .ssl(ssl)
             .timeout(10_000) // 全量拉相对慢，给 10s
-            .putHeader("X-Aster-Timestamp", String.valueOf(timestamp))
-            .putHeader("X-Aster-Signature", signature)
+            .putHeader("X-Aster-Timestamp",
+                signed != null ? signed.timestamp() : String.valueOf(System.currentTimeMillis() / 1000))
+            .putHeader("X-Aster-Nonce", signed != null ? signed.nonce() : "")
+            .putHeader("X-Aster-Signature", signed != null ? signed.signature() : "")
             .send()
             .onSuccess(resp -> {
                 if (resp.statusCode() != 200) {
@@ -242,13 +248,4 @@ public class SnapshotWarmupService {
         return sharedWebClient.client();
     }
 
-    private static String sign(String key, String message) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            return HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException("HMAC sign failed", e);
-        }
-    }
 }
