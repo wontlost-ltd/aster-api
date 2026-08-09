@@ -45,6 +45,9 @@ class ReplayBatchConcurrencyIT {
     @Inject
     EntityManager em;
 
+    @Inject
+    ReplayBatchService service;
+
     @BeforeEach
     void clean() {
         QuarkusTransaction.requiringNew().run(() -> {
@@ -654,6 +657,97 @@ class ReplayBatchConcurrencyIT {
         assertThat(counts)
             .as("★%d 条并发插入后汇总列必须精确等于 %d/%d——丢失更新会让它偏低", n, n, n)
             .isEqualTo(n + "/" + n);
+    }
+
+    /**
+     * ★<b>真正并发调用 {@link ReplayBatchService#runOneSegment}</b>，
+     * 而不是复制它的第一条 SQL。
+     *
+     * <p>上一版的「并发 IT」只手写了段首那条 owner CAS——审查因此指出
+     * 「没有并发调用 runOneSegment，整体并发覆盖仍未完成」。属实：
+     * 手写 SQL 测的是我对那条语句的理解，不是方法的真实行为
+     * （方法里还有冻结集合读取、上游拉取、逐条落标记等）。
+     *
+     * <p>本用例开 6 条线程同时调真实方法：
+     * <ul>
+     *   <li>持当前 owner 的线程可以推进（返回 &gt;= 0）</li>
+     *   <li>持失效 owner 的线程<b>必须</b>拿到 -1 让位，且不得写入任何条目标记</li>
+     *   <li>无论交错如何，同一条目<b>不得被跑两次</b>——
+     *       否则两个 worker 的结果互相覆盖，「谁的结果」不可知</li>
+     * </ul>
+     */
+    @Test
+    void 并发调用runOneSegment时失效owner必须让位且条目不重复处理() throws Exception {
+        UUID id = seedRunning("t-seg", "owner-live", 3);
+        QuarkusTransaction.requiringNew().run(() -> {
+            persistItem(id, "s1", true, null, null);
+            persistItem(id, "s2", true, null, null);
+            persistItem(id, "s3", true, null, null);
+        });
+
+        int threads = 6;
+        java.util.concurrent.ExecutorService pool =
+            java.util.concurrent.Executors.newFixedThreadPool(threads);
+        java.util.concurrent.CountDownLatch start =
+            new java.util.concurrent.CountDownLatch(1);
+        java.util.List<Integer> staleResults =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+
+        try {
+            java.util.List<java.util.concurrent.Future<Integer>> fs = new java.util.ArrayList<>();
+            for (int i = 0; i < threads; i++) {
+                final String owner = (i % 2 == 0) ? "owner-live" : "owner-stale";
+                fs.add(pool.submit(() -> {
+                    start.await();
+                    // ★不得把异常当成「让位」：那会让「去掉 owner 条件」这种
+                    //   破坏护栏的变异也表现为 -1（实测过——变异存活）。
+                    //   异常单独记录，失效 owner 的**返回值**必须真的是 -1。
+                    int r;
+                    try {
+                        r = io.quarkus.narayana.jta.QuarkusTransaction.requiringNew()
+                            .call(() -> service.runOneSegment(id, owner));
+                    } catch (RuntimeException ex) {
+                        r = Integer.MIN_VALUE;   // 哨兵：抛异常 ≠ 让位
+                    }
+                    if ("owner-stale".equals(owner)) {
+                        staleResults.add(r);
+                    }
+                    return r;
+                }));
+            }
+            start.countDown();
+            for (var f : fs) {
+                f.get(60, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(staleResults)
+            .as("★失效 owner 的每次调用都必须**返回 -1** 让位——"
+                + "抛异常（MIN_VALUE）或推进（>=0）都不算，"
+                + "前者说明护栏没生效只是恰好炸了")
+            .isNotEmpty()
+            .allMatch(r -> r == -1);
+
+        // ★同一条目不得被处理两次：success 已置位的条目数不得超过 plannedCount
+        Long processed = QuarkusTransaction.requiringNew().call(() ->
+            ((Number) em.createNativeQuery(
+                "SELECT count(*) FROM replay_batch_item"
+                    + " WHERE batch_id = ?1 AND success IS NOT NULL")
+                .setParameter(1, id).getSingleResult()).longValue());
+        assertThat(processed)
+            .as("★已处理条目数不得超过计划数——超出说明同一条目被多个 worker 重复跑")
+            .isLessThanOrEqualTo(3L);
+
+        // 租约仍应属于当前 owner（失效 owner 不得改写）
+        String owner = QuarkusTransaction.requiringNew().call(() ->
+            String.valueOf(em.createNativeQuery(
+                "SELECT lease_owner FROM replay_batch WHERE id = ?1")
+                .setParameter(1, id).getSingleResult()));
+        assertThat(owner)
+            .as("★失效 owner 不得夺取租约")
+            .isEqualTo("owner-live");
     }
 
     // ── §11.3 槽位唯一性 ─────────────────────────────────────────────────
