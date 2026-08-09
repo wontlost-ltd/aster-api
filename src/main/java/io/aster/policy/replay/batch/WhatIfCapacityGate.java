@@ -34,6 +34,16 @@ public class WhatIfCapacityGate {
 
     private static final int PERMITS;
 
+    /**
+     * 许可总数——供重跑执行池按同一上界封顶（ADR 0034 §12.4）。
+     *
+     * <p>★超时后被弃的 Truffle 线程仍在跑，而许可已在 {@code finally} 释放，
+     * 所以「被弃线程由许可数封顶」**不成立**——必须由执行池自身有界来兜底。
+     */
+    public static int permitCount() {
+        return PERMITS;
+    }
+
     static {
         // 与 PolicyEvaluationResource 同源的估算方式，避免两处口径漂移
         int cpuBound = Math.max(2, 2 * Runtime.getRuntime().availableProcessors());

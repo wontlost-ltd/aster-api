@@ -477,12 +477,31 @@ public class ReplayBatchService {
      * 万条批次要创建/销毁 10000 个线程池。容量由 {@link WhatIfCapacityGate}
      * 的许可数封顶，故池大小取一个略大于许可数的固定值即可。
      */
-    private static final java.util.concurrent.ExecutorService REPLAY_POOL =
-        java.util.concurrent.Executors.newCachedThreadPool(r -> {
-            Thread t = new Thread(r, "whatif-replay-exec");
-            t.setDaemon(true);
-            return t;
-        });
+    private static final java.util.concurrent.ExecutorService REPLAY_POOL = newBoundedReplayPool();
+
+    /**
+     * ★<b>必须有界</b>：超时后 {@code Future.cancel(true)} 不保证停下 Truffle 执行，
+     * 而许可已在 {@code withPermit} 的 {@code finally} 中释放——
+     * 于是「被弃线程由容量闸门许可数封顶」这句话<b>不成立</b>（第八轮审查指出）。
+     * 连续超时会让 cached pool 无限增长，线程数远超许可数。
+     *
+     * <p>改为固定上界 = 许可数 × 2：允许每个许可最多有一个「在跑的」和
+     * 一个「被弃但未结束的」执行，超出则新任务在队列等待而不是再开线程。
+     * 队列有界，满了直接拒绝（归 THROTTLED，可重试）——
+     * 宁可拒绝也不让线程数失控。
+     */
+    private static java.util.concurrent.ExecutorService newBoundedReplayPool() {
+        int max = Math.max(2, WhatIfCapacityGate.permitCount() * 2);
+        return new java.util.concurrent.ThreadPoolExecutor(
+            max, max, 60L, java.util.concurrent.TimeUnit.SECONDS,
+            new java.util.concurrent.ArrayBlockingQueue<>(max),
+            r -> {
+                Thread t = new Thread(r, "whatif-replay-exec");
+                t.setDaemon(true);
+                return t;
+            },
+            new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+    }
 
     /**
      * 带 wall-clock 超时地执行一次重跑。
@@ -765,6 +784,13 @@ public class ReplayBatchService {
      */
     private static ReplayFailureKind classify(Exception ex) {
         String msg = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase(java.util.Locale.ROOT);
+
+        // ★执行池满：这是**服务端容量**问题，不是用户数据问题。
+        //   归 THROTTLED（可重试），落进默认的 INPUT_INCOMPATIBLE 会让用户
+        //   去排查自己没问题的数据。
+        if (ex instanceof java.util.concurrent.RejectedExecutionException) {
+            return ReplayFailureKind.THROTTLED;
+        }
 
         // ★资源耗尽（Truffle statementLimit）必须单独归类。
         //   它落进下面的默认分支 INPUT_INCOMPATIBLE 会**误导用户**：

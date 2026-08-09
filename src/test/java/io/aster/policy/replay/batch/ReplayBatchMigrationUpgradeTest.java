@@ -46,6 +46,48 @@ class ReplayBatchMigrationUpgradeTest {
     }
 
     /**
+     * ★<b>删旧触发器必须早于回填</b>——第八轮审查发现的确定性升级缺陷。
+     *
+     * <p>V6.20.5 的回填 UPDATE 会修改历史 {@code COMPLETED} 行，
+     * 而 V6.20.4 的 {@code BEFORE UPDATE ... WHEN (NEW.status='COMPLETED')}
+     * 触发器若仍存活，会对「条目数 ≠ planned_count」的历史行抛错，
+     * 使回填不生效。
+     *
+     * <p>实测现象（修复前）：回填后 {@code item_total=0}，
+     * 而 item 表里明明有 1 行；单独重放同一条 UPDATE 则 {@code UPDATE 1} 且值正确。
+     * 修复后：{@code item_total=1 item_success=1}，违规行据实降级为 FAILED。
+     *
+     * <p>★我此前的迁移测试没抓到它，因为 fixture 恰好满足旧触发器的校验——
+     * <b>测试用例的取值本身也会决定它能不能发现 bug</b>。
+     */
+    @Test
+    void 删除旧触发器必须早于回填() throws Exception {
+        String sql = frozenExecutionMigration();
+
+        int dropParent = sql.indexOf("DROP TRIGGER IF EXISTS replay_batch_completed_all_success_trg");
+        int dropItem = sql.indexOf("DROP TRIGGER IF EXISTS replay_batch_item_guard_completed_trg");
+        int backfill = sql.indexOf("UPDATE replay_batch b");
+
+        assertThat(dropParent).as("必须删旧父表触发器").isGreaterThan(0);
+        assertThat(dropItem).as("必须删旧 item 触发器").isGreaterThan(0);
+        assertThat(backfill).as("必须有回填语句").isGreaterThan(0);
+
+        assertThat(dropParent)
+            .as("★旧父表触发器必须在回填**之前**删除——"
+                + "否则它会拒绝历史违规行的更新，让回填静默失效")
+            .isLessThan(backfill);
+        assertThat(dropItem)
+            .as("★旧 item 触发器同理")
+            .isLessThan(backfill);
+    }
+
+    private static String frozenExecutionMigration() throws Exception {
+        return Files.readString(Path.of(
+            "src/main/resources/db/migration/"
+                + "V6.20.5__replay_batch_deferrable_fail_closed.sql"));
+    }
+
+    /**
      * ★V6.20.2 也必须先处置存量再加约束——<b>我在同一个分支里把这个错误犯了两次</b>。
      *
      * <p>V6.20.1 修的正是「加可空列后立刻加要求非空的 CHECK」，

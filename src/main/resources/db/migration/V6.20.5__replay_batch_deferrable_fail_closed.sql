@@ -37,6 +37,22 @@
 -- 提交时校验意味着上面那种「两个快照互不可见」的交错不再能通过——
 -- 无论谁先提交，最后一个提交者都要面对已落库的真实计数。
 
+-- ── 0. ★先删旧触发器，再动数据 ──────────────────────────────────────────
+--
+-- ★★ 顺序错误会导致**确定性升级失败**（第八轮审查发现，已复现）：
+--     下面第 1 步的回填 UPDATE 会修改历史 COMPLETED 行，而此时
+--     V6.20.4 的 `BEFORE UPDATE ... WHEN (NEW.status='COMPLETED')` 触发器
+--     仍然存活——它会对「条目数 ≠ planned_count」的历史行抛错，
+--     使回填不生效（严重时整个迁移中止），后面的历史降级根本到不了。
+--
+--     实测现象：回填后 item_total=0 而 item 表里明明有 1 行；
+--     单独重放同一条 UPDATE 则 `UPDATE 1` 且值正确——差别就在旧触发器。
+--
+--     旧触发器做的判定本迁移会用延迟约束触发器重新表达，
+--     所以先删是安全的：中间窗口内没有写入（迁移是单事务）。
+DROP TRIGGER IF EXISTS replay_batch_completed_all_success_trg ON replay_batch;
+DROP TRIGGER IF EXISTS replay_batch_item_guard_completed_trg ON replay_batch_item;
+
 -- ── 1. 汇总列 ────────────────────────────────────────────────────────────
 ALTER TABLE replay_batch
     ADD COLUMN item_total   INTEGER NOT NULL DEFAULT 0,
@@ -96,8 +112,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS replay_batch_item_guard_completed_trg ON replay_batch_item;
-
 CREATE TRIGGER replay_batch_item_counts_trg
     AFTER INSERT OR UPDATE OR DELETE ON replay_batch_item
     FOR EACH ROW
@@ -124,8 +138,6 @@ CREATE TRIGGER replay_batch_item_no_truncate_trg
 --
 -- 旧的父表触发器（V6.20.3/V6.20.4）随之删除：它做的判定现在由约束承担，
 -- 留着只会形成两套规则、且触发器那套在并发下是错的。
-DROP TRIGGER IF EXISTS replay_batch_completed_all_success_trg ON replay_batch;
-
 -- ★★ 不能用 `CHECK ... DEFERRABLE`：PostgreSQL 明确不支持
 --     （实测：ERROR: CHECK constraints cannot be marked DEFERRABLE）。
 --     我第一版就是这么写的，而 psql 的错误没被我的 grep 统计到，
