@@ -43,12 +43,14 @@ ALTER TABLE replay_batch
 --
 -- 诚实的处置是**终止它们**：标记为 FAILED 并释放槽位。
 -- 用户重新发起即可——批次是不可变快照（§3.2），重跑一次没有语义损失。
--- failure_reasons 留空对象：它们不是「用户数据有问题」，
+-- failure_reasons 留**空数组**：它们不是「用户数据有问题」，
 -- 谎称某个失败 kind 会把用户支去排查并不存在的故障。
+-- ★形状必须是数组：§10.1 之后的 API 契约是 failureKinds: [类别]，
+--   写成 `{}` 会让 cloud 侧按数组读时拿到对象（V6.20.4 曾为此加归一化补丁）。
 UPDATE replay_batch
    SET status           = 'FAILED',
        finished_at      = COALESCE(finished_at, NOW()),
-       failure_reasons  = '{}'::jsonb,
+       failure_reasons  = '[]'::jsonb,
        result_summary   = NULL,
        lease_expires_at = NULL,
        lease_owner      = NULL,

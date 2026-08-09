@@ -230,6 +230,71 @@ class ReplayBatchConcurrencyIT {
             .hasMessageContaining("COMPLETED");
     }
 
+    // ── §10.1 契约形状：failureReasons 必须是数组 ────────────────────────
+
+    /**
+     * ★历史行归一化：{@code {}} 必须被转成 {@code []}。
+     *
+     * <p>V6.20.1 最初把历史活跃行处置成 FAILED 时写的是空**对象**，
+     * 而 §10.1 之后的 API 契约是 {@code failureKinds: [类别]} 数组。
+     * cloud 侧按数组读会拿到对象——<b>迁移能过 ≠ 历史数据符合契约</b>。
+     *
+     * <p>本用例直接构造一个对象形状的行，验证 V6.20.4 的归一化确实生效。
+     * 注意它模拟的是「已部署过旧版 V6.20.1 的环境」——
+     * 现在 V6.20.1 本身已改为直接写 {@code []}，但归一化仍需保留。
+     */
+    @Test
+    void 历史对象形状的failureReasons必须被归一化成数组() {
+        UUID id = UUID.randomUUID();
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery("""
+            INSERT INTO replay_batch (id,tenant_id,user_id,policy_id,base_version_id,
+              target_version_id,window_kind,window_label,window_timezone,window_from,
+              window_to,planned_count,status,failure_reasons,toolchain_id,expires_at)
+            VALUES (?1,'t-norm','u','p','1','2','LAST_MONTH','m','UTC',
+              NOW() - INTERVAL '30 day', NOW(), 0, 'FAILED',
+              '{}'::jsonb, 'tc', NOW() + INTERVAL '30 day')
+            """).setParameter(1, id).executeUpdate());
+
+        // 重放 V6.20.4 的归一化语句（迁移已在库上跑过，这里验证语义本身）
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery("""
+            UPDATE replay_batch SET failure_reasons = '[]'::jsonb
+             WHERE failure_reasons IS NOT NULL
+               AND jsonb_typeof(failure_reasons) = 'object'
+            """).executeUpdate());
+
+        String shape = QuarkusTransaction.requiringNew().call(() ->
+            (String) em.createNativeQuery(
+                "SELECT jsonb_typeof(failure_reasons) FROM replay_batch WHERE id = ?1")
+                .setParameter(1, id).getSingleResult());
+
+        assertThat(shape)
+            .as("★归一化后必须是 array——cloud 侧按数组读，拿到对象会渲染出乱码")
+            .isEqualTo("array");
+    }
+
+    /**
+     * ★迁移**自己**写入的处置行就必须是数组，不能依赖后续补丁纠正。
+     *
+     * <p>V6.20.1 曾写 {@code '{}'}，靠 V6.20.4 再转成 {@code '[]'}——
+     * 中间存在一段「数据违反契约」的窗口。现已改为直接写数组。
+     * 本用例扫迁移文件锁住这一点：**不得再有迁移写出对象形状的 failure_reasons**。
+     */
+    @Test
+    void 迁移不得写出对象形状的failureReasons() throws Exception {
+        java.nio.file.Path dir = java.nio.file.Path.of("src/main/resources/db/migration");
+        try (var files = java.nio.file.Files.list(dir)) {
+            for (java.nio.file.Path f : files.filter(x -> x.getFileName().toString()
+                    .startsWith("V6.20.")).toList()) {
+                String sql = java.nio.file.Files.readString(f);
+                assertThat(sql)
+                    .as("★%s 不得把 failure_reasons 写成对象——契约是数组（§10.1）",
+                        f.getFileName())
+                    .doesNotContain("failure_reasons  = '{}'::jsonb")
+                    .doesNotContain("failure_reasons = '{}'::jsonb");
+            }
+        }
+    }
+
     // ── §11.3 槽位唯一性 ─────────────────────────────────────────────────
 
     /** 同租户同槽位不可并存——这是唯一能堵住先查后写 TOCTOU 的机制。 */
