@@ -704,3 +704,81 @@ UPDATE replay_batch
 而成败标记既不含 PII 也不含决策内容——与冻结 id 集合是同一类边界。
 判定仍由 `ReplayBatchRunner.decide` 做，只是输入从内存列表换成表查询。
 
+
+---
+
+## 12. fail-closed 的落点：触发器不是正确的层（2026-08-09，S5 第五轮审查 24/100）
+
+> 状态：**待拍板**。五轮 38 → 26 → 42 → 24，我修了四轮、每轮引入新问题，
+> 这轮的归一化语句还差点删掉生产数据。§12 先定方案再动手。
+
+### 12.0 根因：我一直在用「单语句可见的检查」表达「跨事务的不变量」
+
+§11.0 说过一次「护栏写在了它管不到的层」，那时指的是应用层。
+这一轮同样的错误换到了数据库层：
+
+| 我写的 | 它实际能保证的 |
+|---|---|
+| 父触发器 `BEFORE INSERT OR UPDATE` 查 item 表 | 只看**本事务快照**里的 item |
+| item 触发器查 parent 状态 | 只看**本事务快照**里的 parent |
+| 两者「互相校验」 | 两个快照互不可见时，两边都通过 |
+
+审查的双会话实测把这点钉死了：
+
+```
+A: UPDATE item success true→false      （不提交）
+B: UPDATE parent → COMPLETED           （父触发器看不到 A 的未提交版本 → 放行，提交）
+A: COMMIT                              （item 触发器基于自己的快照 → 放行）
+最终: parent=COMPLETED + item=false    ← 违规状态落库
+```
+
+**即时行级触发器读的是 MVCC 快照，而「全部条目都成功」是一个跨行、跨事务的
+断言。用前者表达后者，在并发下必然漏。**
+
+### 12.1 已证实的四条绕过（全部实测复现）
+
+| # | 路径 | 实测结果 |
+|---|---|---|
+| 1 | 并发 MVCC 交错（上方） | `COMPLETED + success=false` |
+| 2 | `DELETE` / `TRUNCATE replay_batch_item` | `planned=1 item数=0` |
+| 3 | ★`UPDATE item SET batch_id=<新父>` | 旧父 `planned=1 item数=0`——触发器只看 `NEW.batch_id`，不看 `OLD` |
+| 4 | COMPLETED 后追加 `success=true` item | `planned=1 item数=2` |
+
+第 3 条是审查发现的**第四条写入路径**，我此前完全没想到。
+
+### 12.2 ★我的集成测试没有测到它声称的东西
+
+`不得INSERT出COMPLETED加失败条目的组合` 用「同一事务先插 COMPLETED parent、
+再插失败 item」。实测：**第一条 INSERT 就被父触发器的条目数校验拒了**
+（`total_items=0 ≠ planned_count=1`），第二条根本没机会执行。
+
+它验证的是父触发器，却挂着 item 触发器的名字。
+审查还实测：把父触发器变异回 `BEFORE UPDATE`，9 条 IT 仍全绿——
+**重叠覆盖掩盖了测试缺口**。
+
+这是「名称承诺 ≠ 断言体」在我专门为逃离该模式而建的集成测试里再次出现。
+
+### 12.3 待拍板：用什么表达这个不变量
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| **A. DEFERRABLE 约束 + 汇总列** | 在 `replay_batch` 上加 `success_item_count` / `total_item_count`，由 item 触发器维护；父表加 `DEFERRABLE INITIALLY DEFERRED` CHECK「COMPLETED ⇒ success=total=planned」。约束在**提交时**校验，跨事务竞态消失 | 汇总列要覆盖 INSERT/UPDATE/DELETE/TRUNCATE 四类事件；TRUNCATE 需语句级触发器 |
+| **B. 应用层显式锁序** | 所有终态写先 `SELECT ... FOR UPDATE` 锁父行，再校验 item | 依赖每条路径都记得加锁——**又是靠自觉**，与 §11.0/§12.0 的根因相悖 |
+| **C. 不用 item 表做判定** | 判定完全在应用层内存里做，item 表只作崩溃恢复的进度记录；DB 只保「COMPLETED ⇒ failed_count=0」这类**单行**约束 | 放弃「数据库兜底 fail-closed」；但单行约束是触发器能可靠表达的 |
+
+倾向 **A**：它把「提交时才校验」这件事交给 PostgreSQL 的约束机制，
+而不是让我在触发器里模拟。B 重蹈覆辙；C 是退守，
+但如果 A 的四类事件覆盖做不干净，C 比「看起来有护栏其实没有」诚实。
+
+### 12.4 其余两条（修法明确，仍需拍板取值）
+
+- **O(N²) 拉取**：每段都调 `fetchWindow` 拉全量窗口，
+  万条批次 ≈ 500 次全窗口请求、约 5,000,000 个上游对象。
+  修法：窗口只在**冻结时**拉一次，冻结表已存 execution id；
+  重跑时按 id 批量取 payload（需 cloud 侧提供 by-ids 端点，或复用现有分页加过滤）。
+- **租约算术仍不完整**：`fetchWindow` 最多 100 页 × 15s ≈ 25 分钟，
+  加 20×30s 许可等待 ≈ 35 分钟 > 30 分钟租约；且 `replayExecutor.execute`
+  **没有执行超时**。三轮租约取值都被退回，根因是我每次只算了一部分。
+  修法：给单条重跑加硬超时，并让「段最坏耗时」成为一个**可计算的和**
+  （拉取 + N×(等许可 + 执行上限) + 提交），租约取其 2 倍。
+
