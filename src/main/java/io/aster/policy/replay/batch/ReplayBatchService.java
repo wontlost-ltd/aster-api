@@ -83,13 +83,28 @@ public class ReplayBatchService {
     static final int MAX_BATCH_SIZE = 10_000;
 
     /**
-     * 单条重跑的执行硬超时（ADR 0034 §12.4）。
+     * 单条重跑的执行时间**预算**（ADR 0034 §12.4）。
      *
-     * <p>★<b>没有这个上限，「段最坏耗时」就无法计算</b>——这正是三轮租约取值
-     * 都被退回的根源：83h vs 2h、50min vs 30min、以及「fetchWindow 25 分钟不在
-     * 算术里」。一个没有上界的项无法进入求和，我却每次都写了个数字并宣称覆盖。
+     * <p>★<b>诚实说明：这不是一个被强制执行的 wall-clock 超时。</b>
+     * 真正的执行上界由 Truffle {@code statementLimit(10M)} 提供
+     * （见 {@code DynamicCnlExecutor}），它限制的是<b>指令数</b>而非时间——
+     * 本仓刻意选它而非计时器，因为计时器在 GC pause 下不可靠（P1-R22）。
+     *
+     * <p>我曾在这里包一层线程池 + {@code Future.get(timeout)}，但那有两个问题：
+     * 每条重跑新建线程池（万条批次 = 10000 次创建/销毁），且
+     * {@code shutdownNow()} 只发 interrupt、<b>不保证停下 Truffle 执行</b>——
+     * 调用者不再等待，被弃线程仍在烧 CPU。已移除。
+     *
+     * <p>于是「段最坏耗时」不再是严格上界，而是一个<b>工程预算</b>：
+     * 10M statements 在本仓实测策略上远低于 60s（典型 &lt;10K statements，
+     * ADR 0033 §5.1 实测 1.35ms/条）。租约按此预算的 2 倍取值，
+     * 留的是**数量级**余量而非精确证明。
+     *
+     * <p>★这条边界必须写明，否则下一个人会以为租约有严格保证——
+     * 而那正是前三轮租约取值出错的模式（把估算当成证明）。
      */
     private static final java.time.Duration EXEC_TIMEOUT = java.time.Duration.ofSeconds(60);
+    // ↑ 注意这**不是**一个被强制执行的超时（见下方说明）。
 
     /**
      * 单段拉取的超时上界。
@@ -101,11 +116,13 @@ public class ReplayBatchService {
     private static final long SEGMENT_FETCH_TIMEOUT_MS = 15_000;
 
     /**
-     * 一段的最坏耗时上界 = 拉取 + N × (等许可 + 执行上限)。
+     * 一段的耗时**预算** = 拉取 + N × (等许可 + 执行预算)。
      *
-     * <p>★这是个**可计算的和**，且下面用静态断言锁住
-     * {@code SEGMENT_WORST_CASE × 2 <= LEASE_DURATION}——
-     * 不等式写在代码里由编译/启动期校验，而不是写在注释里由我口头保证。
+     * <p>★注意用词：是**预算**不是上界。执行那一项由 statementLimit 间接约束
+     * （指令数而非时间），故这个和是工程估算。
+     * 但「租约 ≥ 2 × 预算」这条不等式仍由 {@link #assertLeaseCoversSegment()}
+     * 在测试与启动时校验——把估算写进代码并校验，
+     * 好过写在注释里由我口头保证（前三轮的错误模式）。
      */
     private static final java.time.Duration SEGMENT_WORST_CASE =
         java.time.Duration.ofMillis(SEGMENT_FETCH_TIMEOUT_MS)
@@ -453,32 +470,6 @@ public class ReplayBatchService {
             .orElse(null);
     }
 
-    /**
-     * 带硬超时地执行一次重跑。
-     *
-     * <p>超时按 {@link ReplayFailureKind#TIMEOUT} 归类（可重试），
-     * 而不是让线程无限期挂住——挂住的后果是租约到期、批次被误回收、双 worker 并跑。
-     */
-    private static <T> T runWithTimeout(java.util.concurrent.Callable<T> work) throws Exception {
-        java.util.concurrent.ExecutorService ex =
-            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
-                Thread t = new Thread(r, "whatif-replay-exec");
-                t.setDaemon(true);
-                return t;
-            });
-        try {
-            return ex.submit(work).get(EXEC_TIMEOUT.toMillis(),
-                java.util.concurrent.TimeUnit.MILLISECONDS);
-        } catch (java.util.concurrent.ExecutionException e) {
-            if (e.getCause() instanceof Exception cause) {
-                throw cause;
-            }
-            throw e;
-        } finally {
-            ex.shutdownNow();
-        }
-    }
-
     /** 从冻结表读回逐条结果，供 {@link ReplayBatchRunner#decide} 统一判定。 */
     @Transactional
     List<ReplayBatchRunner.ItemResult> collectResults(UUID batchId) {
@@ -684,10 +675,15 @@ public class ReplayBatchService {
         String tenantId) {
 
         try {
-            // ★执行加硬超时：没有上界的项无法进入「段最坏耗时」的求和，
-            //   而那个和正是租约取值的依据（§12.4）。
+            // ★执行上限由 **Truffle statementLimit** 保证（见 DynamicCnlExecutor），
+            //   不再包一层线程池超时：
+            //     · 每条重跑新建 ExecutorService，万条批次 = 10000 次线程创建/销毁
+            //     · shutdownNow() 只发 interrupt，**不保证**停下 Truffle 执行——
+            //       它只是让调用者不再等待，被弃的线程仍在烧 CPU
+            //   本仓早有正确先例：TrufflePolicyRuntime 的 P1-R22 明确选择
+            //   statementLimit 而非 wall-clock 超时（后者在 GC pause 下不可靠）。
             var execResult = capacityGate.withPermit(PERMIT_WAIT_MS, () ->
-                runWithTimeout(() -> replayExecutor.execute(
+                (replayExecutor.execute(
                     tenantId, target.content, e.input(),
                     e.functionName(), e.locale(),
                     /* vocabIndex */ null,

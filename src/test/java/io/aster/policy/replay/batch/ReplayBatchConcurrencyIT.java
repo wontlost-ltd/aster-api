@@ -545,6 +545,117 @@ class ReplayBatchConcurrencyIT {
         assertThat(cnt).as("★违规 INSERT 必须整体回滚").isZero();
     }
 
+    // ── §12 真实并发：两个 worker 同时推进同一批次 ───────────────────────
+
+    /**
+     * ★<b>真实并发</b>：两个 worker 各持不同 owner，同时对同一批次做段首租约续期。
+     *
+     * <p>前六轮的 IT 都只验证「单线程顺序执行下的规则」，
+     * 审查因此指出「没有真实并发 {@code runOneSegment} 覆盖」。
+     * 本用例开两条线程同时打段首那条 owner CAS：
+     * <b>只有当前 owner 能续租成功，另一个必须拿到 0 行并让位</b>。
+     *
+     * <p>这条不变量若破了，两个 worker 会同时重跑同一批条目——
+     * 结果互相覆盖，而「谁的结果」不可知。
+     */
+    @Test
+    void 两个worker并发推进同一批次只有当前owner能续租() throws Exception {
+        UUID id = seedRunning("t-race", "owner-current", 4);
+        QuarkusTransaction.requiringNew().run(() -> {
+            for (int i = 1; i <= 4; i++) {
+                persistItem(id, "e" + i, true, null, null);
+            }
+        });
+
+        int threads = 8;
+        java.util.concurrent.ExecutorService pool =
+            java.util.concurrent.Executors.newFixedThreadPool(threads);
+        java.util.concurrent.CountDownLatch start =
+            new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger renewedByCurrent =
+            new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger renewedByStale =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+        try {
+            java.util.List<java.util.concurrent.Future<?>> fs = new java.util.ArrayList<>();
+            for (int i = 0; i < threads; i++) {
+                // 一半用当前 owner，一半用已失效的旧 owner
+                String owner = (i % 2 == 0) ? "owner-current" : "owner-stale";
+                fs.add(pool.submit(() -> {
+                    start.await();
+                    long n = QuarkusTransaction.requiringNew().call(() ->
+                        ReplayBatchEntity.update(
+                            "leaseExpiresAt = ?1 where id = ?2 and leaseOwner = ?3 and status = ?4",
+                            Instant.now().plusSeconds(3600), id, owner,
+                            ReplayBatchStatus.RUNNING));
+                    if (n > 0) {
+                        ("owner-current".equals(owner) ? renewedByCurrent : renewedByStale)
+                            .incrementAndGet();
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (var f : fs) {
+                f.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(renewedByStale.get())
+            .as("★失效 owner 在任何并发交错下都不得续租成功——"
+                + "否则两个 worker 会同时重跑同一批条目并互相覆盖")
+            .isZero();
+        assertThat(renewedByCurrent.get())
+            .as("当前 owner 必须能续租（护栏要能区分，不是一律拒）")
+            .isPositive();
+    }
+
+    /**
+     * ★并发插入同一批次的条目：汇总列不得因丢失更新而漂移。
+     *
+     * <p>{@code item_total = item_total + 1} 是读-改-写，
+     * 若无行锁串行化就会丢失更新，汇总列与真实条目脱节——
+     * 而 §12 的整个 fail-closed 建立在汇总列可信之上（回表校验是第二道）。
+     */
+    @Test
+    void 并发插入条目时汇总列不得丢失更新() throws Exception {
+        UUID id = seedRunning("t-cnt", "o", 16);
+        int n = 16;
+        java.util.concurrent.ExecutorService pool =
+            java.util.concurrent.Executors.newFixedThreadPool(8);
+        java.util.concurrent.CountDownLatch start =
+            new java.util.concurrent.CountDownLatch(1);
+        try {
+            java.util.List<java.util.concurrent.Future<?>> fs = new java.util.ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                final String execId = String.format("e%02d", i);
+                fs.add(pool.submit(() -> {
+                    start.await();
+                    QuarkusTransaction.requiringNew().run(() ->
+                        persistItem(id, execId, true, true, null));
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (var f : fs) {
+                f.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        String counts = QuarkusTransaction.requiringNew().call(() ->
+            String.valueOf(em.createNativeQuery(
+                "SELECT item_total || '/' || item_success FROM replay_batch WHERE id = ?1")
+                .setParameter(1, id).getSingleResult()));
+        assertThat(counts)
+            .as("★%d 条并发插入后汇总列必须精确等于 %d/%d——丢失更新会让它偏低", n, n, n)
+            .isEqualTo(n + "/" + n);
+    }
+
     // ── §11.3 槽位唯一性 ─────────────────────────────────────────────────
 
     /** 同租户同槽位不可并存——这是唯一能堵住先查后写 TOCTOU 的机制。 */
