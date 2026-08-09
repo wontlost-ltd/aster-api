@@ -587,3 +587,111 @@ What-If 后端已随 #230 合入 main 且端点**无 feature flag**，
 `unlimited` 只跳过了数量检查，仍然走 `firstFreeSlot` + 唯一索引。
 两个并发请求都看到同一份 active 列表 → 算出同一槽 → 一个被唯一约束拒绝。
 **额度本应无限的租户被拒**。槽位模型对有限额度成立，对无限额度是错的。
+
+---
+
+## 11. 租约/owner 协议重做（2026-08-09，S5 第三轮审查 26/100）
+
+> 状态：**待拍板**。第三轮审查五个 P0 + 三个 P1，比第二轮（38）更低。
+> **连续两轮「照条目逐条修」都修出了新的架构问题**，故本节先定协议再动手。
+
+### 11.0 根因：护栏写在了「能被绕过的层」
+
+三轮下来，同一个错误换了三种形态：
+
+| 轮次 | 我写的护栏 | 为什么不起作用 |
+|---|---|---|
+| 一 | 装配期 CAS（PermitLease） | 拦不住对同一个 cold Uni 的重复订阅 |
+| 二 | `plannedCount` 在 `replayAll` 里 `persist()` | 并在调用方长事务里，崩溃即回滚 |
+| 三 | 终态写带 `AND leaseOwner = ?` | **managed entity 会自动 flush，条件更新形同虚设** |
+
+共同点不是「粗心」，而是**把护栏放在一个它管不到的层**，
+然后用注释宣称它有效。第三轮那条尤其贵：commit message 写着
+「让双 worker 覆盖变成结构上不可能」，而实现里 Hibernate 在提交时
+照样把脏实体刷进去。
+
+**本节的设计目标因此是一句话**：
+> 让「谁能写这一行」由**数据库**回答，而不是由应用层的自觉回答。
+
+### 11.1 终态写：detached + 单条原子 CAS
+
+**问题**：`runBatch` 里 `findById` 拿到的是 **managed** 实体；
+`markCompleted/markFailed` 改的是它，随后的条件 `update` 即便写 0 行，
+Hibernate 仍会在 flush/commit 时按主键无条件写回。
+空窗口分支更直接 `persist()` 返回，连条件都没有。
+
+**方案（待拍板）**
+
+| 选项 | 做法 | 代价 |
+|---|---|---|
+| **A. 全程 detached** | worker 只读出**值对象**（不持有 managed 实体），所有写一律走单条 `UPDATE ... WHERE id=? AND lease_owner=? AND status='RUNNING'` | 要把 `runBatch` 里对实体的读改成 DTO；改动面中等 |
+| B. `EntityManager.detach()` | 读完立即 detach，再走条件更新 | 一行代码，但**依赖每个写路径都记得 detach**——又是「靠自觉」，与 §11.0 的教训相悖 |
+
+倾向 **A**：它让「忘记 detach」这个失误**不可能发生**，
+而 B 只是把同一个陷阱推迟到下一个写路径。
+
+★无论选哪个，**四条写路径必须统一**：终态、空窗口、防御性兜底、reclaim。
+上一轮只改了终态一条，另外三条仍是无条件写——审查因此说
+「owner token 现在只是有这个字段，还不是所有数据库写路径上的硬闸」。
+
+### 11.2 租约时长：83 小时 vs 2 小时的矛盾要正面解决
+
+**问题**：单条最长等许可 30s × 串行 10000 条 = **83 小时**最坏耗时，
+而我把租约定成 2 小时并注释「可覆盖最坏情况」——**那个算术我从没做过**。
+乐观值（进程内 1.35ms/条）是 13 秒，两者差 5 个数量级。
+
+**方案（待拍板）**
+
+| 选项 | 做法 | 代价 |
+|---|---|---|
+| **A. 分段执行 + 分段续租** | 每 N 条提交一次并续租，租约按「一段」取值而非「整批」 | 拆掉了「整批一个事务」，需要另想办法保 fail-closed（见 §11.5） |
+| B. 租约按最坏取值（≥83h） | 简单 | 真崩溃时批次要卡 83 小时才被回收，等于没有回收 |
+| C. 压低最坏耗时 | 调小 `PERMIT_WAIT_MS`、或并行重跑 | 改容量模型，影响面超出本节 |
+
+倾向 **A**：B 和 C 都是把矛盾挪个地方。A 的代价（fail-closed 怎么保）
+是可以设计的，见 §11.5。
+
+### 11.3 reclaim 必须原子
+
+**问题**：先 `list()` 查 stale、再逐个改、`persist()`，
+没有 `status`/`leaseOwner`/`leaseExpiresAt` 条件，也没有 `@Version`。
+两个副本可同时读到同一批 stale 行，慢的那个会把快的那个刚领走的
+新 owner 覆盖回 PENDING。
+
+**方案**：单条 SQL 完成回收，条件带上读到的 `leaseOwner` 与 `leaseExpiresAt`：
+```sql
+UPDATE replay_batch
+   SET status='PENDING', lease_owner=NULL, lease_expires_at=NULL, started_at=NULL
+ WHERE id = ? AND status='RUNNING'
+   AND lease_owner = ?          -- 读到的那个 owner
+   AND lease_expires_at = ?     -- 读到的那个到期时刻
+```
+写 0 行 = 别人已经处理过，本副本放弃。与 §11.1 是同一个原则。
+
+### 11.4 其余三条（修法明确，不需拍板）
+
+- **异常兜底不校验 owner**：`claimNextPending()` 要把 owner 一并返回，
+  `failBatchDefensively` 带 owner 条件写。否则失租的 A 抛异常时，
+  会把 B 刚领走的批次标成 FAILED 并释放槽位。
+- **unlimited 重试处在已失败的事务里**：`persistAndFlush()` 抛
+  `PersistenceException` 后 session 已 rollback-only，同事务内重试不可靠，
+  且 `catch (PersistenceException)` 会把 DB 故障误报成槽位争用。
+  改为**捕获精确的唯一约束冲突**并在**新事务**里重试。
+- **`INPUT_INCOMPATIBLE` 归类不诚实**：冻结时存在、重跑时上游消失的执行
+  根本没进 `replayOne`，说它「输入不兼容」是错的，还会错误继承不可重试语义。
+  新增 `SOURCE_EXECUTION_UNAVAILABLE`。
+
+### 11.5 分段执行如何保 fail-closed（若 §11.2 选 A）
+
+「整批一个事务」原本是 §1.1 的实现基础：要么全成功要么全拒答。
+分段后需要另一个机制保它：
+
+- 逐条结果落 `replay_batch_item`（该表已存在，加 `result` 列）
+- 只有**全部条目都成功**才允许迁移到 COMPLETED；
+  DB 层加 CHECK：`COMPLETED ⇒ 不存在失败条目`
+- 判定仍由 `ReplayBatchRunner.decide` 做，但输入从内存列表换成表查询
+
+★这会让 §3.1「不存逐条 targetDecision」再次受到挑战——
+但存的是**成功/失败标记**（不是决策内容），与冻结 id 集合同理，
+不含 PII。需要在拍板时确认这条边界。
+
