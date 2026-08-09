@@ -47,6 +47,10 @@ public class ReplayBatchResource {
     /** 保留期（§7.3）：到期转 EXPIRED 并清空聚合结果。 */
     private static final int RETENTION_DAYS = 30;
 
+    /** 仅用于把实体里的 jsonb 字符串列还原成对象（见 {@link #parseJson}）。 */
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON =
+        new com.fasterxml.jackson.databind.ObjectMapper();
+
     @Inject
     RequestIdentityResolver identityResolver;
 
@@ -98,15 +102,18 @@ public class ReplayBatchResource {
         boolean unlimited = plan.hasUnlimitedReplayBatches();
         if (!unlimited && active.size() >= plan.concurrentReplayBatches()) {
             ReplayBatchEntity current = active.get(0);
-            // ★409 带上当前批次 id 与进度——让前端能显示「正在跑，还剩 N 条」，
-            //   而不是干巴巴一句「请稍后」
+            // ★409 带上当前批次 id——让前端能接管并显示进度，
+            //   而不是干巴巴一句「请稍后」。
+            //
+            // ★但**不给 completedCount**：它与 plannedCount 同屏即可相减出失败数，
+            //   反过来也就得到了成功数（§1.1）。这条路径此前同时给了两者——
+            //   与 GET 那条泄漏是同一个错误，只是藏在并发拒绝分支里。
+            //   前端要进度就去 GET 那个批次，那条路径已按状态正确裁剪字段。
             return Response.status(Response.Status.CONFLICT)
                 .entity(Map.of(
                     "error", "whatif_batch_in_progress",
                     "message", "已有批次在运行，完成后可再发起",
-                    "currentBatchId", current.id.toString(),
-                    "plannedCount", current.plannedCount,
-                    "completedCount", current.completedCount))
+                    "currentBatchId", current.id.toString()))
                 .build();
         }
 
@@ -200,6 +207,31 @@ public class ReplayBatchResource {
      * PENDING/RUNNING 作进度分母（此时不给任何失败数），
      * COMPLETED 是全量成功（样本即总体，两者相等，无可推断）。
      */
+    /**
+     * 把实体里以 {@code String} 保存的 JSON 列还原成对象再下发。
+     *
+     * <p>★<b>不还原就是跨仓契约断裂</b>：实体字段是 {@code String}（jsonb 列映射），
+     * 直接放进响应 map 会被 JAX-RS 再编码一次，wire 上变成**转义字符串**：
+     * <pre>{"failureReasons":"{\"INPUT_INCOMPATIBLE\":170}"}</pre>
+     * 而 cloud 侧按对象读（{@code Object.entries(failureReasons)}），
+     * 于是完成态数字变成 undefined、失败原因按**字符**枚举。
+     * 组件测试手造对象 fixture，恰好绕开了这条真实 wire 契约。
+     *
+     * <p>解析失败时抛出而不是回退成原字符串：静默回退会让「wire 上是字符串」
+     * 这个 bug 再次悄悄发生，而调用方只在渲染时才看到乱码。
+     */
+    private static Object parseJson(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            return JSON.readValue(json, Object.class);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException(
+                "批次 JSON 列无法解析，不得以字符串形式下发：" + json, e);
+        }
+    }
+
     static Map<String, Object> describe(ReplayBatchEntity batch) {
         var body = new java.util.LinkedHashMap<String, Object>();
         body.put("batchId", batch.id.toString());
@@ -217,12 +249,12 @@ public class ReplayBatchResource {
             }
             case COMPLETED -> {
                 body.put("plannedCount", batch.plannedCount);
-                body.put("result", batch.resultSummary);
+                body.put("result", parseJson(batch.resultSummary));
             }
             case FAILED -> {
                 // ★拒答：只给失败原因分布，**不给总体量**——
                 //   给了就能与失败量相减得出成功数。
-                body.put("failureReasons", batch.failureReasons);
+                body.put("failureReasons", parseJson(batch.failureReasons));
                 body.put("rejected", true);
             }
             case EXPIRED -> body.put("expired", true);

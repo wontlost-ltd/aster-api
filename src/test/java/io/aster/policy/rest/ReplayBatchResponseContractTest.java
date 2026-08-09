@@ -113,6 +113,59 @@ class ReplayBatchResponseContractTest {
         assertThat(body).doesNotContainKey("rejected");
     }
 
+    /**
+     * ★P0-3：JSON 列必须以**对象**下发，不能是转义字符串。
+     *
+     * <p>实体字段是 {@code String}（jsonb 列映射），直接放进响应会被再编码一次，
+     * wire 上变成 {@code "failureReasons":"{\"INPUT_INCOMPATIBLE\":170}"}。
+     * cloud 侧按对象读（{@code Object.entries(...)}），于是完成态数字变 undefined、
+     * 失败原因按**字符**枚举。组件测试手造对象 fixture，恰好绕开了真实 wire 契约。
+     */
+    @Test
+    void 拒答态的失败原因必须是对象而非转义字符串() {
+        ReplayBatchEntity b = batch(ReplayBatchStatus.FAILED);
+        b.failureReasons = "{\"INPUT_INCOMPATIBLE\":170,\"TIMEOUT\":30}";
+
+        Object reasons = ReplayBatchResource.describe(b).get("failureReasons");
+
+        assertThat(reasons)
+            .as("★失败原因必须是 Map；String 会让 cloud 侧按字符枚举")
+            .isInstanceOf(Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> asMap = (Map<String, Object>) reasons;
+        assertThat(asMap)
+            .containsEntry("INPUT_INCOMPATIBLE", 170)
+            .containsEntry("TIMEOUT", 30);
+    }
+
+    @Test
+    void 完成态的结果必须是对象而非转义字符串() {
+        ReplayBatchEntity b = batch(ReplayBatchStatus.COMPLETED);
+        b.completedCount = 200;
+        b.resultSummary = "{\"changed\":5,\"newlyApproved\":3,\"estimatedValueDelta\":null}";
+
+        Object result = ReplayBatchResource.describe(b).get("result");
+
+        assertThat(result)
+            .as("★结果必须是 Map；String 会让 cloud 侧读到 undefined")
+            .isInstanceOf(Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> m = (Map<String, Object>) result;
+        assertThat(m).containsEntry("changed", 5);
+        // null 必须原样保留：cloud 靠 `=== null` 显示「无法估算」，
+        // 若丢失或变成 0 会被读成「换版本没有金额影响」——一个没有依据的结论
+        assertThat(m).containsKey("estimatedValueDelta");
+        assertThat(m.get("estimatedValueDelta")).isNull();
+    }
+
+    /** JSON 列为空时给 null，而不是空字符串或 "null" 文本。 */
+    @Test
+    void 空的JSON列下发为null() {
+        ReplayBatchEntity b = batch(ReplayBatchStatus.FAILED);
+        b.failureReasons = null;
+        assertThat(ReplayBatchResource.describe(b).get("failureReasons")).isNull();
+    }
+
     /** 窗口口径必须与任何数字同屏：用户要知道自己看的是哪个总体。 */
     @Test
     void 每种状态都必须带窗口口径() {
