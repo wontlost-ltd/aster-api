@@ -95,9 +95,11 @@ public class ReplayBatchResource {
         }
 
         // ── 2. 并发：现在能不能再开一个 ────────────────────────────────
+        // ★按 tenantId 而非 userId：额度是**租户级**的（§7.2）。
+        //   原实现按 userId 统计，同租户多个用户各开一个即可绕过上限。
         List<ReplayBatchEntity> active = ReplayBatchEntity.list(
-            "userId = ?1 and status in ?2",
-            userId, List.of(ReplayBatchStatus.PENDING, ReplayBatchStatus.RUNNING));
+            "tenantId = ?1 and status in ?2",
+            tenantId, List.of(ReplayBatchStatus.PENDING, ReplayBatchStatus.RUNNING));
 
         boolean unlimited = plan.hasUnlimitedReplayBatches();
         if (!unlimited && active.size() >= plan.concurrentReplayBatches()) {
@@ -140,11 +142,28 @@ public class ReplayBatchResource {
         batch.windowTimezone = tz.getId();
         batch.windowFrom = w.from();
         batch.windowTo = w.to();
-        // plannedCount 在 worker 拉完窗口后回填；创建时未知
+        // plannedCount 由 worker 从**冻结窗口**派生并在开跑前落库
+        // （见 ReplayBatchService.replayAll）。创建时窗口尚未拉取，故为 0。
         batch.plannedCount = 0;
         batch.toolchainId = "pending";
         batch.expiresAt = Instant.now().plus(java.time.Duration.ofDays(RETENTION_DAYS));
-        batch.persist();
+        // ★占据一个并发槽：(tenant_id, slot) 上有部分唯一索引。
+        //   上面的 active.size() 判定是**先查后写**，两步之间没有互斥——
+        //   并发请求都读到未满就都会插入，pro 档「1 个并发」形同虚设。
+        //   槽号取「当前已占用之外的最小空位」，真正的互斥由数据库保证。
+        batch.concurrencySlot = firstFreeSlot(active);
+        try {
+            batch.persistAndFlush();
+        } catch (jakarta.persistence.PersistenceException raced) {
+            // ★唯一约束把 TOCTOU 变成了一个可处理的错误：并发抢同一槽，输的这个
+            //   转成 409（而不是 500）——对调用方而言这就是「已有批次在跑」。
+            Log.debugf("租户 %s 并发抢占槽位失败，转 409：%s", tenantId, raced.getMessage());
+            return Response.status(Response.Status.CONFLICT)
+                .entity(Map.of(
+                    "error", "whatif_batch_in_progress",
+                    "message", "已有批次在运行，完成后可再发起"))
+                .build();
+        }
 
         Log.infof("创建 What-If 批次 %s：policy=%s 窗口=%s [%s, %s)",
             batch.id, policyId, w.label(), w.from(), w.to());
@@ -230,6 +249,28 @@ public class ReplayBatchResource {
             throw new IllegalStateException(
                 "批次 JSON 列无法解析，不得以字符串形式下发：" + json, e);
         }
+    }
+
+    /**
+     * 取「当前活跃批次已占用之外的最小槽号」。
+     *
+     * <p>槽号本身没有语义，只是让 {@code (tenant_id, slot)} 唯一索引能表达
+     * 「最多 N 个并发」。取最小空位而不是随机数，是为了让 enterprise 租户
+     * 把额度从 N 调小到 M 时，超出的槽位自然不再被分配。
+     *
+     * <p>★这个函数<b>不负责</b>限流——它只挑一个候选槽。真正的互斥在数据库：
+     * 并发请求即使算出同一个槽号，也只有一个能插入成功。
+     */
+    private static int firstFreeSlot(List<ReplayBatchEntity> active) {
+        java.util.Set<Integer> taken = active.stream()
+            .map(b -> b.concurrencySlot)
+            .filter(java.util.Objects::nonNull)
+            .collect(java.util.stream.Collectors.toSet());
+        int slot = 0;
+        while (taken.contains(slot)) {
+            slot++;
+        }
+        return slot;
     }
 
     static Map<String, Object> describe(ReplayBatchEntity batch) {

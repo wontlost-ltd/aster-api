@@ -98,13 +98,21 @@ class ReplayBatchEntitlementContractTest {
     }
 
     @Test
-    void 并发查询必须带userId() throws Exception {
-        // 租户隔离：不能把别人的批次算进本用户的并发额度，
-        // 更不能让本用户看到别人的批次 id
+    void 并发查询必须按租户隔离且口径为租户级() throws Exception {
+        // 隔离诉求不变：不能把别的租户的批次算进本租户额度，
+        // 更不能让调用方看到别的租户的批次 id。
+        //
+        // ★但口径必须是**租户级**而非用户级（ADR 0034 §7.2）：
+        //   额度按租户售卖，原实现按 userId 统计，
+        //   同租户多个用户各开一个即可绕过上限。
+        //   本用例此前钉死 "userId = ?1"，等于把这个 bug 写进了契约。
         String body = createBody(source());
         assertThat(body)
-            .as("★并发查询必须按 userId 过滤")
-            .contains("userId = ?1");
+            .as("★并发查询必须按 tenantId 过滤——额度是租户级的")
+            .contains("tenantId = ?1");
+        assertThat(body)
+            .as("★不得再按 userId 统计活跃批次：同租户多用户可绕过上限")
+            .doesNotContain("\"userId = ?1 and status in ?2\"");
     }
 
     @Test

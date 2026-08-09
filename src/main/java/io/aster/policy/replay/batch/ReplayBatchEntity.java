@@ -96,6 +96,33 @@ public class ReplayBatchEntity extends PanacheEntityBase {
     @Column(name = "toolchain_id", nullable = false, length = 512)
     public String toolchainId;
 
+    /**
+     * 租约到期时刻。<b>RUNNING 必须非空</b>（DB 层 CHECK 兜底）。
+     *
+     * <p>领取批次时写入，worker 定期续租。超期未续 = 持有者进程已死，
+     * 允许其他副本回收重跑——否则批次永久停在 RUNNING，
+     * 而且<b>持续占着租户的并发额度</b>（pro 档只有 1 个），该租户再也发不出批次。
+     */
+    @Column(name = "lease_expires_at")
+    public java.time.Instant leaseExpiresAt;
+
+    /**
+     * 已尝试次数。回收不是无限的：反复崩溃说明是这个批次本身有问题
+     * （例如某条输入必然让 worker 挂掉），无限重试只会循环占用额度。
+     */
+    @Column(name = "attempt_count", nullable = false)
+    public int attemptCount;
+
+    /**
+     * 并发槽位 {@code [0, quota)}。<b>活跃时非空、终态时为空</b>（DB 层 CHECK 兜底）。
+     *
+     * <p>{@code (tenant_id, concurrency_slot)} 上有部分唯一索引——这是<b>唯一</b>
+     * 能真正堵住「先查数量再插入」那个 TOCTOU 的机制：并发请求抢同一槽时，
+     * 输的那个直接被数据库拒绝，不靠应用层自觉。
+     */
+    @Column(name = "concurrency_slot")
+    public Integer concurrencySlot;
+
     @Column(name = "created_at", nullable = false)
     public Instant createdAt = Instant.now();
 
@@ -121,6 +148,15 @@ public class ReplayBatchEntity extends PanacheEntityBase {
             startedAt = Instant.now();
         } else if (next.isTerminal() && next != ReplayBatchStatus.EXPIRED) {
             finishedAt = Instant.now();
+        }
+        if (next.isTerminal()) {
+            // ★终态**必须**释放并发槽与租约，否则历史批次会永久吃掉租户额度
+            //   （pro 档只有 1 个，占住就等于该租户再也发不出批次）。
+            //   放在 transitionTo 里而不是各个调用点：四条终态路径
+            //   （完成/拒答/空窗口/防御性失败）漏掉任何一条都会造成额度泄漏，
+            //   由**结构**保证比靠每处自觉可靠。DB 层另有 CHECK 兜底。
+            concurrencySlot = null;
+            leaseExpiresAt = null;
         }
         status = next;
     }

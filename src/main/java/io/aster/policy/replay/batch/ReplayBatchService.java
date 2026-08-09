@@ -33,6 +33,15 @@ public class ReplayBatchService {
     /** 等待 What-If 许可的上限；超时归类为 THROTTLED（可重试）。 */
     private static final long PERMIT_WAIT_MS = 30_000;
 
+    /**
+     * 租约时长。需明显长于「一条重跑的最坏耗时」，否则健康的 worker 会被误判为死亡
+     * 而遭回收——那会造成同一批次被两个副本同时跑。worker 应在此期限内续租。
+     */
+    private static final java.time.Duration LEASE_DURATION = java.time.Duration.ofMinutes(10);
+
+    /** 最大尝试次数。反复崩溃说明是批次本身有问题，无限重试只会循环占用额度。 */
+    private static final int MAX_ATTEMPTS = 3;
+
     @jakarta.inject.Inject
     ExecutionWindowClient windowClient;
 
@@ -60,12 +69,69 @@ public class ReplayBatchService {
         if (candidate == null) {
             return null;
         }
+        // ★领取的同时写入 lease：RUNNING 必须有租约（DB 层 CHECK 兜底）。
+        //   没有租约的 RUNNING 就是「持有者已死但没人知道」那个状态。
         long updated = ReplayBatchEntity.update(
-            "status = ?1, startedAt = ?2 where id = ?3 and status = ?4",
+            "status = ?1, startedAt = ?2, leaseExpiresAt = ?3, attemptCount = attemptCount + 1"
+                + " where id = ?4 and status = ?5",
             ReplayBatchStatus.RUNNING, java.time.Instant.now(),
+            java.time.Instant.now().plus(LEASE_DURATION),
             candidate.id, ReplayBatchStatus.PENDING);
         // 竞态：别的副本先领走了 → 本轮放弃，下一轮再来
         return updated == 1 ? candidate.id : null;
+    }
+
+    /**
+     * 回收租约已过期的 RUNNING 批次。
+     *
+     * <p>★<b>没有这一步，进程崩溃就等于批次永久卡死</b>：领取逻辑只查 PENDING，
+     * 调度器只处理当前进程捕获到的异常，所以「提交了 RUNNING 之后进程没了」
+     * 这条路径无人负责。后果不止是这个批次不出结果——它<b>持续占着租户的
+     * 并发额度</b>（pro 档只有 1 个），该租户从此发不出任何 What-If 批次。
+     *
+     * <p>超过 {@link #MAX_ATTEMPTS} 次仍失败的直接标失败并释放槽位：
+     * 反复崩溃说明是这个批次本身有问题（例如某条输入必然让 worker 挂掉），
+     * 无限重试只会循环占用额度。
+     *
+     * @return 本轮回收的批次数
+     */
+    @Transactional
+    public int reclaimStaleLeases() {
+        java.time.Instant now = java.time.Instant.now();
+        List<ReplayBatchEntity> stale = ReplayBatchEntity.list(
+            "status = ?1 and leaseExpiresAt < ?2", ReplayBatchStatus.RUNNING, now);
+
+        int reclaimed = 0;
+        for (ReplayBatchEntity b : stale) {
+            if (b.attemptCount >= MAX_ATTEMPTS) {
+                // 放弃重试：标失败并**释放槽位**，否则额度被永久吃掉
+                b.failedCount = b.plannedCount;
+                b.completedCount = 0;
+                b.markFailed(toJson(Map.of(ReplayFailureKind.UNKNOWN.name(), b.plannedCount)));
+                b.concurrencySlot = null;
+                b.leaseExpiresAt = null;
+                Log.warnf("批次 %s 已尝试 %d 次仍未完成，判定失败并释放并发槽",
+                    b.id, b.attemptCount);
+            } else {
+                // 退回 PENDING 等待重新领取；槽位保留（它仍占着额度，这是对的）
+                b.status = ReplayBatchStatus.PENDING;
+                b.startedAt = null;
+                b.leaseExpiresAt = null;
+                Log.warnf("批次 %s 租约过期（第 %d 次尝试），退回 PENDING 等待重跑",
+                    b.id, b.attemptCount);
+            }
+            b.persist();
+            reclaimed++;
+        }
+        return reclaimed;
+    }
+
+    /** 续租：worker 跑长批次时定期调用，证明自己还活着。 */
+    @Transactional
+    public void renewLease(UUID batchId) {
+        ReplayBatchEntity.update(
+            "leaseExpiresAt = ?1 where id = ?2 and status = ?3",
+            java.time.Instant.now().plus(LEASE_DURATION), batchId, ReplayBatchStatus.RUNNING);
     }
 
     /**
