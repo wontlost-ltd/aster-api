@@ -115,8 +115,7 @@ final class PermitLease {
             //   即闸门被绕过。实测：runs=2 而 permits=1。
             //   放在 deferred 里则每次订阅都过一遍 CAS，第二次直接失败。
             if (!consumed.compareAndSet(false, true)) {
-                return Uni.createFrom().failure(new IllegalStateException(
-                    "PermitLease 是一次性的，不可重复订阅——每个请求必须新建一个"));
+                return Uni.createFrom().failure(new RepeatSubscriptionException());
             }
             return Uni.createFrom().<T>item(() -> {
                 try {
@@ -131,9 +130,25 @@ final class PermitLease {
             // 路径3：调度被拒时 supplier 永不执行，上面的 finally 永不触发。
             // 只能在这里兜底。用 onFailure 而非 onTermination：后者在取消时也会触发。
             //
-            // ★这里也会收到上面「重复订阅」的 failure。此时**必须**归还许可吗？
-            //   不——重复订阅从未取得第二个许可，release() 的 CAS 保证首次订阅
-            //   的归还只发生一次，第二次是 no-op。既不泄漏也不虚增。
-            .onFailure().invoke(t -> release());
+            // ★**必须排除重复订阅的 failure**：它没有取得任何许可，因而
+            //   **不拥有归还权**。若让它走这条兜底，会在首次订阅的 worker
+            //   **仍在运行时**抢先归还唯一许可——闸门提前重开，
+            //   与「反复发起再取消」是同一类绕过，比原 bug 更隐蔽。
+            //   （实测复现：首 worker 卡住时 availablePermits 已变回 1。）
+            //   归还权归属：谁取得许可，谁归还。
+            .onFailure(t -> !(t instanceof RepeatSubscriptionException))
+            .invoke(t -> release());
+    }
+
+    /**
+     * 重复订阅同一个受保护 Uni 时抛出。
+     *
+     * <p>单独建类型是为了让外层 {@code onFailure} 能把它**排除**在归还之外：
+     * 这条 failure 的订阅者从未取得许可，不得归还别人持有的那一个。
+     */
+    static final class RepeatSubscriptionException extends IllegalStateException {
+        RepeatSubscriptionException() {
+            super("PermitLease 是一次性的，不可重复订阅——每个请求必须新建一个");
+        }
     }
 }

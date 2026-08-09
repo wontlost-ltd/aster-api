@@ -442,4 +442,49 @@ class EvaluateSourceSimulateContractTest {
             .as("重复订阅不得让许可凭空变多")
             .isEqualTo(1);
     }
+
+    @Test
+    void 重复订阅不得在首worker运行中提前归还许可() throws Exception {
+        // ★审查者实证的回归：把一次性检查移到订阅期后，第二次订阅的 failure
+        //   会流进外层公共的 onFailure().invoke(release)，在**首 worker 仍在运行时**
+        //   抢先归还唯一许可——闸门提前重开，与「反复发起再取消」同类。
+        //   串行测试测不到：串行时首 worker 已完成、released 已为 true，第二次是 no-op。
+        //   归还权归属：谁取得许可，谁归还。
+        Semaphore sem = new Semaphore(1);
+        PermitLease lease = leased(sem);                 // 取走唯一许可
+        CountDownLatch running = new CountDownLatch(1);  // 首 worker 已开始
+        CountDownLatch hold = new CountDownLatch(1);     // 卡住首 worker
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            var uni = lease.guardAsync(() -> {
+                running.countDown();
+                try {
+                    hold.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return "first";
+            }, pool);
+
+            pool.submit(() -> uni.subscribe().with(v -> { }, t -> { }));
+            assertThat(running.await(5, TimeUnit.SECONDS)).as("首 worker 应已启动").isTrue();
+
+            // 首 worker 仍卡着，此时重复订阅
+            uni.subscribe().with(v -> { }, t -> { });
+            Thread.sleep(200);
+
+            assertThat(sem.availablePermits())
+                .as("★首 worker 仍在运行，许可不得被重复订阅提前归还")
+                .isZero();
+
+            hold.countDown();
+            Thread.sleep(300);
+            assertThat(sem.availablePermits())
+                .as("首 worker 完成后许可才归还，且恰好一个")
+                .isEqualTo(1);
+        } finally {
+            hold.countDown();
+            pool.shutdownNow();
+        }
+    }
 }
