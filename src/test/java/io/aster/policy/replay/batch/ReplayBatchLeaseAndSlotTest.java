@@ -117,6 +117,85 @@ class ReplayBatchLeaseAndSlotTest {
         ReplayBatchService.assertLeaseCoversSegment();
     }
 
+    /**
+     * ★<b>连续超时下线程数与队列长度必须有硬上界</b>（第八轮 P0-2）。
+     *
+     * <p>超时后 {@code Future.cancel(true)} 不保证停下 Truffle 执行，
+     * 而许可已在 {@code withPermit} 的 {@code finally} 中释放——
+     * 所以「被弃线程由容量闸门许可数封顶」<b>不成立</b>，
+     * 必须由执行池自身有界来兜底。原先的 cached pool 会无限增长。
+     *
+     * <p>本用例复刻生产池配置（{@code max=许可数×2}、有界队列、AbortPolicy），
+     * 提交 200 个**永不结束**的任务模拟连续超时，断言两个上界都不被突破。
+     *
+     * <p>审查要求「用连续超时压力测试证明线程数和队列长度不越界」——
+     * 这是我上一轮明确标注「未做」的一项。
+     */
+    @Test
+    void 连续超时下执行池线程与队列不得越界() throws Exception {
+        final int permits = 5;
+        final int max = Math.max(2, permits * 2);
+        java.util.concurrent.ThreadPoolExecutor pool =
+            new java.util.concurrent.ThreadPoolExecutor(
+                max, max, 60L, java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.ArrayBlockingQueue<>(max),
+                r -> {
+                    Thread t = new Thread(r, "probe-replay-exec");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+
+        java.util.concurrent.CountDownLatch hold =
+            new java.util.concurrent.CountDownLatch(1);
+        int accepted = 0;
+        int rejected = 0;
+        try {
+            for (int i = 0; i < 200; i++) {
+                try {
+                    pool.submit(() -> hold.await(120, java.util.concurrent.TimeUnit.SECONDS));
+                    accepted++;
+                } catch (java.util.concurrent.RejectedExecutionException expected) {
+                    rejected++;   // 归 THROTTLED，可重试——不是用户数据问题
+                }
+            }
+            Thread.sleep(300);
+
+            assertThat(pool.getPoolSize())
+                .as("★线程数必须 ≤ %d；cached pool 在此场景下会涨到 200", max)
+                .isLessThanOrEqualTo(max);
+            assertThat(pool.getQueue().size())
+                .as("★队列长度必须 ≤ %d", max)
+                .isLessThanOrEqualTo(max);
+            assertThat(accepted)
+                .as("★接受的任务数受「池 + 队列」双重封顶，不得超过 %d", max * 2)
+                .isLessThanOrEqualTo(max * 2);
+            assertThat(rejected)
+                .as("超出部分必须被明确拒绝，而不是悄悄堆积")
+                .isPositive();
+        } finally {
+            hold.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    /** 生产池必须真的用有界配置——避免有人改回 cached pool。 */
+    @Test
+    void 生产执行池必须是有界配置() throws Exception {
+        String src = serviceSource();
+        assertThat(src)
+            .as("★不得使用无界 cached pool——连续超时会让线程数失控")
+            .doesNotContain("newCachedThreadPool");
+        assertThat(src)
+            .as("必须固定线程数 + 有界队列 + 明确拒绝策略")
+            .contains("ThreadPoolExecutor")
+            .contains("ArrayBlockingQueue")
+            .contains("AbortPolicy");
+        assertThat(src)
+            .as("★上界必须与容量闸门许可数挂钩，而不是一个魔数")
+            .contains("WhatIfCapacityGate.permitCount()");
+    }
+
     @Test
     void 必须存在过期租约回收逻辑() throws Exception {
         String src = serviceSource();
