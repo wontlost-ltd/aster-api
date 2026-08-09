@@ -49,14 +49,16 @@ public class ReplayBatchService {
      * <p>★但真正兜底的不是这个时长，而是 {@code leaseOwner} 条件更新：
      * 即便误判发生，旧 worker 也写不进终态。调长只是让误判更少发生。
      */
-    private static final java.time.Duration LEASE_DURATION = java.time.Duration.ofMinutes(30);
+    private static final java.time.Duration LEASE_DURATION = java.time.Duration.ofHours(1);
 
     /**
      * 每段条数（ADR 0034 §11.2）。
      *
      * <p>租约只需覆盖<b>一段</b>的最坏耗时，而不是整批：
-     * ★取值必须让「单段最坏耗时 < 租约」**真正成立**，而不是写个数字了事：
-     * {@code 20 × 30s（单条最长等许可）= 10 分钟 < 30 分钟租约}，留 3 倍余量。
+     * ★取值由 {@link #SEGMENT_WORST_CASE} 的**静态断言**把关，不再靠注释里的算术：
+     * {@code 15s + 10×(30s 等许可 + 60s 执行上限) = 15.2 分钟}，×2 = 30.5 分钟
+     * ≤ 60 分钟租约。三轮取值被退回（83h vs 2h、50min vs 30min、
+     * 以及 fetchWindow 25min 漏项）之后，这条不等式现在由代码在启动时校验。
      *
      * <p>上一版写的是 100 条，同一段注释里自己算出「= 50 分钟」，
      * 而租约设的是 30 分钟——<b>注释里的算术直接否定了它旁边的常量</b>。
@@ -69,7 +71,7 @@ public class ReplayBatchService {
      * 而我把租约定成 2 小时并注释「可覆盖最坏情况」——那个算术从没做过。
      * 分段把「租约必须覆盖多久」从不可控变成可控。
      */
-    private static final int SEGMENT_SIZE = 20;
+    private static final int SEGMENT_SIZE = 10;
 
     /**
      * 批次规模硬上限（ADR 0034 §10.3）。
@@ -79,6 +81,66 @@ public class ReplayBatchService {
      * 靠租约兜底等于让一个必然超时的批次先跑两小时再失败。
      */
     static final int MAX_BATCH_SIZE = 10_000;
+
+    /**
+     * 单条重跑的执行硬超时（ADR 0034 §12.4）。
+     *
+     * <p>★<b>没有这个上限，「段最坏耗时」就无法计算</b>——这正是三轮租约取值
+     * 都被退回的根源：83h vs 2h、50min vs 30min、以及「fetchWindow 25 分钟不在
+     * 算术里」。一个没有上界的项无法进入求和，我却每次都写了个数字并宣称覆盖。
+     */
+    private static final java.time.Duration EXEC_TIMEOUT = java.time.Duration.ofSeconds(60);
+
+    /**
+     * 单段拉取的超时上界。
+     *
+     * <p>分段后每段只拉**一页**（{@code ExecutionWindowClient} 的 HTTP timeout 15s），
+     * 不再是「最多 100 页 × 15s ≈ 25 分钟」——那个 25 分钟正是上一轮
+     * 租约算术漏掉的一项。
+     */
+    private static final long SEGMENT_FETCH_TIMEOUT_MS = 15_000;
+
+    /**
+     * 一段的最坏耗时上界 = 拉取 + N × (等许可 + 执行上限)。
+     *
+     * <p>★这是个**可计算的和**，且下面用静态断言锁住
+     * {@code SEGMENT_WORST_CASE × 2 <= LEASE_DURATION}——
+     * 不等式写在代码里由编译/启动期校验，而不是写在注释里由我口头保证。
+     */
+    private static final java.time.Duration SEGMENT_WORST_CASE =
+        java.time.Duration.ofMillis(SEGMENT_FETCH_TIMEOUT_MS)
+            .plus(java.time.Duration.ofMillis(PERMIT_WAIT_MS).plus(EXEC_TIMEOUT)
+                .multipliedBy(SEGMENT_SIZE));
+
+    /**
+     * 校验「段最坏耗时 × 2 ≤ 租约」。
+     *
+     * <p>★<b>刻意做成可调用的方法，而不是 {@code static} 块</b>：
+     * static 块只在类被加载时执行，而本仓所有相关测试都只把
+     * {@code ReplayBatchService} 当**字符串**读源码，从不加载这个类——
+     * 实测把租约改成 10 分钟，测试全绿，static 块根本没跑。
+     * 那就是又一个「写了但永不执行」的护栏
+     * （前有 {@code PermitLease} 死代码、{@code renewLease} 无调用点）。
+     *
+     * <p>做成方法后由 {@code ReplayBatchLeaseAndSlotTest} 显式调用，
+     * 常量取错时测试**必然**转红。
+     *
+     * @throws IllegalStateException 不等式不成立
+     */
+    static void assertLeaseCoversSegment() {
+        if (SEGMENT_WORST_CASE.multipliedBy(2).compareTo(LEASE_DURATION) > 0) {
+            throw new IllegalStateException(
+                "租约不足以覆盖单段最坏耗时：段最坏 " + SEGMENT_WORST_CASE
+                    + " × 2 > 租约 " + LEASE_DURATION
+                    + "——健康的长批次会被误回收并双跑（ADR 0034 §12.4）");
+        }
+    }
+
+    @jakarta.annotation.PostConstruct
+    void verifyTimingInvariant() {
+        // 应用启动时也校验一次：常量改错不该等到生产上某个长批次被误回收才暴露
+        assertLeaseCoversSegment();
+    }
 
     /** 最大尝试次数。反复崩溃说明是批次本身有问题，无限重试只会循环占用额度。 */
     private static final int MAX_ATTEMPTS = 3;
@@ -338,9 +400,18 @@ public class ReplayBatchService {
             throw new TargetVersionMissingException(snap.targetVersionId());
         }
 
+        // ★只拉**本段**，不再每段拉全量窗口（ADR 0034 §12.4）。
+        //   上一版是 O(N²)：500 段 × 10000 条 = 5,000,000 个对象、约 5000 次 HTTP。
+        //   现在按 keyset cursor 取本段那 20 条：10,000 个对象、500 次请求。
+        //
+        //   ★不需要 cloud 新端点：现有窗口端点的 cursor 就是
+        //     `gt(executions.id, cursor)` + `orderBy asc(executions.id)`，
+        //     而冻结表也按 executionId 升序读——两边排序一致，
+        //     把「本段第一条的前一个 id」当 cursor 传进去即可。
+        String afterId = todo.isEmpty() ? null : previousExecutionId(batchId, todo.get(0).executionId);
         Map<String, ExecutionWindowClient.WindowedExecution> upstream =
-            windowClient.fetchWindow(snap.policyId(), snap.userId(),
-                    snap.windowFrom(), snap.windowTo())
+            windowClient.fetchSegment(snap.policyId(), snap.userId(),
+                    snap.windowFrom(), snap.windowTo(), afterId, todo.size())
                 .stream()
                 .collect(java.util.stream.Collectors.toMap(
                     ExecutionWindowClient.WindowedExecution::executionId,
@@ -363,6 +434,49 @@ public class ReplayBatchService {
             item.targetApproved = r.failureKind() == null ? r.targetApproved() : null;
         }
         return todo.size();
+    }
+
+    /**
+     * 取冻结表中排在 {@code executionId} 之前的那一个 id，用作 keyset cursor。
+     *
+     * <p>cloud 侧语义是 {@code gt(executions.id, cursor)}——**严格大于**，
+     * 所以要传「前一个」而不是「本段第一个」，否则本段第一条会被跳过。
+     * 本段第一条就是全批第一条时返回 {@code null}（从头取）。
+     */
+    private String previousExecutionId(UUID batchId, String executionId) {
+        return ReplayBatchItemEntity
+            .<ReplayBatchItemEntity>find(
+                "batchId = ?1 and executionId < ?2 order by executionId desc",
+                batchId, executionId)
+            .firstResultOptional()
+            .map(i -> i.executionId)
+            .orElse(null);
+    }
+
+    /**
+     * 带硬超时地执行一次重跑。
+     *
+     * <p>超时按 {@link ReplayFailureKind#TIMEOUT} 归类（可重试），
+     * 而不是让线程无限期挂住——挂住的后果是租约到期、批次被误回收、双 worker 并跑。
+     */
+    private static <T> T runWithTimeout(java.util.concurrent.Callable<T> work) throws Exception {
+        java.util.concurrent.ExecutorService ex =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "whatif-replay-exec");
+                t.setDaemon(true);
+                return t;
+            });
+        try {
+            return ex.submit(work).get(EXEC_TIMEOUT.toMillis(),
+                java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.ExecutionException e) {
+            if (e.getCause() instanceof Exception cause) {
+                throw cause;
+            }
+            throw e;
+        } finally {
+            ex.shutdownNow();
+        }
     }
 
     /** 从冻结表读回逐条结果，供 {@link ReplayBatchRunner#decide} 统一判定。 */
@@ -570,14 +684,16 @@ public class ReplayBatchService {
         String tenantId) {
 
         try {
+            // ★执行加硬超时：没有上界的项无法进入「段最坏耗时」的求和，
+            //   而那个和正是租约取值的依据（§12.4）。
             var execResult = capacityGate.withPermit(PERMIT_WAIT_MS, () ->
-                replayExecutor.execute(
+                runWithTimeout(() -> replayExecutor.execute(
                     tenantId, target.content, e.input(),
                     e.functionName(), e.locale(),
                     /* vocabIndex */ null,
                     /* legacyEvaluateSentinel */ false,
                     /* aliasSet */ java.util.Map.of(),
-                    /* aliasesTrusted */ true));
+                    /* aliasesTrusted */ true)));
 
             var targetVerdict = DecisionInterpreter.interpret(execResult.result());
 

@@ -100,6 +100,23 @@ class ReplayBatchLeaseAndSlotTest {
             .contains("leaseExpiresAt = ?3");
     }
 
+    /**
+     * ★租约必须覆盖单段最坏耗时——由**代码**校验，不再靠注释里的算术。
+     *
+     * <p>三轮取值都被退回：83h vs 2h、50min vs 30min、
+     * 以及「fetchWindow 25 分钟不在算术里」。根因是我每次只算了一部分，
+     * 而没有上界的项（执行无超时）根本无法进入求和。
+     *
+     * <p>现在 {@code SEGMENT_WORST_CASE = 拉取 + N×(等许可 + 执行上限)}
+     * 是可计算的和，本用例直接调用校验方法。
+     * ★曾写成 {@code static} 块，但没有任何测试加载这个类——
+     * 实测把租约改成 10 分钟仍全绿。护栏必须有人**调用**才算数。
+     */
+    @Test
+    void 租约必须覆盖单段最坏耗时() {
+        ReplayBatchService.assertLeaseCoversSegment();
+    }
+
     @Test
     void 必须存在过期租约回收逻辑() throws Exception {
         String src = serviceSource();

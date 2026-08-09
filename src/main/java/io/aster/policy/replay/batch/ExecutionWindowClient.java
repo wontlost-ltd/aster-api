@@ -81,6 +81,32 @@ public class ExecutionWindowClient {
      *
      * @throws IllegalStateException 拉取失败或超过分页上限
      */
+    /**
+     * 只拉<b>一段</b>：从 {@code afterExecutionId} 之后取至多 {@code limit} 条。
+     *
+     * <p>★这是把重跑从 <b>O(N²)</b> 降到 <b>O(N)</b> 的关键（ADR 0034 §12.4）。
+     * 上一版每段都调 {@link #fetchWindow} 拉<b>全量</b>窗口再只消费 20 条：
+     * 万条批次 = 500 段 × 10000 条 = <b>5,000,000 个对象</b>、约 5000 次 HTTP。
+     * 现在每段只拉自己那 20 条：10,000 个对象、500 次请求。
+     *
+     * <p>★<b>不需要 cloud 侧新增端点</b>：现有 {@code /api/internal/executions/window}
+     * 的 cursor 就是 keyset 分页（{@code gt(executions.id, cursor)} +
+     * {@code orderBy asc(executions.id)}），而冻结表也按 {@code executionId} 升序存。
+     * 两边排序一致，直接把「上一段最后一条 id」当 cursor 传进去即可。
+     */
+    public List<WindowedExecution> fetchSegment(
+        String policyId, String userId, Instant from, Instant to,
+        String afterExecutionId, int limit) {
+
+        JsonObject page = fetchPage(policyId, userId, from, to, afterExecutionId, limit);
+        JsonArray rows = page.getJsonArray("executions", new JsonArray());
+        List<WindowedExecution> out = new ArrayList<>(rows.size());
+        for (int i = 0; i < rows.size(); i++) {
+            out.add(toExecution(rows.getJsonObject(i)));
+        }
+        return out;
+    }
+
     public List<WindowedExecution> fetchWindow(
         String policyId, String userId, Instant from, Instant to) {
 
@@ -89,7 +115,7 @@ public class ExecutionWindowClient {
         int pages = 0;
 
         while (pages < MAX_PAGES) {
-            JsonObject page = fetchPage(policyId, userId, from, to, cursor);
+            JsonObject page = fetchPage(policyId, userId, from, to, cursor, PAGE_LIMIT);
             JsonArray rows = page.getJsonArray("executions", new JsonArray());
             for (int i = 0; i < rows.size(); i++) {
                 all.add(toExecution(rows.getJsonObject(i)));
@@ -120,7 +146,7 @@ public class ExecutionWindowClient {
     }
 
     private JsonObject fetchPage(
-        String policyId, String userId, Instant from, Instant to, String cursor) {
+        String policyId, String userId, Instant from, Instant to, String cursor, int limit) {
 
         URI baseUri = URI.create(config.cloudInternalUrl());
         int port = baseUri.getPort() == -1
@@ -134,7 +160,7 @@ public class ExecutionWindowClient {
             .append("&userId=").append(enc(userId))
             .append("&from=").append(enc(from.toString()))
             .append("&to=").append(enc(to.toString()))
-            .append("&limit=").append(PAGE_LIMIT);
+            .append("&limit=").append(limit);
         if (cursor != null) {
             q.append("&cursor=").append(enc(cursor));
         }
