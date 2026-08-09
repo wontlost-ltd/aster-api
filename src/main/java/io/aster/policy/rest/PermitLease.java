@@ -147,8 +147,10 @@ final class PermitLease {
     /**
      * 重复订阅同一个受保护 Uni 时抛出。
      *
-     * <p>单独建类型是为了让外层 {@code onFailure} 能把它**排除**在归还之外：
-     * 这条 failure 的订阅者从未取得许可，不得归还别人持有的那一个。
+     * <p>归还权**不靠**这个类型来判定——它由分支结构表达：
+     * 抛出它的那一支从未取得许可，因而根本没有挂归还钩子。
+     * 单独建类型只是为了让调用方与测试能精确断言「这是重复订阅，
+     * 不是别的失败」，而不必匹配异常消息文本。
      */
     static final class RepeatSubscriptionException extends IllegalStateException {
         RepeatSubscriptionException() {

@@ -469,7 +469,10 @@ class EvaluateSourceSimulateContractTest {
     void 首worker阻塞时并发多次重复订阅不得放闸也不得堆积() throws Exception {
         // ★审查者要求的回归：单次重复订阅不够，要证明**多次并发**重复订阅
         //   既不会提前放闸，也不会因为「记住被拒的订阅」而无界堆积。
-        //   现在归还钩子挂在取得许可的那一支内部，被拒订阅**不留任何状态**。
+        //
+        // ★「不得堆积」必须**真的被断言**，否则又是一条名不副实的测试：
+        //   审查者实证——加一个无界集合、每次拒绝都往里塞，19 条测试照样全绿。
+        //   所以下面用反射检查 lease 的字段：不得出现随订阅次数增长的容器。
         final int repeats = 500;
         Semaphore sem = new Semaphore(1);
         PermitLease lease = leased(sem);
@@ -518,6 +521,11 @@ class EvaluateSourceSimulateContractTest {
                 .isZero();
             assertThat(runs.get()).as("★业务体只能执行一次").isEqualTo(1);
 
+            // ★真正断言「不堆积」：lease 不得持有任何随订阅次数增长的容器。
+            //   只断言 permits/runs 证明不了这一点——审查者用「加个无界集合」
+            //   的变异实证过：那样 19 条测试照样全绿。
+            assertNoGrowingState(lease, repeats);
+
             hold.countDown();
             assertThat(firstDone.await(5, TimeUnit.SECONDS)).as("首 worker 应已完成").isTrue();
             assertThat(sem.availablePermits())
@@ -526,6 +534,29 @@ class EvaluateSourceSimulateContractTest {
         } finally {
             hold.countDown();
             pool.shutdownNow();
+        }
+    }
+
+    /**
+     * 断言 lease 未持有随订阅次数增长的状态。
+     *
+     * <p>遍历实例字段：{@link java.util.Collection} / {@link java.util.Map} 一律视为
+     * 「可增长容器」——本类的归还权由**分支结构**表达，不需要记住任何被拒的订阅；
+     * 一旦出现这类字段，就说明又退回了「记住谁被拒过」的反推式判定
+     * （那正是第三轮的阻断项：可被恶意重复订阅无界放大）。
+     */
+    private static void assertNoGrowingState(PermitLease lease, int repeats) throws Exception {
+        for (Field f : PermitLease.class.getDeclaredFields()) {
+            if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+            f.setAccessible(true);
+            Object v = f.get(lease);
+            int size = -1;
+            if (v instanceof java.util.Collection<?> c) size = c.size();
+            else if (v instanceof java.util.Map<?, ?> m) size = m.size();
+            assertThat(size)
+                .as("★字段 " + f.getName() + " 是可增长容器（" + repeats
+                    + " 次重复订阅后 size=" + size + "）——归还权不得靠记住被拒订阅来反推")
+                .isEqualTo(-1);
         }
     }
 
