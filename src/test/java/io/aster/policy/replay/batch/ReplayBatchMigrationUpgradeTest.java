@@ -40,6 +40,61 @@ class ReplayBatchMigrationUpgradeTest {
             "src/main/resources/db/migration/V6.20.1__replay_batch_lease_and_concurrency.sql"));
     }
 
+    private static String frozenWindowMigration() throws Exception {
+        return Files.readString(Path.of(
+            "src/main/resources/db/migration/V6.20.2__replay_batch_frozen_window.sql"));
+    }
+
+    /**
+     * ★V6.20.2 也必须先处置存量再加约束——<b>我在同一个分支里把这个错误犯了两次</b>。
+     *
+     * <p>V6.20.1 修的正是「加可空列后立刻加要求非空的 CHECK」，
+     * V6.20.2 却原样又写了一遍：新增 {@code window_frozen_at} 后立即要求
+     * RUNNING 行非空。两个迁移之间存在时间窗——多副本部署时调度器可能
+     * 刚好在这期间领走一个批次，那行的 {@code window_frozen_at} 是 NULL。
+     *
+     * <p>实测确认：V6.20.1 之后插入一行 RUNNING，再跑 V6.20.2 →
+     * <pre>ERROR: check constraint "replay_batch_running_is_frozen_ck" is violated by some row</pre>
+     *
+     * <p>教训：「先处置存量、再加约束」必须当成<b>加约束的固定前置</b>，
+     * 而不是某一次的特例修补。本用例因此对 V6.20.2 独立断言一遍。
+     */
+    @Test
+    void 冻结窗口迁移也必须先处置未冻结的活跃行() throws Exception {
+        String sql = frozenWindowMigration();
+
+        int disposal = sql.indexOf("UPDATE replay_batch");
+        assertThat(disposal)
+            .as("★V6.20.2 同样需要处置存量：两个迁移之间新产生的 RUNNING 行"
+                + "没有 window_frozen_at，会让 CHECK 直接失败")
+            .isGreaterThan(0);
+
+        int frozenCk = sql.indexOf("ADD CONSTRAINT replay_batch_running_is_frozen_ck");
+        assertThat(frozenCk).isGreaterThan(0);
+        assertThat(disposal)
+            .as("★处置必须在 CHECK 之前")
+            .isLessThan(frozenCk);
+
+        // 处置范围要精确到「尚未冻结的活跃行」，别把已冻结的正常批次也杀掉
+        String stmt = sql.substring(disposal, frozenCk);
+        assertThat(stmt)
+            .as("★只处置**未冻结**的活跃行——已冻结的批次是正常状态，不该被终止")
+            .contains("window_frozen_at IS NULL");
+    }
+
+    /**
+     * failureReasons 现在是**类别数组**（§10.1），迁移里的处置语句也必须写数组。
+     *
+     * <p>写成 {@code '{}'::jsonb}（空对象）会与 {@code failureKinds} 的数组契约不符，
+     * cloud 侧按数组读时拿到对象。
+     */
+    @Test
+    void 迁移写入的失败原因必须是数组形态() throws Exception {
+        assertThat(frozenWindowMigration())
+            .as("★§10.1 后 failureReasons 存的是类别数组，不是 {类别:条数} 对象")
+            .contains("'[]'::jsonb");
+    }
+
     @Test
     void 必须先处置历史活跃行再加约束() throws Exception {
         String sql = migration();

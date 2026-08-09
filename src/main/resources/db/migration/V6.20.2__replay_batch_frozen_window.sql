@@ -46,6 +46,29 @@ CREATE INDEX replay_batch_item_batch_idx
 ALTER TABLE replay_batch
     ADD COLUMN window_frozen_at TIMESTAMPTZ;
 
+-- ★★ 加约束前必须先处置「尚未冻结的活跃行」——与 V6.20.1 同一个教训。
+--
+--   V6.20.1 已把迁移**当时**的历史活跃行终止掉了，但那不等于此刻表里没有活跃行：
+--   两个迁移之间存在时间窗（多副本部署时，调度器可能刚好在这期间领走一个批次），
+--   那些行的 window_frozen_at 是 NULL，会让下面的 CHECK 直接失败。
+--   实测确认过：插入一行 RUNNING 后跑本迁移 →
+--     ERROR: check constraint "replay_batch_running_is_frozen_ck" is violated by some row
+--
+--   ★我在同一个分支里把这个错误犯了两次：V6.20.1 修的就是「加可空列后
+--   立刻加要求非空的 CHECK」，V6.20.2 又原样写了一遍。
+--   说明「先处置存量、再加约束」必须当成**加约束的固定前置**，
+--   而不是某一次的特例修补。
+UPDATE replay_batch
+   SET status           = 'FAILED',
+       finished_at      = COALESCE(finished_at, NOW()),
+       failure_reasons  = '[]'::jsonb,
+       result_summary   = NULL,
+       lease_expires_at = NULL,
+       lease_owner      = NULL,
+       concurrency_slot = NULL
+ WHERE status IN ('PENDING', 'RUNNING')
+   AND window_frozen_at IS NULL;
+
 -- RUNNING 必须已完成冻结：worker 开跑的前提就是总体已确定。
 ALTER TABLE replay_batch
     ADD CONSTRAINT replay_batch_running_is_frozen_ck CHECK (
