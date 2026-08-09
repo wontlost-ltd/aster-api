@@ -125,26 +125,31 @@ class ReplayBatchLeaseAndSlotTest {
      * 所以「被弃线程由容量闸门许可数封顶」<b>不成立</b>，
      * 必须由执行池自身有界来兜底。原先的 cached pool 会无限增长。
      *
-     * <p>本用例复刻生产池配置（{@code max=许可数×2}、有界队列、AbortPolicy），
-     * 提交 200 个**永不结束**的任务模拟连续超时，断言两个上界都不被突破。
+     * <p>★本用例调用<b>生产的</b> {@code newBoundedReplayPool()} 工厂，
+     * 而不是照抄一份同参数的副本。复刻副本只能证明
+     * {@code ThreadPoolExecutor} 有界——那是 JDK 的保证，不是本仓的：
+     * 有人把生产池改回 {@code newCachedThreadPool}，副本测试照样全绿。
+     * 这与本轮修掉的「测试守护自己那份迁移 SQL 拷贝」是同一种假绿。
      *
-     * <p>审查要求「用连续超时压力测试证明线程数和队列长度不越界」——
-     * 这是我上一轮明确标注「未做」的一项。
+     * <p>提交 200 个**永不结束**的任务模拟连续超时，断言两个上界都不被突破。
      */
     @Test
     void 连续超时下执行池线程与队列不得越界() throws Exception {
-        final int permits = 5;
-        final int max = Math.max(2, permits * 2);
+        // ★取生产工厂本身；上界也从它身上读，不另写一遍算式——
+        //   写死 max 等于把「生产用了什么参数」这个待测事实变成测试的假设。
+        java.lang.reflect.Method factory = ReplayBatchService.class
+            .getDeclaredMethod("newBoundedReplayPool");
+        factory.setAccessible(true);
         java.util.concurrent.ThreadPoolExecutor pool =
-            new java.util.concurrent.ThreadPoolExecutor(
-                max, max, 60L, java.util.concurrent.TimeUnit.SECONDS,
-                new java.util.concurrent.ArrayBlockingQueue<>(max),
-                r -> {
-                    Thread t = new Thread(r, "probe-replay-exec");
-                    t.setDaemon(true);
-                    return t;
-                },
-                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+            (java.util.concurrent.ThreadPoolExecutor) factory.invoke(null);
+        final int max = pool.getMaximumPoolSize();
+
+        assertThat(pool.getQueue().remainingCapacity())
+            .as("★生产队列必须有界——无界队列会让任务无声堆积而不是被拒绝")
+            .isEqualTo(max);
+        assertThat(pool.getRejectedExecutionHandler())
+            .as("★必须是 AbortPolicy：拒绝要显式抛出并归 THROTTLED，不得静默丢弃或退回调用线程")
+            .isInstanceOf(java.util.concurrent.ThreadPoolExecutor.AbortPolicy.class);
 
         java.util.concurrent.CountDownLatch hold =
             new java.util.concurrent.CountDownLatch(1);
