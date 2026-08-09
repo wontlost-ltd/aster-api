@@ -8,6 +8,7 @@ import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -48,12 +49,30 @@ class ReplayBatchConcurrencyIT {
     @Inject
     ReplayBatchService service;
 
+    /**
+     * ★真实上游会做 HMAC 签名，在 IT 环境里必然抛 {@code HMAC 签名失败}。
+     * 不 mock 它，持有效 owner 的线程<b>连 fetchSegment 都过不去</b>，
+     * 整段重放循环一行都不会跑——「条目不重复处理」就成了空断言
+     * （一张 3 行的表当然不会超过 3）。实测探针证实过：
+     * live owner 三次调用全部抛异常，处理数恒为 0。
+     */
+    @io.quarkus.test.InjectMock
+    ExecutionWindowClient windowClient;
+
+    /** 每个 executionId 被真实拉取（进而重放）的次数——用于证明「恰好一次」。 */
+    private final java.util.Map<String, java.util.concurrent.atomic.AtomicInteger> fetchCounts =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
     @BeforeEach
     void clean() {
         QuarkusTransaction.requiringNew().run(() -> {
             em.createNativeQuery("DELETE FROM replay_batch_item").executeUpdate();
             em.createNativeQuery("DELETE FROM replay_batch").executeUpdate();
+            em.createNativeQuery("DELETE FROM policy_versions WHERE policy_id='p'")
+                .executeUpdate();
         });
+        fetchCounts.clear();
+        targetVersionRowId = null;
     }
 
     /**
@@ -85,6 +104,60 @@ class ReplayBatchConcurrencyIT {
         i.persist();
     }
 
+    /**
+     * 装配 {@code fetchSegment}：按 cursor/limit 返回本段条目，并<b>逐条计数</b>。
+     *
+     * <p>计数发生在服务真正取到该条 execution 时，因此
+     * 「某个 id 被计了两次」⇔「两个 worker 都拿它跑了一遍」，
+     * 这正是「每个 execution 恰好执行一次」需要证明的事。
+     */
+    private void stubSegmentFetch(java.util.List<String> ids) {
+        Mockito.when(windowClient.fetchSegment(
+                Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(Instant.class), Mockito.any(Instant.class),
+                Mockito.any(), Mockito.anyInt()))
+            .thenAnswer(inv -> {
+                String after = inv.getArgument(4);
+                int limit = inv.getArgument(5);
+                java.util.List<ExecutionWindowClient.WindowedExecution> out =
+                    new java.util.ArrayList<>();
+                for (String id : ids) {
+                    if (after != null && id.compareTo(after) <= 0) {
+                        continue;
+                    }
+                    if (out.size() >= limit) {
+                        break;
+                    }
+                    fetchCounts.computeIfAbsent(
+                        id, k -> new java.util.concurrent.atomic.AtomicInteger()).incrementAndGet();
+                    out.add(new ExecutionWindowClient.WindowedExecution(
+                        id, java.util.Map.of("amount", 150), "approved", true,
+                        "decide", "en-US", new io.vertx.core.json.JsonObject(),
+                        String.valueOf(targetVersionRowId)));
+                }
+                return out;
+            });
+    }
+
+    /** 供重放解析的目标版本行 id——没有它 runOneSegment 会抛 TargetVersionMissing。 */
+    private Long targetVersionRowId;
+
+    private Long seedTargetVersion() {
+        return QuarkusTransaction.requiringNew().call(() -> {
+            em.createNativeQuery("""
+                INSERT INTO policy_versions (policy_id, version, module_name, function_name,
+                    content, status, is_default, lock_version, created_at)
+                VALUES ('p', 2, 'M', 'decide', ?1, 'APPROVED', false, 0, NOW())
+                """)
+                .setParameter(1, "Module M.\n\nRule decide given amount as Int, produce Bool:\n"
+                    + "  Return amount is at least 180.\n")
+                .executeUpdate();
+            return ((Number) em.createNativeQuery(
+                "SELECT id FROM policy_versions WHERE policy_id='p' AND version=2")
+                .getSingleResult()).longValue();
+        });
+    }
+
     private UUID seedRunning(String tenant, String owner, int planned) {
         UUID id = UUID.randomUUID();
         QuarkusTransaction.requiringNew().run(() -> {
@@ -94,7 +167,8 @@ class ReplayBatchConcurrencyIT {
             b.userId = "u";
             b.policyId = "p";
             b.baseVersionId = "1";
-            b.targetVersionId = "2";
+            b.targetVersionId = targetVersionRowId == null ? "2"
+                : String.valueOf(targetVersionRowId);
             b.windowKind = "LAST_MONTH";
             b.windowLabel = "近一个月";
             b.windowTimezone = "UTC";
@@ -678,6 +752,8 @@ class ReplayBatchConcurrencyIT {
      */
     @Test
     void 并发调用runOneSegment时失效owner必须让位且条目不重复处理() throws Exception {
+        targetVersionRowId = seedTargetVersion();
+        stubSegmentFetch(java.util.List.of("s1", "s2", "s3"));
         UUID id = seedRunning("t-seg", "owner-live", 3);
         QuarkusTransaction.requiringNew().run(() -> {
             persistItem(id, "s1", true, null, null);
@@ -691,6 +767,8 @@ class ReplayBatchConcurrencyIT {
         java.util.concurrent.CountDownLatch start =
             new java.util.concurrent.CountDownLatch(1);
         java.util.List<Integer> staleResults =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        java.util.List<Integer> liveResults =
             java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 
         try {
@@ -711,6 +789,8 @@ class ReplayBatchConcurrencyIT {
                     }
                     if ("owner-stale".equals(owner)) {
                         staleResults.add(r);
+                    } else {
+                        liveResults.add(r);
                     }
                     return r;
                 }));
@@ -730,15 +810,42 @@ class ReplayBatchConcurrencyIT {
             .isNotEmpty()
             .allMatch(r -> r == -1);
 
-        // ★同一条目不得被处理两次：success 已置位的条目数不得超过 plannedCount
+        // ★持有效 owner 的线程必须**真的推进**，而不是抛异常。
+        //   此前本用例没有这条断言：实测探针显示三条 live 线程全部抛
+        //   `HMAC 签名失败`（返回 MIN_VALUE），一条 execution 都没跑，
+        //   下面「不重复处理」的断言因此是空的——一张 3 行的表当然不超过 3。
+        assertThat(liveResults)
+            .as("★持当前 owner 的调用不得抛异常（MIN_VALUE）——"
+                + "抛了就说明它一条都没跑，后面的「恰好一次」断言全是空的")
+            .isNotEmpty()
+            .allMatch(r -> r >= 0);
+        assertThat(liveResults.stream().mapToInt(Integer::intValue).sum())
+            .as("★live 线程合计必须推进 3 条——总数不足说明有条目没被任何人跑")
+            .isEqualTo(3);
+
+        // ★「每个 execution 恰好一次」的直接证据：计数来自服务真实拉取的那一刻。
+        //   此前用「DB 里 success 非空的行数 <= 3」代替，那是恒真的——
+        //   表里就 3 行，重复处理只会覆盖同一行，行数永远不会超。
+        assertThat(fetchCounts.keySet())
+            .as("★三条冻结条目都必须被拉取——漏掉即样本不是总体全量")
+            .containsExactlyInAnyOrder("s1", "s2", "s3");
+        for (var e : fetchCounts.entrySet()) {
+            assertThat(e.getValue().get())
+                .as("★execution %s 被拉取 %d 次——必须恰好 1 次，"
+                    + "多于 1 次说明两个 worker 都跑了它，结果互相覆盖后「谁的结果」不可知",
+                    e.getKey(), e.getValue().get())
+                .isEqualTo(1);
+        }
+
+        // 所有条目都应落成败标记（§11.3）
         Long processed = QuarkusTransaction.requiringNew().call(() ->
             ((Number) em.createNativeQuery(
                 "SELECT count(*) FROM replay_batch_item"
                     + " WHERE batch_id = ?1 AND success IS NOT NULL")
                 .setParameter(1, id).getSingleResult()).longValue());
         assertThat(processed)
-            .as("★已处理条目数不得超过计划数——超出说明同一条目被多个 worker 重复跑")
-            .isLessThanOrEqualTo(3L);
+            .as("★三条都必须落成败标记")
+            .isEqualTo(3L);
 
         // 租约仍应属于当前 owner（失效 owner 不得改写）
         String owner = QuarkusTransaction.requiringNew().call(() ->
