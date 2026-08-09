@@ -794,3 +794,65 @@ C 是退守选项，若 A 的四类事件覆盖做不干净再回到它。
   再让「段最坏耗时」成为可计算的和：`拉取 + N×(等许可 + 执行上限) + 提交`，
   租约取其 2 倍并**在代码里断言这个不等式**，而不是写在注释里。
 
+
+### 12.5 信任边界：触发器防的是代码疏漏，不是拥有 DDL 权限的角色
+
+> **✅ 已拍板（2026-08-09）：接受为信任边界内风险，明确记录而非假装堵住。**
+
+第六轮审查指出「`session_replication_role=replica` / `DISABLE TRIGGER` 可绕过整个约束体系」，
+并要求以**角色权限与部署配置**证明，不得由迁移注释假定。已实测查证：
+
+#### 生产角色的实际权限（已证）
+
+`aster_api_user` 是 CNPG managed role
+（`k3s: apps/infrastructure/postgres-cluster/manifests/cluster.yaml:85`），
+只声明 `login` + `inherit`，**无** superuser / replication / createrole。
+复刻同属性角色实测：
+
+| 手段 | 结果 |
+|---|---|
+| `SET session_replication_role='replica'` | ❌ `permission denied to set parameter` |
+| `ALTER TABLE ... DISABLE TRIGGER ALL` | ❌ `must be owner of table` |
+
+**审查所指的「逻辑复制角色绕过」在生产配置下不成立。**
+
+#### 但表所有权带来的绕过成立（已证）
+
+Flyway 用 `aster_api_user` 跑迁移，因此**它创建的表归它所有**。
+建 owner 为应用角色的库实测：
+
+```
+replay_batch      owner=<app_role>
+replay_batch_item owner=<app_role>
+
+DISABLE TRIGGER ALL              → 仍失败（PG 保护 FK 系统触发器）
+DISABLE TRIGGER <本 ADR 的触发器名> → ★成功
+随后伪造插入                      → 错误数 0
+结果: COMPLETED planned=5 声称=5/5 真实item=0
+```
+
+#### 为什么接受而不是继续加固
+
+★**能执行 `ALTER TABLE` 的角色，本来就能直接
+`UPDATE replay_batch SET status='COMPLETED'`。**
+触发器从来防不住这一层——它防的是**代码路径上的疏漏**：
+忘记校验、并发交错、汇总列不同步、写路径漏覆盖。那部分已由 §12.1–12.3 闭合，
+并有真实 PostgreSQL 集成测试锁定。
+
+在同一个信任域里追加「防住 owner」的机制，只会得到又一个
+「看起来有护栏其实绕得过」的东西——这正是 §11.0/§12.0 反复出现的错误。
+**诚实地画出边界，比假装边界不存在更有价值。**
+
+#### 若将来要根治（不在本 PR 范围）
+
+表 owner 与应用角色分离：迁移用独立 `migrator` 角色执行、
+应用角色只授予 DML（`SELECT/INSERT/UPDATE/DELETE`）而无 DDL。
+这需要改 CNPG managed roles 与 Flyway 凭据配置，属于部署层变更。
+届时上表中「DISABLE TRIGGER 成功」那一行会变成失败。
+
+#### 记录到此为止的判据
+
+本 ADR 的 fail-closed 声明**范围明确**为：
+> 在应用代码与并发时序层面，不存在能产出「COMPLETED 但样本非总体全量」的路径。
+
+**不**声明：能对表执行 DDL 的角色无法伪造。后者是部署层信任边界问题。

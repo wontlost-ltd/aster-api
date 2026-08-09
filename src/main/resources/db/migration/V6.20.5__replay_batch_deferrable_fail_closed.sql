@@ -15,6 +15,23 @@
 --     · UPDATE item SET batch_id=<新父>     → 旧父 item数=0（触发器只看 NEW，不看 OLD）
 --     · COMPLETED 后追加 success=true       → planned=1 item数=2
 --
+-- ★★ 信任边界（ADR 0034 §12.5，已实测查证）：
+--     本文件的触发器防的是**代码路径上的疏漏**——忘记校验、并发交错、
+--     汇总列不同步、写路径漏覆盖。它**不防**拥有 DDL 权限的角色。
+--
+--     生产 aster_api_user 是 CNPG managed role（仅 login+inherit，
+--     无 superuser/replication），实测：
+--       SET session_replication_role='replica' → permission denied ✅
+--       DISABLE TRIGGER ALL                    → must be owner     ✅
+--     但 Flyway 以该角色建表，故它是**表 owner**，可以
+--       DISABLE TRIGGER <本文件的触发器名>     → ★成功
+--
+--     不再对此加固：能 ALTER TABLE 的角色本就能直接
+--     UPDATE replay_batch SET status='COMPLETED'——触发器从来防不住这一层。
+--     追加「防 owner」的机制只会得到又一个「看起来有护栏其实绕得过」的东西。
+--     根治办法是表 owner 与应用角色分离（迁移用独立 migrator 角色），
+--     属于部署层变更，不在本 ADR 范围。
+--
 -- 本迁移的思路：**不再让触发器做判定**，而是让它只维护两个计数列；
 -- 判定交给 DEFERRABLE INITIALLY DEFERRED 约束，在**提交时**统一校验。
 -- 提交时校验意味着上面那种「两个快照互不可见」的交错不再能通过——
