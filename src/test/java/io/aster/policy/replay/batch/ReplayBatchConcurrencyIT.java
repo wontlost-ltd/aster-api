@@ -750,6 +750,89 @@ class ReplayBatchConcurrencyIT {
             .isEqualTo("owner-live");
     }
 
+    /**
+     * ★<b>真实 PostgreSQL 上重放 V6.20.5 的关键顺序</b>（第八轮 P0-1）。
+     *
+     * <p>审查要求「新增真实 PostgreSQL 连续 .0→.5 自动测试，种入合法 pre-.3
+     * COMPLETED + item 历史行并断言升级成功、违规历史降级结果正确」。
+     * Flyway 已在测试容器启动时跑完 .0→.5（空库），故本用例补的是
+     * <b>有历史数据时的语义</b>：种入一条「条目数 ≠ planned_count」的
+     * COMPLETED 行，重放回填与降级两步，断言计数被正确重算。
+     *
+     * <p>修复前的现象：回填后 {@code item_total=0}，而 item 表里明明有 1 行
+     * ——旧 V6.20.4 触发器拒绝了那条 UPDATE，使回填静默失效。
+     */
+    @Test
+    void 历史违规COMPLETED行必须被据实重算并降级() {
+        UUID id = UUID.randomUUID();
+
+        // ★禁用与恢复必须各自独立提交：CONSTRAINT TRIGGER 在**提交时**触发，
+        //   若与 seed 同事务，禁用尚未生效就已到 COMMIT（实测 RollbackException）。
+        runSql("ALTER TABLE replay_batch DISABLE TRIGGER replay_batch_totality_trg");
+        runSql("ALTER TABLE replay_batch_item"
+            + " DISABLE TRIGGER replay_batch_item_parent_totality_trg");
+        // ★连汇总维护触发器也要禁：否则插 item 时它会把 item_total 从 0 加到 1，
+        //   汇总列不再停留在「.5 之前的形态」，回填就成了 1→1 的空转——
+        //   实测：删掉回填语句后测试仍绿（变异存活），因为值是维护触发器给的。
+        runSql("ALTER TABLE replay_batch_item DISABLE TRIGGER replay_batch_item_counts_trg");
+
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery("""
+            INSERT INTO replay_batch (id,tenant_id,user_id,policy_id,base_version_id,
+              target_version_id,window_kind,window_label,window_timezone,window_from,
+              window_to,planned_count,status,completed_count,failed_count,result_summary,
+              toolchain_id,expires_at,window_frozen_at,item_total,item_success)
+            VALUES (?1,'t-legacy','u','p','1','2','LAST_MONTH','m','UTC',
+              NOW() - INTERVAL '30 day', NOW(), 2, 'COMPLETED', 2, 0,
+              '{"changed":0}'::jsonb, 'tc', NOW() + INTERVAL '30 day', NOW(), 0, 0)
+            """).setParameter(1, id).executeUpdate());
+        // 只有 1 条 item，而 planned_count=2 —— 这就是「历史违规行」
+        QuarkusTransaction.requiringNew().run(() -> persistItem(id, "L1", true, true, null));
+
+        runSql("ALTER TABLE replay_batch ENABLE TRIGGER replay_batch_totality_trg");
+        runSql("ALTER TABLE replay_batch_item"
+            + " ENABLE TRIGGER replay_batch_item_parent_totality_trg");
+        runSql("ALTER TABLE replay_batch_item ENABLE TRIGGER replay_batch_item_counts_trg");
+
+        // 重放 V6.20.5 的回填 + 历史降级两步
+        QuarkusTransaction.requiringNew().run(() -> {
+            em.createNativeQuery("""
+                UPDATE replay_batch b
+                   SET item_total = COALESCE(c.total,0), item_success = COALESCE(c.ok,0)
+                  FROM (SELECT batch_id, count(*) AS total,
+                               count(*) FILTER (WHERE success IS TRUE) AS ok
+                          FROM replay_batch_item GROUP BY batch_id) c
+                 WHERE b.id = c.batch_id
+                """).executeUpdate();
+            em.createNativeQuery("""
+                UPDATE replay_batch
+                   SET status='FAILED', failure_reasons='["UNKNOWN"]'::jsonb,
+                       result_summary=NULL, finished_at=COALESCE(finished_at, NOW())
+                 WHERE status='COMPLETED'
+                   AND (item_total <> planned_count OR item_success <> planned_count)
+                """).executeUpdate();
+        });
+
+        Object[] row = QuarkusTransaction.requiringNew().call(() ->
+            (Object[]) em.createNativeQuery(
+                "SELECT status, item_total, item_success FROM replay_batch WHERE id = ?1")
+                .setParameter(1, id).getSingleResult());
+
+        assertThat(((Number) row[1]).intValue())
+            .as("★回填必须真的生效——修复前这里是 0，而 item 表有 1 行"
+                + "（旧 V6.20.4 触发器拒绝了该 UPDATE，使回填静默失效）")
+            .isEqualTo(1);
+        assertThat(((Number) row[2]).intValue()).isEqualTo(1);
+        assertThat(String.valueOf(row[0]))
+            .as("★条目数(1) ≠ planned(2) 的历史 COMPLETED 行必须据实降级")
+            .isEqualTo("FAILED");
+    }
+
+    /** 独立事务执行一条 DDL/SQL。 */
+    private void runSql(String sql) {
+        QuarkusTransaction.requiringNew().run(() ->
+            em.createNativeQuery(sql).executeUpdate());
+    }
+
     // ── §11.3 槽位唯一性 ─────────────────────────────────────────────────
 
     /** 同租户同槽位不可并存——这是唯一能堵住先查后写 TOCTOU 的机制。 */
