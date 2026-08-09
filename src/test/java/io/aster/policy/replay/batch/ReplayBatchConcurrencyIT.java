@@ -273,6 +273,74 @@ class ReplayBatchConcurrencyIT {
     }
 
     /**
+     * ★<b>归一化不得丢弃历史失败信息</b>——这是我写出过的最严重的一条。
+     *
+     * <p>V6.20.4 最初写的是「所有 object 一律转 {@code []}」，
+     * 实测把 <code>{"INPUT_INCOMPATIBLE":170,"TIMEOUT":30}</code> 直接清成 {@code []}。
+     * 我给它起名叫「归一化」，WHERE 条件却匹配了<b>任意</b>对象——
+     * 那不是改形状，是**删数据**，而且是生产环境的历史失败分布。
+     *
+     * <p>正确做法：非空 object 取 key 列表转数组（保留类别、按 §10.1 有意丢掉条数），
+     * 只有真正的空 {@code {}} 才变成 {@code []}。
+     */
+    @Test
+    void 归一化不得清空非空的历史失败分布() {
+        UUID withData = UUID.randomUUID();
+        UUID empty = UUID.randomUUID();
+        QuarkusTransaction.requiringNew().run(() -> {
+            insertFailedWithReasons(withData, "loss-a",
+                "{\"INPUT_INCOMPATIBLE\":170,\"TIMEOUT\":30}");
+            insertFailedWithReasons(empty, "loss-b", "{}");
+        });
+
+        // 重放 V6.20.4 的两条归一化语句
+        QuarkusTransaction.requiringNew().run(() -> {
+            em.createNativeQuery("""
+                UPDATE replay_batch SET failure_reasons = '[]'::jsonb
+                 WHERE failure_reasons IS NOT NULL
+                   AND jsonb_typeof(failure_reasons) = 'object'
+                   AND failure_reasons = '{}'::jsonb
+                """).executeUpdate();
+            em.createNativeQuery("""
+                UPDATE replay_batch SET failure_reasons = (
+                     SELECT COALESCE(jsonb_agg(k ORDER BY k), '[]'::jsonb)
+                       FROM jsonb_object_keys(failure_reasons) AS k)
+                 WHERE failure_reasons IS NOT NULL
+                   AND jsonb_typeof(failure_reasons) = 'object'
+                   AND failure_reasons <> '{}'::jsonb
+                """).executeUpdate();
+        });
+
+        String kept = readReasons(withData);
+        assertThat(kept)
+            .as("★非空失败分布必须**保留类别**，不得被清成空数组——那是删数据不是归一化")
+            .contains("INPUT_INCOMPATIBLE")
+            .contains("TIMEOUT");
+        assertThat(readReasons(empty))
+            .as("真正的空对象才转空数组")
+            .isEqualTo("[]");
+    }
+
+    private void insertFailedWithReasons(UUID id, String tenant, String reasonsJson) {
+        em.createNativeQuery("""
+            INSERT INTO replay_batch (id,tenant_id,user_id,policy_id,base_version_id,
+              target_version_id,window_kind,window_label,window_timezone,window_from,
+              window_to,planned_count,status,failure_reasons,toolchain_id,expires_at)
+            VALUES (?1,?2,'u','p','1','2','LAST_MONTH','m','UTC',
+              NOW() - INTERVAL '30 day', NOW(), 0, 'FAILED', CAST(?3 AS jsonb),
+              'tc', NOW() + INTERVAL '30 day')
+            """).setParameter(1, id).setParameter(2, tenant)
+            .setParameter(3, reasonsJson).executeUpdate();
+    }
+
+    private String readReasons(UUID id) {
+        return QuarkusTransaction.requiringNew().call(() ->
+            String.valueOf(em.createNativeQuery(
+                "SELECT failure_reasons::text FROM replay_batch WHERE id = ?1")
+                .setParameter(1, id).getSingleResult()));
+    }
+
+    /**
      * ★迁移**自己**写入的处置行就必须是数组，不能依赖后续补丁纠正。
      *
      * <p>V6.20.1 曾写 {@code '{}'}，靠 V6.20.4 再转成 {@code '[]'}——
@@ -286,11 +354,23 @@ class ReplayBatchConcurrencyIT {
             for (java.nio.file.Path f : files.filter(x -> x.getFileName().toString()
                     .startsWith("V6.20.")).toList()) {
                 String sql = java.nio.file.Files.readString(f);
-                assertThat(sql)
-                    .as("★%s 不得把 failure_reasons 写成对象——契约是数组（§10.1）",
-                        f.getFileName())
-                    .doesNotContain("failure_reasons  = '{}'::jsonb")
-                    .doesNotContain("failure_reasons = '{}'::jsonb");
+                // ★只看 SET 子句（写入），不看 WHERE 子句（比较）：
+                //   V6.20.4 的归一化必须用 `failure_reasons = '{}'::jsonb` 做
+                //   **条件判断**来区分空/非空对象——那是正当的读，
+                //   按裸串断言会把它误判成写入（我第一版就这么错了）。
+                for (String line : sql.lines().toList()) {
+                    String t = line.trim();
+                    if (t.startsWith("--") || t.toUpperCase(java.util.Locale.ROOT)
+                            .startsWith("AND") || t.toUpperCase(java.util.Locale.ROOT)
+                            .startsWith("WHERE")) {
+                        continue;   // 注释与条件子句不算写入
+                    }
+                    assertThat(t.replaceAll("\\s+", " "))
+                        .as("★%s 不得把 failure_reasons **写成**对象——契约是数组（§10.1）",
+                            f.getFileName())
+                        .doesNotContain("SET failure_reasons = '{}'::jsonb")
+                        .doesNotContain("failure_reasons = '{}'::jsonb,");
+                }
             }
         }
     }

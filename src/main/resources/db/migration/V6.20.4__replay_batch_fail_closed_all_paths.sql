@@ -88,7 +88,25 @@ CREATE TRIGGER replay_batch_item_guard_completed_trg
 -- V6.20.1/V6.20.2 把历史活跃行处置成 FAILED 时写的是 `{}`（空对象），
 -- 而 §10.1 之后的 API 契约是**数组** failureKinds。
 -- 迁移能过 ≠ 历史数据符合契约：cloud 侧按数组读会拿到对象。
+-- ★★ 只转**空**对象。上一版写的是「所有 object 一律转 []」——
+--   实测把 {"INPUT_INCOMPATIBLE":170,"TIMEOUT":30} 直接清成 []，
+--   那不是归一化，是**丢弃历史失败信息**。
+--   我给它起名叫「归一化」，WHERE 条件却匹配了任意对象。
+--
+--   非空 object 是**真实的历史失败分布**（§10.1 之前的契约就是 {类别:条数}），
+--   它们要保留信息、只改形状：取 key 列表转成数组，与新契约一致。
 UPDATE replay_batch
    SET failure_reasons = '[]'::jsonb
  WHERE failure_reasons IS NOT NULL
-   AND jsonb_typeof(failure_reasons) = 'object';
+   AND jsonb_typeof(failure_reasons) = 'object'
+   AND failure_reasons = '{}'::jsonb;
+
+-- 非空 object：{类别:条数} → [类别]，保留类别、丢掉条数
+-- （丢条数是 §10.1 的**有意**决定：条数可与总体量相减推出成功数）
+UPDATE replay_batch
+   SET failure_reasons = (
+        SELECT COALESCE(jsonb_agg(k ORDER BY k), '[]'::jsonb)
+          FROM jsonb_object_keys(failure_reasons) AS k)
+ WHERE failure_reasons IS NOT NULL
+   AND jsonb_typeof(failure_reasons) = 'object'
+   AND failure_reasons <> '{}'::jsonb;
