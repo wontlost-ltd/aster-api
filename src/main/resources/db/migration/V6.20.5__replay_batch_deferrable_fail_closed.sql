@@ -121,7 +121,9 @@ DROP TRIGGER IF EXISTS replay_batch_completed_all_success_trg ON replay_batch;
 CREATE OR REPLACE FUNCTION replay_batch_assert_totality()
 RETURNS TRIGGER AS $$
 DECLARE
-    b RECORD;
+    b          RECORD;
+    real_ok    BIGINT;
+    real_total BIGINT;
 BEGIN
     SELECT status, planned_count, item_total, item_success INTO b
       FROM replay_batch WHERE id = NEW.id;
@@ -129,6 +131,33 @@ BEGIN
     -- 行可能已被同事务删除
     IF NOT FOUND THEN
         RETURN NULL;
+    END IF;
+
+    -- ★★ 汇总列**不是真值**——它们是普通可写列，应用 SQL / 运维脚本 / ORM
+    --    都能直接写。上一版只比较这三个列彼此，从不读真实 item，
+    --    于是「零 item + 手写 item_total=item_success=planned_count=5」
+    --    就能提交 COMPLETED（实测：真实item=0 而声称 5/5，零错误）。
+    --
+    --    DEFERRABLE 解决的是「何时检查」，不解决「检查的数据是否权威」。
+    --    所以 COMPLETED 时必须**回到 item 表数一遍**，让汇总列只作快路径，
+    --    真值永远以 replay_batch_item 为准。
+    IF b.status = 'COMPLETED' THEN
+        SELECT count(*) FILTER (WHERE success IS TRUE), count(*)
+          INTO real_ok, real_total
+          FROM replay_batch_item WHERE batch_id = NEW.id;
+
+        IF real_total <> b.item_total OR real_ok <> b.item_success THEN
+            RAISE EXCEPTION
+                'batch % 的汇总列与真实条目不符（列 total=%/success=%，实际 total=%/success=%）'
+                '——汇总列被直接篡改或维护有 bug（ADR 0034 §12）',
+                NEW.id, b.item_total, b.item_success, real_total, real_ok;
+        END IF;
+        IF real_total <> b.planned_count OR real_ok <> b.planned_count THEN
+            RAISE EXCEPTION
+                'batch % 真实条目 total=%/success=% 与计划 % 不符，'
+                '样本不是总体全量（ADR 0034 §1.1）',
+                NEW.id, real_total, real_ok, b.planned_count;
+        END IF;
     END IF;
 
     IF b.item_total < 0 OR b.item_success < 0 OR b.item_success > b.item_total THEN

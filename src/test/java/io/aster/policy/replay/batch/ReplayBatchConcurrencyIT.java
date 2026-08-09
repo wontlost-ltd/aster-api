@@ -508,6 +508,43 @@ class ReplayBatchConcurrencyIT {
         assertThat(st).as("全量成功必须能落 COMPLETED").isEqualTo("COMPLETED 2/2");
     }
 
+    /**
+     * ★<b>汇总列不是真值</b>——第六轮审查抓到的致命绕过。
+     *
+     * <p>{@code item_total}/{@code item_success} 是普通可写列，
+     * 应用 SQL、运维脚本、ORM 都能直接写。上一版的约束触发器只比较这三个列
+     * 彼此，从不读真实 item——于是「零 item + 手写 total=success=planned=5」
+     * 就能提交 COMPLETED（实测：真实 item=0 而声称 5/5，零错误）。
+     *
+     * <p>审查原话：<i>「DEFERRABLE 解决的是『何时检查』，
+     * 没有解决『检查的数据是否权威』。」</i>
+     * 现在 COMPLETED 时回表数一遍真实条目，汇总列只作快路径。
+     */
+    @Test
+    void 伪造汇总列不得让零条目批次标COMPLETED() {
+        UUID id = UUID.randomUUID();
+
+        assertThatThrownBy(() -> QuarkusTransaction.requiringNew().run(() ->
+            em.createNativeQuery("""
+                INSERT INTO replay_batch (id,tenant_id,user_id,policy_id,base_version_id,
+                  target_version_id,window_kind,window_label,window_timezone,window_from,
+                  window_to,planned_count,status,completed_count,failed_count,result_summary,
+                  toolchain_id,expires_at,window_frozen_at,item_total,item_success)
+                VALUES (?1,'t-forge','u','p','1','2','LAST_MONTH','m','UTC',
+                  NOW() - INTERVAL '30 day', NOW(), 5, 'COMPLETED', 5, 0,
+                  '{"changed":3}'::jsonb, 'tc', NOW() + INTERVAL '30 day', NOW(), 5, 5)
+                """).setParameter(1, id).executeUpdate()))
+            .as("★零条目却手写汇总列声称全量成功——必须被拒，"
+                + "否则「跑了 0 条」可以伪装成「5 条全成功」（§1.1）")
+            .isInstanceOf(Exception.class);
+
+        Long cnt = QuarkusTransaction.requiringNew().call(() ->
+            ((Number) em.createNativeQuery(
+                "SELECT count(*) FROM replay_batch WHERE id = ?1")
+                .setParameter(1, id).getSingleResult()).longValue());
+        assertThat(cnt).as("★违规 INSERT 必须整体回滚").isZero();
+    }
+
     // ── §11.3 槽位唯一性 ─────────────────────────────────────────────────
 
     /** 同租户同槽位不可并存——这是唯一能堵住先查后写 TOCTOU 的机制。 */
