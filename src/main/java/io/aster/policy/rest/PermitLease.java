@@ -108,13 +108,6 @@ final class PermitLease {
      * @param executor worker 线程池
      */
     <T> Uni<T> guardAsync(Supplier<T> work, java.util.concurrent.Executor executor) {
-        // ★用**实例身份**而非异常类型来判定归还权（见下方 onFailure）。
-        //   若按类型排除，任何来源的同类型异常都会被误判为「无归还权」——
-        //   例如 executor 自己抛出该类型时 supplier 不执行、finally 不触发，
-        //   许可就永久泄漏。只有**本 lease 亲手造的那个实例**才代表
-        //   「这次订阅从未取得许可」。
-        final java.util.Set<Throwable> disowned =
-            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
         return Uni.createFrom().<T>deferred(() -> {
             // ★一次性约束必须在**订阅期**检查，而不是装配期。
             //   装配期只跑一次（每次 guardAsync 调用一次），拦不住对**同一个**
@@ -122,10 +115,16 @@ final class PermitLease {
             //   即闸门被绕过。实测：runs=2 而 permits=1。
             //   放在 deferred 里则每次订阅都过一遍 CAS，第二次直接失败。
             if (!consumed.compareAndSet(false, true)) {
-                RepeatSubscriptionException rejected = new RepeatSubscriptionException();
-                disowned.add(rejected);
-                return Uni.createFrom().failure(rejected);
+                // ★这条 failure **不挂**任何归还钩子：本次订阅从未取得许可，
+                //   不拥有归还权。若让它归还，会在首次订阅的 worker **仍在运行时**
+                //   抢先放开唯一许可——闸门提前重开，与「反复发起再取消」同类，
+                //   比原 bug 更隐蔽（实测：首 worker 卡住时 availablePermits 已变回 1）。
+                return Uni.createFrom().<T>failure(new RepeatSubscriptionException());
             }
+            // ★归还钩子挂在**取得许可的这一支内部**，而不是整条链的外层。
+            //   这样「谁取得许可，谁归还」由**结构**保证，无需在外层反推归还权
+            //   （反推要么按异常类型——会误伤 executor 抛出的同类型异常，
+            //   要么按实例身份——要维护一个随订阅次数无界增长的 Set）。
             return Uni.createFrom().<T>item(() -> {
                 try {
                     return work.get();
@@ -134,22 +133,15 @@ final class PermitLease {
                     // 取消**不会**触发这里——不归还一个仍在烧 CPU 的 worker 的许可。
                     release();
                 }
-            });
-        }).runSubscriptionOn(executor)
-            // 路径3：调度被拒时 supplier 永不执行，上面的 finally 永不触发。
-            // 只能在这里兜底。用 onFailure 而非 onTermination：后者在取消时也会触发。
-            //
-            // ★**必须排除重复订阅的 failure**：它没有取得任何许可，因而
-            //   **不拥有归还权**。若让它走这条兜底，会在首次订阅的 worker
-            //   **仍在运行时**抢先归还唯一许可——闸门提前重开，
-            //   与「反复发起再取消」是同一类绕过，比原 bug 更隐蔽。
-            //   （实测复现：首 worker 卡住时 availablePermits 已变回 1。）
-            //   归还权归属：谁取得许可，谁归还。
-            //
-            // ★按**实例身份**排除，不按类型：类型判定会把「executor 抛出同类型异常」
-            //   这种 supplier 未执行的场景也误判为无归还权，造成永久泄漏。
-            .onFailure(t -> !disowned.contains(t))
-            .invoke(t -> release());
+            })
+                // ★runSubscriptionOn 必须在**这一支内部**：调度拒绝是它产生的
+                //   failure，只有放在它下游的 onFailure 才收得到。
+                //   （实测：把它挪到整条链外层，路径3 的许可不再归还，permits 停在 0。）
+                .runSubscriptionOn(executor)
+                // 路径3：调度被拒时 supplier 永不执行，上面的 finally 永不触发。
+                // 只能在这里兜底。用 onFailure 而非 onTermination：后者在取消时也会触发。
+                .onFailure().invoke(t -> release());
+        });
     }
 
     /**

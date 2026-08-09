@@ -444,12 +444,13 @@ class EvaluateSourceSimulateContractTest {
     }
 
     @Test
-    void 归还权按实例身份判定而非异常类型() {
-        // ★若外层 onFailure 用 `t instanceof RepeatSubscriptionException` 排除归还，
-        //   那么**任何来源**的同类型异常都会被误判为「无归还权」。
-        //   这里让 executor 抛出该类型：supplier 不执行 → finally 不触发 →
-        //   兜底又被跳过 → 许可永久泄漏。实测（类型判定版）permits 停在 0。
-        //   按实例身份判定则只排除本 lease 亲手造的那一个。
+    void executor抛出重复订阅同类型异常时许可仍须归还() {
+        // ★归还权不得靠「异常长什么样」来反推。
+        //   曾经的实现用 `t instanceof RepeatSubscriptionException` 排除归还，
+        //   于是 executor 抛出同类型异常时：supplier 不执行 → finally 不触发 →
+        //   兜底又被跳过 → 许可永久泄漏（实测 permits 停在 0）。
+        //   现在归还钩子挂在**取得许可的那一支内部**，归属由结构保证，
+        //   与异常类型无关；本用例锁住这条不变量，防止再退回反推式判定。
         Semaphore sem = new Semaphore(1);
         PermitLease lease = leased(sem);
         Executor throwsSameType = r -> {
@@ -462,6 +463,70 @@ class EvaluateSourceSimulateContractTest {
         assertThat(sem.availablePermits())
             .as("★同类型但非本 lease 所造的异常，许可仍必须归还")
             .isEqualTo(1);
+    }
+
+    @Test
+    void 首worker阻塞时并发多次重复订阅不得放闸也不得堆积() throws Exception {
+        // ★审查者要求的回归：单次重复订阅不够，要证明**多次并发**重复订阅
+        //   既不会提前放闸，也不会因为「记住被拒的订阅」而无界堆积。
+        //   现在归还钩子挂在取得许可的那一支内部，被拒订阅**不留任何状态**。
+        final int repeats = 500;
+        Semaphore sem = new Semaphore(1);
+        PermitLease lease = leased(sem);
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch hold = new CountDownLatch(1);
+        CountDownLatch firstDone = new CountDownLatch(1);
+        CountDownLatch allRejected = new CountDownLatch(repeats);
+        java.util.concurrent.atomic.AtomicInteger runs =
+            new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger wrongType =
+            new java.util.concurrent.atomic.AtomicInteger();
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        try {
+            var uni = lease.guardAsync(() -> {
+                runs.incrementAndGet();
+                running.countDown();
+                try {
+                    hold.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return "first";
+            }, pool);
+
+            uni.subscribe().with(v -> firstDone.countDown(), t -> firstDone.countDown());
+            assertThat(running.await(5, TimeUnit.SECONDS)).as("首 worker 应已启动").isTrue();
+
+            // 首 worker 仍卡着，此时并发发起 500 次重复订阅
+            for (int i = 0; i < repeats; i++) {
+                pool.submit(() -> uni.subscribe().with(
+                    v -> allRejected.countDown(),
+                    t -> {
+                        if (!(t instanceof PermitLease.RepeatSubscriptionException)) {
+                            wrongType.incrementAndGet();
+                        }
+                        allRejected.countDown();
+                    }));
+            }
+            assertThat(allRejected.await(10, TimeUnit.SECONDS))
+                .as("全部重复订阅都应已被处理")
+                .isTrue();
+            assertThat(wrongType.get()).as("每一次重复订阅都应以重复订阅异常告终").isZero();
+
+            assertThat(sem.availablePermits())
+                .as("★" + repeats + " 次并发重复订阅期间，首 worker 仍在运行，闸门不得放开")
+                .isZero();
+            assertThat(runs.get()).as("★业务体只能执行一次").isEqualTo(1);
+
+            hold.countDown();
+            assertThat(firstDone.await(5, TimeUnit.SECONDS)).as("首 worker 应已完成").isTrue();
+            assertThat(sem.availablePermits())
+                .as("首 worker 完成后许可归还，且恰好一个（不因重复订阅而虚增）")
+                .isEqualTo(1);
+        } finally {
+            hold.countDown();
+            pool.shutdownNow();
+        }
     }
 
     @Test
