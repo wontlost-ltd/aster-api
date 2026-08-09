@@ -54,10 +54,11 @@ public class ReplayBatchScheduler {
             Log.errorf(e, "回收过期租约失败");
         }
 
-        java.util.UUID batchId = service.claimNextPending();
-        if (batchId == null) {
+        ReplayBatchService.Claim claim = service.claimNextPending();
+        if (claim == null) {
             return;
         }
+        java.util.UUID batchId = claim.batchId();
         Log.infof("领取 What-If 批次 %s，开始执行", batchId);
         try {
             service.runBatch(batchId);
@@ -66,7 +67,7 @@ public class ReplayBatchScheduler {
             //   批次自身的状态由 runBatch 内部保证已落到 FAILED——
             //   若连那都失败，下面的兜底会把它标记掉，避免永久卡在 RUNNING。
             Log.errorf(e, "What-If 批次 %s 执行异常", batchId);
-            service.failBatchDefensively(batchId, ReplayFailureKind.UNKNOWN);
+            service.failBatchDefensively(batchId, claim.owner(), ReplayFailureKind.UNKNOWN);
         }
     }
 

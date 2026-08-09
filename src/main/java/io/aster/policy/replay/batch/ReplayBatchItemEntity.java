@@ -43,6 +43,29 @@ public class ReplayBatchItemEntity extends PanacheEntityBase {
     @Column(name = "base_approved", nullable = false)
     public boolean baseApproved;
 
+    /**
+     * 本条是否重跑成功。<b>{@code null} = 尚未重跑</b>——分段执行的天然中间态。
+     *
+     * <p>★分段执行拆掉了「整批一个事务」，而那原本是 §1.1 的实现基础
+     * （要么全成功、要么全拒答）。改由本列保：每条跑完立即落标记，
+     * 崩溃只丢当前段；DB 触发器保证「COMPLETED ⇒ 不存在非成功条目」。
+     */
+    @Column(name = "success")
+    public Boolean success;
+
+    /** 仅 {@code success = false} 时非空，取值为 {@link ReplayFailureKind} 的名字。 */
+    @Column(name = "failure_kind", length = 64)
+    public String failureKind;
+
+    /**
+     * 重跑后目标版本是否「通过」。
+     *
+     * <p>★<b>只存布尔判定，不存 decision 内容</b>——与 §3.1 的边界一致：
+     * 那条要避免的是决策结果（PII 面 + 失效语义），这里是一个不含 PII 的判定位。
+     */
+    @Column(name = "target_approved")
+    public Boolean targetApproved;
+
     public ReplayBatchItemEntity() {
     }
 

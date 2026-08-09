@@ -49,7 +49,21 @@ public class ReplayBatchService {
      * <p>★但真正兜底的不是这个时长，而是 {@code leaseOwner} 条件更新：
      * 即便误判发生，旧 worker 也写不进终态。调长只是让误判更少发生。
      */
-    private static final java.time.Duration LEASE_DURATION = java.time.Duration.ofHours(2);
+    private static final java.time.Duration LEASE_DURATION = java.time.Duration.ofMinutes(30);
+
+    /**
+     * 每段条数（ADR 0034 §11.2）。
+     *
+     * <p>租约只需覆盖<b>一段</b>的最坏耗时，而不是整批：
+     * 100 条 × 30s（单条最长等许可）= 50 分钟——故 {@link #LEASE_DURATION}
+     * 取 30 分钟仍偏紧，但配合<b>每段开头续租</b>即可：
+     * 续租发生在每段之前，只要单段不超时，租约就一直有效。
+     *
+     * <p>★对照上一版：整批 10000 条 × 30s = <b>83 小时</b>，
+     * 而我把租约定成 2 小时并注释「可覆盖最坏情况」——那个算术从没做过。
+     * 分段把「租约必须覆盖多久」从不可控变成可控。
+     */
+    private static final int SEGMENT_SIZE = 100;
 
     /**
      * 批次规模硬上限（ADR 0034 §10.3）。
@@ -82,7 +96,7 @@ public class ReplayBatchService {
      *
      * @return 领到的批次 id；无待跑批次时返回 null
      */
-    public UUID claimNextPending() {
+    public Claim claimNextPending() {
         UUID candidateId = peekNextPending();
         if (candidateId == null) {
             return null;
@@ -96,6 +110,16 @@ public class ReplayBatchService {
         return markRunning(candidateId);
     }
 
+    /**
+     * 领取结果：批次 id **与本次持有的 owner token**。
+     *
+     * <p>★owner 必须一并返回（§11.4）：调度器要拿它做防御性兜底的条件写。
+     * 上一版只返回 UUID，于是 {@code failBatchDefensively} 没有 owner 可用，
+     * 失租的 worker 会把别人刚领走的批次标成 FAILED。
+     */
+    public record Claim(UUID batchId, String owner) {
+    }
+
     /** 取下一个待跑批次 id（只读，不改状态）。 */
     @Transactional
     UUID peekNextPending() {
@@ -107,7 +131,7 @@ public class ReplayBatchService {
 
     /** 把已冻结的批次原子迁移到 RUNNING 并写入租约。 */
     @Transactional
-    UUID markRunning(UUID candidateId) {
+    Claim markRunning(UUID candidateId) {
         ReplayBatchEntity candidate = ReplayBatchEntity.findById(candidateId);
         if (candidate == null || candidate.status != ReplayBatchStatus.PENDING) {
             return null;
@@ -126,7 +150,7 @@ public class ReplayBatchService {
             java.time.Instant.now().plus(LEASE_DURATION), owner,
             candidate.id, ReplayBatchStatus.PENDING);
         // 竞态：别的副本先领走了 → 本轮放弃，下一轮再来
-        return updated == 1 ? candidate.id : null;
+        return updated == 1 ? new Claim(candidate.id, owner) : null;
     }
 
     /**
@@ -151,102 +175,227 @@ public class ReplayBatchService {
 
         int reclaimed = 0;
         for (ReplayBatchEntity b : stale) {
-            if (b.attemptCount >= MAX_ATTEMPTS) {
-                // 放弃重试：标失败并**释放槽位**，否则额度被永久吃掉
-                b.failedCount = b.plannedCount;
-                b.completedCount = 0;
-                b.markFailed(toJson(List.of(ReplayFailureKind.UNKNOWN.name())));
-                b.concurrencySlot = null;
-                b.leaseExpiresAt = null;
-                Log.warnf("批次 %s 已尝试 %d 次仍未完成，判定失败并释放并发槽",
-                    b.id, b.attemptCount);
+            // ★快照出条件所需的值后**不再改这个实体**——改了会被自动 flush，
+            //   那正是 §11.1 的坑。所有写走下面的条件 UPDATE。
+            String owner = b.leaseOwner;
+            java.time.Instant expiry = b.leaseExpiresAt;
+            int attempts = b.attemptCount;
+            UUID id = b.id;
+            int planned = b.plannedCount;
+
+            long written;
+            if (attempts >= MAX_ATTEMPTS) {
+                // 放弃重试：标失败并释放槽位，否则额度被永久吃掉
+                written = ReplayBatchEntity.update(
+                    "status = ?1, failedCount = ?2, completedCount = 0, finishedAt = ?3,"
+                        + " failureReasons = ?4, resultSummary = null,"
+                        + " concurrencySlot = null, leaseExpiresAt = null, leaseOwner = null"
+                        + " where id = ?5 and status = ?6"
+                        + " and leaseOwner = ?7 and leaseExpiresAt = ?8",
+                    ReplayBatchStatus.FAILED, planned, now,
+                    toJson(List.of(ReplayFailureKind.UNKNOWN.name())),
+                    id, ReplayBatchStatus.RUNNING, owner, expiry);
             } else {
                 // 退回 PENDING 等待重新领取；槽位保留（它仍占着额度，这是对的）
-                b.status = ReplayBatchStatus.PENDING;
-                b.startedAt = null;
-                b.leaseExpiresAt = null;
-                Log.warnf("批次 %s 租约过期（第 %d 次尝试），退回 PENDING 等待重跑",
-                    b.id, b.attemptCount);
+                written = ReplayBatchEntity.update(
+                    "status = ?1, startedAt = null, leaseExpiresAt = null, leaseOwner = null"
+                        + " where id = ?2 and status = ?3"
+                        + " and leaseOwner = ?4 and leaseExpiresAt = ?5",
+                    ReplayBatchStatus.PENDING, id, ReplayBatchStatus.RUNNING, owner, expiry);
             }
-            b.persist();
-            reclaimed++;
+
+            // ★写 0 行 = 别的副本已经处理过这一行（或原 worker 刚续了租）。
+            //   条件里带上**读到的 owner 与到期时刻**，是为了让「先查后写」
+            //   之间的窗口无害：慢的副本写不进去，不会把快的副本刚领走的
+            //   新 owner 覆盖回 PENDING。
+            if (written == 1) {
+                reclaimed++;
+                Log.warnf("批次 %s 租约过期（第 %d 次尝试）已回收", id, attempts);
+            }
         }
         return reclaimed;
     }
 
     /**
-     * 执行批次：逐条重跑 → 判定 → 落库。
+     * 执行批次：分段重跑 → 逐条落成败标记 → 全部跑完后判定终态。
      *
-     * <p>★<b>本方法不吞异常</b>：重跑过程中的业务失败被归类进
-     * {@link ReplayFailureKind} 并导致整批拒答（这是**预期路径**）；
-     * 而基础设施异常（DB 断连等）应当抛出，由调度器兜底标记——
-     * 把两者混为一谈会让真正的缺陷伪装成「用户数据有问题」。
+     * <p>★<b>不再是一个长事务</b>（ADR 0034 §11.2）：单条最长等许可 30s、
+     * 串行 10000 条 = <b>83 小时</b>最坏耗时，而租约只有 2 小时——
+     * 我上一版把租约定成 2 小时并注释「可覆盖最坏情况」，<b>那个算术从没做过</b>。
+     * 现在每段提交一次并续租，租约只需覆盖<b>一段</b>。
+     *
+     * <p>★<b>本方法不持有 managed 实体</b>（§11.1）：上一版在这里
+     * {@code findById} 拿到受管实体、改它、再执行带 {@code AND leaseOwner=?}
+     * 的条件更新——但 Hibernate 提交时仍会 flush 那个脏实体，
+     * <b>条件更新形同虚设</b>。commit message 却写着「结构上不可能」。
+     * 现在全程只读值对象，所有写走单条原子 CAS。
      */
-    @Transactional
     public void runBatch(UUID batchId) {
-        ReplayBatchEntity batch = ReplayBatchEntity.findById(batchId);
-        if (batch == null) {
-            Log.warnf("批次 %s 不存在，跳过", batchId);
-            return;
-        }
-        if (batch.status != ReplayBatchStatus.RUNNING) {
-            Log.warnf("批次 %s 状态为 %s 而非 RUNNING，跳过", batchId, batch.status);
+        BatchSnapshot snap = loadSnapshot(batchId);
+        if (snap == null) {
             return;
         }
 
-        // ★记下开跑时的 owner。终态写前会复核它——若期间本批次被回收并被
-        //   另一个 worker 重新领取，owner 已变，本次结果**必须丢弃**而不是覆盖。
-        //   这是 §10.3 的落点：让「两个 worker 互相覆盖」结构上不可能，
-        //   而不是寄望于「租约调长后误判不会发生」。
-        final String owner = batch.leaseOwner;
-
-        List<ReplayBatchRunner.ItemResult> results = replayAll(batch);
-
-        // ★空窗口是**正当业务结果**，不是编程错误：这段时间内该策略就是没有执行。
-        //   decide() 对 plannedCount<=0 会抛异常（那是给「worker 提前退出」用的），
-        //   所以必须在此之前分流。呈现上它既不是「全量成功」也不是「拒答」，
-        //   而是「没有可分析的样本」——这同样满足 §1.1：总体为空，不给任何推断。
-        if (batch.plannedCount == 0) {
-            batch.completedCount = 0;
-            batch.failedCount = 0;
-            // 空对象而非某个失败 kind：窗口内没有执行**不是失败**，
-            // 谎称某类失败会误导用户去排查并不存在的数据问题。
-            batch.markFailed(toJson(List.of()));
+        // 空窗口：正当业务结果（这段时间该策略就是没有执行），不是失败。
+        // 谎称某类失败会误导用户去排查并不存在的数据问题。
+        if (snap.plannedCount() == 0) {
+            finishAtomically(batchId, snap.owner(), ReplayBatchStatus.FAILED,
+                0, 0, null, toJson(List.of()));
             Log.infof("批次 %s 窗口内无可重放执行，无样本可分析", batchId);
-            batch.persist();
             return;
         }
 
-        ReplayBatchOutcome outcome = ReplayBatchRunner.decide(batch.plannedCount, results);
+        // ── 分段推进 ────────────────────────────────────────────────────
+        // 每段自己提交并续租；崩溃只丢当前段，已完成的段不会回滚。
+        while (true) {
+            int done = runOneSegment(batchId, snap.owner());
+            if (done < 0) {
+                // 租约已改派：本 worker 立即让位，绝不继续写
+                Log.warnf("批次 %s 租约已改派，本 worker 停止推进", batchId);
+                return;
+            }
+            if (done == 0) {
+                break;   // 没有待跑条目了
+            }
+        }
+
+        // ── 全部跑完，统一判定终态 ──────────────────────────────────────
+        List<ReplayBatchRunner.ItemResult> results = collectResults(batchId);
+        ReplayBatchOutcome outcome = ReplayBatchRunner.decide(snap.plannedCount(), results);
 
         if (outcome instanceof ReplayBatchOutcome.Completed c) {
-            batch.completedCount = batch.plannedCount;
-            batch.failedCount = 0;
-            batch.markCompleted(toJson(summaryOf(c)));
-            Log.infof("批次 %s 全量成功：%d/%d 条，%d 条决策变化",
-                batchId, batch.plannedCount, batch.plannedCount, c.changed());
+            finishAtomically(batchId, snap.owner(), ReplayBatchStatus.COMPLETED,
+                snap.plannedCount(), 0, toJson(summaryOf(c)), null);
+            Log.infof("批次 %s 全量成功：%d 条，%d 条决策变化",
+                batchId, snap.plannedCount(), c.changed());
         } else if (outcome instanceof ReplayBatchOutcome.Rejected r) {
-            batch.failedCount = r.totalFailures();
-            batch.completedCount = batch.plannedCount - batch.failedCount;
-            batch.markFailed(toJson(reasonsOf(r)));
-            Log.infof("批次 %s 拒答：%d 条失败，分布=%s",
-                batchId, r.totalFailures(), r.failuresByKind());
+            finishAtomically(batchId, snap.owner(), ReplayBatchStatus.FAILED,
+                snap.plannedCount() - r.totalFailures(), r.totalFailures(),
+                null, toJson(reasonsOf(r)));
+            Log.infof("批次 %s 拒答：%d 条失败", batchId, r.totalFailures());
+        }
+    }
+
+    /** 批次的只读快照：**刻意不返回实体**，避免任何 managed 状态泄漏到写路径（§11.1）。 */
+    private record BatchSnapshot(UUID id, String owner, int plannedCount,
+                                 String tenantId, String targetVersionId,
+                                 String policyId, String userId,
+                                 java.time.Instant windowFrom, java.time.Instant windowTo) {
+    }
+
+    @Transactional
+    BatchSnapshot loadSnapshot(UUID batchId) {
+        ReplayBatchEntity b = ReplayBatchEntity.findById(batchId);
+        if (b == null) {
+            Log.warnf("批次 %s 不存在，跳过", batchId);
+            return null;
+        }
+        if (b.status != ReplayBatchStatus.RUNNING) {
+            Log.warnf("批次 %s 状态为 %s 而非 RUNNING，跳过", batchId, b.status);
+            return null;
+        }
+        return new BatchSnapshot(b.id, b.leaseOwner, b.plannedCount, b.tenantId,
+            b.targetVersionId, b.policyId, b.userId, b.windowFrom, b.windowTo);
+    }
+
+    /**
+     * 跑一段（至多 {@link #SEGMENT_SIZE} 条）并**提交**，同时续租。
+     *
+     * @return 本段实际跑的条数；0 表示没有待跑条目；<b>-1 表示租约已改派</b>
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    int runOneSegment(UUID batchId, String owner) {
+        // ★每段开头复核租约：改派后立即让位，不写任何东西
+        long stillMine = ReplayBatchEntity.update(
+            "leaseExpiresAt = ?1 where id = ?2 and leaseOwner = ?3 and status = ?4",
+            java.time.Instant.now().plus(LEASE_DURATION),
+            batchId, owner, ReplayBatchStatus.RUNNING);
+        if (stillMine == 0) {
+            return -1;
         }
 
-        // ★owner 复核：本次持有期间批次若被回收并改派，owner 已变。
-        //   此时丢弃本次结果——新 worker 会重新跑出一份，
-        //   而覆盖会让「谁的结果」变得不可知。
-        // owner 不同即丢弃——不附加状态条件：被改派后无论新 owner 处于
-        // RUNNING 还是已跑完，本次结果都不该落库。
+        List<ReplayBatchItemEntity> todo = ReplayBatchItemEntity
+            .find("batchId = ?1 and success is null order by executionId", batchId)
+            .page(0, SEGMENT_SIZE)
+            .list();
+        if (todo.isEmpty()) {
+            return 0;
+        }
+
+        BatchSnapshot snap = loadSnapshot(batchId);
+        if (snap == null) {
+            return -1;
+        }
+        io.aster.policy.entity.PolicyVersion target =
+            io.aster.policy.entity.PolicyVersion.findById(Long.valueOf(snap.targetVersionId()));
+        if (target == null) {
+            throw new TargetVersionMissingException(snap.targetVersionId());
+        }
+
+        Map<String, ExecutionWindowClient.WindowedExecution> upstream =
+            windowClient.fetchWindow(snap.policyId(), snap.userId(),
+                    snap.windowFrom(), snap.windowTo())
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(
+                    ExecutionWindowClient.WindowedExecution::executionId,
+                    java.util.function.Function.identity(), (x, y) -> x));
+
+        for (ReplayBatchItemEntity item : todo) {
+            ExecutionWindowClient.WindowedExecution e = upstream.get(item.executionId);
+            if (e == null) {
+                // ★冻结时存在、现在没了。这**不是**「输入不兼容」——
+                //   它根本没进 replayOne。谎称 INPUT_INCOMPATIBLE 会让用户
+                //   去排查一个不存在的数据问题，还会错误继承不可重试语义。
+                item.success = false;
+                item.failureKind = ReplayFailureKind.SOURCE_EXECUTION_UNAVAILABLE.name();
+                continue;
+            }
+            ReplayBatchRunner.ItemResult r =
+                replayOne(e, item.baseApproved, target, snap.tenantId());
+            item.success = r.failureKind() == null;
+            item.failureKind = r.failureKind() == null ? null : r.failureKind().name();
+            item.targetApproved = r.failureKind() == null ? r.targetApproved() : null;
+        }
+        return todo.size();
+    }
+
+    /** 从冻结表读回逐条结果，供 {@link ReplayBatchRunner#decide} 统一判定。 */
+    @Transactional
+    List<ReplayBatchRunner.ItemResult> collectResults(UUID batchId) {
+        List<ReplayBatchItemEntity> items = ReplayBatchItemEntity
+            .list("batchId = ?1 order by executionId", batchId);
+        List<ReplayBatchRunner.ItemResult> out = new ArrayList<>(items.size());
+        for (ReplayBatchItemEntity i : items) {
+            if (Boolean.TRUE.equals(i.success)) {
+                out.add(ReplayBatchRunner.ItemResult.ok(i.executionId, i.baseApproved,
+                    Boolean.TRUE.equals(i.targetApproved), null));
+            } else {
+                out.add(ReplayBatchRunner.ItemResult.failed(i.executionId,
+                    ReplayFailureKind.valueOf(
+                        i.failureKind == null ? ReplayFailureKind.UNKNOWN.name() : i.failureKind)));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 终态写：**单条原子 CAS**，条件带 owner 与 RUNNING（§11.1）。
+     *
+     * <p>写 0 行 = 租约已改派，本次结果丢弃。这里<b>不碰任何 managed 实体</b>——
+     * 上一版正是因为先改受管实体、再条件更新，被 Hibernate 的自动 flush 绕过。
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    void finishAtomically(UUID batchId, String owner, ReplayBatchStatus status,
+                          int completed, int failed, String resultJson, String reasonsJson) {
         long written = ReplayBatchEntity.update(
             "status = ?1, completedCount = ?2, failedCount = ?3, finishedAt = ?4,"
                 + " resultSummary = ?5, failureReasons = ?6,"
-                + " concurrencySlot = null, leaseExpiresAt = null"
-                + " where id = ?7 and leaseOwner = ?8",
-            batch.status, batch.completedCount, batch.failedCount, batch.finishedAt,
-            batch.resultSummary, batch.failureReasons, batchId, owner);
+                + " concurrencySlot = null, leaseExpiresAt = null, leaseOwner = null"
+                + " where id = ?7 and leaseOwner = ?8 and status = ?9",
+            status, completed, failed, java.time.Instant.now(),
+            resultJson, reasonsJson, batchId, owner, ReplayBatchStatus.RUNNING);
         if (written == 0) {
-            Log.warnf("批次 %s 的租约已改派（原 owner %s），丢弃本次结果", batchId, owner);
+            Log.warnf("批次 %s 的租约已改派（原 owner %s），丢弃本次终态写", batchId, owner);
         }
     }
 
@@ -257,15 +406,22 @@ public class ReplayBatchService {
      * 复用那个事务会一起回滚，批次仍然卡住。
      */
     @Transactional(Transactional.TxType.REQUIRES_NEW)
-    public void failBatchDefensively(UUID batchId, ReplayFailureKind kind) {
-        ReplayBatchEntity batch = ReplayBatchEntity.findById(batchId);
-        if (batch == null || batch.status.isTerminal()) {
-            return;
-        }
+    public void failBatchDefensively(UUID batchId, String owner, ReplayFailureKind kind) {
         try {
-            batch.markFailed(toJson(List.of(kind.name())));
-            batch.persist();
-            Log.warnf("批次 %s 被防御性标记为 FAILED（%s）", batchId, kind);
+            // ★必须带 owner 条件（§11.4）：若 worker A 已失租、B 已重新领取，
+            //   A 随后抛异常时会把 B 的批次标成 FAILED 并释放槽位。
+            //   上一版只检查「非终态」，挡不住这条。
+            long written = ReplayBatchEntity.update(
+                "status = ?1, finishedAt = ?2, failureReasons = ?3, resultSummary = null,"
+                    + " concurrencySlot = null, leaseExpiresAt = null, leaseOwner = null"
+                    + " where id = ?4 and leaseOwner = ?5 and status = ?6",
+                ReplayBatchStatus.FAILED, java.time.Instant.now(),
+                toJson(List.of(kind.name())), batchId, owner, ReplayBatchStatus.RUNNING);
+            if (written == 1) {
+                Log.warnf("批次 %s 被防御性标记为 FAILED（%s）", batchId, kind);
+            } else {
+                Log.warnf("批次 %s 已改派或已终态，跳过防御性标记", batchId);
+            }
         } catch (RuntimeException e) {
             // 连兜底都失败：记日志，不再抛——否则会掩盖最初的那个异常
             Log.errorf(e, "批次 %s 防御性标记失败", batchId);

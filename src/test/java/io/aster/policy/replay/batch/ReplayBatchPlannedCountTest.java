@@ -151,12 +151,14 @@ class ReplayBatchPlannedCountTest {
     void 空窗口必须在decide之前分流() throws Exception {
         String src = serviceSource();
 
+        // 值对象化后（§11.1 全程 detached）判定表达式从 batch.plannedCount
+        // 变成 snap.plannedCount()；不变量本身没变：空窗口必须先于 decide 分流。
         assertThat(src)
             .as("★空窗口必须在调用 decide 之前分流——"
                 + "否则 plannedCount=0 会抛异常，把「这段时间没有执行」伪装成系统故障")
-            .contains("if (batch.plannedCount == 0)");
+            .contains("if (snap.plannedCount() == 0)");
 
-        int emptyBranch = src.indexOf("if (batch.plannedCount == 0)");
+        int emptyBranch = src.indexOf("if (snap.plannedCount() == 0)");
         int decideCall = src.indexOf("ReplayBatchRunner.decide(");
         assertThat(emptyBranch)
             .as("★空窗口分流必须在 decide 调用之前")

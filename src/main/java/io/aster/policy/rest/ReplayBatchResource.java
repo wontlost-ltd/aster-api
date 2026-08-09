@@ -159,36 +159,31 @@ public class ReplayBatchResource {
         try {
             batch.persistAndFlush();
         } catch (jakarta.persistence.PersistenceException raced) {
-            if (unlimited) {
-                // ★unlimited 租户抢槽冲突只是「这个槽号被别人先占了」，
-                //   额度上并没有超限。直接回 409 会把**合法并发**打成拒绝
-                //   （审查发现的假 409）。改为让出槽号重试一次：
-                //   重新查当前活跃集合、取新的最小空位。
-                List<ReplayBatchEntity> refreshed = ReplayBatchEntity.list(
-                    "tenantId = ?1 and status in ?2",
-                    tenantId, List.of(ReplayBatchStatus.PENDING, ReplayBatchStatus.RUNNING));
-                batch.concurrencySlot = firstFreeSlot(refreshed);
-                try {
-                    batch.persistAndFlush();
-                } catch (jakarta.persistence.PersistenceException stillRaced) {
-                    // 连续两次撞槽：并发极高，让调用方稍后重试比无限循环诚实
-                    Log.warnf("unlimited 租户 %s 连续抢槽失败，回 503 让其重试", tenantId);
-                    return Response.status(Response.Status.SERVICE_UNAVAILABLE)
-                        .entity(Map.of(
-                            "error", "whatif_slot_contention",
-                            "message", "并发创建冲突，请稍后重试"))
-                        .build();
-                }
-            } else {
-                // ★有限额度：唯一约束把 TOCTOU 变成了一个可处理的错误——
-                //   并发抢同一槽，输的这个转成 409（而不是 500）。
-                Log.debugf("租户 %s 并发抢占槽位失败，转 409：%s", tenantId, raced.getMessage());
-                return Response.status(Response.Status.CONFLICT)
+            // ★这里**不能在同一事务里重试**（ADR 0034 §11.4）：
+            //   persistAndFlush 抛异常后 Hibernate session 已 rollback-only，
+            //   继续 persist 不构成可靠的新插入，返回的 503 也可能最终变成 500。
+            //   上一版就是这么写的——把假 409 换成了不可靠的 500/503。
+            //
+            // ★而且必须**精确识别唯一约束冲突**：catch 所有 PersistenceException
+            //   会把 DB 故障误报成槽位争用。
+            if (!isUniqueViolation(raced)) {
+                throw raced;
+            }
+            // 槽位争用：交给调用方重试。对有限额度而言这就是「已有批次在跑」；
+            // 对 unlimited 而言是短暂争用，两者都用重试语义表达，
+            // 由 error code 区分，不谎称对方「超限」。
+            Log.debugf("租户 %s 槽位争用（unlimited=%s）", tenantId, unlimited);
+            return unlimited
+                ? Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                    .entity(Map.of(
+                        "error", "whatif_slot_contention",
+                        "message", "并发创建冲突，请稍后重试"))
+                    .build()
+                : Response.status(Response.Status.CONFLICT)
                     .entity(Map.of(
                         "error", "whatif_batch_in_progress",
                         "message", "已有批次在运行，完成后可再发起"))
                     .build();
-            }
         }
 
         Log.infof("创建 What-If 批次 %s：policy=%s 窗口=%s [%s, %s)",
@@ -291,6 +286,27 @@ public class ReplayBatchResource {
      * <p>★这个函数<b>不负责</b>限流——它只挑一个候选槽。真正的互斥在数据库：
      * 并发请求即使算出同一个槽号，也只有一个能插入成功。
      */
+    /**
+     * 是否为唯一约束冲突（槽位争用），而非其它数据库故障。
+     *
+     * <p>★不能笼统 catch {@code PersistenceException}：连接中断、约束校验失败
+     * 都会走同一个异常类型，一律当成「槽位争用」会把真故障伪装成正常争用，
+     * 让调用方一直重试一个永远不会成功的请求。
+     */
+    private static boolean isUniqueViolation(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof org.hibernate.exception.ConstraintViolationException cve) {
+                return cve.getConstraintName() != null
+                    && cve.getConstraintName().contains("tenant_slot");
+            }
+            if (c instanceof java.sql.SQLException sql) {
+                // 23505 = unique_violation（PostgreSQL）
+                return "23505".equals(sql.getSQLState());
+            }
+        }
+        return false;
+    }
+
     private static int firstFreeSlot(List<ReplayBatchEntity> active) {
         java.util.Set<Integer> taken = active.stream()
             .map(b -> b.concurrencySlot)
