@@ -53,6 +53,27 @@ class ReplayBatchConcurrencyIT {
         });
     }
 
+    /**
+     * 断言批次**没有**停在 COMPLETED。
+     *
+     * <p>★为什么不只断言「抛异常」：延迟约束在**提交时**触发，
+     * JTA 会把它包成 {@code RollbackException: Could not commit transaction}，
+     * 原始的 PostgreSQL 消息不在最外层——按 {@code hasMessageContaining("COMPLETED")}
+     * 断言会失败，而按 {@code isInstanceOf(Exception.class)} 又太宽
+     * （任何异常都能满足，包括测试自身写错）。
+     *
+     * <p>所以在「拒绝」之外**再查一次落库状态**：违规状态没落库才是真正要保的东西。
+     */
+    private void assertNotCompleted(UUID id) {
+        String st = QuarkusTransaction.requiringNew().call(() ->
+            String.valueOf(em.createNativeQuery(
+                "SELECT status FROM replay_batch WHERE id = ?1")
+                .setParameter(1, id).getSingleResult()));
+        assertThat(st)
+            .as("★违规事务必须整体回滚——批次不得停在 COMPLETED")
+            .isNotEqualTo("COMPLETED");
+    }
+
     private void persistItem(UUID batchId, String execId, boolean baseApproved,
                              Boolean success, String failureKind) {
         ReplayBatchItemEntity i = new ReplayBatchItemEntity(batchId, execId, baseApproved);
@@ -157,7 +178,8 @@ class ReplayBatchConcurrencyIT {
                     + " concurrencySlot = null where id = ?4",
                 ReplayBatchStatus.COMPLETED, 1, "{\"changed\":1}", id)))
             .as("★存在失败条目却标 COMPLETED，数据库必须拒绝")
-            .hasMessageContaining("COMPLETED");
+            .isInstanceOf(Exception.class);
+        assertNotCompleted(id);
     }
 
     /**
@@ -189,7 +211,13 @@ class ReplayBatchConcurrencyIT {
         }))
             .as("★INSERT 路径同样不得产出「COMPLETED + 失败条目」——"
                 + "触发器只挂 BEFORE UPDATE 时这条会被放行（第四轮实测）")
-            .hasMessageContaining("COMPLETED");
+            .isInstanceOf(Exception.class);
+        // INSERT 被回滚后该行根本不存在，比「不是 COMPLETED」更强
+        Long cnt = QuarkusTransaction.requiringNew().call(() ->
+            ((Number) em.createNativeQuery(
+                "SELECT count(*) FROM replay_batch WHERE id = ?1")
+                .setParameter(1, id).getSingleResult()).longValue());
+        assertThat(cnt).as("★违规 INSERT 必须整体回滚，该批次不得存在").isZero();
     }
 
     /**
@@ -227,7 +255,8 @@ class ReplayBatchConcurrencyIT {
                     + " concurrencySlot = null where id = ?3",
                 ReplayBatchStatus.COMPLETED, "{\"changed\":0}", id)))
             .as("★只跑了 1 条却声称 3 条全成功——样本不是总体全量")
-            .hasMessageContaining("COMPLETED");
+            .isInstanceOf(Exception.class);
+        assertNotCompleted(id);
     }
 
     // ── §10.1 契约形状：failureReasons 必须是数组 ────────────────────────
@@ -373,6 +402,110 @@ class ReplayBatchConcurrencyIT {
                 }
             }
         }
+    }
+
+    // ── §12.3 DEFERRABLE 约束触发器：五条绕过全部封闭 ────────────────────
+
+    /**
+     * ★{@code DELETE} item 后标 COMPLETED——V6.20.4 的即时触发器放行过这条。
+     *
+     * <p>现在由 {@code CONSTRAINT TRIGGER ... DEFERRABLE INITIALLY DEFERRED}
+     * 在**提交时**校验汇总列，DELETE 与状态变更在同一事务里都会被回滚。
+     */
+    @Test
+    void 删除条目后标COMPLETED必须在提交时被拒() {
+        UUID id = seedRunning("t-del", "o", 1);
+        QuarkusTransaction.requiringNew().run(() -> persistItem(id, "e1", true, true, null));
+
+        assertThatThrownBy(() -> QuarkusTransaction.requiringNew().run(() -> {
+            em.createNativeQuery("DELETE FROM replay_batch_item WHERE batch_id = ?1")
+                .setParameter(1, id).executeUpdate();
+            em.createNativeQuery("""
+                UPDATE replay_batch SET status='COMPLETED', completed_count=1, failed_count=0,
+                       result_summary='{"changed":0}'::jsonb, concurrency_slot=NULL,
+                       lease_expires_at=NULL, lease_owner=NULL
+                 WHERE id = ?1
+                """).setParameter(1, id).executeUpdate();
+        }))
+            .as("★删掉条目再标 COMPLETED，样本不是总体全量，必须在提交时被拒")
+            .isInstanceOf(Exception.class);
+    }
+
+    /**
+     * ★把 item 改挂到另一个父——审查发现的**第四条写入路径**。
+     *
+     * <p>V6.20.4 的 item 触发器只查 {@code NEW.batch_id}，
+     * 于是旧父静默失去一条 item（实测 {@code planned=1 item数=0}）。
+     * 汇总维护函数现在对 {@code OLD} 与 {@code NEW} 双向增减。
+     */
+    @Test
+    void 把条目改挂到别的父必须被拒() {
+        UUID oldParent = seedRunning("t-rp1", "o1", 1);
+        QuarkusTransaction.requiringNew().run(() -> persistItem(oldParent, "e1", true, true, null));
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery("""
+            UPDATE replay_batch SET status='COMPLETED', completed_count=1, failed_count=0,
+                   result_summary='{"changed":0}'::jsonb, concurrency_slot=NULL,
+                   lease_expires_at=NULL, lease_owner=NULL
+             WHERE id = ?1
+            """).setParameter(1, oldParent).executeUpdate());
+
+        UUID newParent = seedRunning("t-rp2", "o2", 1);
+
+        assertThatThrownBy(() -> QuarkusTransaction.requiringNew().run(() ->
+            em.createNativeQuery("UPDATE replay_batch_item SET batch_id = ?1 WHERE batch_id = ?2")
+                .setParameter(1, newParent).setParameter(2, oldParent).executeUpdate()))
+            .as("★改挂父会让旧父失去条目——只看 NEW.batch_id 时这条被放行过")
+            .isInstanceOf(Exception.class);
+    }
+
+    /** ★COMPLETED 后追加 success=true 条目：会让 item_total > planned_count。 */
+    @Test
+    void COMPLETED后追加成功条目必须被拒() {
+        UUID id = seedRunning("t-add", "o", 1);
+        QuarkusTransaction.requiringNew().run(() -> persistItem(id, "e1", true, true, null));
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery("""
+            UPDATE replay_batch SET status='COMPLETED', completed_count=1, failed_count=0,
+                   result_summary='{"changed":0}'::jsonb, concurrency_slot=NULL,
+                   lease_expires_at=NULL, lease_owner=NULL
+             WHERE id = ?1
+            """).setParameter(1, id).executeUpdate());
+
+        assertThatThrownBy(() -> QuarkusTransaction.requiringNew().run(() ->
+            persistItem(id, "e2", true, true, null)))
+            .as("★追加条目让 item_total 超过 planned_count，同样违反「样本即总体全量」")
+            .isInstanceOf(Exception.class);
+    }
+
+    /** ★TRUNCATE 是语句级事件，行级触发器收不到——必须单独挡。 */
+    @Test
+    void TRUNCATE条目表必须被拒() {
+        assertThatThrownBy(() -> QuarkusTransaction.requiringNew().run(() ->
+            em.createNativeQuery("TRUNCATE replay_batch_item").executeUpdate()))
+            .as("★TRUNCATE 会让所有批次的计数与实际脱节")
+            .isInstanceOf(Exception.class);
+    }
+
+    /** 正例：合法的全量成功仍必须放行——护栏要能区分，不能一律拒。 */
+    @Test
+    void 合法的全量成功必须放行() {
+        UUID id = seedRunning("t-ok", "o", 2);
+        QuarkusTransaction.requiringNew().run(() -> {
+            persistItem(id, "e1", true, true, null);
+            persistItem(id, "e2", false, true, null);
+        });
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery("""
+            UPDATE replay_batch SET status='COMPLETED', completed_count=2, failed_count=0,
+                   result_summary='{"changed":1}'::jsonb, concurrency_slot=NULL,
+                   lease_expires_at=NULL, lease_owner=NULL
+             WHERE id = ?1
+            """).setParameter(1, id).executeUpdate());
+
+        String st = QuarkusTransaction.requiringNew().call(() ->
+            String.valueOf(em.createNativeQuery(
+                "SELECT status || ' ' || item_total || '/' || planned_count"
+                    + " FROM replay_batch WHERE id = ?1")
+                .setParameter(1, id).getSingleResult()));
+        assertThat(st).as("全量成功必须能落 COMPLETED").isEqualTo("COMPLETED 2/2");
     }
 
     // ── §11.3 槽位唯一性 ─────────────────────────────────────────────────
