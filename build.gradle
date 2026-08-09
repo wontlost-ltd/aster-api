@@ -118,7 +118,7 @@ dependencies {
     testImplementation 'org.mockito:mockito-core:5.23.0'
     testImplementation 'io.quarkus:quarkus-jdbc-h2'
     testImplementation 'org.awaitility:awaitility:4.3.0'
-    testImplementation 'com.tngtech.archunit:archunit-junit5:1.4.2'
+    testImplementation 'com.tngtech.archunit:archunit-junit5:1.5.0'
 
     // D-1 distribution parity：in-JVM 调 RunnerMain.run() 与生产权威路径 byte 比对。
     // 无环：runner→:replay，aster-api→:replay，aster-api-test→runner（runner 不依赖 aster-api）。
