@@ -9,6 +9,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import io.smallrye.mutiny.Uni;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -410,22 +411,213 @@ class EvaluateSourceSimulateContractTest {
         lease.guardAsync(() -> "first", Runnable::run).await().indefinitely();
 
         assertThat(sem.tryAcquire()).isTrue();   // 第二个许可
-        assertThatThrownBy(() -> lease.guardAsync(() -> "second", Runnable::run))
-            .as("复用租约必须抛出，而不是静默泄漏第二个许可")
+        // 一次性检查在**订阅期**，所以失败以 Uni failure 呈现而非装配期抛出
+        assertThatThrownBy(
+            () -> lease.guardAsync(() -> "second", Runnable::run).await().indefinitely())
+            .as("复用租约必须失败，而不是静默泄漏第二个许可")
             .isInstanceOf(IllegalStateException.class);
     }
 
     @Test
     void 重复订阅同一个Uni必须被拒() {
-        // 一次性检查若写在 supplier 内部，重复订阅会绕过它——所以必须在装配期。
+        // ★这条测试此前是**假绿**：名字说「必须被拒」，却让第二次订阅正常通过，
+        //   只断言许可数没变多。实测复现过绕过：runs=2 而 permits=1——
+        //   业务体在**不持有许可**的情况下重跑，即并发闸门失效。
+        //   一次性检查因此从装配期移到订阅期（Uni.createFrom().deferred）。
         Semaphore sem = new Semaphore(1);
-        PermitLease lease = leased(sem);
-        var uni = lease.guardAsync(() -> "x", Runnable::run);
+        PermitLease lease = leased(sem);         // leased() 内部已 tryAcquire 唯一许可
+        AtomicInteger runs = new AtomicInteger();
+
+        var uni = lease.guardAsync(() -> { runs.incrementAndGet(); return "x"; }, Runnable::run);
         uni.await().indefinitely();
-        // 同一个 Uni 再订阅一次：业务体会重跑，但许可已归还——闸门形同虚设
-        uni.await().indefinitely();
+
+        assertThatThrownBy(() -> uni.await().indefinitely())
+            .as("★同一个 Uni 第二次订阅必须失败——否则业务体会无许可重跑")
+            .isInstanceOf(IllegalStateException.class);
+
+        assertThat(runs.get())
+            .as("★业务体只能执行一次；执行两次即闸门被绕过")
+            .isEqualTo(1);
         assertThat(sem.availablePermits())
             .as("重复订阅不得让许可凭空变多")
             .isEqualTo(1);
+    }
+
+    @Test
+    void executor抛出重复订阅同类型异常时许可仍须归还() {
+        // ★归还权不得靠「异常长什么样」来反推。
+        //   曾经的实现用 `t instanceof RepeatSubscriptionException` 排除归还，
+        //   于是 executor 抛出同类型异常时：supplier 不执行 → finally 不触发 →
+        //   兜底又被跳过 → 许可永久泄漏（实测 permits 停在 0）。
+        //   现在归还钩子挂在**取得许可的那一支内部**，归属由结构保证，
+        //   与异常类型无关；本用例锁住这条不变量，防止再退回反推式判定。
+        Semaphore sem = new Semaphore(1);
+        PermitLease lease = leased(sem);
+        Executor throwsSameType = r -> {
+            throw new PermitLease.RepeatSubscriptionException();
+        };
+        assertThatThrownBy(
+            () -> lease.guardAsync(() -> "x", throwsSameType).await().indefinitely())
+            .isInstanceOf(PermitLease.RepeatSubscriptionException.class);
+
+        assertThat(sem.availablePermits())
+            .as("★同类型但非本 lease 所造的异常，许可仍必须归还")
+            .isEqualTo(1);
+    }
+
+    @Test
+    void 首worker阻塞时并发多次重复订阅不得放闸也不得堆积() throws Exception {
+        // ★审查者要求的回归：单次重复订阅不够，要证明**多次并发**重复订阅
+        //   既不会提前放闸，也不会因为「记住被拒的订阅」而无界堆积。
+        //
+        // ★「不得堆积」必须**真的被断言**，否则又是一条名不副实的测试：
+        //   审查者实证——加一个无界集合、每次拒绝都往里塞，19 条测试照样全绿。
+        //   所以下面用反射检查 lease 的字段：不得出现随订阅次数增长的容器。
+        final int repeats = 500;
+        Semaphore sem = new Semaphore(1);
+        PermitLease lease = leased(sem);
+        CountDownLatch running = new CountDownLatch(1);
+        CountDownLatch hold = new CountDownLatch(1);
+        CountDownLatch firstDone = new CountDownLatch(1);
+        CountDownLatch allRejected = new CountDownLatch(repeats);
+        java.util.concurrent.atomic.AtomicInteger runs =
+            new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger wrongType =
+            new java.util.concurrent.atomic.AtomicInteger();
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        try {
+            var uni = lease.guardAsync(() -> {
+                runs.incrementAndGet();
+                running.countDown();
+                try {
+                    hold.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return "first";
+            }, pool);
+
+            uni.subscribe().with(v -> firstDone.countDown(), t -> firstDone.countDown());
+            assertThat(running.await(5, TimeUnit.SECONDS)).as("首 worker 应已启动").isTrue();
+
+            // 首 worker 仍卡着，此时并发发起 500 次重复订阅
+            for (int i = 0; i < repeats; i++) {
+                pool.submit(() -> uni.subscribe().with(
+                    v -> allRejected.countDown(),
+                    t -> {
+                        if (!(t instanceof PermitLease.RepeatSubscriptionException)) {
+                            wrongType.incrementAndGet();
+                        }
+                        allRejected.countDown();
+                    }));
+            }
+            assertThat(allRejected.await(10, TimeUnit.SECONDS))
+                .as("全部重复订阅都应已被处理")
+                .isTrue();
+            assertThat(wrongType.get()).as("每一次重复订阅都应以重复订阅异常告终").isZero();
+
+            assertThat(sem.availablePermits())
+                .as("★" + repeats + " 次并发重复订阅期间，首 worker 仍在运行，闸门不得放开")
+                .isZero();
+            assertThat(runs.get()).as("★业务体只能执行一次").isEqualTo(1);
+
+            // ★真正断言「不堆积」：lease 不得持有任何随订阅次数增长的容器。
+            //   只断言 permits/runs 证明不了这一点——审查者用「加个无界集合」
+            //   的变异实证过：那样 19 条测试照样全绿。
+            assertNoGrowingState(lease, repeats);
+
+            hold.countDown();
+            assertThat(firstDone.await(5, TimeUnit.SECONDS)).as("首 worker 应已完成").isTrue();
+            assertThat(sem.availablePermits())
+                .as("首 worker 完成后许可归还，且恰好一个（不因重复订阅而虚增）")
+                .isEqualTo(1);
+        } finally {
+            hold.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    /**
+     * 断言 lease 未持有随订阅次数增长的状态。
+     *
+     * <p>遍历实例字段：{@link java.util.Collection} / {@link java.util.Map} 一律视为
+     * 「可增长容器」——本类的归还权由**分支结构**表达，不需要记住任何被拒的订阅；
+     * 一旦出现这类字段，就说明又退回了「记住谁被拒过」的反推式判定
+     * （那正是第三轮的阻断项：可被恶意重复订阅无界放大）。
+     */
+    private static void assertNoGrowingState(PermitLease lease, int repeats) throws Exception {
+        for (Field f : PermitLease.class.getDeclaredFields()) {
+            if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+            f.setAccessible(true);
+            Object v = f.get(lease);
+            int size = -1;
+            if (v instanceof java.util.Collection<?> c) size = c.size();
+            else if (v instanceof java.util.Map<?, ?> m) size = m.size();
+            assertThat(size)
+                .as("★字段 " + f.getName() + " 是可增长容器（" + repeats
+                    + " 次重复订阅后 size=" + size + "）——归还权不得靠记住被拒订阅来反推")
+                .isEqualTo(-1);
+        }
+    }
+
+    @Test
+    void 重复订阅不得在首worker运行中提前归还许可() throws Exception {
+        // ★审查者实证的回归：把一次性检查移到订阅期后，第二次订阅的 failure
+        //   会流进外层公共的 onFailure().invoke(release)，在**首 worker 仍在运行时**
+        //   抢先归还唯一许可——闸门提前重开，与「反复发起再取消」同类。
+        //   串行测试测不到：串行时首 worker 已完成、released 已为 true，第二次是 no-op。
+        //   归还权归属：谁取得许可，谁归还。
+        // ★不用 sleep 判定时序：sleep 后断言 permits=0 会**假绿**——
+        //   permits=0 也可能只是因为第二订阅还没被调度到（审查者变异实证：
+        //   把第二次订阅整个删掉，sleep 版本照样通过）。
+        //   改用 latch 精确等到「第二订阅的 failure 已送达」再断言。
+        Semaphore sem = new Semaphore(1);
+        PermitLease lease = leased(sem);                 // 取走唯一许可
+        CountDownLatch running = new CountDownLatch(1);  // 首 worker 已开始
+        CountDownLatch hold = new CountDownLatch(1);     // 卡住首 worker
+        CountDownLatch firstDone = new CountDownLatch(1);
+        CountDownLatch secondFailed = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> secondError =
+            new java.util.concurrent.atomic.AtomicReference<>();
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            var uni = lease.guardAsync(() -> {
+                running.countDown();
+                try {
+                    hold.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return "first";
+            }, pool);
+
+            uni.subscribe().with(v -> firstDone.countDown(), t -> firstDone.countDown());
+            assertThat(running.await(5, TimeUnit.SECONDS)).as("首 worker 应已启动").isTrue();
+
+            // 首 worker 仍卡着，此时重复订阅
+            uni.subscribe().with(
+                v -> secondFailed.countDown(),
+                t -> { secondError.set(t); secondFailed.countDown(); });
+
+            assertThat(secondFailed.await(5, TimeUnit.SECONDS))
+                .as("第二订阅必须已被处理——否则后面的断言证明不了任何事")
+                .isTrue();
+            assertThat(secondError.get())
+                .as("★第二订阅必须以重复订阅失败告终")
+                .isInstanceOf(PermitLease.RepeatSubscriptionException.class);
+
+            assertThat(sem.availablePermits())
+                .as("★首 worker 仍在运行，许可不得被重复订阅提前归还")
+                .isZero();
+
+            hold.countDown();
+            assertThat(firstDone.await(5, TimeUnit.SECONDS)).as("首 worker 应已完成").isTrue();
+            assertThat(sem.availablePermits())
+                .as("首 worker 完成后许可才归还，且恰好一个")
+                .isEqualTo(1);
+        } finally {
+            hold.countDown();
+            pool.shutdownNow();
+        }
     }
 }
