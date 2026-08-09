@@ -107,6 +107,19 @@ public class ReplayBatchEntity extends PanacheEntityBase {
     public java.time.Instant leaseExpiresAt;
 
     /**
+     * 租约持有者标识。<b>RUNNING 必须非空</b>（DB 层 CHECK 兜底）。
+     *
+     * <p>★<b>这是防「双 worker 覆盖」的根本手段</b>（ADR 0034 §10.3）：
+     * 终态写带 {@code AND leaseOwner = ?} 条件更新，被误回收的旧 worker
+     * 即便还在跑，也<b>写不进去</b>。
+     *
+     * <p>为什么不能只靠把 lease 调长：调长只是让误判**更少发生**，
+     * 不是让误判**无害**。owner token 让它无害。
+     */
+    @Column(name = "lease_owner", length = 64)
+    public String leaseOwner;
+
+    /**
      * 已尝试次数。回收不是无限的：反复崩溃说明是这个批次本身有问题
      * （例如某条输入必然让 worker 挂掉），无限重试只会循环占用额度。
      */
@@ -122,6 +135,17 @@ public class ReplayBatchEntity extends PanacheEntityBase {
      */
     @Column(name = "concurrency_slot")
     public Integer concurrencySlot;
+
+    /**
+     * 总体冻结完成时刻。<b>RUNNING 必须非空</b>（DB 层 CHECK 兜底）。
+     *
+     * <p>★没有这个标记，{@code plannedCount == 0} 是有歧义的：
+     * 究竟是「这段时间没有执行」（正当业务结果），
+     * 还是「冻结事务还没跑／崩了」（系统故障）？
+     * 两者对用户的含义完全不同，不能都表现成 0。
+     */
+    @Column(name = "window_frozen_at")
+    public java.time.Instant windowFrozenAt;
 
     @Column(name = "created_at", nullable = false)
     public Instant createdAt = Instant.now();

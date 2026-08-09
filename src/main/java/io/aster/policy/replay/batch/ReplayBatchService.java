@@ -34,10 +34,31 @@ public class ReplayBatchService {
     private static final long PERMIT_WAIT_MS = 30_000;
 
     /**
-     * 租约时长。需明显长于「一条重跑的最坏耗时」，否则健康的 worker 会被误判为死亡
-     * 而遭回收——那会造成同一批次被两个副本同时跑。worker 应在此期限内续租。
+     * 租约时长：必须覆盖<b>整批</b>的最坏耗时，而不是一条的（ADR 0034 §10.3）。
+     *
+     * <p>★<b>这里不能用「心跳续租」</b>：{@link #runBatch} 是 {@code @Transactional}，
+     * 整批跑完才提交，期间该行一直被这个事务持有——任何独立事务的续租更新都
+     * 拿不到行锁，写不进去。曾经写过一个心跳续租方法，它<b>没有任何调用点，
+     * 而且即便调用也不可能生效</b>；那种「注释描述了一个不存在的机制」
+     * 正是本仓最高产的 bug 模式，故整体删除。
+     *
+     * <p>取值依据：单条最长等许可 {@link #PERMIT_WAIT_MS}（30s）+ 执行时间，
+     * 而重跑是<b>串行</b>循环；配合 {@link #MAX_BATCH_SIZE} 的规模上限，
+     * 2 小时可覆盖最坏情况。
+     *
+     * <p>★但真正兜底的不是这个时长，而是 {@code leaseOwner} 条件更新：
+     * 即便误判发生，旧 worker 也写不进终态。调长只是让误判更少发生。
      */
-    private static final java.time.Duration LEASE_DURATION = java.time.Duration.ofMinutes(10);
+    private static final java.time.Duration LEASE_DURATION = java.time.Duration.ofHours(2);
+
+    /**
+     * 批次规模硬上限（ADR 0034 §10.3）。
+     *
+     * <p>与 §7.4「万条以上要进度条」对齐：进度条覆盖的正是接近上限的批次。
+     * 超限在**创建入口**拒绝，而不是靠租约兜底——
+     * 靠租约兜底等于让一个必然超时的批次先跑两小时再失败。
+     */
+    static final int MAX_BATCH_SIZE = 10_000;
 
     /** 最大尝试次数。反复崩溃说明是批次本身有问题，无限重试只会循环占用额度。 */
     private static final int MAX_ATTEMPTS = 3;
@@ -61,21 +82,48 @@ public class ReplayBatchService {
      *
      * @return 领到的批次 id；无待跑批次时返回 null
      */
-    @Transactional
     public UUID claimNextPending() {
+        UUID candidateId = peekNextPending();
+        if (candidateId == null) {
+            return null;
+        }
+        // ★冻结必须发生在 PENDING 阶段、且**先于**状态迁移提交：
+        //   DB 有 CHECK「RUNNING 必须已冻结」，先迁移再冻结会直接违反约束
+        //   （实测：replay_batch_running_is_frozen_ck）。
+        //   freezeWindow 是 REQUIRES_NEW，自己提交——这正是它成为
+        //   「崩溃后仍可见的检查点」的原因（§10.2）。
+        freezeWindow(candidateId);
+        return markRunning(candidateId);
+    }
+
+    /** 取下一个待跑批次 id（只读，不改状态）。 */
+    @Transactional
+    UUID peekNextPending() {
         ReplayBatchEntity candidate = ReplayBatchEntity
             .<ReplayBatchEntity>find("status = ?1 order by createdAt", ReplayBatchStatus.PENDING)
             .firstResult();
-        if (candidate == null) {
+        return candidate == null ? null : candidate.id;
+    }
+
+    /** 把已冻结的批次原子迁移到 RUNNING 并写入租约。 */
+    @Transactional
+    UUID markRunning(UUID candidateId) {
+        ReplayBatchEntity candidate = ReplayBatchEntity.findById(candidateId);
+        if (candidate == null || candidate.status != ReplayBatchStatus.PENDING) {
             return null;
         }
-        // ★领取的同时写入 lease：RUNNING 必须有租约（DB 层 CHECK 兜底）。
-        //   没有租约的 RUNNING 就是「持有者已死但没人知道」那个状态。
+        // ★领取的同时写入 lease 与 **owner token**：
+        //   RUNNING 必须两者都有（DB 层 CHECK 兜底）。
+        //   owner 是本次持有的唯一标识——终态写会带 `AND leaseOwner = ?`，
+        //   于是被误回收的旧 worker **写不进去**（§10.3）。
+        //   这把「两个 worker 互相覆盖」从「尽量不发生」变成「结构上不可能」。
+        String owner = UUID.randomUUID().toString();
         long updated = ReplayBatchEntity.update(
-            "status = ?1, startedAt = ?2, leaseExpiresAt = ?3, attemptCount = attemptCount + 1"
-                + " where id = ?4 and status = ?5",
+            "status = ?1, startedAt = ?2, leaseExpiresAt = ?3, leaseOwner = ?4,"
+                + " attemptCount = attemptCount + 1"
+                + " where id = ?5 and status = ?6",
             ReplayBatchStatus.RUNNING, java.time.Instant.now(),
-            java.time.Instant.now().plus(LEASE_DURATION),
+            java.time.Instant.now().plus(LEASE_DURATION), owner,
             candidate.id, ReplayBatchStatus.PENDING);
         // 竞态：别的副本先领走了 → 本轮放弃，下一轮再来
         return updated == 1 ? candidate.id : null;
@@ -126,14 +174,6 @@ public class ReplayBatchService {
         return reclaimed;
     }
 
-    /** 续租：worker 跑长批次时定期调用，证明自己还活着。 */
-    @Transactional
-    public void renewLease(UUID batchId) {
-        ReplayBatchEntity.update(
-            "leaseExpiresAt = ?1 where id = ?2 and status = ?3",
-            java.time.Instant.now().plus(LEASE_DURATION), batchId, ReplayBatchStatus.RUNNING);
-    }
-
     /**
      * 执行批次：逐条重跑 → 判定 → 落库。
      *
@@ -153,6 +193,12 @@ public class ReplayBatchService {
             Log.warnf("批次 %s 状态为 %s 而非 RUNNING，跳过", batchId, batch.status);
             return;
         }
+
+        // ★记下开跑时的 owner。终态写前会复核它——若期间本批次被回收并被
+        //   另一个 worker 重新领取，owner 已变，本次结果**必须丢弃**而不是覆盖。
+        //   这是 §10.3 的落点：让「两个 worker 互相覆盖」结构上不可能，
+        //   而不是寄望于「租约调长后误判不会发生」。
+        final String owner = batch.leaseOwner;
 
         List<ReplayBatchRunner.ItemResult> results = replayAll(batch);
 
@@ -186,7 +232,22 @@ public class ReplayBatchService {
             Log.infof("批次 %s 拒答：%d 条失败，分布=%s",
                 batchId, r.totalFailures(), r.failuresByKind());
         }
-        batch.persist();
+
+        // ★owner 复核：本次持有期间批次若被回收并改派，owner 已变。
+        //   此时丢弃本次结果——新 worker 会重新跑出一份，
+        //   而覆盖会让「谁的结果」变得不可知。
+        // owner 不同即丢弃——不附加状态条件：被改派后无论新 owner 处于
+        // RUNNING 还是已跑完，本次结果都不该落库。
+        long written = ReplayBatchEntity.update(
+            "status = ?1, completedCount = ?2, failedCount = ?3, finishedAt = ?4,"
+                + " resultSummary = ?5, failureReasons = ?6,"
+                + " concurrencySlot = null, leaseExpiresAt = null"
+                + " where id = ?7 and leaseOwner = ?8",
+            batch.status, batch.completedCount, batch.failedCount, batch.finishedAt,
+            batch.resultSummary, batch.failureReasons, batchId, owner);
+        if (written == 0) {
+            Log.warnf("批次 %s 的租约已改派（原 owner %s），丢弃本次结果", batchId, owner);
+        }
     }
 
     /**
@@ -240,21 +301,85 @@ public class ReplayBatchService {
             throw new TargetVersionMissingException(batch.targetVersionId);
         }
 
+        // ★总体由**冻结集合**定义，不由「此刻拉到什么」定义（ADR 0034 §10.2）。
+        //
+        //   冻结表只存 id 与基线（不存 input——那会把用户数据复制一份，
+        //   扩大 PII 面，正是 §3.1 要避免的）。所以重跑时仍需向上游取 payload，
+        //   但**成员资格以冻结集合为准**：
+        //     · 冻结内、上游还在  → 正常重跑
+        //     · 冻结内、上游已没  → 记为失败（诚实：这条属于总体但跑不了）
+        //     · 不在冻结内        → **忽略**，哪怕上游新增了
+        //
+        //   这样窗口漂移不会改变总体，§1.1 的「样本即总体全量」前提才成立。
+        List<ReplayBatchItemEntity> frozen = ReplayBatchItemEntity
+            .list("batchId = ?1 order by executionId", batch.id);
+
+        Map<String, ExecutionWindowClient.WindowedExecution> upstream =
+            windowClient.fetchWindow(batch.policyId, batch.userId, batch.windowFrom, batch.windowTo)
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(
+                    ExecutionWindowClient.WindowedExecution::executionId,
+                    java.util.function.Function.identity(),
+                    (a, b) -> a));
+
+        List<ReplayBatchRunner.ItemResult> results = new ArrayList<>(frozen.size());
+        for (ReplayBatchItemEntity item : frozen) {
+            ExecutionWindowClient.WindowedExecution e = upstream.get(item.executionId);
+            if (e == null) {
+                // 冻结时还在、现在没了（删除／状态变更）。这是**真实失败**，
+                // 不能假装它不属于总体——那就退回成「拿成功子集出数」了。
+                results.add(ReplayBatchRunner.ItemResult.failed(
+                    item.executionId, ReplayFailureKind.INPUT_INCOMPATIBLE));
+                continue;
+            }
+            // ★基线取**冻结时**的值，不取上游当前值：
+            //   上游 decision 可能因数据订正而变，那会让「变化了多少条」
+            //   这个结论随时间漂移。
+            results.add(replayOne(e, item.baseApproved, target, batch.tenantId));
+        }
+        return results;
+    }
+
+    /**
+     * 冻结总体：拉取窗口、把 execution id 与基线落表、派生 {@code plannedCount}。
+     *
+     * <p>★<b>独立事务</b>（{@code REQUIRES_NEW}）：这是本次修复的关键。
+     * 上一版把 {@code plannedCount = window.size(); persist();} 写在
+     * {@code replayAll} 里，而后者由 {@code @Transactional runBatch} 调用、
+     * <b>加入同一个长事务</b>——Panache 的 {@code persist()} 不提交，
+     * worker 崩溃后事务回滚，库里仍是创建时的 0。
+     * 我曾在 commit message 里声称「在任何一条重跑开始前落库」，
+     * <b>那是不实陈述</b>。只有独立提交的事务才是真正的检查点。
+     *
+     * <p>冻结完成后写 {@code windowFrozenAt}：它区分「还没冻结」与
+     * 「冻结完成但窗口为空」——后者是正当业务结果，前者是系统故障，
+     * 两者对用户的含义完全不同，不能都表现成 {@code plannedCount == 0}。
+     *
+     * @return 冻结的条数（即 plannedCount）
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public int freezeWindow(UUID batchId) {
+        ReplayBatchEntity batch = ReplayBatchEntity.findById(batchId);
+        if (batch == null) {
+            return 0;
+        }
+        if (batch.windowFrozenAt != null) {
+            // 已冻结（回收重跑的场景）：直接复用，绝不重新拉窗口
+            return batch.plannedCount;
+        }
+
         List<ExecutionWindowClient.WindowedExecution> window =
             windowClient.fetchWindow(batch.policyId, batch.userId, batch.windowFrom, batch.windowTo);
 
-        // ★plannedCount 由**冻结的窗口**派生，并在任何一条重跑开始前落库。
-        //   创建时写 0 且从不回填是致命 bug：decide() 对 plannedCount<=0 必抛异常，
-        //   于是**任何批次都跑不完**（实测全仓对该字段零赋值）。
-        //   总体必须在开跑前确定：先全量拉完再定 planned，才谈得上「全量成功」（§1.1）。
+        for (ExecutionWindowClient.WindowedExecution e : window) {
+            new ReplayBatchItemEntity(batchId, e.executionId(), e.baseApproved()).persist();
+        }
         batch.plannedCount = window.size();
+        batch.windowFrozenAt = java.time.Instant.now();
         batch.persist();
 
-        List<ReplayBatchRunner.ItemResult> results = new ArrayList<>(window.size());
-        for (ExecutionWindowClient.WindowedExecution e : window) {
-            results.add(replayOne(e, target, batch.tenantId));
-        }
-        return results;
+        Log.infof("批次 %s 冻结总体：%d 条", batchId, window.size());
+        return window.size();
     }
 
     /**
@@ -263,6 +388,7 @@ public class ReplayBatchService {
      */
     private ReplayBatchRunner.ItemResult replayOne(
         ExecutionWindowClient.WindowedExecution e,
+        boolean frozenBaseApproved,
         io.aster.policy.entity.PolicyVersion target,
         String tenantId) {
 
@@ -283,12 +409,12 @@ public class ReplayBatchService {
             //   这类执行**仍算成功重跑**，只是决策视为未变。
             if (targetVerdict == DecisionInterpreter.Verdict.INDETERMINATE) {
                 return ReplayBatchRunner.ItemResult.ok(
-                    e.executionId(), e.baseApproved(), e.baseApproved(), null);
+                    e.executionId(), frozenBaseApproved, frozenBaseApproved, null);
             }
 
             boolean targetApproved = targetVerdict == DecisionInterpreter.Verdict.APPROVED;
             return ReplayBatchRunner.ItemResult.ok(
-                e.executionId(), e.baseApproved(), targetApproved, null);
+                e.executionId(), frozenBaseApproved, targetApproved, null);
 
         } catch (WhatIfCapacityGate.WhatIfThrottledException throttled) {
             // 服务端繁忙，不是用户数据的问题——文案上必须与 INPUT_INCOMPATIBLE 区分

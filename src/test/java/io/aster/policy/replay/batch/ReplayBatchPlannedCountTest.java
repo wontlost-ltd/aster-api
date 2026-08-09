@@ -65,7 +65,7 @@ class ReplayBatchPlannedCountTest {
      * 这里断言的是整份文件里的两个事实，与位置无关。
      */
     @Test
-    void plannedCount必须由窗口派生并在开跑前落库() throws Exception {
+    void plannedCount必须由冻结窗口派生且冻结须独立提交() throws Exception {
         String src = serviceSource();
 
         assertThat(src)
@@ -73,9 +73,51 @@ class ReplayBatchPlannedCountTest {
                 + "创建时写 0 且从不回填会让任何批次都跑不完")
             .contains("batch.plannedCount = window.size()");
 
+        // ★这条断言此前写成「persist() 紧跟在赋值之后」，而那**锁住了错误的事务语义**：
+        //   当时那段代码在 replayAll 里，由 @Transactional runBatch 调用、加入同一长事务，
+        //   persist() 根本不提交，worker 崩溃即回滚。测试却因为「文本相邻」而全绿——
+        //   审查者称之为假绿，属实。
+        //   真正的不变量是：冻结必须在**自己的事务**里提交（REQUIRES_NEW），
+        //   否则它不是崩溃后仍可见的检查点。
+        int freeze = src.indexOf("public int freezeWindow(");
+        assertThat(freeze).as("★必须有独立的冻结方法").isGreaterThan(0);
+
+        String beforeFreeze = src.substring(0, freeze);
+        assertThat(beforeFreeze)
+            .as("★freezeWindow 必须标注 REQUIRES_NEW——"
+                + "并进调用方的长事务就不是检查点，崩溃会一起回滚")
+            .containsPattern("(?s)@Transactional\\(Transactional\\.TxType\\.REQUIRES_NEW\\)\\s*$");
+    }
+
+    /**
+     * 总体必须冻结**成员**，不只是数量。
+     *
+     * <p>只存数量时，回收重跑会重新拉窗口——上游若已变化（迟到写入、删除、
+     * replayable 状态变更），跑的就不是同一个总体了，
+     * 而「样本即某个总体的全量」正是 §1.1 的前提。
+     */
+    @Test
+    void 必须冻结execution_id集合而非只存数量() throws Exception {
+        String src = serviceSource();
+
         assertThat(src)
-            .as("★派生之后必须立即落库：worker 崩溃时总体量不能丢")
-            .containsPattern("(?s)batch\\.plannedCount = window\\.size\\(\\);\\s*batch\\.persist\\(\\);");
+            .as("★冻结时必须把 execution id 与基线落表")
+            .contains("new ReplayBatchItemEntity(");
+        assertThat(src)
+            .as("★重跑必须读**冻结集合**，不得重新拉窗口决定成员")
+            .contains("ReplayBatchItemEntity")
+            .contains("batchId = ?1");
+        // ★断言**调用点真的传了冻结值**，而不是「文件里出现过这个词」。
+        //   只断言词出现是空的：把调用点改回 `e.baseApproved()`（读上游当前值）
+        //   时该断言仍绿——实测过，这正是本仓反复出现的假绿形态。
+        assertThat(src)
+            .as("★基线必须取**冻结时**的值并传入 replayOne——"
+                + "上游 decision 可能因数据订正而变，"
+                + "读当前值会让「变化了多少条」随时间漂移")
+            .contains("replayOne(e, item.baseApproved,");
+        assertThat(src)
+            .as("★不得在重跑时读上游的当前基线")
+            .doesNotContain("replayOne(e, e.baseApproved()");
     }
 
     /** 空窗口是正当业务结果，不得走 decide 的异常路径（那是给编程错误用的）。 */
