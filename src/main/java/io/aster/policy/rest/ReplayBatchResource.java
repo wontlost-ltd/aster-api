@@ -151,18 +151,44 @@ public class ReplayBatchResource {
         //   上面的 active.size() 判定是**先查后写**，两步之间没有互斥——
         //   并发请求都读到未满就都会插入，pro 档「1 个并发」形同虚设。
         //   槽号取「当前已占用之外的最小空位」，真正的互斥由数据库保证。
+        //
+        // ★unlimited 租户也要占槽（DB 有 CHECK「活跃必须占槽」），
+        //   但抢槽失败对它们**不是**「超限」——它们本就没有上限。
+        //   见下方 catch 里的重试。
         batch.concurrencySlot = firstFreeSlot(active);
         try {
             batch.persistAndFlush();
         } catch (jakarta.persistence.PersistenceException raced) {
-            // ★唯一约束把 TOCTOU 变成了一个可处理的错误：并发抢同一槽，输的这个
-            //   转成 409（而不是 500）——对调用方而言这就是「已有批次在跑」。
-            Log.debugf("租户 %s 并发抢占槽位失败，转 409：%s", tenantId, raced.getMessage());
-            return Response.status(Response.Status.CONFLICT)
-                .entity(Map.of(
-                    "error", "whatif_batch_in_progress",
-                    "message", "已有批次在运行，完成后可再发起"))
-                .build();
+            if (unlimited) {
+                // ★unlimited 租户抢槽冲突只是「这个槽号被别人先占了」，
+                //   额度上并没有超限。直接回 409 会把**合法并发**打成拒绝
+                //   （审查发现的假 409）。改为让出槽号重试一次：
+                //   重新查当前活跃集合、取新的最小空位。
+                List<ReplayBatchEntity> refreshed = ReplayBatchEntity.list(
+                    "tenantId = ?1 and status in ?2",
+                    tenantId, List.of(ReplayBatchStatus.PENDING, ReplayBatchStatus.RUNNING));
+                batch.concurrencySlot = firstFreeSlot(refreshed);
+                try {
+                    batch.persistAndFlush();
+                } catch (jakarta.persistence.PersistenceException stillRaced) {
+                    // 连续两次撞槽：并发极高，让调用方稍后重试比无限循环诚实
+                    Log.warnf("unlimited 租户 %s 连续抢槽失败，回 503 让其重试", tenantId);
+                    return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of(
+                            "error", "whatif_slot_contention",
+                            "message", "并发创建冲突，请稍后重试"))
+                        .build();
+                }
+            } else {
+                // ★有限额度：唯一约束把 TOCTOU 变成了一个可处理的错误——
+                //   并发抢同一槽，输的这个转成 409（而不是 500）。
+                Log.debugf("租户 %s 并发抢占槽位失败，转 409：%s", tenantId, raced.getMessage());
+                return Response.status(Response.Status.CONFLICT)
+                    .entity(Map.of(
+                        "error", "whatif_batch_in_progress",
+                        "message", "已有批次在运行，完成后可再发起"))
+                    .build();
+            }
         }
 
         Log.infof("创建 What-If 批次 %s：policy=%s 窗口=%s [%s, %s)",
@@ -217,10 +243,14 @@ public class ReplayBatchResource {
      * ——实测注入一个字面的 {@code successCount} 该测试仍绿。
      * 现在测试可以直接调用本方法、检查**真实输出的 key**。
      *
-     * <p>★<b>plannedCount 不得无条件下发</b>（ADR 0034 §1.1）：它与 FAILED 分支的
-     * {@code failureReasons} 同屏时，用户可算出 {@code 成功数 = plannedCount - Σ失败数}
-     * ——那正是上一版 Phase 4 的死因（200 条里 170 条失败，靠剩下 30 条算出
-     * 「12% 决策会变化」）。在客户端 DOM 里藏起来不算修复：泄漏在 <b>API 契约</b>上。
+     * <p>★<b>plannedCount 不得无条件下发</b>（ADR 0034 §1.1）：它与失败数量同屏时，
+     * 用户可算出 {@code 成功数 = plannedCount - Σ失败数}——那正是上一版 Phase 4 的
+     * 死因（200 条里 170 条失败，靠剩下 30 条算出「12% 决策会变化」）。
+     * 在客户端 DOM 里藏起来不算修复：泄漏在 <b>API 契约</b>上。
+     *
+     * <p>★而且 §1.1 是<b>信息流</b>约束，不是「同屏」约束：拒答态因此
+     * 连失败**条数**都不给（只给类别），否则用户缓存上一次 RUNNING 响应的
+     * plannedCount 就能跨请求相减。
      *
      * <p>故只在「总体本身就是要呈现的信息」的状态里给：
      * PENDING/RUNNING 作进度分母（此时不给任何失败数），
@@ -231,8 +261,8 @@ public class ReplayBatchResource {
      *
      * <p>★<b>不还原就是跨仓契约断裂</b>：实体字段是 {@code String}（jsonb 列映射），
      * 直接放进响应 map 会被 JAX-RS 再编码一次，wire 上变成**转义字符串**：
-     * <pre>{"failureReasons":"{\"INPUT_INCOMPATIBLE\":170}"}</pre>
-     * 而 cloud 侧按对象读（{@code Object.entries(failureReasons)}），
+     * <pre>{"failureKinds":"[\"INPUT_INCOMPATIBLE\"]"}</pre>
+     * 而 cloud 侧按数组读，
      * 于是完成态数字变成 undefined、失败原因按**字符**枚举。
      * 组件测试手造对象 fixture，恰好绕开了这条真实 wire 契约。
      *
@@ -293,9 +323,18 @@ public class ReplayBatchResource {
                 body.put("result", parseJson(batch.resultSummary));
             }
             case FAILED -> {
-                // ★拒答：只给失败原因分布，**不给总体量**——
-                //   给了就能与失败量相减得出成功数。
-                body.put("failureReasons", parseJson(batch.failureReasons));
+                // ★拒答：只给失败**类别**，既不给总体量、也不给每类条数
+                //   （ADR 0034 §10.1，方案 B）。
+                //
+                //   §1.1 是**信息流**约束，不是「同屏」约束：只删掉本响应里的
+                //   plannedCount 是不够的——用户可以缓存 RUNNING 响应的
+                //   plannedCount，再读这里的失败条数，**跨请求相减**得出成功数。
+                //   那正是 Phase 4 的死因，只是分成了两次请求。
+                //
+                //   ★字段名从 failureReasons 改成 failureKinds：形状从
+                //   {KIND: count} 变成 [KIND]，换名可以让旧客户端**显式报错**，
+                //   而不是把数组当对象遍历、静默渲染出乱码。
+                body.put("failureKinds", parseJson(batch.failureReasons));
                 body.put("rejected", true);
             }
             case EXPIRED -> body.put("expired", true);

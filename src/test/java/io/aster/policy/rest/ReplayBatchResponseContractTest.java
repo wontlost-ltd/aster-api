@@ -50,12 +50,12 @@ class ReplayBatchResponseContractTest {
         ReplayBatchEntity b = batch(ReplayBatchStatus.FAILED);
         b.failedCount = 170;
         b.completedCount = 30;
-        b.failureReasons = "{\"INPUT_INCOMPATIBLE\":170}";
+        b.failureReasons = "[\"INPUT_INCOMPATIBLE\"]";
 
         Map<String, Object> body = ReplayBatchResource.describe(b);
 
-        // 失败原因分布本身是允许的：用户要知道「为什么不给数字」
-        assertThat(body).containsKey("failureReasons");
+        // 失败**类别**是允许的：用户要知道「为什么不给数字」
+        assertThat(body).containsKey("failureKinds");
         assertThat(body).containsEntry("rejected", true);
 
         // ★但凡能推出总体量或成功量的字段，一个都不能有
@@ -88,7 +88,7 @@ class ReplayBatchResponseContractTest {
             .containsEntry("processedCount", 60);
         assertThat(body).doesNotContainKey("completedCount");
         assertThat(body).doesNotContainKey("failedCount");
-        assertThat(body).doesNotContainKey("failureReasons");
+        assertThat(body).doesNotContainKey("failureKinds");
     }
 
     /**
@@ -109,7 +109,7 @@ class ReplayBatchResponseContractTest {
         assertThat(body).containsEntry("plannedCount", 200);
         assertThat(body).containsKey("result");
         // 完成态不该有失败分布——有就说明它其实不是全量成功
-        assertThat(body).doesNotContainKey("failureReasons");
+        assertThat(body).doesNotContainKey("failureKinds");
         assertThat(body).doesNotContainKey("rejected");
     }
 
@@ -122,20 +122,43 @@ class ReplayBatchResponseContractTest {
      * 失败原因按**字符**枚举。组件测试手造对象 fixture，恰好绕开了真实 wire 契约。
      */
     @Test
-    void 拒答态的失败原因必须是对象而非转义字符串() {
+    void 拒答态的失败类别必须是数组而非转义字符串() {
         ReplayBatchEntity b = batch(ReplayBatchStatus.FAILED);
-        b.failureReasons = "{\"INPUT_INCOMPATIBLE\":170,\"TIMEOUT\":30}";
+        b.failureReasons = "[\"INPUT_INCOMPATIBLE\",\"TIMEOUT\"]";
 
-        Object reasons = ReplayBatchResource.describe(b).get("failureReasons");
+        Object kinds = ReplayBatchResource.describe(b).get("failureKinds");
 
-        assertThat(reasons)
-            .as("★失败原因必须是 Map；String 会让 cloud 侧按字符枚举")
-            .isInstanceOf(Map.class);
+        assertThat(kinds)
+            .as("★失败类别必须是 List；String 会让 cloud 侧按字符枚举")
+            .isInstanceOf(java.util.List.class);
         @SuppressWarnings("unchecked")
-        Map<String, Object> asMap = (Map<String, Object>) reasons;
-        assertThat(asMap)
-            .containsEntry("INPUT_INCOMPATIBLE", 170)
-            .containsEntry("TIMEOUT", 30);
+        java.util.List<String> asList = (java.util.List<String>) kinds;
+        assertThat(asList).containsExactly("INPUT_INCOMPATIBLE", "TIMEOUT");
+    }
+
+    /**
+     * ★§10.1 的核心：拒答态连**失败条数**都不给。
+     *
+     * <p>§1.1 是**信息流**约束，不是「同屏」约束——用户可以缓存 RUNNING 响应的
+     * plannedCount，再读 FAILED 响应的失败条数，**跨请求相减**得出成功数。
+     * 只删掉本响应里的 plannedCount 堵不住这条。
+     */
+    @Test
+    void 拒答态不得下发每类失败的条数() {
+        ReplayBatchEntity b = batch(ReplayBatchStatus.FAILED);
+        b.failureReasons = "[\"INPUT_INCOMPATIBLE\",\"TIMEOUT\"]";
+
+        Object kinds = ReplayBatchResource.describe(b).get("failureKinds");
+
+        assertThat(kinds)
+            .as("★必须是类别列表而非 {类别:条数}——"
+                + "给了条数，用户缓存上一次 RUNNING 的 plannedCount 即可跨请求相减")
+            .isNotInstanceOf(Map.class);
+        for (Object k : (java.util.List<?>) kinds) {
+            assertThat(k)
+                .as("★每一项必须是纯类别名，不得携带任何数字")
+                .isInstanceOf(String.class);
+        }
     }
 
     @Test
@@ -163,7 +186,7 @@ class ReplayBatchResponseContractTest {
     void 空的JSON列下发为null() {
         ReplayBatchEntity b = batch(ReplayBatchStatus.FAILED);
         b.failureReasons = null;
-        assertThat(ReplayBatchResource.describe(b).get("failureReasons")).isNull();
+        assertThat(ReplayBatchResource.describe(b).get("failureKinds")).isNull();
     }
 
     /** 窗口口径必须与任何数字同屏：用户要知道自己看的是哪个总体。 */

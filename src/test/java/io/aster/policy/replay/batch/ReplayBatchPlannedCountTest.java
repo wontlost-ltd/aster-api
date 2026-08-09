@@ -120,6 +120,32 @@ class ReplayBatchPlannedCountTest {
             .doesNotContain("replayOne(e, e.baseApproved()");
     }
 
+    /**
+     * ★批次规模上限必须**被真的执行**，而不只是声明一个常量（§10.3）。
+     *
+     * <p>本仓有前科：{@code MAX_BATCH_SIZE} 一度只在 Javadoc 里被引用，
+     * 没有任何判定代码——那就是死常量，跟没有一样。
+     * 同理 {@code PermitLease} 曾整条是死代码而 13 条测试全绿。
+     */
+    @Test
+    void 规模上限必须在冻结时判定且拒答() throws Exception {
+        String src = serviceSource();
+
+        assertThat(src)
+            .as("★上限必须被真的比较，而不是只声明一个常量")
+            .contains("window.size() > MAX_BATCH_SIZE");
+        assertThat(src)
+            .as("★超限要拒答并给出**可操作**的类别——"
+                + "告诉用户缩小时间窗，而不是让他去排查数据")
+            .contains("ReplayFailureKind.WINDOW_TOO_LARGE");
+
+        int check = src.indexOf("window.size() > MAX_BATCH_SIZE");
+        int persistItems = src.indexOf("new ReplayBatchItemEntity(");
+        assertThat(check)
+            .as("★判定必须在冻结落表**之前**——超限批次不该先写一万行再失败")
+            .isLessThan(persistItems);
+    }
+
     /** 空窗口是正当业务结果，不得走 decide 的异常路径（那是给编程错误用的）。 */
     @Test
     void 空窗口必须在decide之前分流() throws Exception {

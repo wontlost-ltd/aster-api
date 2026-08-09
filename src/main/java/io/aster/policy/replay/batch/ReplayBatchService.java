@@ -155,7 +155,7 @@ public class ReplayBatchService {
                 // 放弃重试：标失败并**释放槽位**，否则额度被永久吃掉
                 b.failedCount = b.plannedCount;
                 b.completedCount = 0;
-                b.markFailed(toJson(Map.of(ReplayFailureKind.UNKNOWN.name(), b.plannedCount)));
+                b.markFailed(toJson(List.of(ReplayFailureKind.UNKNOWN.name())));
                 b.concurrencySlot = null;
                 b.leaseExpiresAt = null;
                 Log.warnf("批次 %s 已尝试 %d 次仍未完成，判定失败并释放并发槽",
@@ -211,7 +211,7 @@ public class ReplayBatchService {
             batch.failedCount = 0;
             // 空对象而非某个失败 kind：窗口内没有执行**不是失败**，
             // 谎称某类失败会误导用户去排查并不存在的数据问题。
-            batch.markFailed(toJson(Map.of()));
+            batch.markFailed(toJson(List.of()));
             Log.infof("批次 %s 窗口内无可重放执行，无样本可分析", batchId);
             batch.persist();
             return;
@@ -263,7 +263,7 @@ public class ReplayBatchService {
             return;
         }
         try {
-            batch.markFailed(toJson(Map.of(kind.name(), batch.plannedCount)));
+            batch.markFailed(toJson(List.of(kind.name())));
             batch.persist();
             Log.warnf("批次 %s 被防御性标记为 FAILED（%s）", batchId, kind);
         } catch (RuntimeException e) {
@@ -371,6 +371,21 @@ public class ReplayBatchService {
         List<ExecutionWindowClient.WindowedExecution> window =
             windowClient.fetchWindow(batch.policyId, batch.userId, batch.windowFrom, batch.windowTo);
 
+        // ★规模上限在**冻结时**判定：这是第一次知道窗口真实条数的时刻
+        //   （创建时窗口还没拉，那时判不了）。
+        //   超限直接拒答，不进重跑——靠租约兜底等于让一个必然超时的批次
+        //   先跑两小时再失败，既占额度又浪费容量（§10.3）。
+        if (window.size() > MAX_BATCH_SIZE) {
+            batch.plannedCount = window.size();
+            batch.windowFrozenAt = java.time.Instant.now();
+            batch.failedCount = window.size();
+            batch.completedCount = 0;
+            batch.markFailed(toJson(List.of(ReplayFailureKind.WINDOW_TOO_LARGE.name())));
+            batch.persist();
+            Log.warnf("批次 %s 窗口 %d 条超过上限 %d，拒答", batchId, window.size(), MAX_BATCH_SIZE);
+            return 0;
+        }
+
         for (ExecutionWindowClient.WindowedExecution e : window) {
             new ReplayBatchItemEntity(batchId, e.executionId(), e.baseApproved()).persist();
         }
@@ -468,10 +483,22 @@ public class ReplayBatchService {
         return m;
     }
 
-    private static Map<String, Integer> reasonsOf(ReplayBatchOutcome.Rejected r) {
-        Map<String, Integer> m = new LinkedHashMap<>();
-        r.failuresByKind().forEach((k, v) -> m.put(k.name(), v));
-        return m;
+    private static List<String> reasonsOf(ReplayBatchOutcome.Rejected r) {
+        // ★只给失败**类别**，不给每类条数（ADR 0034 §10.1，方案 B）。
+        //
+        //   §1.1 是**信息流**约束，不是「同屏」约束：用户可以缓存 RUNNING 响应里的
+        //   plannedCount，再读 FAILED 响应的失败条数，跨请求相减得出成功数——
+        //   那正是 Phase 4 的死因，只是分成了两次请求。
+        //   上一轮我只删掉了 FAILED 响应里的 plannedCount，堵的是同屏，堵不住这条。
+        //
+        //   类别足以指导排查（「有版本不兼容」告诉用户该去看什么），
+        //   失去的只是规模感——而规模感一旦给出就可被相减。
+        //
+        //   排序保证同一批失败每次呈现一致，便于用户比对与我们复现。
+        return r.failuresByKind().keySet().stream()
+            .map(Enum::name)
+            .sorted()
+            .toList();
     }
 
     private static String toJson(Object o) {
