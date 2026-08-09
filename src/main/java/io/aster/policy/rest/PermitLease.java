@@ -108,6 +108,13 @@ final class PermitLease {
      * @param executor worker 线程池
      */
     <T> Uni<T> guardAsync(Supplier<T> work, java.util.concurrent.Executor executor) {
+        // ★用**实例身份**而非异常类型来判定归还权（见下方 onFailure）。
+        //   若按类型排除，任何来源的同类型异常都会被误判为「无归还权」——
+        //   例如 executor 自己抛出该类型时 supplier 不执行、finally 不触发，
+        //   许可就永久泄漏。只有**本 lease 亲手造的那个实例**才代表
+        //   「这次订阅从未取得许可」。
+        final java.util.Set<Throwable> disowned =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
         return Uni.createFrom().<T>deferred(() -> {
             // ★一次性约束必须在**订阅期**检查，而不是装配期。
             //   装配期只跑一次（每次 guardAsync 调用一次），拦不住对**同一个**
@@ -115,7 +122,9 @@ final class PermitLease {
             //   即闸门被绕过。实测：runs=2 而 permits=1。
             //   放在 deferred 里则每次订阅都过一遍 CAS，第二次直接失败。
             if (!consumed.compareAndSet(false, true)) {
-                return Uni.createFrom().failure(new RepeatSubscriptionException());
+                RepeatSubscriptionException rejected = new RepeatSubscriptionException();
+                disowned.add(rejected);
+                return Uni.createFrom().failure(rejected);
             }
             return Uni.createFrom().<T>item(() -> {
                 try {
@@ -136,7 +145,10 @@ final class PermitLease {
             //   与「反复发起再取消」是同一类绕过，比原 bug 更隐蔽。
             //   （实测复现：首 worker 卡住时 availablePermits 已变回 1。）
             //   归还权归属：谁取得许可，谁归还。
-            .onFailure(t -> !(t instanceof RepeatSubscriptionException))
+            //
+            // ★按**实例身份**排除，不按类型：类型判定会把「executor 抛出同类型异常」
+            //   这种 supplier 未执行的场景也误判为无归还权，造成永久泄漏。
+            .onFailure(t -> !disowned.contains(t))
             .invoke(t -> release());
     }
 

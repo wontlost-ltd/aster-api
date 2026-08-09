@@ -444,16 +444,45 @@ class EvaluateSourceSimulateContractTest {
     }
 
     @Test
+    void 归还权按实例身份判定而非异常类型() {
+        // ★若外层 onFailure 用 `t instanceof RepeatSubscriptionException` 排除归还，
+        //   那么**任何来源**的同类型异常都会被误判为「无归还权」。
+        //   这里让 executor 抛出该类型：supplier 不执行 → finally 不触发 →
+        //   兜底又被跳过 → 许可永久泄漏。实测（类型判定版）permits 停在 0。
+        //   按实例身份判定则只排除本 lease 亲手造的那一个。
+        Semaphore sem = new Semaphore(1);
+        PermitLease lease = leased(sem);
+        Executor throwsSameType = r -> {
+            throw new PermitLease.RepeatSubscriptionException();
+        };
+        assertThatThrownBy(
+            () -> lease.guardAsync(() -> "x", throwsSameType).await().indefinitely())
+            .isInstanceOf(PermitLease.RepeatSubscriptionException.class);
+
+        assertThat(sem.availablePermits())
+            .as("★同类型但非本 lease 所造的异常，许可仍必须归还")
+            .isEqualTo(1);
+    }
+
+    @Test
     void 重复订阅不得在首worker运行中提前归还许可() throws Exception {
         // ★审查者实证的回归：把一次性检查移到订阅期后，第二次订阅的 failure
         //   会流进外层公共的 onFailure().invoke(release)，在**首 worker 仍在运行时**
         //   抢先归还唯一许可——闸门提前重开，与「反复发起再取消」同类。
         //   串行测试测不到：串行时首 worker 已完成、released 已为 true，第二次是 no-op。
         //   归还权归属：谁取得许可，谁归还。
+        // ★不用 sleep 判定时序：sleep 后断言 permits=0 会**假绿**——
+        //   permits=0 也可能只是因为第二订阅还没被调度到（审查者变异实证：
+        //   把第二次订阅整个删掉，sleep 版本照样通过）。
+        //   改用 latch 精确等到「第二订阅的 failure 已送达」再断言。
         Semaphore sem = new Semaphore(1);
         PermitLease lease = leased(sem);                 // 取走唯一许可
         CountDownLatch running = new CountDownLatch(1);  // 首 worker 已开始
         CountDownLatch hold = new CountDownLatch(1);     // 卡住首 worker
+        CountDownLatch firstDone = new CountDownLatch(1);
+        CountDownLatch secondFailed = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> secondError =
+            new java.util.concurrent.atomic.AtomicReference<>();
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             var uni = lease.guardAsync(() -> {
@@ -466,19 +495,27 @@ class EvaluateSourceSimulateContractTest {
                 return "first";
             }, pool);
 
-            pool.submit(() -> uni.subscribe().with(v -> { }, t -> { }));
+            uni.subscribe().with(v -> firstDone.countDown(), t -> firstDone.countDown());
             assertThat(running.await(5, TimeUnit.SECONDS)).as("首 worker 应已启动").isTrue();
 
             // 首 worker 仍卡着，此时重复订阅
-            uni.subscribe().with(v -> { }, t -> { });
-            Thread.sleep(200);
+            uni.subscribe().with(
+                v -> secondFailed.countDown(),
+                t -> { secondError.set(t); secondFailed.countDown(); });
+
+            assertThat(secondFailed.await(5, TimeUnit.SECONDS))
+                .as("第二订阅必须已被处理——否则后面的断言证明不了任何事")
+                .isTrue();
+            assertThat(secondError.get())
+                .as("★第二订阅必须以重复订阅失败告终")
+                .isInstanceOf(PermitLease.RepeatSubscriptionException.class);
 
             assertThat(sem.availablePermits())
                 .as("★首 worker 仍在运行，许可不得被重复订阅提前归还")
                 .isZero();
 
             hold.countDown();
-            Thread.sleep(300);
+            assertThat(firstDone.await(5, TimeUnit.SECONDS)).as("首 worker 应已完成").isTrue();
             assertThat(sem.availablePermits())
                 .as("首 worker 完成后许可才归还，且恰好一个")
                 .isEqualTo(1);
