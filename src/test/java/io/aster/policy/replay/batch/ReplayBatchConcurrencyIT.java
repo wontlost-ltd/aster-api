@@ -768,6 +768,9 @@ class ReplayBatchConcurrencyIT {
 
         // ★禁用与恢复必须各自独立提交：CONSTRAINT TRIGGER 在**提交时**触发，
         //   若与 seed 同事务，禁用尚未生效就已到 COMMIT（实测 RollbackException）。
+        // ★禁用必须配 finally 恢复：测试中途失败若留下禁用状态，
+        //   后续所有用例的护栏都失效——一个坏用例会让整个套件变成假绿。
+        try {
         runSql("ALTER TABLE replay_batch DISABLE TRIGGER replay_batch_totality_trg");
         runSql("ALTER TABLE replay_batch_item"
             + " DISABLE TRIGGER replay_batch_item_parent_totality_trg");
@@ -788,28 +791,21 @@ class ReplayBatchConcurrencyIT {
         // 只有 1 条 item，而 planned_count=2 —— 这就是「历史违规行」
         QuarkusTransaction.requiringNew().run(() -> persistItem(id, "L1", true, true, null));
 
-        runSql("ALTER TABLE replay_batch ENABLE TRIGGER replay_batch_totality_trg");
-        runSql("ALTER TABLE replay_batch_item"
-            + " ENABLE TRIGGER replay_batch_item_parent_totality_trg");
-        runSql("ALTER TABLE replay_batch_item ENABLE TRIGGER replay_batch_item_counts_trg");
+        } finally {
+            restoreGuards();
+        }
 
-        // 重放 V6.20.5 的回填 + 历史降级两步
+        // ★从**真实迁移文件**里抽出回填与降级语句执行，而不是在测试里复制一份 SQL。
+        //   复制版只能验证我的转写，验证不了迁移本身——
+        //   实测：删掉真实 V6.20.5 的回填语句后，复制版测试**仍然全绿**。
+        // ★两条必须在**同一事务**里执行——迁移本身就是单事务。
+        //   分开提交的话，回填提交时该行仍违反延迟约束（还没降级），
+        //   会在 COMMIT 被拒（实测 RollbackException）。
+        java.util.List<String> stmts = extractBackfillAndDowngrade();
         QuarkusTransaction.requiringNew().run(() -> {
-            em.createNativeQuery("""
-                UPDATE replay_batch b
-                   SET item_total = COALESCE(c.total,0), item_success = COALESCE(c.ok,0)
-                  FROM (SELECT batch_id, count(*) AS total,
-                               count(*) FILTER (WHERE success IS TRUE) AS ok
-                          FROM replay_batch_item GROUP BY batch_id) c
-                 WHERE b.id = c.batch_id
-                """).executeUpdate();
-            em.createNativeQuery("""
-                UPDATE replay_batch
-                   SET status='FAILED', failure_reasons='["UNKNOWN"]'::jsonb,
-                       result_summary=NULL, finished_at=COALESCE(finished_at, NOW())
-                 WHERE status='COMPLETED'
-                   AND (item_total <> planned_count OR item_success <> planned_count)
-                """).executeUpdate();
+            for (String stmt : stmts) {
+                em.createNativeQuery(stmt).executeUpdate();
+            }
         });
 
         Object[] row = QuarkusTransaction.requiringNew().call(() ->
@@ -825,6 +821,72 @@ class ReplayBatchConcurrencyIT {
         assertThat(String.valueOf(row[0]))
             .as("★条目数(1) ≠ planned(2) 的历史 COMPLETED 行必须据实降级")
             .isEqualTo("FAILED");
+    }
+
+    /**
+     * 从真实的 V6.20.5 迁移文件里抽出「回填」与「历史降级」两条语句。
+     *
+     * <p>★<b>必须读文件，不能在测试里复制 SQL</b>：复制版验证的是我的转写，
+     * 迁移本身坏掉时它照样绿（第九轮审查实测确认）。
+     */
+    private static java.util.List<String> extractBackfillAndDowngrade() {
+        String sql;
+        try {
+            sql = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "src/main/resources/db/migration/"
+                    + "V6.20.5__replay_batch_deferrable_fail_closed.sql"));
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("读不到 V6.20.5 迁移文件", e);
+        }
+        // ★按**用途**识别，不按前缀：触发器函数体里也有 `UPDATE replay_batch`
+        //   （汇总维护），只按前缀会多抽一条（实测抽到 3 条）。
+        //   回填 = 带 `FROM (SELECT ... replay_batch_item` 的那条；
+        //   降级 = SET status='FAILED' 的那条。
+        String backfill = null;
+        String downgrade = null;
+        for (String raw : sql.split(";")) {
+            String stmt = raw.lines()
+                .filter(l -> !l.trim().startsWith("--"))
+                .reduce("", (x, y) -> x + "\n" + y).trim();
+            if (!stmt.startsWith("UPDATE replay_batch")) {
+                continue;
+            }
+            if (stmt.contains("FROM (SELECT") && stmt.contains("replay_batch_item")) {
+                backfill = stmt;
+            } else if (stmt.contains("status          = 'FAILED'")
+                || stmt.contains("SET status='FAILED'")
+                || stmt.contains("SET status = 'FAILED'")) {
+                downgrade = stmt;
+            }
+        }
+        assertThat(backfill)
+            .as("★必须从迁移文件里抽到**回填**语句——抽不到说明迁移结构变了")
+            .isNotNull();
+        assertThat(downgrade)
+            .as("★必须从迁移文件里抽到**历史降级**语句")
+            .isNotNull();
+        return java.util.List.of(backfill, downgrade);
+    }
+
+    /**
+     * 恢复被测试临时禁用的护栏触发器。
+     *
+     * <p>★放在 {@code finally} 里：中途失败若留下禁用状态，
+     * 后续所有用例的 fail-closed 护栏都失效——一个坏用例会让整套测试变成假绿。
+     * 逐条独立执行并吞掉异常，确保一条失败不阻断其余恢复。
+     */
+    private void restoreGuards() {
+        for (String sql : new String[] {
+            "ALTER TABLE replay_batch ENABLE TRIGGER replay_batch_totality_trg",
+            "ALTER TABLE replay_batch_item ENABLE TRIGGER replay_batch_item_parent_totality_trg",
+            "ALTER TABLE replay_batch_item ENABLE TRIGGER replay_batch_item_counts_trg",
+        }) {
+            try {
+                runSql(sql);
+            } catch (RuntimeException ignored) {
+                // 尽力恢复：某一条失败不应阻断其余
+            }
+        }
     }
 
     /** 独立事务执行一条 DDL/SQL。 */
