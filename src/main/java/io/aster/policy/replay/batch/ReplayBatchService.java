@@ -470,6 +470,43 @@ public class ReplayBatchService {
             .orElse(null);
     }
 
+    /**
+     * 全局共享的重跑执行池。
+     *
+     * <p>★<b>共享而非每条新建</b>：上一版每条重跑 {@code newSingleThreadExecutor}，
+     * 万条批次要创建/销毁 10000 个线程池。容量由 {@link WhatIfCapacityGate}
+     * 的许可数封顶，故池大小取一个略大于许可数的固定值即可。
+     */
+    private static final java.util.concurrent.ExecutorService REPLAY_POOL =
+        java.util.concurrent.Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "whatif-replay-exec");
+            t.setDaemon(true);
+            return t;
+        });
+
+    /**
+     * 带 wall-clock 超时地执行一次重跑。
+     *
+     * <p>★超时归 {@link ReplayFailureKind#TIMEOUT}（可重试）。
+     * 它<b>不保证</b>停下已在跑的 Truffle 执行——被弃线程仍会烧完 CPU，
+     * 但数量由容量闸门许可数封顶。它保证的是**调用者不再等待**，
+     * 从而让「段最坏耗时」成为真实上界（ADR 0034 §12.4）。
+     */
+    private static <T> T runWithTimeout(java.util.concurrent.Callable<T> work) throws Exception {
+        java.util.concurrent.Future<T> f = REPLAY_POOL.submit(work);
+        try {
+            return f.get(EXEC_TIMEOUT.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.ExecutionException e) {
+            if (e.getCause() instanceof Exception cause) {
+                throw cause;
+            }
+            throw e;
+        } catch (java.util.concurrent.TimeoutException te) {
+            f.cancel(true);   // 尽力中断；不保证 Truffle 立即停下
+            throw te;
+        }
+    }
+
     /** 从冻结表读回逐条结果，供 {@link ReplayBatchRunner#decide} 统一判定。 */
     @Transactional
     List<ReplayBatchRunner.ItemResult> collectResults(UUID batchId) {
@@ -675,15 +712,19 @@ public class ReplayBatchService {
         String tenantId) {
 
         try {
-            // ★执行上限由 **Truffle statementLimit** 保证（见 DynamicCnlExecutor），
-            //   不再包一层线程池超时：
-            //     · 每条重跑新建 ExecutorService，万条批次 = 10000 次线程创建/销毁
-            //     · shutdownNow() 只发 interrupt，**不保证**停下 Truffle 执行——
-            //       它只是让调用者不再等待，被弃的线程仍在烧 CPU
-            //   本仓早有正确先例：TrufflePolicyRuntime 的 P1-R22 明确选择
-            //   statementLimit 而非 wall-clock 超时（后者在 GC pause 下不可靠）。
+            // ★执行上界由 **wall-clock 超时** 提供——不能靠 statementLimit。
+            //   实测（limit=1/2/10，同一策略连续执行 10 万次）：
+            //   Aster AST **根本不产生可计数的 statement**，statementLimit 完全不触发。
+            //   我上一轮删掉这层超时、改称「上界由 statementLimit 保证」，
+            //   净效果是把执行上界从「有」变成「没有」，而注释却宣称有——
+            //   本仓「注释声称 ≠ 实现如此」的又一次。
+            //
+            //   ★用**共享**线程池而非每条新建：万条批次原会创建 10000 个池。
+            //   shutdownNow 确实不保证停下 Truffle（被弃线程仍占 CPU），
+            //   但它保证**调用者不再等待**，从而让「段耗时」有真实上界——
+            //   这正是租约取值的依据。被弃线程由容量闸门的许可数封顶。
             var execResult = capacityGate.withPermit(PERMIT_WAIT_MS, () ->
-                (replayExecutor.execute(
+                runWithTimeout(() -> replayExecutor.execute(
                     tenantId, target.content, e.input(),
                     e.functionName(), e.locale(),
                     /* vocabIndex */ null,
@@ -724,6 +765,20 @@ public class ReplayBatchService {
      */
     private static ReplayFailureKind classify(Exception ex) {
         String msg = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase(java.util.Locale.ROOT);
+
+        // ★资源耗尽（Truffle statementLimit）必须单独归类。
+        //   它落进下面的默认分支 INPUT_INCOMPATIBLE 会**误导用户**：
+        //   那句话是「你的历史输入与新版本不兼容」，而真相是
+        //   「这条策略执行量超出上限」——两者要做的事完全不同。
+        //   用 PolyglotException.isResourceExhausted() 判定，
+        //   不靠消息文本匹配（消息随 Graal 版本变化）。
+        for (Throwable t = ex; t != null; t = t.getCause()) {
+            if (t instanceof org.graalvm.polyglot.PolyglotException pe
+                && pe.isResourceExhausted()) {
+                return ReplayFailureKind.TIMEOUT;
+            }
+        }
+
         if (ex instanceof java.util.concurrent.TimeoutException || msg.contains("timeout")) {
             return ReplayFailureKind.TIMEOUT;
         }

@@ -690,17 +690,18 @@ public class DynamicCnlExecutor {
         // 与 allowPublicAccess(true) 的攻击面有本质区别。
         // 另加 allowHostClassLookup(name -> false) 显式禁止按名查找 host 类。
         // PolyglotAccess.NONE / IOAccess.NONE / 无进程·线程·native 保持不变。
-        // ★statementLimit 防死循环（与 TrufflePolicyRuntime 的 P1-R22 拉齐）。
-        //   本类此前只做了沙箱收紧（禁 IO/进程/线程/类查找），**没有执行上限**——
-        //   恶意或有 bug 的策略写个无限循环就能耗死 worker 线程。
+        // ★★ statementLimit 在 Aster 上**实测无效**，保留仅为与
+        //     TrufflePolicyRuntime 配置对齐，**不得**作为执行上界依赖。
         //
-        //   ★用 statementLimit 而非 wall-clock 超时：后者在 JVM GC pause 下不可靠，
-        //   这也是 TrufflePolicyRuntime 当初的选择理由。
-        //   10M statements 实测覆盖所有合法 aster 策略（典型 <10K，复杂 workflow <1M），
-        //   拒绝的是死循环 / fork-bomb 风格输入。
+        //     实测（limit=1/2/10，同一策略连续执行 100,000 次）：全部成功，从不触发。
+        //     Aster AST 不产生 Truffle 可计数的 statement，故该限制形同虚设。
         //
-        //   ★What-If 批次尤其依赖这条：单条重跑没有上界时，
-        //   「段最坏耗时」就不可计算，租约取值失去依据（ADR 0034 §12.4）。
+        //     ★这同时意味着 TrufflePolicyRuntime 的 P1-R22 审计项
+        //     （「+ ResourceLimits 防 DoS」）也是无效防护——生产 /evaluate
+        //     自那次审计起就一直以为自己有执行上限。已另行记录，需单独处理。
+        //
+        //     What-If 重跑的真实执行上界改由 ReplayBatchService 的
+        //     wall-clock 超时提供（ADR 0034 §12.4）。
         ResourceLimits limits = ResourceLimits.newBuilder()
             .statementLimit(10_000_000L, null)
             .build();

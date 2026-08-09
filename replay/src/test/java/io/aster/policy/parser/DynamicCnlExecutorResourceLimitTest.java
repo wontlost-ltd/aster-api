@@ -63,12 +63,30 @@ class DynamicCnlExecutorResourceLimitTest {
      * 上限取值必须与生产执行路径一致。
      *
      * <p>两条路径取不同值会让「What-If 重跑的资源约束」与
-     * 「线上求值的资源约束」出现无人解释的差异——
-     * 那种差异迟早会被当成 bug 或被随手改掉。
+     * 「线上求值的资源约束」出现无人解释的差异。
      */
     @Test
     void 上限取值须与生产执行路径拉齐() throws Exception {
         assertTrue(source().contains("statementLimit(10_000_000L"),
             "★与 TrufflePolicyRuntime 的 P1-R22 取同一数量级（10M statements）");
+    }
+
+    /**
+     * ★<b>必须写明 statementLimit 在 Aster 上无效</b>，防止它被当成执行上界依赖。
+     *
+     * <p>实测（limit=1/2/10，同一策略连续执行 100,000 次）：全部成功，从不触发——
+     * Aster AST 不产生 Truffle 可计数的 statement。
+     *
+     * <p>我曾在注释里写「真正的执行上界由 statementLimit 提供」并据此
+     * 删掉了 wall-clock 超时，净效果是把上界从「有」变成「没有」。
+     * 本用例锁死这条警示，避免下一个人重复这个判断。
+     */
+    @Test
+    void 必须写明statementLimit在Aster上无效() throws Exception {
+        String src = source();
+        assertTrue(src.contains("实测无效"),
+            "★必须写明 statementLimit 实测不触发，否则会被误当作执行上界");
+        assertTrue(src.contains("不得") && src.contains("作为执行上界依赖"),
+            "★必须明确禁止把它当执行上界——这是我犯过的错，要留住教训");
     }
 }
