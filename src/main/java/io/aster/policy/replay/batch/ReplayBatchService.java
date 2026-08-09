@@ -90,6 +90,21 @@ public class ReplayBatchService {
 
         List<ReplayBatchRunner.ItemResult> results = replayAll(batch);
 
+        // ★空窗口是**正当业务结果**，不是编程错误：这段时间内该策略就是没有执行。
+        //   decide() 对 plannedCount<=0 会抛异常（那是给「worker 提前退出」用的），
+        //   所以必须在此之前分流。呈现上它既不是「全量成功」也不是「拒答」，
+        //   而是「没有可分析的样本」——这同样满足 §1.1：总体为空，不给任何推断。
+        if (batch.plannedCount == 0) {
+            batch.completedCount = 0;
+            batch.failedCount = 0;
+            // 空对象而非某个失败 kind：窗口内没有执行**不是失败**，
+            // 谎称某类失败会误导用户去排查并不存在的数据问题。
+            batch.markFailed(toJson(Map.of()));
+            Log.infof("批次 %s 窗口内无可重放执行，无样本可分析", batchId);
+            batch.persist();
+            return;
+        }
+
         ReplayBatchOutcome outcome = ReplayBatchRunner.decide(batch.plannedCount, results);
 
         if (outcome instanceof ReplayBatchOutcome.Completed c) {
@@ -161,6 +176,13 @@ public class ReplayBatchService {
 
         List<ExecutionWindowClient.WindowedExecution> window =
             windowClient.fetchWindow(batch.policyId, batch.userId, batch.windowFrom, batch.windowTo);
+
+        // ★plannedCount 由**冻结的窗口**派生，并在任何一条重跑开始前落库。
+        //   创建时写 0 且从不回填是致命 bug：decide() 对 plannedCount<=0 必抛异常，
+        //   于是**任何批次都跑不完**（实测全仓对该字段零赋值）。
+        //   总体必须在开跑前确定：先全量拉完再定 planned，才谈得上「全量成功」（§1.1）。
+        batch.plannedCount = window.size();
+        batch.persist();
 
         List<ReplayBatchRunner.ItemResult> results = new ArrayList<>(window.size());
         for (ExecutionWindowClient.WindowedExecution e : window) {

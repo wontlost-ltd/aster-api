@@ -180,29 +180,54 @@ public class ReplayBatchResource {
             return Response.status(Response.Status.NOT_FOUND).build();
         }
 
+        return Response.ok(describe(batch)).build();
+    }
+
+    /**
+     * 组装批次查询响应。
+     *
+     * <p>★<b>抽成静态方法是为了让 §1.1 能被真实断言</b>：此前守护这条约束的测试
+     * 靠 {@code indexOf} 在源码里切一个 192 字符窗口，而泄漏恰好在窗口**之外**
+     * ——实测注入一个字面的 {@code successCount} 该测试仍绿。
+     * 现在测试可以直接调用本方法、检查**真实输出的 key**。
+     *
+     * <p>★<b>plannedCount 不得无条件下发</b>（ADR 0034 §1.1）：它与 FAILED 分支的
+     * {@code failureReasons} 同屏时，用户可算出 {@code 成功数 = plannedCount - Σ失败数}
+     * ——那正是上一版 Phase 4 的死因（200 条里 170 条失败，靠剩下 30 条算出
+     * 「12% 决策会变化」）。在客户端 DOM 里藏起来不算修复：泄漏在 <b>API 契约</b>上。
+     *
+     * <p>故只在「总体本身就是要呈现的信息」的状态里给：
+     * PENDING/RUNNING 作进度分母（此时不给任何失败数），
+     * COMPLETED 是全量成功（样本即总体，两者相等，无可推断）。
+     */
+    static Map<String, Object> describe(ReplayBatchEntity batch) {
         var body = new java.util.LinkedHashMap<String, Object>();
         body.put("batchId", batch.id.toString());
         body.put("status", batch.status.name());
         body.put("windowLabel", batch.windowLabel);
         body.put("windowFrom", batch.windowFrom.toString());
         body.put("windowTo", batch.windowTo.toString());
-        body.put("plannedCount", batch.plannedCount);
 
         switch (batch.status) {
             case PENDING, RUNNING -> {
                 // 进度：只给「跑了几条」，不给「成功几条」——
                 // 后者会让用户在批次跑完前自行推断结论（§7.4）
+                body.put("plannedCount", batch.plannedCount);
                 body.put("processedCount", batch.completedCount + batch.failedCount);
             }
-            case COMPLETED -> body.put("result", batch.resultSummary);
+            case COMPLETED -> {
+                body.put("plannedCount", batch.plannedCount);
+                body.put("result", batch.resultSummary);
+            }
             case FAILED -> {
-                // ★拒答：只给失败原因分布，不给任何计数
+                // ★拒答：只给失败原因分布，**不给总体量**——
+                //   给了就能与失败量相减得出成功数。
                 body.put("failureReasons", batch.failureReasons);
                 body.put("rejected", true);
             }
             case EXPIRED -> body.put("expired", true);
         }
-        return Response.ok(body).build();
+        return body;
     }
 
     // ── 窗口解析 ───────────────────────────────────────────────────────
