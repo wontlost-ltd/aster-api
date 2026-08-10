@@ -234,4 +234,52 @@ class NamedContextMapperTest {
             target.setLevel(targetOriginal);
         }
     }
+
+    /**
+     * ★多参数规则、且键一个都没对上时，必须在**映射层**报错。
+     *
+     * <p>此前这里和单参数走同一条兜底：返回 {@code new Object[]{map}}，
+     * 把 1 个实参喂给 N 参函数。错误于是延迟到引擎里，炸成
+     * {@code Lambda func_X expects at least 2 arguments} 或
+     * {@code HostObject 不支持成员访问}——两者都指向引擎/HostAccess 配置，
+     * 而真因只是**键名对不上**，排查方向被彻底带偏。
+     *
+     * <p>真实事故：内置样例的 defaultInput 只有一份英文键，
+     * 而非英文规则的参数名是本地化的（de 是 {@code fahrer, fahrzeug}），
+     * 于是 5 示例 × zh/de 共 10 例执行全挂。
+     */
+    @Test
+    void 多参数且键全不匹配时必须报可诊断的错误() {
+        List<CoreModel.Param> params = createParams("fahrer", "fahrzeug");
+
+        Map<String, Object> context = new HashMap<>();
+        context.put("driver", Map.of("age", 35));
+        context.put("vehicle", Map.of("year", 2020));
+
+        NamedContextMapper.MappingResult result = NamedContextMapper.mapContext(context, params);
+
+        assertFalse(result.success(), "★多参数键全不匹配必须失败，不能悄悄按单参数处理");
+        assertNotNull(result.error());
+        assertTrue(result.error().contains("driver"),
+            "★错误必须列出实际收到的键，否则用户不知道自己传了什么");
+        assertTrue(result.error().contains("fahrer"),
+            "★错误必须列出期望的参数名，否则用户不知道该改成什么");
+    }
+
+    /** ★单参数规则的兜底行为必须**保持不变**（整个 Map 当作那一个参数）。 */
+    @Test
+    void 单参数规则的整体Map兜底必须保留() {
+        List<CoreModel.Param> params = createParams("applicant");
+
+        Map<String, Object> context = new HashMap<>();
+        context.put("id", "A001");
+        context.put("age", 35);
+
+        NamedContextMapper.MappingResult result = NamedContextMapper.mapContext(context, params);
+
+        assertTrue(result.success(), "★单参数场景是合法用法，不得因本次改动被打回");
+        assertFalse(result.wasNamedFormat());
+        assertEquals(1, result.positionalArgs().length);
+        assertEquals(context, result.positionalArgs()[0]);
+    }
 }
