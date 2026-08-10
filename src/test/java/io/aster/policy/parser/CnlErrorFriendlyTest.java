@@ -76,4 +76,42 @@ class CnlErrorFriendlyTest {
         assertThat(CnlErrorListener.humanize("no viable alternative at input 'Definehas'"))
             .contains("无法解析");
     }
+
+    /**
+     * ★{@code is} 后面直接跟符号必须给出**可操作**提示。
+     *
+     * <p>CNL 里 {@code is} 是可选连接词，只能接**文字**比较词
+     * （{@code is less than} / {@code is at least} / {@code is equal to}）；
+     * 接符号（{@code is < 18}）是语法错误。
+     *
+     * <p>这条是真实生产事故：AI 生成的策略写了 {@code is < 18} 并存进库，
+     * 用户在执行页才看到「行 15 第 25 列：无法解析 'Ifapplicant.ageis&lt;18'」——
+     * 而当时的提示还反过来建议「用 `is less than` 等形式**或** `<` `>` 符号」，
+     * 没说两者不能拼在一起，等于在失败点上给了导致失败的建议。
+     */
+    @Test
+    void isBeforeSymbol_tellsUserTheTwoStylesCannotBeMixed() {
+        String err = parseErr("Module m.\nRule r given x, produce:\n  If x is < 18\n    Return 1.");
+
+        assertThat(err)
+            .as("★必须点名 `is` 不能接符号，而不是只说「无法解析 ... 附近」")
+            .contains("is");
+        assertThat(err)
+            .as("★必须给出两条可用的改法之一")
+            .containsAnyOf("less than", "< 18");
+        assertThat(err)
+            .as("★不得再出现 ANTLR 的无分隔 token 串")
+            .doesNotContain("xis<18");
+    }
+
+    /** 文字比较词（含省略 is）必须照常通过——修提示不能改变可接受的语法。 */
+    @Test
+    void wordComparators_remainValid() {
+        assertThat(parseErr("Module m.\nRule r given x, produce:\n  If x is less than 18\n    Return 1."))
+            .isEqualTo("<no error>");
+        assertThat(parseErr("Module m.\nRule r given x, produce:\n  If x less than 18\n    Return 1."))
+            .isEqualTo("<no error>");
+        assertThat(parseErr("Module m.\nRule r given x, produce:\n  If x < 18\n    Return 1."))
+            .isEqualTo("<no error>");
+    }
 }

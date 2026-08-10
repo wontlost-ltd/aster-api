@@ -74,6 +74,10 @@ Match <expression>:
 Natural language: equals to, not equal to, greater than, less than, greater than or equal to, less than or equal to
 Symbolic: <, >, <=, >=, !=
 IMPORTANT: For equality, use "equals to" (NOT = or ==). For inequality, use != or "not equal to".
+IMPORTANT: The optional connective "is" may ONLY precede a WORD comparator, never a symbol.
+  Correct:   If age is less than 18      /  If age less than 18   /  If age < 18
+  WRONG:     If age is < 18              (syntax error: "is" + symbol)
+Pick one style per comparison: words with optional "is", OR a bare symbol. Never mix them.
 
 ### Arithmetic Operators (natural language)
 plus, minus, times, divided by
@@ -163,7 +167,8 @@ Rule handleWrite given request, produce:
 - Do NOT use Data keyword — use Define <TypeName> has ...
 - Do NOT add type annotations after field names in Define — types are inferred from names
 - For equality use "equals to" (NOT = or ==). For inequality use != or "not equal to"
-- For >=/<= use symbolic >=/<= or "greater than or equal to"/"less than or equal to". Do NOT use "at least" or "at most"
+- For >=/<= use symbolic >=/<= or the word forms "greater than or equal to"/"less than or equal to"/"at least"/"at most"
+- NEVER write "is" before a symbol: "is < 18" / "is >= 700" are syntax errors. Use "is less than 18" or "< 18"
 - If/Otherwise/Match lines have NO period: "If age > 18" (correct) vs "If age > 18." (WRONG)
 
 ## Output Requirements
