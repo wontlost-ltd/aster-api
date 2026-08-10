@@ -69,6 +69,10 @@ Match <表达式>:
 ### 比较运算符
 自然语言：equals to, not equal to, greater than, less than, greater than or equal to, less than or equal to
 符号：<, >, <=, >=, !=
+重要：可选连接词 "is" 只能接**文字**比较词，绝不能接符号。
+  正确：If age is less than 18  /  If age less than 18  /  If age < 18
+  错误：If age is < 18          （语法错误："is" + 符号）
+每个比较只选一种风格：文字（可带 is）或裸符号，不得混用。
 重要：等于比较使用 "equals to"（不要使用 = 或 ==）。不等于使用 != 或 "not equal to"。
 
 ### 算术运算符（自然语言）
@@ -159,7 +163,8 @@ Rule handleWrite given request, produce:
 - 不要使用 Data 关键字 — 使用 Define <类型名> has ...
 - 不要在 Define 中的字段名后添加类型标注 — 类型从名称自动推断
 - 等于比较使用 "equals to"（不要使用 = 或 ==）。不等于使用 != 或 "not equal to"
-- 大于等于/小于等于使用符号 >=/<= 或 "greater than or equal to"/"less than or equal to"。不要使用 "at least" 或 "at most"
+- 大于等于/小于等于可用符号 >=/<= 或文字 "greater than or equal to"/"less than or equal to"/"at least"/"at most"
+- 绝不要在符号前写 "is"："is < 18" / "is >= 700" 都是语法错误。请写 "is less than 18" 或 "< 18"
 - If/Otherwise/Match 行不加句号："If age > 18"（正确） vs "If age > 18."（错误）
 
 ## 输出要求

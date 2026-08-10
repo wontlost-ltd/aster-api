@@ -79,6 +79,10 @@ Match <ausdruck>:
 Natuerliche Sprache: equals to, not equal to, greater than, less than, greater than or equal to, less than or equal to
 Symbolisch: <, >, <=, >=, !=
 WICHTIG: Fuer Gleichheit verwende "equals to" (NICHT = oder ==). Fuer Ungleichheit verwende != oder "not equal to".
+WICHTIG: Das optionale Bindewort "is" darf NUR vor einem WORT-Vergleich stehen, niemals vor einem Symbol.
+  Richtig:  If age is less than 18   /  If age less than 18  /  If age < 18
+  FALSCH:   If age is < 18           (Syntaxfehler: "is" + Symbol)
+Waehle pro Vergleich einen Stil: Woerter mit optionalem "is" ODER ein blosses Symbol. Niemals mischen.
 
 ### Arithmetische Operatoren (natuerliche Sprache)
 plus, minus, times, divided by
@@ -168,7 +172,8 @@ Rule handleWrite given request, produce:
 - Verwende NICHT das Schluesselwort Data — verwende Define <Typname> has ...
 - Fuege KEINE Typannotationen nach Feldnamen in Define hinzu — Typen werden aus Namen abgeleitet
 - Fuer Gleichheit verwende "equals to" (NICHT = oder ==). Fuer Ungleichheit verwende != oder "not equal to"
-- Fuer >=/<= verwende symbolisch >=/<= oder "greater than or equal to"/"less than or equal to". Verwende NICHT "at least" oder "at most"
+- Fuer >=/<= verwende symbolisch >=/<= oder die Wortformen "greater than or equal to"/"less than or equal to"/"at least"/"at most"
+- Schreibe NIEMALS "is" vor einem Symbol: "is < 18" / "is >= 700" sind Syntaxfehler. Nutze "is less than 18" oder "< 18"
 - If/Otherwise/Match-Zeilen haben KEINEN Punkt: "If age > 18" (richtig) vs "If age > 18." (FALSCH)
 
 ## Ausgabeanforderungen

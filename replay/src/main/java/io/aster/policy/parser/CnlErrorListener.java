@@ -110,6 +110,9 @@ public class CnlErrorListener extends BaseErrorListener {
         Pattern.compile("extraneous input '(.+?)' expecting");
     private static final Pattern NO_VIABLE =
         Pattern.compile("no viable alternative at input '(.+?)'");
+    /** `is` 与符号比较词相邻——ANTLR 拼接后形如 `...is<18`。 */
+    private static final Pattern IS_BEFORE_SYMBOL =
+        Pattern.compile("is\\s*[<>!=]");
     private static final Pattern FAILED_PREDICATE =
         Pattern.compile("rule (\\w+) failed predicate");
 
@@ -128,8 +131,9 @@ public class CnlErrorListener extends BaseErrorListener {
         // 或 `is` 后面跟了非比较词。给出可操作建议。
         if ((m = FAILED_PREDICATE.matcher(msg)).find()) {
             return "无法识别此处的运算符或关键词。"
-                + "比较请用 `is less than` / `is greater than` / `is at least` / "
-                + "`is at most` / `is equal to` 等自然语言形式或 `<` `>` `>=` 等符号";
+                + "比较可写成文字（`is less than` / `is at least` / `is equal to`，`is` 可省略）"
+                + "或裸符号（`<` `>` `>=`）。"
+                + "★两种写法不能混用：`is < 18` 是语法错误，请写 `is less than 18` 或 `< 18`";
         }
 
         if ((m = MISMATCHED.matcher(msg)).find()) {
@@ -153,7 +157,15 @@ public class CnlErrorListener extends BaseErrorListener {
         }
 
         if ((m = NO_VIABLE.matcher(msg)).find()) {
-            return "无法解析 " + friendlyToken(m.group(1)) + " 附近的语法";
+            String tok = m.group(1);
+            // ★`is` 紧跟符号是本仓最高频的手写/AI 生成错误（见 system_base_*.txt）。
+            //   ANTLR 把已匹配 token **无分隔**拼接，故这里按 "is<" / "is>" 检测，
+            //   而不是按源码文本——源码里它们中间通常有空格。
+            if (IS_BEFORE_SYMBOL.matcher(tok).find()) {
+                return "`is` 后面不能直接跟符号（如 `is < 18`）。"
+                    + "请改写成文字形式 `is less than 18`，或去掉 `is` 只用符号 `< 18`";
+            }
+            return "无法解析 " + friendlyToken(tok) + " 附近的语法";
         }
 
         if (msg.contains("token recognition error")) {
