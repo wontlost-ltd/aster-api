@@ -137,9 +137,26 @@ public class NamedContextMapper {
         boolean isNamedFormat = !keyToParamMapping.isEmpty();
 
         if (!isNamedFormat) {
-            // 不是命名格式，按单参数 Map 处理（向后兼容）
-            LOG.infof("上下文 Map 键与参数名不匹配，按单参数处理。上下文键: %s, 参数名: %s", map.keySet(), paramNames);
-            return MappingResult.success(new Object[] { map }, false, List.of());
+            // ★单参数规则：把整个 Map 当作那一个参数（合法且常用——
+            //   `given applicant` 配 {id:…, age:…} 就是这条路径）。
+            if (params.size() == 1) {
+                LOG.debugf("上下文键与参数名不匹配，按单参数 Map 处理。参数: %s", paramNames.get(0));
+                return MappingResult.success(new Object[] { map }, false, List.of());
+            }
+
+            // ★多参数规则：键一个都没对上，说明调用方给错了输入形状。
+            //   此前这里也返回 `new Object[]{map}`——把 1 个实参喂给 N 参函数，
+            //   于是错误延迟到引擎里炸成
+            //   `Lambda func_X expects at least 2 arguments` 或
+            //   `HostObject 不支持成员访问，成员：age`。
+            //   两者都指向引擎/HostAccess 配置，而真实原因是**键名对不上**，
+            //   排查方向完全被带偏（实测：非英文模板全军覆没即由此而来——
+            //   defaultInput 的键是英文，而非英文规则的参数名是本地化的）。
+            //   改为在映射层就报出可直接行动的信息。
+            String msg = "上下文键与参数名不匹配。上下文键: " + map.keySet()
+                + "，期望参数名: " + paramNames;
+            LOG.errorf(msg);
+            return MappingResult.error(msg);
         }
 
         // 命名格式：按参数顺序提取值
