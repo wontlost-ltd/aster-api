@@ -77,6 +77,10 @@ class NonDeterminismSourceTest {
         // - InternalCallSigner: 生成 HMAC v2 canonical 的 nonce（2026-07-29 审计）——
         //   nonce 的**不可预测性正是安全诉求**（防重放），它只进 HTTP 头、不入 workflow
         //   重放状态，与确定性无关。若改成可重放的确定值，重放防护即失效。
+        // - ReplayBatchService: 生成 What-If 批次的 lease owner token（ADR 0034 §10.3）——
+        //   与 GenericOutboxScheduler 的租约令牌同理：每次领取一个随机 owner，
+        //   终态写带 `AND leaseOwner = ?` 条件更新，使被误回收的旧 worker **写不进去**。
+        //   随机性正是诉求（要能区分两次领取），且不入 workflow 重放状态。
         Assertions.assertThat(uuidMatches.keySet())
                 .containsExactlyInAnyOrder(
                         "src/main/java/io/aster/policy/service/PolicyStorageService.java",
@@ -86,7 +90,8 @@ class NonDeterminismSourceTest {
                         "src/main/java/io/aster/policy/rest/LexiconAdminResource.java",
                         "src/main/java/io/aster/audit/outbox/GenericOutboxScheduler.java",
                         "src/main/java/io/aster/security/internal/InternalCallSigner.java",
-                        "src/main/java/io/aster/policy/rest/ReplayBatchResource.java"
+                        "src/main/java/io/aster/policy/rest/ReplayBatchResource.java",
+                        "src/main/java/io/aster/policy/replay/batch/ReplayBatchService.java"
                 );
 
         Map<String, List<Integer>> nanoMatches = scanPattern(

@@ -52,7 +52,7 @@ class ReplayBatchEntitlementContractTest {
     }
 
     @Test
-    void 并发超限返回409且带当前批次进度() throws Exception {
+    void 并发超限返回409且只带批次id不带进度() throws Exception {
         String body = createBody(source());
         int concurrencyCheck = body.indexOf("concurrentReplayBatches()");
         assertThat(concurrencyCheck).as("必须查并发上限").isGreaterThan(0);
@@ -62,10 +62,19 @@ class ReplayBatchEntitlementContractTest {
             .as("★并发超限必须返回 409 CONFLICT")
             .contains("Response.Status.CONFLICT");
         assertThat(after)
-            .as("★带当前批次 id 与进度——前端要能显示「正在跑，还剩 N 条」")
-            .contains("currentBatchId")
-            .contains("plannedCount")
-            .contains("completedCount");
+            .as("★带当前批次 id——前端要能接管并显示进度")
+            .contains("currentBatchId");
+
+        // ★本用例此前还断言 409 含 plannedCount 与 completedCount，
+        //   而那两个字段正是 §1.1 的泄漏（相减即得成功数），已被删除。
+        //   它当时仍全绿——只因为那两个词还出现在**解释为什么删掉它们**的注释里。
+        //   「名称承诺 ≠ 断言体」的又一例：测试名说「带进度」，
+        //   而实现刻意不带进度，测试却因为扫到注释里的词而通过。
+        //   现在改为断言它们**确实不在** put 调用中。
+        assertThat(after)
+            .as("★409 不得下发 plannedCount/completedCount：两者相减即得成功数")
+            .doesNotContain("\"plannedCount\", current.plannedCount")
+            .doesNotContain("\"completedCount\", current.completedCount");
     }
 
     @Test
@@ -98,13 +107,21 @@ class ReplayBatchEntitlementContractTest {
     }
 
     @Test
-    void 并发查询必须带userId() throws Exception {
-        // 租户隔离：不能把别人的批次算进本用户的并发额度，
-        // 更不能让本用户看到别人的批次 id
+    void 并发查询必须按租户隔离且口径为租户级() throws Exception {
+        // 隔离诉求不变：不能把别的租户的批次算进本租户额度，
+        // 更不能让调用方看到别的租户的批次 id。
+        //
+        // ★但口径必须是**租户级**而非用户级（ADR 0034 §7.2）：
+        //   额度按租户售卖，原实现按 userId 统计，
+        //   同租户多个用户各开一个即可绕过上限。
+        //   本用例此前钉死 "userId = ?1"，等于把这个 bug 写进了契约。
         String body = createBody(source());
         assertThat(body)
-            .as("★并发查询必须按 userId 过滤")
-            .contains("userId = ?1");
+            .as("★并发查询必须按 tenantId 过滤——额度是租户级的")
+            .contains("tenantId = ?1");
+        assertThat(body)
+            .as("★不得再按 userId 统计活跃批次：同租户多用户可绕过上限")
+            .doesNotContain("\"userId = ?1 and status in ?2\"");
     }
 
     @Test
@@ -133,18 +150,34 @@ class ReplayBatchEntitlementContractTest {
 
     @Test
     void 拒答的批次不返回任何计数() throws Exception {
-        // ★§1.1：FAILED 只给失败原因分布，不给 completedCount——
-        //   后者会诱导前端自行计算成功率
+        // ★§1.1：FAILED 只给失败**类别**，既不给总体量也不给每类条数。
+        //
+        // ★这条用例本身曾是本仓最典型的假绿：它用 indexOf 切出
+        //   [case FAILED ->, case EXPIRED) 这个 192 字符窗口，
+        //   而真正的泄漏（无条件 put("plannedCount", ...)）在 switch **之前**，
+        //   结构上就在窗口外——实测注入一个字面的 successCount 它照样全绿。
+        //   窗口边界是人选的，而 bug 恰好爱待在边界外。
+        //
+        //   真正的行为约束现由 ReplayBatchResponseContractTest 断言**真实输出的 key**；
+        //   这里只保留「分支内不得出现计数」这一条结构性检查，不再冒充完整守护。
         String src = source();
         int failedCase = src.indexOf("case FAILED ->");
         assertThat(failedCase).isGreaterThan(0);
         String branch = src.substring(failedCase, src.indexOf("case EXPIRED", failedCase));
 
-        assertThat(branch).contains("failureReasons");
         assertThat(branch)
-            .as("★拒答分支不得返回 completedCount / processedCount")
-            .doesNotContain("completedCount")
-            .doesNotContain("processedCount");
+            .as("★只给失败类别（failureKinds），不给 {类别:条数} 的分布")
+            .contains("failureKinds");
+
+        // ★断言的是 **body.put 调用**，不是「分支里不出现这些词」——
+        //   分支内的注释正是在解释「为什么不下发 plannedCount」，
+        //   按裸词断言会被自己的注释判负（实测撞过一次）。
+        //   这与本文件顶部记的教训同源：扫文本时，边界与词形都是人选的。
+        assertThat(branch)
+            .as("★拒答分支不得 put 任何计数字段")
+            .doesNotContain("body.put(\"completedCount\"")
+            .doesNotContain("body.put(\"processedCount\"")
+            .doesNotContain("body.put(\"plannedCount\"");
     }
 
     @Test

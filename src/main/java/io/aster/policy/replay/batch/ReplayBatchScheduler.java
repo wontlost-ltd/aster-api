@@ -39,10 +39,26 @@ public class ReplayBatchScheduler {
         concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
         skipExecutionIf = BackgroundSchedulerSkipPredicate.class)
     public void pollAndRun() {
-        java.util.UUID batchId = service.claimNextPending();
-        if (batchId == null) {
+        // ★先回收租约过期的 RUNNING 批次，再领新的。
+        //   没有这一步，「提交 RUNNING 之后进程崩溃」那条路径无人负责：
+        //   领取只查 PENDING，异常处理只覆盖当前进程捕获到的异常。
+        //   卡死的批次不止自己不出结果，还持续占着租户并发额度（pro 档只有 1 个），
+        //   该租户从此发不出任何 What-If 批次。
+        try {
+            int reclaimed = service.reclaimStaleLeases();
+            if (reclaimed > 0) {
+                Log.warnf("回收 %d 个租约过期的 What-If 批次", reclaimed);
+            }
+        } catch (RuntimeException e) {
+            // 回收失败不应阻断领取——下一轮再试
+            Log.errorf(e, "回收过期租约失败");
+        }
+
+        ReplayBatchService.Claim claim = service.claimNextPending();
+        if (claim == null) {
             return;
         }
+        java.util.UUID batchId = claim.batchId();
         Log.infof("领取 What-If 批次 %s，开始执行", batchId);
         try {
             service.runBatch(batchId);
@@ -51,7 +67,7 @@ public class ReplayBatchScheduler {
             //   批次自身的状态由 runBatch 内部保证已落到 FAILED——
             //   若连那都失败，下面的兜底会把它标记掉，避免永久卡在 RUNNING。
             Log.errorf(e, "What-If 批次 %s 执行异常", batchId);
-            service.failBatchDefensively(batchId, ReplayFailureKind.UNKNOWN);
+            service.failBatchDefensively(batchId, claim.owner(), ReplayFailureKind.UNKNOWN);
         }
     }
 

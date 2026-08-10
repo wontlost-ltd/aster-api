@@ -455,3 +455,404 @@ fail-open 等于「plan-gate 一抖动，free 租户就能免费跑批」。
   跨租户同时跑会把 `EVAL_SOURCE_PERMITS` 吃满导致正常 `/evaluate` 503。
   ★教训：「数据在哪，编排就在哪」是好直觉，但不能替代查证；
   第一次改判几分钟就下了结论，第二次才去读先例——顺序反过来就没这次来回。
+
+- 2026-08-09：PR #234（五个 P0 修复）独立审查 **38/100 退回**，新增 §10。
+  ★**四条阻断都不是「补丁没写好」，而是异步模型本身没拉通**：
+  §1.1 只堵了同屏没堵跨请求（信息流约束被误读成呈现约束）；
+  `plannedCount` 的「冻结」在同一长事务内、崩溃即回滚（我在 commit message 里
+  声称「开跑前落库」是**不实陈述**）；心跳续租在长事务下**不可能生效**
+  （写了个没有调用点、且即便调用也无效的方法，SQL 注释还描述了这个不存在的机制）；
+  迁移遇任何一行历史活跃批次**必定失败**（已实测，两条 CHECK 都炸）。
+  ★教训一：**我验证了「约束能拒绝坏数据」，却没验证「有历史数据时能否升级」**——
+  两者是不同的事，而端点已在 main 上无 flag 运行。
+  ★教训二：上一轮照着「五个 P0」逐条打补丁，修出了新的架构级问题；
+  故本次先定稿再动手。
+
+---
+
+## 10. 异步执行模型的四处未决（2026-08-09，S5 第二轮审查）
+
+> 状态：**待拍板**。以下四条来自 PR #234（五个 P0 修复）的独立审查（38/100 退回）。
+> 它们不是「补丁没写好」，而是**异步模型本身没有拉通**——与当初把 What-If
+> 从同步改异步是同一量级的决策，故单列一节，定稿后再动手。
+
+### 10.1 §1.1 是**信息流**约束，不是「同屏」约束
+
+上一轮我把 §1.1 落地成「同一个响应里不得同时出现总体量与失败量」，
+于是 FAILED 响应删掉了 `plannedCount`。**这只堵了一半。**
+
+真实泄漏路径是**跨请求**的：
+
+```
+T1  GET  → RUNNING，拿到 plannedCount = 200
+T2  GET  → FAILED，拿到 failureReasons = {INPUT_INCOMPATIBLE: 170}
+        用户自己相减 → 成功数 = 30
+```
+
+审查原话：「§1.1 是信息流约束，不是『必须同屏才算泄漏』。」这句是对的——
+上一版 Phase 4 的死因也不是某一屏，而是**用户最终能得到一个有偏差的数字**。
+
+**待选方案**（二选一，需拍板）：
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| **A. 终态前不下发总体量** | RUNNING 只给 `processedCount`，不给分母 | 进度条没有分母，只能显示「已处理 N 条」而非 N/M；§7.4 的万条进度条体验下降 |
+| **B. 拒答不下发可求和的数量** | FAILED 只给失败**类别**（不给每类条数） | 用户知道「有输入不兼容」但不知道规模，排查时信息更少 |
+
+**✅ 已拍板（2026-08-09）：方案 B。**
+拒答态只给失败**类别**（`["INPUT_INCOMPATIBLE","TIMEOUT"]`），不给每类条数。
+§7.4 的 N/M 进度条保留——它是拍过板的产品决策。
+代价：用户失去失败规模感（知道「有输入不兼容」但不知道 170 条还是 3 条）。
+接受这个代价，因为**类别已足够指导排查**，而规模感一旦给出就可被相减。
+
+### 10.2 `plannedCount` 的「冻结」是假象——它在同一个长事务里
+
+上一轮我在 `replayAll` 里写了 `batch.plannedCount = window.size(); batch.persist();`
+并在 commit message 里声称「在任何一条重跑开始前落库」。**这句话是假的**：
+
+`replayAll` 是私有方法、无事务标注，从 `@Transactional runBatch` 调用即**加入同一事务**。
+Panache 的 `persist()` 不提交；worker 在此之后硬崩，事务回滚，库里仍是创建时的 0。
+
+更深一层：**窗口本身没有被快照，只存了数量**。回收重跑时重新拉窗口，
+上游若已变化，即使 planned 重新派生，**也不是同一个总体**——
+而「同一个总体」正是 §1.1 的前提。
+
+**待拍板**：冻结到什么粒度？
+
+| 粒度 | 做法 | 代价 |
+|---|---|---|
+| **只冻数量** | 独立事务提交 `plannedCount` 后再开跑 | 简单；但重跑时总体可能已变，§1.1 前提不牢 |
+| **冻结 id 集合** | 把窗口内 execution id 列表落一张子表 | 万条批次多一张万行表；但总体真正可复现 |
+
+**✅ 已拍板（2026-08-09）：冻结 execution id 集合。**
+把窗口内的 execution id 列表落一张子表，`plannedCount` 由该表行数派生。
+总体因此**真正可复现**：回收重跑读的是冻结的 id 集合，而非重新拉窗口。
+
+★与 §3.1 不冲突：那条禁的是「逐条 targetDecision」（决策结果，PII 面 + 失效语义），
+这里存的是**输入标识**（execution id），不含决策也不含 PII。
+
+代价：万条批次多一张万行子表。可接受——`expiresAt` 到期随批次一起清。
+
+### 10.3 lease 协议：心跳在长事务下不可能生效
+
+`runBatch` 整体 `@Transactional`，批次跑完才提交，期间该行被这个事务持有——
+**任何独立事务的续租都拿不到行锁**。我上一轮写的 `renewLease` 不仅没有调用点，
+**即便调用也不可能生效**；SQL 注释里那句「worker 定期续租」描述的是一个不存在的机制。
+
+后果链：单条最长等许可 30s × 串行 N 条 → 长批次必然超过 10 分钟 lease →
+被回收改回 PENDING → 另一副本领走 → **同一批次两个 worker 并跑**，
+而实体既无 `@Version` 也无 owner/attempt token，终态写会互相覆盖。
+**这比它要修的崩溃卡死更糟。**
+
+**待拍板**：
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| **A. 拆分事务** | 窗口冻结 / 逐条执行 / 终态各自独立事务，心跳才可能生效 | 改动面最大；中间态可见性要重新想 |
+| **B. 长 lease + owner token** | lease 取小时级覆盖整批；终态写带 owner token 条件更新，旧 worker 写不进去 | 改动小；但需要「批次规模硬上限」兜底，否则超大批次仍会超时 |
+
+**✅ 已拍板（2026-08-09）：方案 B——长 lease + owner token + 规模上限。**
+
+- **lease 取小时级**，覆盖整批最坏耗时，不依赖心跳（长事务下心跳不可能生效）
+- **终态写带 owner token 条件更新**：`WHERE id = ? AND lease_owner = ?`，
+  被误回收的旧 worker **写不进去**，从根上消掉「两个 worker 互相覆盖」
+- **批次规模硬上限**：超过上限在创建入口就拒绝，不靠 lease 兜底
+
+★选 B 而非 A 的理由：A 会把「整批要么全成功要么全拒答」的事务保证拆掉，
+而那是 §1.1 的**实现基础**——拆了就得另想办法保，得不偿失。
+
+规模上限取值需与 §7.4「万条以上要进度条」对齐：
+上限设为 **10000 条**，即进度条覆盖的正是「接近上限」的批次。
+超过 10000 条的窗口在创建时返回 400 并提示缩小窗口。
+
+### 10.4 迁移对历史数据必定失败（**已实测**）
+
+V6.20.1 先加可空列、随后立即加 CHECK 要求活跃行非空。
+**任何一行历史 PENDING/RUNNING 都会让迁移失败**——实测：
+
+```
+ERROR: check constraint "replay_batch_running_has_lease_ck" is violated by some row
+ERROR: check constraint "replay_batch_active_holds_slot_ck" is violated by some row
+```
+
+What-If 后端已随 #230 合入 main 且端点**无 feature flag**，
+线上表不能假设为空。上一轮我验证了「约束能拒绝坏数据」，
+却**没验证「有历史数据时能否升级」**——两者是不同的事。
+
+**修法明确**（不需拍板，但要记）：先处置历史活跃行（终止为 FAILED 或回填），
+再加约束；用 `NOT VALID → 回填 → VALIDATE` 分阶段，避免全表扫描阻塞写。
+
+### 10.5 附带：enterprise unlimited 会被假 409 拒绝
+
+`unlimited` 只跳过了数量检查，仍然走 `firstFreeSlot` + 唯一索引。
+两个并发请求都看到同一份 active 列表 → 算出同一槽 → 一个被唯一约束拒绝。
+**额度本应无限的租户被拒**。槽位模型对有限额度成立，对无限额度是错的。
+
+---
+
+## 11. 租约/owner 协议重做（2026-08-09，S5 第三轮审查 26/100）
+
+> 状态：**待拍板**。第三轮审查五个 P0 + 三个 P1，比第二轮（38）更低。
+> **连续两轮「照条目逐条修」都修出了新的架构问题**，故本节先定协议再动手。
+
+### 11.0 根因：护栏写在了「能被绕过的层」
+
+三轮下来，同一个错误换了三种形态：
+
+| 轮次 | 我写的护栏 | 为什么不起作用 |
+|---|---|---|
+| 一 | 装配期 CAS（PermitLease） | 拦不住对同一个 cold Uni 的重复订阅 |
+| 二 | `plannedCount` 在 `replayAll` 里 `persist()` | 并在调用方长事务里，崩溃即回滚 |
+| 三 | 终态写带 `AND leaseOwner = ?` | **managed entity 会自动 flush，条件更新形同虚设** |
+
+共同点不是「粗心」，而是**把护栏放在一个它管不到的层**，
+然后用注释宣称它有效。第三轮那条尤其贵：commit message 写着
+「让双 worker 覆盖变成结构上不可能」，而实现里 Hibernate 在提交时
+照样把脏实体刷进去。
+
+**本节的设计目标因此是一句话**：
+> 让「谁能写这一行」由**数据库**回答，而不是由应用层的自觉回答。
+
+### 11.1 终态写：detached + 单条原子 CAS
+
+**问题**：`runBatch` 里 `findById` 拿到的是 **managed** 实体；
+`markCompleted/markFailed` 改的是它，随后的条件 `update` 即便写 0 行，
+Hibernate 仍会在 flush/commit 时按主键无条件写回。
+空窗口分支更直接 `persist()` 返回，连条件都没有。
+
+**方案（待拍板）**
+
+| 选项 | 做法 | 代价 |
+|---|---|---|
+| **A. 全程 detached** | worker 只读出**值对象**（不持有 managed 实体），所有写一律走单条 `UPDATE ... WHERE id=? AND lease_owner=? AND status='RUNNING'` | 要把 `runBatch` 里对实体的读改成 DTO；改动面中等 |
+| B. `EntityManager.detach()` | 读完立即 detach，再走条件更新 | 一行代码，但**依赖每个写路径都记得 detach**——又是「靠自觉」，与 §11.0 的教训相悖 |
+
+**✅ 已拍板（2026-08-09）：方案 A——全程 detached。**
+worker 只读值对象，不持有 managed 实体；所有写一律走单条条件 UPDATE。
+选 A 而非 B 的理由正是 §11.0 的根因：B 依赖「每个写路径都记得 detach」，
+那是又一个靠自觉的护栏；A 让这个失误**不可能发生**。
+
+★无论选哪个，**四条写路径必须统一**：终态、空窗口、防御性兜底、reclaim。
+上一轮只改了终态一条，另外三条仍是无条件写——审查因此说
+「owner token 现在只是有这个字段，还不是所有数据库写路径上的硬闸」。
+
+### 11.2 租约时长：83 小时 vs 2 小时的矛盾要正面解决
+
+**问题**：单条最长等许可 30s × 串行 10000 条 = **83 小时**最坏耗时，
+而我把租约定成 2 小时并注释「可覆盖最坏情况」——**那个算术我从没做过**。
+乐观值（进程内 1.35ms/条）是 13 秒，两者差 5 个数量级。
+
+**方案（待拍板）**
+
+| 选项 | 做法 | 代价 |
+|---|---|---|
+| **A. 分段执行 + 分段续租** | 每 N 条提交一次并续租，租约按「一段」取值而非「整批」 | 拆掉了「整批一个事务」，需要另想办法保 fail-closed（见 §11.5） |
+| B. 租约按最坏取值（≥83h） | 简单 | 真崩溃时批次要卡 83 小时才被回收，等于没有回收 |
+| C. 压低最坏耗时 | 调小 `PERMIT_WAIT_MS`、或并行重跑 | 改容量模型，影响面超出本节 |
+
+**✅ 已拍板（2026-08-09）：方案 A——分段执行 + 分段续租。**
+每 N 条提交一次并续租，租约按「一段」取值。
+B（租约取 83h）等于回收机制不存在，且租户额度被占 83 小时；
+C（压低最坏耗时）会改到 §4.8 的容量模型，影响面超出本节。
+A 的代价是 fail-closed 要另想办法保——那是可设计的，见 §11.5。
+
+### 11.3 reclaim 必须原子
+
+**问题**：先 `list()` 查 stale、再逐个改、`persist()`，
+没有 `status`/`leaseOwner`/`leaseExpiresAt` 条件，也没有 `@Version`。
+两个副本可同时读到同一批 stale 行，慢的那个会把快的那个刚领走的
+新 owner 覆盖回 PENDING。
+
+**方案**：单条 SQL 完成回收，条件带上读到的 `leaseOwner` 与 `leaseExpiresAt`：
+```sql
+UPDATE replay_batch
+   SET status='PENDING', lease_owner=NULL, lease_expires_at=NULL, started_at=NULL
+ WHERE id = ? AND status='RUNNING'
+   AND lease_owner = ?          -- 读到的那个 owner
+   AND lease_expires_at = ?     -- 读到的那个到期时刻
+```
+写 0 行 = 别人已经处理过，本副本放弃。与 §11.1 是同一个原则。
+
+### 11.4 其余三条（修法明确，不需拍板）
+
+- **异常兜底不校验 owner**：`claimNextPending()` 要把 owner 一并返回，
+  `failBatchDefensively` 带 owner 条件写。否则失租的 A 抛异常时，
+  会把 B 刚领走的批次标成 FAILED 并释放槽位。
+- **unlimited 重试处在已失败的事务里**：`persistAndFlush()` 抛
+  `PersistenceException` 后 session 已 rollback-only，同事务内重试不可靠，
+  且 `catch (PersistenceException)` 会把 DB 故障误报成槽位争用。
+  改为**捕获精确的唯一约束冲突**并在**新事务**里重试。
+- **`INPUT_INCOMPATIBLE` 归类不诚实**：冻结时存在、重跑时上游消失的执行
+  根本没进 `replayOne`，说它「输入不兼容」是错的，还会错误继承不可重试语义。
+  新增 `SOURCE_EXECUTION_UNAVAILABLE`。
+
+### 11.5 分段执行如何保 fail-closed（若 §11.2 选 A）
+
+「整批一个事务」原本是 §1.1 的实现基础：要么全成功要么全拒答。
+分段后需要另一个机制保它：
+
+- 逐条结果落 `replay_batch_item`（该表已存在，加 `result` 列）
+- 只有**全部条目都成功**才允许迁移到 COMPLETED；
+  DB 层加 CHECK：`COMPLETED ⇒ 不存在失败条目`
+- 判定仍由 `ReplayBatchRunner.decide` 做，但输入从内存列表换成表查询
+
+**✅ 已拍板（2026-08-09）：可以存成败标记。**
+`replay_batch_item` 加 `success` 与 `failure_kind` 两列，
+**不存 targetDecision 内容**。
+
+★与 §3.1 不冲突：那条真正要避免的是**决策结果**（PII 面扩大 + 失效语义复杂），
+而成败标记既不含 PII 也不含决策内容——与冻结 id 集合是同一类边界。
+判定仍由 `ReplayBatchRunner.decide` 做，只是输入从内存列表换成表查询。
+
+
+---
+
+## 12. fail-closed 的落点：触发器不是正确的层（2026-08-09，S5 第五轮审查 24/100）
+
+> 状态：**待拍板**。五轮 38 → 26 → 42 → 24，我修了四轮、每轮引入新问题，
+> 这轮的归一化语句还差点删掉生产数据。§12 先定方案再动手。
+
+### 12.0 根因：我一直在用「单语句可见的检查」表达「跨事务的不变量」
+
+§11.0 说过一次「护栏写在了它管不到的层」，那时指的是应用层。
+这一轮同样的错误换到了数据库层：
+
+| 我写的 | 它实际能保证的 |
+|---|---|
+| 父触发器 `BEFORE INSERT OR UPDATE` 查 item 表 | 只看**本事务快照**里的 item |
+| item 触发器查 parent 状态 | 只看**本事务快照**里的 parent |
+| 两者「互相校验」 | 两个快照互不可见时，两边都通过 |
+
+审查的双会话实测把这点钉死了：
+
+```
+A: UPDATE item success true→false      （不提交）
+B: UPDATE parent → COMPLETED           （父触发器看不到 A 的未提交版本 → 放行，提交）
+A: COMMIT                              （item 触发器基于自己的快照 → 放行）
+最终: parent=COMPLETED + item=false    ← 违规状态落库
+```
+
+**即时行级触发器读的是 MVCC 快照，而「全部条目都成功」是一个跨行、跨事务的
+断言。用前者表达后者，在并发下必然漏。**
+
+### 12.1 已证实的四条绕过（全部实测复现）
+
+| # | 路径 | 实测结果 |
+|---|---|---|
+| 1 | 并发 MVCC 交错（上方） | `COMPLETED + success=false` |
+| 2 | `DELETE` / `TRUNCATE replay_batch_item` | `planned=1 item数=0` |
+| 3 | ★`UPDATE item SET batch_id=<新父>` | 旧父 `planned=1 item数=0`——触发器只看 `NEW.batch_id`，不看 `OLD` |
+| 4 | COMPLETED 后追加 `success=true` item | `planned=1 item数=2` |
+
+第 3 条是审查发现的**第四条写入路径**，我此前完全没想到。
+
+### 12.2 ★我的集成测试没有测到它声称的东西
+
+`不得INSERT出COMPLETED加失败条目的组合` 用「同一事务先插 COMPLETED parent、
+再插失败 item」。实测：**第一条 INSERT 就被父触发器的条目数校验拒了**
+（`total_items=0 ≠ planned_count=1`），第二条根本没机会执行。
+
+它验证的是父触发器，却挂着 item 触发器的名字。
+审查还实测：把父触发器变异回 `BEFORE UPDATE`，9 条 IT 仍全绿——
+**重叠覆盖掩盖了测试缺口**。
+
+这是「名称承诺 ≠ 断言体」在我专门为逃离该模式而建的集成测试里再次出现。
+
+### 12.3 待拍板：用什么表达这个不变量
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| **A. DEFERRABLE 约束 + 汇总列** | 在 `replay_batch` 上加 `success_item_count` / `total_item_count`，由 item 触发器维护；父表加 `DEFERRABLE INITIALLY DEFERRED` CHECK「COMPLETED ⇒ success=total=planned」。约束在**提交时**校验，跨事务竞态消失 | 汇总列要覆盖 INSERT/UPDATE/DELETE/TRUNCATE 四类事件；TRUNCATE 需语句级触发器 |
+| **B. 应用层显式锁序** | 所有终态写先 `SELECT ... FOR UPDATE` 锁父行，再校验 item | 依赖每条路径都记得加锁——**又是靠自觉**，与 §11.0/§12.0 的根因相悖 |
+| **C. 不用 item 表做判定** | 判定完全在应用层内存里做，item 表只作崩溃恢复的进度记录；DB 只保「COMPLETED ⇒ failed_count=0」这类**单行**约束 | 放弃「数据库兜底 fail-closed」；但单行约束是触发器能可靠表达的 |
+
+**✅ 已拍板（2026-08-09）：方案 A——DEFERRABLE 约束 + 汇总列。**
+
+把「提交时才校验」交给 PostgreSQL 的约束机制，而不是在触发器里模拟快照可见性。
+不选 B（依赖每条路径记得加锁，与 §11.0/§12.0 的根因相悖）；
+C 是退守选项，若 A 的四类事件覆盖做不干净再回到它。
+
+★实施要点：汇总列必须覆盖 **INSERT / UPDATE / DELETE** 三类行级事件
+**加 TRUNCATE 语句级事件**，其中 UPDATE 要同时处理 `OLD.batch_id` 与
+`NEW.batch_id`（第 3 条绕过正是只看 NEW 造成的）。
+
+### 12.4 其余两条（修法明确，仍需拍板取值）
+
+- **O(N²) 拉取**：每段都调 `fetchWindow` 拉全量窗口，
+  万条批次 ≈ 500 次全窗口请求、约 5,000,000 个上游对象。
+  **✅ 已拍板：冻结时拉一次 + 按 id 批量取 payload。**
+  窗口只在冻结时拉一次；重跑时按冻结表里的 execution id 批量取。
+  不选「冻结时连 payload 一并存下」——那会把用户 input 复制进第二张表，
+  扩大 PII 面，正是 §3.1 要避免的。
+  ★需 cloud 侧提供 by-ids 端点（跨仓改动，记入 §8 外部依赖）。
+- **租约算术仍不完整**：`fetchWindow` 最多 100 页 × 15s ≈ 25 分钟，
+  加 20×30s 许可等待 ≈ 35 分钟 > 30 分钟租约；且 `replayExecutor.execute`
+  **没有执行超时**。三轮租约取值都被退回，根因是我每次只算了一部分。
+  **✅ 已拍板：先加硬超时，再让租约可计算。**
+  `replayExecutor.execute` 现在**没有执行超时**——这是三轮算术都不完整的根源：
+  没有上限的项无法进入求和。先给单条重跑加硬超时，
+  再让「段最坏耗时」成为可计算的和：`拉取 + N×(等许可 + 执行上限) + 提交`，
+  租约取其 2 倍并**在代码里断言这个不等式**，而不是写在注释里。
+
+
+### 12.5 信任边界：触发器防的是代码疏漏，不是拥有 DDL 权限的角色
+
+> **✅ 已拍板（2026-08-09）：接受为信任边界内风险，明确记录而非假装堵住。**
+
+第六轮审查指出「`session_replication_role=replica` / `DISABLE TRIGGER` 可绕过整个约束体系」，
+并要求以**角色权限与部署配置**证明，不得由迁移注释假定。已实测查证：
+
+#### 生产角色的实际权限（已证）
+
+`aster_api_user` 是 CNPG managed role
+（`k3s: apps/infrastructure/postgres-cluster/manifests/cluster.yaml:85`），
+只声明 `login` + `inherit`，**无** superuser / replication / createrole。
+复刻同属性角色实测：
+
+| 手段 | 结果 |
+|---|---|
+| `SET session_replication_role='replica'` | ❌ `permission denied to set parameter` |
+| `ALTER TABLE ... DISABLE TRIGGER ALL` | ❌ `must be owner of table` |
+
+**审查所指的「逻辑复制角色绕过」在生产配置下不成立。**
+
+#### 但表所有权带来的绕过成立（已证）
+
+Flyway 用 `aster_api_user` 跑迁移，因此**它创建的表归它所有**。
+建 owner 为应用角色的库实测：
+
+```
+replay_batch      owner=<app_role>
+replay_batch_item owner=<app_role>
+
+DISABLE TRIGGER ALL              → 仍失败（PG 保护 FK 系统触发器）
+DISABLE TRIGGER <本 ADR 的触发器名> → ★成功
+随后伪造插入                      → 错误数 0
+结果: COMPLETED planned=5 声称=5/5 真实item=0
+```
+
+#### 为什么接受而不是继续加固
+
+★**能执行 `ALTER TABLE` 的角色，本来就能直接
+`UPDATE replay_batch SET status='COMPLETED'`。**
+触发器从来防不住这一层——它防的是**代码路径上的疏漏**：
+忘记校验、并发交错、汇总列不同步、写路径漏覆盖。那部分已由 §12.1–12.3 闭合，
+并有真实 PostgreSQL 集成测试锁定。
+
+在同一个信任域里追加「防住 owner」的机制，只会得到又一个
+「看起来有护栏其实绕得过」的东西——这正是 §11.0/§12.0 反复出现的错误。
+**诚实地画出边界，比假装边界不存在更有价值。**
+
+#### 若将来要根治（不在本 PR 范围）
+
+表 owner 与应用角色分离：迁移用独立 `migrator` 角色执行、
+应用角色只授予 DML（`SELECT/INSERT/UPDATE/DELETE`）而无 DDL。
+这需要改 CNPG managed roles 与 Flyway 凭据配置，属于部署层变更。
+届时上表中「DISABLE TRIGGER 成功」那一行会变成失败。
+
+#### 记录到此为止的判据
+
+本 ADR 的 fail-closed 声明**范围明确**为：
+> 在应用代码与并发时序层面，不存在能产出「COMPLETED 但样本非总体全量」的路径。
+
+**不**声明：能对表执行 DDL 的角色无法伪造。后者是部署层信任边界问题。

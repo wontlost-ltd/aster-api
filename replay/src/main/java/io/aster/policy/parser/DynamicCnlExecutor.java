@@ -15,6 +15,7 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.PolyglotAccess;
+import org.graalvm.polyglot.ResourceLimits;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.io.IOAccess;
@@ -689,8 +690,24 @@ public class DynamicCnlExecutor {
         // 与 allowPublicAccess(true) 的攻击面有本质区别。
         // 另加 allowHostClassLookup(name -> false) 显式禁止按名查找 host 类。
         // PolyglotAccess.NONE / IOAccess.NONE / 无进程·线程·native 保持不变。
+        // ★★ statementLimit 在 Aster 上**实测无效**，保留仅为与
+        //     TrufflePolicyRuntime 配置对齐，**不得**作为执行上界依赖。
+        //
+        //     实测（limit=1/2/10，同一策略连续执行 100,000 次）：全部成功，从不触发。
+        //     Aster AST 不产生 Truffle 可计数的 statement，故该限制形同虚设。
+        //
+        //     ★这同时意味着 TrufflePolicyRuntime 的 P1-R22 审计项
+        //     （「+ ResourceLimits 防 DoS」）也是无效防护——生产 /evaluate
+        //     自那次审计起就一直以为自己有执行上限。已另行记录，需单独处理。
+        //
+        //     What-If 重跑的真实执行上界改由 ReplayBatchService 的
+        //     wall-clock 超时提供（ADR 0034 §12.4）。
+        ResourceLimits limits = ResourceLimits.newBuilder()
+            .statementLimit(10_000_000L, null)
+            .build();
         try (Context polyglotContext = Context.newBuilder("aster")
                 .engine(SHARED_ENGINE)  // 复用进程级 Engine，避免 per-request AOT 重做
+                .resourceLimits(limits)
                 .allowHostAccess(HostAccess.newBuilder(HostAccess.EXPLICIT)
                     .allowArrayAccess(true)   // 允许读数组元素（结构化上下文）
                     .allowListAccess(true)    // 允许读 List 元素
