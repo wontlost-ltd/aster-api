@@ -2,7 +2,10 @@ package io.aster.policy.parser;
 
 import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.RecognitionException;
+import org.antlr.v4.runtime.Parser;
 import org.antlr.v4.runtime.Recognizer;
+import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.TokenStream;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,6 +44,14 @@ public class CnlErrorListener extends BaseErrorListener {
     private final List<String> rawErrors = new ArrayList<>();
     /** 结构化诊断（含 1-based 行列），供编译端点映射为前端 diagnostics。 */
     private final List<Diagnostic> diagnostics = new ArrayList<>();
+    /**
+     * 首条**可确诊**错误的下标（-1 = 无）。
+     *
+     * <p>ANTLR 的第一条错误往往不是根因：`x is < 18` 会先在 `18` 上报
+     * 「no viable alternative」，真正能确诊的 `<` 排在第二条。只展示第一条
+     * 就把可操作的提示丢了，用户只能看到「无法解析 'Ifxis<18' 附近的语法」。
+     */
+    private int diagnosableIndex = -1;
 
     @Override
     public void syntaxError(
@@ -51,8 +62,16 @@ public class CnlErrorListener extends BaseErrorListener {
         String msg,
         RecognitionException e
     ) {
-        String friendly = humanize(msg);
+        // ★用 token 流做判定，而不是靠 ANTLR 消息里的**无分隔拼接串**：
+        //   那个串把 `analysis <= 3` 拼成 `analysis<=3`，与真正的 `x is < 18`
+        //   拼出的 `xis<18` 在正则眼里毫无区别——实测 `analysis <= 3` 会被
+        //   报成「`is` 后面不能直接跟符号」，把用户引向一个根本不存在的问题。
+        boolean isBeforeSymbol = precededByIsKeyword(recognizer, offendingSymbol);
+        String friendly = humanize(msg, isBeforeSymbol);
         rawErrors.add(String.format("行 %d:%d - %s", line, charPositionInLine, msg));
+        if (isBeforeSymbol && diagnosableIndex < 0) {
+            diagnosableIndex = friendlyErrors.size();
+        }
         friendlyErrors.add(String.format("行 %d 第 %d 列：%s", line, charPositionInLine + 1, friendly));
         // 行列归一到 1-based（Monaco/前端契约）。charPositionInLine 是 0-based → +1。
         diagnostics.add(new Diagnostic(line, charPositionInLine + 1, friendly));
@@ -77,7 +96,10 @@ public class CnlErrorListener extends BaseErrorListener {
         if (friendlyErrors.isEmpty()) {
             return "";
         }
-        String first = friendlyErrors.get(0);
+        // ★优先展示**可确诊**的那条，而不是机械取第一条：
+        //   ANTLR 常常先在下一个 token 上报一条泛化错误，真正指明原因的排在后面。
+        int idx = diagnosableIndex >= 0 ? diagnosableIndex : 0;
+        String first = friendlyErrors.get(idx);
         if (friendlyErrors.size() > 1) {
             return first + "（另有 " + (friendlyErrors.size() - 1) + " 处后续错误，建议先修正此处）";
         }
@@ -110,16 +132,49 @@ public class CnlErrorListener extends BaseErrorListener {
         Pattern.compile("extraneous input '(.+?)' expecting");
     private static final Pattern NO_VIABLE =
         Pattern.compile("no viable alternative at input '(.+?)'");
-    /** `is` 与符号比较词相邻——ANTLR 拼接后形如 `...is<18`。 */
-    private static final Pattern IS_BEFORE_SYMBOL =
-        Pattern.compile("is\\s*[<>!=]");
     private static final Pattern FAILED_PREDICATE =
         Pattern.compile("rule (\\w+) failed predicate");
 
     /**
+     * 出错 token 的**前一个** token 是否就是 `is` 关键字，且自身以符号开头。
+     *
+     * <p>这是「`is` 后面直接跟符号」的<b>权威</b>判定：走 token 流，
+     * 不受 ANTLR 消息里无分隔拼接串的干扰。
+     */
+    private static boolean precededByIsKeyword(Recognizer<?, ?> recognizer, Object offendingSymbol) {
+        if (!(offendingSymbol instanceof Token bad)) {
+            return false;
+        }
+        String text = bad.getText();
+        if (text == null || text.isEmpty() || "<>!=".indexOf(text.charAt(0)) < 0) {
+            return false;   // 出错 token 不是符号，谈不上「is 后跟符号」
+        }
+        if (!(recognizer instanceof Parser parser)) {
+            return false;
+        }
+        TokenStream stream = parser.getInputStream();
+        if (stream == null) {
+            return false;
+        }
+        for (int i = bad.getTokenIndex() - 1; i >= 0; i--) {
+            Token prev = stream.get(i);
+            if (prev.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;   // 跳过空白/注释通道
+            }
+            return "is".equalsIgnoreCase(prev.getText());
+        }
+        return false;
+    }
+
+    /**
      * 把一条 ANTLR 消息翻译成面向 CNL 作者的提示。无法识别的模式原样返回。
      */
+    /** 兼容旧签名（无 token 上下文时按「不是 is+符号」处理，即不作断言）。 */
     static String humanize(String msg) {
+        return humanize(msg, false);
+    }
+
+    static String humanize(String msg, boolean isBeforeSymbol) {
         if (msg == null) {
             return "语法错误";
         }
@@ -158,10 +213,11 @@ public class CnlErrorListener extends BaseErrorListener {
 
         if ((m = NO_VIABLE.matcher(msg)).find()) {
             String tok = m.group(1);
-            // ★`is` 紧跟符号是本仓最高频的手写/AI 生成错误（见 system_base_*.txt）。
-            //   ANTLR 把已匹配 token **无分隔**拼接，故这里按 "is<" / "is>" 检测，
-            //   而不是按源码文本——源码里它们中间通常有空格。
-            if (IS_BEFORE_SYMBOL.matcher(tok).find()) {
+            // ★只有当**上一个真实 token 就是 `is` 关键字**时才给这条专项提示。
+            //   曾经改用正则扫拼接串，结果 `analysis <= 3` / `this is< 5` 之类
+            //   含 "is" 的标识符全部误报——一条自信但错误的提示比没有提示更糟，
+            //   它让用户去改一个正确的地方（实测浪费了整轮排查）。
+            if (isBeforeSymbol) {
                 return "`is` 后面不能直接跟符号（如 `is < 18`）。"
                     + "请改写成文字形式 `is less than 18`，或去掉 `is` 只用符号 `< 18`";
             }
