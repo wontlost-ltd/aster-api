@@ -114,4 +114,58 @@ class CnlErrorFriendlyTest {
         assertThat(parseErr("Module m.\nRule r given x, produce:\n  If x < 18\n    Return 1."))
             .isEqualTo("<no error>");
     }
+
+    /**
+     * ★<b>误报回归</b>：标识符里含 "is" 不得被报成「`is` 后面跟了符号」。
+     *
+     * <p>此前的判定是拿正则扫 ANTLR 消息里的**无分隔拼接串**
+     * （{@code no viable alternative at input 'Ifanalysis<=3'}）。
+     * ANTLR 把 token 无空格拼起来，于是 {@code analysis <= 3} 与真正的
+     * {@code x is < 18} 在正则眼里完全一样，双双被报成 `is` 的问题。
+     *
+     * <p>这条误报的代价是实打实的：用户源码里根本没有 `is`，
+     * 却被这条自信的提示引去反复修改一个正确的地方。
+     * <b>一条自信但错误的诊断，比没有诊断更糟。</b>
+     *
+     * <p>现改为走 token 流判定（出错 token 的前一个 token 必须**就是** `is`）。
+     */
+    @Test
+    void identifierContainingIs_mustNotBeReportedAsIsBeforeSymbol() {
+        String err = parseErr("Module m.\nRule r given analysis, produce:\n  If analysis <= 3 foo\n    Return 1.");
+
+        assertThat(err)
+            .as("★源码里没有 `is` 关键词，不得声称是 `is` 的问题")
+            .doesNotContain("`is` 后面不能直接跟符号");
+    }
+
+    /** 真正的 `is` + 符号仍必须给出可操作提示（不能为了消误报把功能也砍掉）。 */
+    @Test
+    void realIsBeforeSymbol_stillGivesActionableHint() {
+        String err = parseErr("Module m.\nRule r given x, produce:\n  If x is < 18\n    Return 1.");
+
+        assertThat(err)
+            .as("★真正的 `is <` 必须仍被诊断出来")
+            .containsAnyOf("两种写法不能混用", "`is` 后面不能直接跟符号");
+        assertThat(err)
+            .as("★必须给出可用的改法")
+            .containsAnyOf("less than", "< 18");
+    }
+
+    /**
+     * ★`is` 与文字比较词的组合是**合法**的，必须照常通过。
+     *
+     * <p>用户报「以前带 is 是能跑的」——属实，且现在依然能跑。
+     * 之前那轮排查里，是**误报的提示**让人误以为 `is` 坏掉了。
+     */
+    @Test
+    void isWithWordComparators_remainsValid() {
+        for (String cmp : new String[] {
+            "is less than 18", "is greater than 18", "is at least 18",
+            "is at most 18", "is equal to 18",
+        }) {
+            assertThat(parseErr("Module m.\nRule r given x, produce:\n  If x " + cmp + "\n    Return 1."))
+                .as("★`%s` 是合法 CNL", cmp)
+                .isEqualTo("<no error>");
+        }
+    }
 }
