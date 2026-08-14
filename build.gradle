@@ -69,7 +69,7 @@ dependencies {
 
     // GraphQL支持
     implementation 'io.quarkus:quarkus-smallrye-graphql'
-    implementation 'commons-codec:commons-codec:1.22.0'
+    implementation 'commons-codec:commons-codec:1.22.1'
 
     // Persistence - Hibernate ORM Panache (blocking) + PostgreSQL + Flyway
     // #57：全应用（生产+测试）已移除 reactive 持久化 —— audit inbox 岛统一到 blocking JDBC。
