@@ -66,8 +66,16 @@ public class ReplayBatchScheduler {
             // ★不让异常逃出调度器：一个批次炸掉不应停掉整个轮询。
             //   批次自身的状态由 runBatch 内部保证已落到 FAILED——
             //   若连那都失败，下面的兜底会把它标记掉，避免永久卡在 RUNNING。
-            Log.errorf(e, "What-If 批次 %s 执行异常", batchId);
-            service.failBatchDefensively(batchId, claim.owner(), ReplayFailureKind.UNKNOWN);
+            //
+            //   ★分类要诚实：目标版本定位不到是**输入契约问题**，不是用户数据问题。
+            //   一律归 UNKNOWN 会让 UI 说成「部分执行无法重放」，而这类失败下
+            //   一条都没跑——那句话会把用户支去排查自己的执行记录。
+            ReplayFailureKind kind =
+                e instanceof ReplayBatchService.TargetVersionMissingException
+                    ? ReplayFailureKind.TARGET_VERSION_MISSING
+                    : ReplayFailureKind.UNKNOWN;
+            Log.errorf(e, "What-If 批次 %s 执行异常（归类 %s）", batchId, kind);
+            service.failBatchDefensively(batchId, claim.owner(), kind);
         }
     }
 

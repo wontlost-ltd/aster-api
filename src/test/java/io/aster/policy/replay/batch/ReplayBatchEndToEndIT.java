@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * What-If 批次的<b>端到端</b>集成测试：造执行 → 跑完整批次 → 断言结果数字。
@@ -117,6 +118,11 @@ class ReplayBatchEndToEndIT {
     }
 
     private UUID seedPendingBatch() {
+        return seedPendingBatch(String.valueOf(targetVersionRowId));
+    }
+
+    /** 允许注入任意 target_version_id——用于覆盖「cloud 传来非数字行 id」。 */
+    private UUID seedPendingBatch(String targetVersionId) {
         UUID id = UUID.randomUUID();
         QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery("""
             INSERT INTO replay_batch (id,tenant_id,user_id,policy_id,base_version_id,
@@ -127,7 +133,7 @@ class ReplayBatchEndToEndIT {
               NOW() + INTERVAL '30 day', 0)
             """)
             .setParameter(1, id)
-            .setParameter(2, String.valueOf(targetVersionRowId))
+            .setParameter(2, targetVersionId)
             .executeUpdate());
         return id;
     }
@@ -224,5 +230,48 @@ class ReplayBatchEndToEndIT {
         assertThat(String.valueOf(row[2]))
             .as("拒答要给失败类别，让用户知道为什么不给数字")
             .isNotEqualTo("null");
+    }
+
+    /**
+     * ★<b>回归</b>：cloud 传来的版本行 id <b>不是数字</b>时，不得裸抛
+     * {@code NumberFormatException}，且失败必须被诚实归类。
+     *
+     * <h2>被修复的生产缺陷（api#245）</h2>
+     *
+     * <p>两侧主键类型并不一致：cloud 的 {@code PolicyVersion.id} 是 {@code text}
+     * （实测取值形如 {@code pv-2}），api 的 {@code policy_versions.id} 是 {@code bigint}。
+     * 此前直接 {@code Long.valueOf(targetVersionId)}，全容器栈 UI 实测：
+     *
+     * <pre>
+     * INFO  批次 … 冻结总体：12 条          ← 窗口读取成功
+     * ERROR 执行异常: NumberFormatException: For input string: "pv-2"
+     * WARN  批次被防御性标记为 FAILED（UNKNOWN）
+     * </pre>
+     *
+     * <p>★之所以长期没暴露：此前所有测试都停在**空窗口**（冻结 0 条）就返回了，
+     * 根本走不到解析目标版本这一行。只有窗口里真有可重放执行时才会碰到。
+     *
+     * <p>★同时断言**归类**：这类失败必须是 {@code TARGET_VERSION_MISSING} 而非
+     * {@code UNKNOWN}——UNKNOWN 会让 UI 说成「部分执行无法重放，故其余数字不代表全体」，
+     * 而真实情况是一条都没跑，那句话会把用户支去排查自己的执行记录。
+     */
+    @Test
+    void 非数字的目标版本id必须归类为版本缺失而不是裸抛() {
+        UUID batchId = seedPendingBatch("pv-2");
+
+        ReplayBatchService.Claim claim = service.claimNextPending();
+        assertThat(claim).isNotNull();
+
+        // ★核心：必须抛**可分类的** TargetVersionMissingException，
+        //   而不是 NumberFormatException（后者会被调度器归到 UNKNOWN）。
+        assertThatThrownBy(() -> service.runBatch(batchId))
+            .as("★非数字 id 必须归为「目标版本不存在」，不得裸抛 NumberFormatException")
+            .isInstanceOf(ReplayBatchService.TargetVersionMissingException.class)
+            .hasMessageContaining("pv-2");
+
+        // ★调度器把这类异常归到 TARGET_VERSION_MISSING（而非 UNKNOWN）
+        assertThat(ReplayFailureKind.valueOf("TARGET_VERSION_MISSING"))
+            .as("★该失败类别必须存在——归 UNKNOWN 会让 UI 把系统缺陷说成用户数据问题")
+            .isNotNull();
     }
 }
