@@ -32,6 +32,29 @@ public class TrufflePolicyRuntime {
     private BlockingQueue<Context> contextPool;
     private Engine sharedEngine;
     private int poolSize;
+    private ResourceLimits pooledLimits;
+
+    /**
+     * 单次策略执行的 wall-clock 上界（毫秒）。
+     *
+     * <p>这是**真实**的执行上界——statementLimit 在本语言上不触发（见 init() 的实测记录）。
+     * 取值参照 What-If 路径（ReplayBatchService）的同类超时：合法策略典型 &lt; 50ms，
+     * 5s 留足冷启动与 GC 抖动的余量，同时把失控执行的影响限制在单个请求。
+     */
+    private static final long EXECUTION_TIMEOUT_MS = Long.getLong(
+        "aster.policy.execution-timeout-ms", 5_000L);
+
+    /**
+     * 看门狗调度器：到点用 {@code ctx.close(true)} 中断执行中的 guest 代码。
+     *
+     * <p>daemon 线程，单线程即可——它只负责“到点踹一脚”，不承载业务。
+     */
+    private static final java.util.concurrent.ScheduledExecutorService WATCHDOG =
+        java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "aster-policy-watchdog");
+            t.setDaemon(true);
+            return t;
+        });
 
     // Core IR JSON → 已构建的 Truffle Source（cached=true）。
     // 此前 execute() 每次都 ctx.eval("aster", coreJson) 传 raw String，GraalVM 每次把 coreJson
@@ -76,31 +99,35 @@ public class TrufflePolicyRuntime {
         // 对比 DynamicCnlExecutor (parser/) 已是 EXPLICIT + IOAccess.NONE,
         // 这次把 production execution path 拉齐.
         //
-        // P1-R22 (audit R22): + ResourceLimits 防 DoS. 之前 sandbox 锁定
-        // RCE 攻击面, 但恶意策略仍能写无限循环耗死 worker. statementLimit
-        // 在每个 Polyglot statement 之间检查计数; 超过 10M (相当于轻度策略
-        // ~100ms 上限) 立即抛 PolyglotException, 不依赖 wall-clock timer
-        // (后者在 JVM GC pause 下不可靠).
+        // P1-R22 (audit R22) 的原始注释宣称「statementLimit 提供执行上限」。
+        // ★这是**假的**，已实测证伪（issue #235）：
         //
-        // 10M statements 实测覆盖所有合法 aster 策略 (典型 < 10K, 复杂
-        // workflow < 1M); 拒绝的是死循环 / fork-bomb 风格输入.
+        //   对照实验（无限递归策略，同一份 Core IR）：
+        //     无任何 ResourceLimits   → Stack overflow, 177ms
+        //     statementLimit=100      → Stack overflow,  51ms
+        //     statementLimit=1        → Stack overflow,  29ms
+        //
+        //   三者表现完全一致，连 limit=1 都不触发——抛出的 ResourceExhausted
+        //   全部来自 **JVM 栈溢出**，与 statementLimit 无关。
+        //
+        //   根因：AsterLanguage 未声明 ProvidedTags，AST 节点上没有 StatementTag，
+        //   Truffle 无从计数。这不是配置问题，是**语言实现层缺一整套 tag**。
+        //
+        // 保留 statementLimit 是**无害的**（将来若补上 tag 即自动生效），但绝不能
+        // 再把它当作执行上限的依据。真实上界改由 wall-clock 超时提供——与 What-If
+        // 路径（ReplayBatchService.replayOne）已经采用的手段一致，那边同样是在
+        // 发现 statementLimit 不触发后改回来的。
+        //
+        // 威胁面评估（比原注释描述的小）：AsterParser.g4 无任何循环结构
+        // （无 while/for each/repeat），「恶意策略写无限循环」在本语言里**无法表达**。
+        // 剩余无界路径是**递归**——已由 JVM 栈溢出兜住（上面实测 <200ms 即抛），
+        // 以及深层表达式展开等非语言层构造，由 wall-clock 超时兜底。
         ResourceLimits limits = ResourceLimits.newBuilder()
             .statementLimit(10_000_000L, null)
             .build();
+        this.pooledLimits = limits;
         for (int i = 0; i < poolSize; i++) {
-            // 注意：engine 选项已在 sharedEngine 上设置，Context 不能重复设置
-            Context ctx = Context.newBuilder("aster")
-                .engine(sharedEngine)
-                .allowHostAccess(HostAccess.EXPLICIT)
-                .allowIO(IOAccess.NONE)
-                .allowNativeAccess(false)
-                .allowHostClassLookup(name -> false)
-                .allowPolyglotAccess(org.graalvm.polyglot.PolyglotAccess.NONE)
-                .allowCreateProcess(false)
-                .resourceLimits(limits)
-                .build();
-
-            contextPool.offer(ctx);
+            contextPool.offer(newPooledContext());
         }
 
         LOG.info("TrufflePolicyRuntime 初始化完成");
@@ -121,32 +148,116 @@ public class TrufflePolicyRuntime {
     ) {
         long startTime = System.currentTimeMillis();
         Context ctx = null;
+        boolean contextTainted = false;
 
         try {
             // 1. 从池中获取 Context
             ctx = contextPool.take();
 
-            // 2. 评估 Core IR（用按内容缓存的 cached Source，避免每次重新 parse coreJson）
-            Value evalResult = ctx.eval(sourceFor(coreJson));
+            // 2. 看门狗：到点用 ctx.close(true) 中断**正在执行**的 Truffle 代码。
+            //    这是真实上界的来源（statementLimit 不触发，见 init() 注释）。
+            //    ★用 close(true) 而不是 Thread.interrupt()：Truffle 不响应 Java
+            //    中断，只有 close(cancelIfExecuting=true) 能把执行中的 guest 代码停下。
+            final Context watched = ctx;
+            java.util.concurrent.ScheduledFuture<?> watchdog = WATCHDOG.schedule(() -> {
+                try {
+                    watched.close(true);
+                } catch (Exception ignored) {
+                    // 关闭本身失败不该再抛——此时已在超时路径上
+                }
+            }, EXECUTION_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
 
-            // 3. 执行函数
-            Object result = executeFunction(evalResult, contextArgs);
+            try {
+                // 3. 评估 Core IR（用按内容缓存的 cached Source，避免每次重新 parse coreJson）
+                Value evalResult = ctx.eval(sourceFor(coreJson));
 
-            long executionTime = System.currentTimeMillis() - startTime;
-            return ExecutionResult.success(result, executionTime);
+                // 4. 执行函数
+                Object result = executeFunction(evalResult, contextArgs);
+
+                long executionTime = System.currentTimeMillis() - startTime;
+                return ExecutionResult.success(result, executionTime);
+            } finally {
+                // 没超时就取消看门狗；已经跑过则 cancel 返回 false
+                if (!watchdog.cancel(false)) {
+                    contextTainted = true;
+                }
+            }
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             LOG.errorf(e, "获取 Context 被中断");
             return ExecutionResult.failure("执行被中断: " + e.getMessage());
         } catch (Exception e) {
+            // ★资源耗尽 / 被看门狗取消的 Context **不可复用**，必须重建。
+            //   原实现在 finally 里无条件 offer 回池，一个被 close 的 Context
+            //   回池后，后续每个拿到它的请求都会立刻失败——一次超时污染整个池。
+            if (isFatalToContext(e)) {
+                contextTainted = true;
+            }
             LOG.errorf(e, "策略执行失败: %s", e.getMessage());
             return ExecutionResult.failure("执行失败: " + e.getMessage());
         } finally {
-            // 4. 归还 Context 到池
+            // 5. 归还 Context：干净的直接回池，被污染的丢弃并补一个新的，
+            //    保证池容量不缩水（否则连续超时会把池耗成空，请求全部阻塞在 take()）。
             if (ctx != null) {
-                contextPool.offer(ctx);
+                if (contextTainted) {
+                    discardAndReplace(ctx);
+                } else {
+                    contextPool.offer(ctx);
+                }
             }
+        }
+    }
+
+    /**
+     * 按池化配置新建一个 Context。
+     *
+     * <p>初始化与「污染后重建」共用同一份配置——分成两处写就迟早漂移，
+     * 重建出的 Context 少一条 sandbox 限制而无人察觉是最坏的形态。
+     */
+    private Context newPooledContext() {
+        // 注意：engine 选项已在 sharedEngine 上设置，Context 不能重复设置
+        return Context.newBuilder("aster")
+            .engine(sharedEngine)
+            .allowHostAccess(HostAccess.EXPLICIT)
+            .allowIO(IOAccess.NONE)
+            .allowNativeAccess(false)
+            .allowHostClassLookup(name -> false)
+            .allowPolyglotAccess(org.graalvm.polyglot.PolyglotAccess.NONE)
+            .allowCreateProcess(false)
+            .resourceLimits(pooledLimits)
+            .build();
+    }
+
+    /**
+     * 判断异常是否已让该 Context 不可再用。
+     *
+     * <p>资源耗尽（含 JVM 栈溢出——递归策略的实际兜底）与 Context 被取消/关闭后，
+     * 该 Context 的内部状态不保证可继续承载新的执行，回池即污染。
+     */
+    // 包级可见：供单测直接验证分类规则。这条规则是「失败后池是否可用」的全部依据，
+    // 而它的两个触发源（看门狗超时、资源耗尽）都无法在共享 JVM 的单测里安全制造——
+    // 递归会打坏整个 test fork，超时阈值是 static final 读不到测试设的属性。
+    // 与其为了走通端到端而把测试写成不可靠的计时竞争，不如直接钉住这条规则本身。
+    static boolean isFatalToContext(Exception e) {
+        if (e instanceof org.graalvm.polyglot.PolyglotException pe) {
+            return pe.isResourceExhausted() || pe.isCancelled() || pe.isExit();
+        }
+        return e instanceof IllegalStateException; // Context already closed
+    }
+
+    /** 丢弃被污染的 Context 并补建一个，维持池容量。 */
+    private void discardAndReplace(Context tainted) {
+        try {
+            tainted.close(true);
+        } catch (Exception ignored) {
+            // 已关闭或正在关闭，忽略
+        }
+        try {
+            contextPool.offer(newPooledContext());
+        } catch (Exception e) {
+            // 补建失败只缩水一个槽位，比放回一个坏 Context 好；记录以便观测
+            LOG.errorf(e, "重建 Context 失败，池容量临时缩水");
         }
     }
 

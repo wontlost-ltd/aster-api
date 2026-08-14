@@ -85,10 +85,15 @@ public class ReplayBatchService {
     /**
      * 单条重跑的执行时间**预算**（ADR 0034 §12.4）。
      *
-     * <p>★<b>诚实说明：这不是一个被强制执行的 wall-clock 超时。</b>
-     * 真正的执行上界由 Truffle {@code statementLimit(10M)} 提供
-     * （见 {@code DynamicCnlExecutor}），它限制的是<b>指令数</b>而非时间——
-     * 本仓刻意选它而非计时器，因为计时器在 GC pause 下不可靠（P1-R22）。
+     * <p>★<b>这段注释此前是错的</b>（issue #235）：它写着「真正的执行上界由 Truffle
+     * {@code statementLimit(10M)} 提供」，而 statementLimit 在 Aster 上<b>完全不触发</b>
+     * ——AsterLanguage 未声明 ProvidedTags，AST 上没有 StatementTag，Truffle 无从计数。
+     * 实测对照：无限递归策略在「无限制 / limit=100 / limit=1」三种配置下表现完全一致，
+     * 全部止于 JVM 栈溢出。
+     *
+     * <p>真正的执行上界由 {@link #runWithTimeout} 的 <b>wall-clock 超时</b>提供
+     * （见 {@code replayOne}），生产 {@code /evaluate} 路径同样改用看门狗
+     * （{@code TrufflePolicyRuntime}）。
      *
      * <p>我曾在这里包一层线程池 + {@code Future.get(timeout)}，但那有两个问题：
      * 每条重跑新建线程池（万条批次 = 10000 次创建/销毁），且
@@ -118,8 +123,9 @@ public class ReplayBatchService {
     /**
      * 一段的耗时**预算** = 拉取 + N × (等许可 + 执行预算)。
      *
-     * <p>★注意用词：是**预算**不是上界。执行那一项由 statementLimit 间接约束
-     * （指令数而非时间），故这个和是工程估算。
+     * <p>★注意用词：是**预算**不是上界。执行那一项由 {@link #runWithTimeout} 的
+     * wall-clock 超时约束（**不是** statementLimit——它在本语言上不触发，见 #235），
+     * 故这个和是工程估算。
      * 但「租约 ≥ 2 × 预算」这条不等式仍由 {@link #assertLeaseCoversSegment()}
      * 在测试与启动时校验——把估算写进代码并校验，
      * 好过写在注释里由我口头保证（前三轮的错误模式）。
