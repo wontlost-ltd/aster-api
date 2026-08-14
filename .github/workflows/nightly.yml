@@ -253,14 +253,14 @@ jobs:
   ui-messages-drift:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           path: aster-api
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: aster-cloud/aster-lang-locales
           path: aster-lang-locales
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: aster-cloud/aster-lang-hi
           path: aster-lang-hi
