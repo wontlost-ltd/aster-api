@@ -255,7 +255,25 @@ class PolicyEvaluationReplayOrderingTest {
                 rm.get("canonicalInputHash").asText(), "canonicalInputHash 对固定输入必须确定性不变");
             assertEquals("d337b218e8ee5eb4a11a38c8a683b0a5382185cab2cea2d08ddd7d308420ee32",
                 rm.get("canonicalOutputHash").asText(), "canonicalOutputHash 对固定输入必须确定性不变");
-            assertEquals("6763236652d9dff76954270acedb7e0a8bce470762d11e1b00daae4598b763b1",
+            // ★2026-08-14 重新基线化：aster-lang-truffle 给 trace 步骤加了源码行号
+            //   （`return value` → `return value @L3`，见 truffle#64）。traceHash 覆盖
+            //   canonicalTrace 全文，故标签变化必然改变 hash。
+            //
+            //   ★重新基线化前已逐字段验证「只变标签、不变语义」——这正是本断言存在的意义，
+            //     不能因为"测试红了"就顺手换个数字：
+            //       finalResult   42 → 42        不变
+            //       result        42 → 42        不变
+            //       matched     true → true      不变
+            //       sequence       1 → 1         不变
+            //       expression  "return value" → "return value @L3"   ← 唯一差异
+            //     canonicalTrace 实测：
+            //       {"finalResult":42,"functionName":"main","moduleName":"probe",
+            //        "steps":[{"children":[],"expression":"return value @L3",
+            //                  "matched":true,"result":42,"sequence":1}]}
+            //
+            //   ★若将来这个值再变，仍必须先做同样的逐字段比对再改——
+            //     hash 变了而语义没变是可接受的；语义变了却把 hash 改掉，就是拿证据链换绿灯。
+            assertEquals("567f685bae9aea6437fbf46344b57df02c9130b5f86839ed66885faf18f96aa0",
                 rm.get("traceHash").asText(), "traceHash 对固定输入必须确定性不变");
             assertEquals("aster-canonical-json/v1", rm.get("canonicalizationVersion").asText(),
                 "canonicalizationVersion 现状固定值不变");
