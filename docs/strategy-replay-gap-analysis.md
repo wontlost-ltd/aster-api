@@ -323,6 +323,34 @@ Phase 5（完整 What-if 模拟）仍未开工——它们依赖客户配合，�
 「预计少收入 $18,240」「预计复购率提升 3.2%」——**至今仍然无法兑现**，
 不因 Phase 0-3 已交付而改变。对外材料引用本文时，这一节才是需要遵守的约束。
 
+### 补充：留存期本身此前也只是「文档承诺」（cloud#396，已修）
+
+第三节把 Phase 3 标为「依赖 retention 开关」。这句话当时是对的，但**遗漏了一件事**：
+`plans.ts` 里 `audit7days`（free）/ `audit90days`（pro 等）**没有任何代码执行它**——
+`cleanupOldExecutionLogs` 全仓零调用方，所有档位实际留存都是**永久**。
+
+即：本文写作时，「retention 开关」控制的是**是否记录**，而「留存多久」这一侧
+根本没有执行者。与本文第二·五节自己揭示的「trace 列已建好但没人写」是**同一形态**——
+schema/配置到位，执行缺位。
+
+已修（cloud#396 → #397/#398/#399）：
+
+| | |
+| --- | --- |
+| 留存 GC 自执行 | `/api/cron/execution-retention-gc`，按租户 plan 取天数 |
+| enterprise | 加 `auditUnlimited` featureKey——从「无法判定」变成**显式承诺** |
+| 决策骨架 | 独立留存 **365 天**，与 plan 解耦（骨架无 PII，且需覆盖最长分析窗口） |
+| 真实删除行为 | 真 Postgres 集成测试，4 条用例 + 3 轮变异验证 |
+
+**对本文结论的影响**：
+
+- Phase 3「依赖 retention 开关」→ 现在还要加一句**依赖留存期覆盖所选窗口**。
+  What-If 要真回放就得读 `Execution.input`，而它随执行日志按 plan 被 GC 删除。
+  已配套把 What-If 的可选窗口按 plan 裁剪（free 7d 只给「最近一个月」），
+  并对自定义区间如实标注实际覆盖天数。
+- 第二节的两条硬约束**不受影响**：平台仍不持有业务数据，`replayRetentionEnabled`
+  仍 default(false)。留存 GC 只是让「保留多久」这一侧变得可执行。
+
 ### 设计约束被实现照单执行（可核查）
 
 第二·五节要求「落库结构必须丢弃 `result` 值，否则等于绕过 `replayRetentionEnabled`
