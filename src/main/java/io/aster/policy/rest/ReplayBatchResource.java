@@ -65,7 +65,24 @@ public class ReplayBatchResource {
         String windowKind,
         /** CUSTOM 时必填，ISO-8601 日期（如 2026-07-01） */
         String customFrom,
-        String customTo
+        String customTo,
+        /**
+         * 是否把窗口右边界延伸到**此刻**（默认 false = 当天 00:00）。
+         *
+         * <p>★这是用户显式选择的取舍，不是默认行为：
+         * 默认右边界指向**已封闭的过去**，正在写入的数据天然落在窗口外，
+         * 因此同一窗口在任何时刻重算都得到同一批执行。
+         *
+         * <p>勾选后窗口覆盖**仍在写入的当天**：好处是"刚跑完就能立刻看
+         * What-If"（否则今天的执行要等到明天才进得了窗口，这是真实的
+         * 使用痛点）；代价是该窗口所覆盖的时段尚未封闭，此刻之后写入的
+         * 执行不会被这一批次看到——两次分析可能落在不同的数据集上。
+         *
+         * <p>注意：批次**自身仍然可复现**——windowFrom/windowTo 在创建时
+         * 就固化成绝对时刻存进实体，重放这一批次永远是同一个区间。
+         * 失去的是"同一档位在不同时刻重新发起会得到同一区间"这一性质。
+         */
+        Boolean includeToday
     ) {
     }
 
@@ -380,7 +397,16 @@ public class ReplayBatchResource {
      */
     private static Window resolveWindow(CreateRequest req, ZoneId tz) {
         LocalDate today = LocalDate.now(tz);
-        Instant to = today.atStartOfDay(tz).toInstant();   // 当天 00:00，不含当天
+        // ★右边界：默认当天 00:00（不含当天）；用户显式勾选 includeToday 时延伸到此刻。
+        //   默认值背后的理由见方法注释——边界指向已封闭的过去，故同一档位
+        //   在任何时刻重算都得到同一区间。
+        //   勾选后覆盖仍在写入的当天：解决"刚跑完却看不到"的真实痛点，
+        //   代价是该区间尚未封闭。无论哪种，边界都会在创建时固化成绝对时刻
+        //   存进实体，**批次自身始终可复现**。
+        boolean includeToday = Boolean.TRUE.equals(req.includeToday());
+        Instant to = includeToday
+            ? Instant.now()
+            : today.atStartOfDay(tz).toInstant();
 
         String kind = req.windowKind() == null ? "LAST_MONTH" : req.windowKind();
         return switch (kind) {
@@ -397,6 +423,13 @@ public class ReplayBatchResource {
         };
     }
 
+    /**
+     * CUSTOM 档位。
+     *
+     * <p>★`includeToday` 对本档位**不适用**（不是遗漏）：用户已经明确指定了
+     * 起止日期，右边界就是他自己选的那天 00:00，没有"要不要含当天"的歧义。
+     * 若想覆盖到此刻，选预设档位并勾选该选项即可。
+     */
     private static Window resolveCustom(CreateRequest req, ZoneId tz, LocalDate today) {
         if (req.customFrom() == null || req.customTo() == null) {
             throw new IllegalArgumentException("CUSTOM 窗口必须提供 customFrom 与 customTo");
