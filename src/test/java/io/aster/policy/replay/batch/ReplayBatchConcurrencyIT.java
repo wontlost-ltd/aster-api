@@ -59,6 +59,10 @@ class ReplayBatchConcurrencyIT {
     @io.quarkus.test.InjectMock
     ExecutionWindowClient windowClient;
 
+    /** 目标版本源码同样来自 cloud（见 ReplayBatchEndToEndIT 的说明）。 */
+    @io.quarkus.test.InjectMock
+    PolicyVersionSourceClient versionSourceClient;
+
     /** 每个 executionId 被真实拉取（进而重放）的次数——用于证明「恰好一次」。 */
     private final java.util.Map<String, java.util.concurrent.atomic.AtomicInteger> fetchCounts =
         new java.util.concurrent.ConcurrentHashMap<>();
@@ -143,6 +147,13 @@ class ReplayBatchConcurrencyIT {
     private Long targetVersionRowId;
 
     private Long seedTargetVersion() {
+        // ★源码由 cloud 提供（版本历史的系统真相在那边）；本库仍插一行是为了
+        //   保留原有的 rowId 语义，但重放取的是下面这个桩的内容。
+        Mockito.when(versionSourceClient.fetch(Mockito.anyString(), Mockito.anyString()))
+            .thenReturn(java.util.Optional.of(new PolicyVersionSourceClient.VersionSource(
+                "pv-2", "p", 2,
+                "Module M.\n\nRule decide given amount as Int, produce Bool:\n"
+                    + "  Return amount is at least 180.\n")));
         return QuarkusTransaction.requiringNew().call(() -> {
             em.createNativeQuery("""
                 INSERT INTO policy_versions (policy_id, version, module_name, function_name,
