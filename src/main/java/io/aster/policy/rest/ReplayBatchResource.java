@@ -193,6 +193,11 @@ public class ReplayBatchResource {
             .entity(Map.of(
                 "batchId", batch.id.toString(),
                 "status", batch.status.name(),
+                // ★下发 windowKind：客户端据此**自己本地化**窗口名称。
+                //   windowLabel 是服务端硬编码的中文，英文/德文/印地文界面
+                //   会原样显示"最近一个月"——实测在生产英文界面复现。
+                //   服务端不该决定展示语言；保留 windowLabel 仅为向后兼容。
+                "windowKind", batch.windowKind,
                 "windowLabel", batch.windowLabel,
                 "windowFrom", batch.windowFrom.toString(),
                 "windowTo", batch.windowTo.toString()))
@@ -323,6 +328,8 @@ public class ReplayBatchResource {
         var body = new java.util.LinkedHashMap<String, Object>();
         body.put("batchId", batch.id.toString());
         body.put("status", batch.status.name());
+        // ★见创建响应处注释：客户端用 windowKind 本地化，不用服务端的中文 label。
+        body.put("windowKind", batch.windowKind);
         body.put("windowLabel", batch.windowLabel);
         body.put("windowFrom", batch.windowFrom.toString());
         body.put("windowTo", batch.windowTo.toString());
