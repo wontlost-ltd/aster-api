@@ -780,8 +780,15 @@ public class ReplayBatchService {
                 e.executionId(), ReplayFailureKind.THROTTLED);
 
         } catch (Exception ex) {
-            return ReplayBatchRunner.ItemResult.failed(
-                e.executionId(), classify(ex));
+            ReplayFailureKind kind = classify(ex);
+            // ★必须记下**原始异常**：classify() 的默认分支是 INPUT_INCOMPATIBLE，
+            //   它会把任何未识别的失败一律说成「你的历史输入与新版本不兼容」。
+            //   生产实测（2026-08-17）126 条全 INPUT_INCOMPATIBLE，而同样的源码 +
+            //   同样的输入走 evaluate-source 却成功——真因被这个 catch 吞掉了，
+            //   日志、item 表里都没有任何线索，只能靠猜。
+            //   条目表只存分类（无 message 列），故这里是唯一的取证点。
+            Log.errorf(ex, "重放失败 execution=%s 归类=%s", e.executionId(), kind);
+            return ReplayBatchRunner.ItemResult.failed(e.executionId(), kind);
         }
     }
 
