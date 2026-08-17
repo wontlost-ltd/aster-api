@@ -171,6 +171,11 @@ public class ReplayBatchService {
     @jakarta.inject.Inject
     ExecutionWindowClient windowClient;
 
+    // 目标版本源码向 cloud 取——本服务的 policy_versions 是执行期编译缓存，
+    // 与 cloud 的版本历史不是同一批数据（见 PolicyVersionSourceClient 头注释）。
+    @jakarta.inject.Inject
+    PolicyVersionSourceClient versionSourceClient;
+
     @jakarta.inject.Inject
     WhatIfCapacityGate capacityGate;
 
@@ -417,10 +422,11 @@ public class ReplayBatchService {
         if (snap == null) {
             return -1;
         }
-        io.aster.policy.entity.PolicyVersion target = findTargetVersion(snap.targetVersionId());
-        if (target == null) {
-            throw new TargetVersionMissingException(snap.targetVersionId());
-        }
+        // ★向 cloud 取，不查本地表：本地 policy_versions 是执行期缓存，id 为
+        //   bigint 自增，而 targetVersionId 是 cloud 的 UUID——Long.parseLong
+        //   必定失败，导致每次 What-If 都以 TARGET_VERSION_MISSING 收场。
+        var target = versionSourceClient.fetch(snap.targetVersionId(), snap.userId())
+            .orElseThrow(() -> new TargetVersionMissingException(snap.targetVersionId()));
 
         // ★只拉**本段**，不再每段拉全量窗口（ADR 0034 §12.4）。
         //   上一版是 O(N²)：500 段 × 10000 条 = 5,000,000 个对象、约 5000 次 HTTP。
@@ -622,11 +628,10 @@ public class ReplayBatchService {
      */
     private List<ReplayBatchRunner.ItemResult> replayAll(ReplayBatchEntity batch) {
         // 目标版本源码：content 列是冻结的（updatable=false），可安全复用
-        io.aster.policy.entity.PolicyVersion target = findTargetVersion(batch.targetVersionId);
-        if (target == null) {
-            // 目标版本已被删除 → 整批失败，且是「重跑无用」那一类
-            throw new TargetVersionMissingException(batch.targetVersionId);
-        }
+        // 见上：源码的系统真相在 cloud，本服务不查本地缓存表。
+        // 取不到 = 版本已删或不属于该用户 → 整批失败，属「重跑无用」那一类。
+        var target = versionSourceClient.fetch(batch.targetVersionId, batch.userId)
+            .orElseThrow(() -> new TargetVersionMissingException(batch.targetVersionId));
 
         // ★总体由**冻结集合**定义，不由「此刻拉到什么」定义（ADR 0034 §10.2）。
         //
@@ -731,7 +736,7 @@ public class ReplayBatchService {
     private ReplayBatchRunner.ItemResult replayOne(
         ExecutionWindowClient.WindowedExecution e,
         boolean frozenBaseApproved,
-        io.aster.policy.entity.PolicyVersion target,
+        PolicyVersionSourceClient.VersionSource target,
         String tenantId) {
 
         try {
@@ -748,7 +753,7 @@ public class ReplayBatchService {
             //   这正是租约取值的依据。被弃线程由容量闸门的许可数封顶。
             var execResult = capacityGate.withPermit(PERMIT_WAIT_MS, () ->
                 runWithTimeout(() -> replayExecutor.execute(
-                    tenantId, target.content, e.input(),
+                    tenantId, target.content(), e.input(),
                     e.functionName(), e.locale(),
                     /* vocabIndex */ null,
                     /* legacyEvaluateSentinel */ false,
@@ -824,44 +829,6 @@ public class ReplayBatchService {
         return ReplayFailureKind.INPUT_INCOMPATIBLE;
     }
 
-    /**
-     * 按版本行 id 查目标版本；**id 不是数字时按「找不到」处理，而不是抛 NumberFormatException**。
-     *
-     * <p>★为什么需要这层：版本行 id 是 <b>cloud 传来的外部输入</b>，
-     * 而两侧的主键类型并不一致——cloud 的 {@code PolicyVersion.id} 是
-     * {@code text}（实测取值形如 {@code pv-2}），api 的 {@code policy_versions.id}
-     * 是 {@code bigint}。此前直接 {@code Long.valueOf(...)}，只要 cloud 传来非数字
-     * 就在**执行阶段**裸抛 {@code NumberFormatException}：
-     *
-     * <pre>
-     * INFO  批次 … 冻结总体：12 条          ← 窗口读取成功
-     * ERROR 执行异常: NumberFormatException: For input string: "pv-2"
-     * WARN  批次被防御性标记为 FAILED（UNKNOWN）
-     * </pre>
-     *
-     * <p>后果不只是崩溃：批次被归到 {@code UNKNOWN}，UI 显示「部分执行无法重放，
-     * 故其余数字不代表全体」——把一个**输入契约错误**说成**用户的数据问题**，
-     * 引导用户去排查自己的执行记录。而真实情况是<b>一条都没跑</b>。
-     *
-     * <p>归为「目标版本不存在」是诚实的：从本服务的角度，这个 id 确实指不到任何版本。
-     * 调用方拿到的是明确的 {@code TargetVersionMissingException}，
-     * 而不是一个需要猜的 {@code UNKNOWN}。
-     */
-    private static io.aster.policy.entity.PolicyVersion findTargetVersion(String versionId) {
-        if (versionId == null || versionId.isBlank()) {
-            return null;
-        }
-        final long numericId;
-        try {
-            numericId = Long.parseLong(versionId.trim());
-        } catch (NumberFormatException e) {
-            // 非数字 id：本库里不可能存在这样的版本行——按「找不到」处理，
-            // 由调用方统一抛 TargetVersionMissingException。
-            Log.warnf("目标版本 id 非数字，无法在本库定位：%s", versionId);
-            return null;
-        }
-        return io.aster.policy.entity.PolicyVersion.findById(numericId);
-    }
 
     /** 目标版本不存在——整批失败，且重跑无用。 */
     static class TargetVersionMissingException extends RuntimeException {

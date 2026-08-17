@@ -63,6 +63,17 @@ class ReplayBatchEndToEndIT {
     @InjectMock
     ExecutionWindowClient windowClient;
 
+    /**
+     * 目标版本源码同样来自 aster-cloud（版本历史的系统真相在那边）。
+     *
+     * <p>★这取代了原先「往本库 policy_versions 塞两行、再传其 bigint id」的做法：
+     * 那条路径在生产中**永远走不到**——UI 传来的是 cloud 的 UUID，本库没有那一行。
+     * api#245 让这种情况优雅降级为 TARGET_VERSION_MISSING（不再裸抛），
+     * 但降级之后功能依然拿不到结果；本次改为向 cloud 索取源码，才真正可用。
+     */
+    @InjectMock
+    PolicyVersionSourceClient versionSourceClient;
+
     private Long targetVersionRowId;
 
     @BeforeEach
@@ -74,6 +85,13 @@ class ReplayBatchEndToEndIT {
                 .executeUpdate();
         });
         targetVersionRowId = QuarkusTransaction.requiringNew().call(this::seedVersions);
+
+        // ★目标版本源码来自 cloud：默认桩返回 TARGET_POLICY。
+        //   本库 policy_versions 仍然播种，是因为**基线决策**仍走本地执行路径；
+        //   但「目标版本源码」这一项已改由 cloud 提供。
+        Mockito.when(versionSourceClient.fetch(Mockito.anyString(), Mockito.anyString()))
+            .thenReturn(java.util.Optional.of(new PolicyVersionSourceClient.VersionSource(
+                "pv-2", "p-e2e", 2, TARGET_POLICY)));
 
         // 三条历史执行：基线决策来自 BASE_POLICY
         Mockito.when(windowClient.fetchWindow(
@@ -233,43 +251,39 @@ class ReplayBatchEndToEndIT {
     }
 
     /**
-     * ★<b>回归</b>：cloud 传来的版本行 id <b>不是数字</b>时，不得裸抛
-     * {@code NumberFormatException}，且失败必须被诚实归类。
+     * ★<b>回归</b>：cloud 侧找不到目标版本时，必须归类为 {@code TARGET_VERSION_MISSING}。
      *
-     * <h2>被修复的生产缺陷（api#245）</h2>
+     * <h2>本用例的演进（api#245 → 本次）</h2>
      *
-     * <p>两侧主键类型并不一致：cloud 的 {@code PolicyVersion.id} 是 {@code text}
-     * （实测取值形如 {@code pv-2}），api 的 {@code policy_versions.id} 是 {@code bigint}。
-     * 此前直接 {@code Long.valueOf(targetVersionId)}，全容器栈 UI 实测：
+     * <p>原用例断言的是「非数字 id 不得裸抛 NumberFormatException」——那时
+     * api 在**本库** {@code policy_versions} 里按 bigint 主键找目标版本，而 cloud
+     * 传来的是 UUID，必然解析失败。#245 让它优雅降级为 TARGET_VERSION_MISSING。
      *
-     * <pre>
-     * INFO  批次 … 冻结总体：12 条          ← 窗口读取成功
-     * ERROR 执行异常: NumberFormatException: For input string: "pv-2"
-     * WARN  批次被防御性标记为 FAILED（UNKNOWN）
-     * </pre>
+     * <p>但降级只是不再崩，**功能依旧拿不到结果**：本库那张表是执行期编译缓存，
+     * 根本不含 cloud 的版本行。现改为向 cloud 索取源码后，「非数字 id」已是
+     * <b>正常情况</b>（UUID 本就非数字），该前提不复存在。
      *
-     * <p>★之所以长期没暴露：此前所有测试都停在**空窗口**（冻结 0 条）就返回了，
-     * 根本走不到解析目标版本这一行。只有窗口里真有可重放执行时才会碰到。
-     *
-     * <p>★同时断言**归类**：这类失败必须是 {@code TARGET_VERSION_MISSING} 而非
-     * {@code UNKNOWN}——UNKNOWN 会让 UI 说成「部分执行无法重放，故其余数字不代表全体」，
-     * 而真实情况是一条都没跑，那句话会把用户支去排查自己的执行记录。
+     * <p>真正需要守住的性质没变，故本用例改为断言它：<b>cloud 说找不到</b>
+     * （版本已删、或不属于该用户）时，必须是可分类的 TARGET_VERSION_MISSING，
+     * 而非 UNKNOWN——UNKNOWN 会让 UI 说成「部分执行无法重放，故其余数字不代表全体」，
+     * 而这类失败下一条都没跑，那句话会把系统缺陷说成用户数据问题。
      */
     @Test
-    void 非数字的目标版本id必须归类为版本缺失而不是裸抛() {
-        UUID batchId = seedPendingBatch("pv-2");
+    void cloud找不到目标版本时必须归类为版本缺失() {
+        // cloud 返回空 = 版本不存在或不属于该用户
+        Mockito.when(versionSourceClient.fetch(Mockito.anyString(), Mockito.anyString()))
+            .thenReturn(java.util.Optional.empty());
+
+        UUID batchId = seedPendingBatch("e409df40-42e0-4de5-8157-39784c61f6d0");
 
         ReplayBatchService.Claim claim = service.claimNextPending();
         assertThat(claim).isNotNull();
 
-        // ★核心：必须抛**可分类的** TargetVersionMissingException，
-        //   而不是 NumberFormatException（后者会被调度器归到 UNKNOWN）。
         assertThatThrownBy(() -> service.runBatch(batchId))
-            .as("★非数字 id 必须归为「目标版本不存在」，不得裸抛 NumberFormatException")
+            .as("★cloud 找不到时必须归为「目标版本不存在」，且异常可分类")
             .isInstanceOf(ReplayBatchService.TargetVersionMissingException.class)
-            .hasMessageContaining("pv-2");
+            .hasMessageContaining("e409df40");
 
-        // ★调度器把这类异常归到 TARGET_VERSION_MISSING（而非 UNKNOWN）
         assertThat(ReplayFailureKind.valueOf("TARGET_VERSION_MISSING"))
             .as("★该失败类别必须存在——归 UNKNOWN 会让 UI 把系统缺陷说成用户数据问题")
             .isNotNull();
