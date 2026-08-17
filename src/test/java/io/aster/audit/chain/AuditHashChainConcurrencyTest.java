@@ -45,7 +45,7 @@ public class AuditHashChainConcurrencyTest {
 
     @BeforeEach
     void cleanup() {
-        db.execute("DELETE FROM audit_logs");
+        db.executeAsAuditMaintenance("DELETE FROM audit_logs");
     }
 
     @Test

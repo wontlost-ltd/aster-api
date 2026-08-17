@@ -33,11 +33,19 @@ class AuditLogComplianceTest {
 
     private final PIIRedactor piiRedactor = new PIIRedactor();
 
+    @jakarta.inject.Inject
+    io.aster.test.BlockingDbTestHelper db;
+
     @BeforeEach
-    @Transactional
     void setUp() {
-        // 清理测试数据
-        AuditLog.deleteAll();
+        // 清理测试数据。
+        //
+        // ★不能再用 AuditLog.deleteAll()：V6.22.0 起 audit_logs 是数据库层
+        //   append-only，常规 DELETE（含 Panache 的 deleteAll）会被触发器拒绝。
+        //   夹具清理必须像生产的保留期清理任务一样**显式声明意图**，
+        //   走同一条豁免通道——这样测试与生产跑在同一套数据库语义上，
+        //   append-only 保护本身才是可测的。
+        db.executeAsAuditMaintenance("DELETE FROM audit_logs");
     }
 
     /**

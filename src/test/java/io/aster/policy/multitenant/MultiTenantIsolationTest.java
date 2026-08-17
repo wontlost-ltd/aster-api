@@ -35,6 +35,11 @@ import static org.junit.jupiter.api.Assertions.*;
 @QuarkusTestResource(PostgresTestResource.class)
 class MultiTenantIsolationTest {
 
+    // audit_logs 自 V6.22.0 起为数据库层 append-only，
+    // 夹具清理须走显式保留期通道（与生产清理任务同一条豁免路径）。
+    @jakarta.inject.Inject
+    io.aster.test.BlockingDbTestHelper auditDb;
+
     private static final String TENANT_ALPHA = "tenant-alpha";
     private static final String TENANT_BETA = "tenant-beta";
     private static final String TENANT_GAMMA = "tenant-gamma";
@@ -50,7 +55,7 @@ class MultiTenantIsolationTest {
     void setupTenants() {
         // 仅清理本测试创建的数据（按租户和策略模块隔离），保留 V99 种子数据
         TENANTS.forEach(tenant -> {
-            AuditLog.delete("tenantId = ?1", tenant);
+            auditDb.executeAsAuditMaintenance("DELETE FROM audit_logs WHERE tenant_id = ?", tenant);
             WorkflowStateEntity.delete("tenantId = ?1", tenant);
             AnomalyReportEntity.delete("tenantId = ?1", tenant);
         });

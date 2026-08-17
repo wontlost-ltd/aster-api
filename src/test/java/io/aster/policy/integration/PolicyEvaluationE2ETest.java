@@ -24,6 +24,11 @@ import static org.hamcrest.Matchers.*;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class PolicyEvaluationE2ETest {
 
+    // audit_logs 自 V6.22.0 起为数据库层 append-only，
+    // 夹具清理须走显式保留期通道（与生产清理任务同一条豁免路径）。
+    @jakarta.inject.Inject
+    io.aster.test.BlockingDbTestHelper auditDb;
+
     // 使用 default 租户以匹配 V99 种子数据中的策略
     private static final String TENANT_A = "default";
     private static final String TENANT_B = "default";
@@ -34,7 +39,7 @@ class PolicyEvaluationE2ETest {
     @Transactional
     void setUp() {
         // 清理审计日志
-        AuditLog.deleteAll();
+        auditDb.executeAsAuditMaintenance("DELETE FROM audit_logs");
     }
 
     /**

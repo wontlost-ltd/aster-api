@@ -34,7 +34,7 @@ public class TamperDetectionIntegrationTest {
 
     @BeforeEach
     void cleanup() {
-        db.execute("DELETE FROM audit_logs");
+        db.executeAsAuditMaintenance("DELETE FROM audit_logs");
     }
 
     @Test
@@ -82,7 +82,7 @@ public class TamperDetectionIntegrationTest {
         }
 
         // 篡改中间记录
-        db.execute("UPDATE audit_logs SET policy_module = 'hacked.module' WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
+        db.executeAsAuditTamper("UPDATE audit_logs SET policy_module = 'hacked.module' WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
 
         Instant end = Instant.now().plusSeconds(60); // +1 minute buffer
 

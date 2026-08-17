@@ -49,6 +49,13 @@ public class AuditLogResource {
     AuditChainVerifier chainVerifier;
 
     /**
+     * 锚点核对（V6.23.0）：覆盖 {@link AuditChainVerifier} 的盲区——
+     * 删除链尾后剩余记录依然首尾相接，链内验证看不出问题。
+     */
+    @Inject
+    io.aster.audit.chain.AuditChainAnchorService anchorService;
+
+    /**
      * 查询指定租户的所有审计日志
      *
      * GET /api/audit
@@ -154,12 +161,15 @@ public class AuditLogResource {
     @Path("/verify-chain")
     @io.smallrye.common.annotation.Blocking
     @Operation(summary = "验证审计哈希链完整性",
-        description = "通过校验哈希链的连续性与逐条摘要，检测审计记录被修改或被中间删除。"
-            + "范围说明：（1）hash_version=2 的记录覆盖全部业务字段；"
-            + "hash_version=1 的历史记录仅覆盖 6 个字段（event_type/timestamp/tenant_id/"
-            + "policy_module/policy_function/success），其余字段的改动在这些历史行上不可检测。"
-            + "（2）删除链**尾部**记录不会破坏剩余链，故无法由本接口检出——"
-            + "该场景需依赖数据库层的 append-only 约束或外部锚定。")
+        description = "校验审计记录的完整性，返回 valid/brokenAt/reason/recordsVerified 与锚点字段"
+            + "（anchorChecked/anchorIntact/anchorReason）。两重校验："
+            + "（1）哈希链连续性与逐条摘要——检出修改与中间删除；"
+            + "（2）链尾锚点比对——检出删除链尾与整链重写，这两类攻击不会破坏链内自洽性，"
+            + "仅凭链验证无法发现。"
+            + "范围说明：hash_version=2 的记录覆盖全部业务字段；hash_version=1 的历史记录"
+            + "仅覆盖 6 个字段（event_type/timestamp/tenant_id/policy_module/policy_function/success），"
+            + "其余字段在这些历史行上的改动不可检测。"
+            + "anchorChecked=false 表示该租户尚无锚点（无结论，非「已篡改」）。")
     @APIResponse(responseCode = "200", description = "验证结果（包含 valid、brokenAt、reason、recordsVerified 字段）")
     @APIResponse(responseCode = "400", description = "缺少必需参数或参数格式错误")
     @APIResponse(responseCode = "500", description = "验证失败（服务器内部错误）")
@@ -200,21 +210,33 @@ public class AuditLogResource {
             return Uni.createFrom().item(() -> {
                 ChainVerificationResult result = chainVerifier.verifyChain(tenantId, startTime, endTime);
 
+                // ★锚点核对（V6.23.0）：链内自洽性无法发现「删除链尾」——
+                //   删掉最后 N 条后剩余部分依然首尾相接，verifyChain 会返回 valid。
+                //   锚点是独立于该表的外部证据，专门覆盖这一盲区。
+                var anchor = anchorService.verifyAgainstAnchor(tenantId);
+                boolean overallValid = result.isValid() && anchor.intact();
+
                 // 构建 JSON 响应
                 String json = String.format(
-                    "{\"valid\":%b,\"brokenAt\":%s,\"reason\":%s,\"recordsVerified\":%d}",
-                    result.isValid(),
+                    "{\"valid\":%b,\"brokenAt\":%s,\"reason\":%s,\"recordsVerified\":%d,"
+                        + "\"anchorChecked\":%b,\"anchorIntact\":%b,\"anchorReason\":%s}",
+                    overallValid,
                     result.getBrokenAt() != null ? "\"" + result.getBrokenAt() + "\"" : "null",
                     result.getReason() != null ? "\"" + result.getReason().replace("\"", "\\\"") + "\"" : "null",
-                    result.getRecordsVerified()
+                    result.getRecordsVerified(),
+                    anchor.hasAnchor(),
+                    anchor.intact(),
+                    anchor.reason() != null ? "\"" + anchor.reason().replace("\"", "\\\"") + "\"" : "null"
                 );
 
-                if (result.isValid()) {
-                    LOG.infof("Chain verification succeeded: tenant=%s, recordsVerified=%d",
-                        tenantId, result.getRecordsVerified());
+                if (overallValid) {
+                    LOG.infof("Chain verification succeeded: tenant=%s, recordsVerified=%d, anchorChecked=%b",
+                        tenantId, result.getRecordsVerified(), anchor.hasAnchor());
                 } else {
-                    LOG.warnf("Chain verification failed: tenant=%s, reason=%s",
-                        tenantId, result.getReason());
+                    // 锚点失败必须与链失败一样醒目——它指向的是「链尾被删」这类
+                    // 链内验证看不见的攻击。
+                    LOG.warnf("Chain verification failed: tenant=%s, chainReason=%s, anchorReason=%s",
+                        tenantId, result.getReason(), anchor.reason());
                 }
 
                 return Response.ok(json).build();

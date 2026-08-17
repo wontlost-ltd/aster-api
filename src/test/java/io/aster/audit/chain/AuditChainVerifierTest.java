@@ -36,7 +36,7 @@ public class AuditChainVerifierTest {
 
     @BeforeEach
     void cleanup() {
-        db.execute("DELETE FROM audit_logs");
+        db.executeAsAuditMaintenance("DELETE FROM audit_logs");
     }
 
     @Test
@@ -87,7 +87,7 @@ public class AuditChainVerifierTest {
         }
 
         // 篡改中间记录的 policy_module（该字段 V1/V2 均在链内）
-        db.execute("UPDATE audit_logs SET policy_module = 'hacked.module' WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
+        db.executeAsAuditTamper("UPDATE audit_logs SET policy_module = 'hacked.module' WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
 
         Instant end = Instant.now();
 
@@ -126,7 +126,7 @@ public class AuditChainVerifierTest {
             }
 
             // 直接改写问责字段——这正是「谁批准 / 为何批准」被静默改写的攻击形态
-            db.execute(
+            db.executeAsAuditTamper(
                 "UPDATE audit_logs SET " + column + " = 'TAMPERED'"
                     + " WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ?"
                     + " ORDER BY id LIMIT 1 OFFSET 1)",
@@ -155,7 +155,7 @@ public class AuditChainVerifierTest {
         }
 
         // 删除第2条记录（索引1）
-        db.execute("DELETE FROM audit_logs WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
+        db.executeAsAuditMaintenance("DELETE FROM audit_logs WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
 
         Instant end = Instant.now();
 
