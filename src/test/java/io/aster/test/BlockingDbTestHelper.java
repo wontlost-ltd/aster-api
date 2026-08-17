@@ -79,6 +79,17 @@ public class BlockingDbTestHelper {
         return executeWithAuditGrant("aster.audit_tamper_simulation", sql, params);
     }
 
+    /**
+     * 锚点退休通道：**独立于**审计表的保留期开关。
+     *
+     * <p>★两者分开是安全要求而非风格：共用一个开关时，攻击者可在同一事务里
+     * 「删掉不利记录 + 删掉能揭发它的那个锚点」，层 3 被自己的清理通道解除。
+     * 触发器另外要求锚定点对应的审计记录**确实已不存在**才允许删锚点。
+     */
+    public int executeAsAnchorRetention(String sql, Object... params) {
+        return executeWithAuditGrant("aster.audit_anchor_retention_job", sql, params);
+    }
+
     private int executeWithAuditGrant(String settingName, String sql, Object... params) {
         try (Connection c = dataSource.getConnection()) {
             // ★不能无条件接管事务：调用方可能是 @Transactional 测试方法，

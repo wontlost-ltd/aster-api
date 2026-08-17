@@ -12,10 +12,21 @@
 --   层 3（锚定）：定期把链尾快照写入独立 anchor 表 —— 见 V6.23.0
 --
 -- 为什么触发器与权限**都要**做，而不是二选一：
---   - 只有权限：DBA / 超级用户 / 拿到 postgres 凭据者仍可随意改写；
---   - 只有触发器：超级用户可 `ALTER TABLE ... DISABLE TRIGGER ALL` 绕过
---     （但该操作本身会留下 DDL 痕迹，且需要显式意图，不再是「一条 UPDATE 就改了」）。
---   两者叠加后，改写审计记录需要**显式的、可审计的特权操作**，而非顺手一条 SQL。
+--   - 只有权限：超级用户绕过一切权限检查，仍可随意改写；
+--   - 只有触发器：有 ALTER 权限者可 `ALTER TABLE ... DISABLE TRIGGER` 绕过。
+--   两者叠加后，对**非 owner 的普通角色**而言，改写审计记录需要显式的、
+--   可审计的特权操作，而非顺手一条 SQL（实测：单独 GRANT UPDATE 后仍被触发器拒；
+--   单独 DISABLE TRIGGER 后仍 permission denied）。
+--
+-- ★★ 关键前提（当前生产**尚不满足**，见 V6.22.1 结尾说明）：
+--   本表的 **owner 必须不是应用连接角色**。
+--   实测（PG 16，全程非超级用户）：表 owner 只需两条 DDL 即可同时解除层 1 与层 2——
+--       GRANT UPDATE ON audit_logs TO <self>;              -- owner 可自授权限
+--       ALTER TABLE audit_logs DISABLE TRIGGER trg_...;    -- owner 可关自己的触发器
+--   甚至更隐蔽的一步版本：owner 可 CREATE OR REPLACE 守卫函数为空实现。
+--   因此「只有超级用户能绕过」这一说法**不成立**——owner 同样可以。
+--   若 Flyway 与应用运行时共用同一角色（当前生产情况），该角色即 owner，
+--   层 1/2 对它形同虚设，实际防线只剩层 3（锚定）能事后发现。
 --
 -- 允许的操作：INSERT（追加）。TRUNCATE 一并禁止（否则可整表清空绕过行级触发器）。
 --

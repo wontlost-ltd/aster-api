@@ -53,8 +53,12 @@ class AuditImmutabilityTest {
     void cleanup() {
         // 夹具清理必须走特权通道——普通 DELETE 已被触发器拒绝，
         // 这本身就说明 append-only 生效了。
-        db.executeAsAuditMaintenance("DELETE FROM audit_chain_anchors");
+        //
+        // ★顺序不可颠倒：锚点触发器要求「锚定点对应的审计记录已不存在」才允许删锚点，
+        //   故必须先删 audit_logs 再删锚点。这个约束正是防止
+        //   「删记录 + 删揭发它的锚点」这一组合攻击的核心。
         db.executeAsAuditMaintenance("DELETE FROM audit_logs");
+        db.executeAsAnchorRetention("DELETE FROM audit_chain_anchors");
     }
 
     // ============================================================
@@ -231,6 +235,105 @@ class AuditImmutabilityTest {
             "新锚点落下后仍必须检出链尾被删——锚点是累积证据，不能只看最新的一个");
     }
 
+    /**
+     * ★<b>已知边界</b>：删除尚未被锚定的最新记录**不会**被检出。
+     *
+     * <p>这不是缺陷，而是周期性锚定的固有性质——证据不可能覆盖尚未产生证据的
+     * 时间段。本用例把该边界**固化为可执行的事实陈述**，避免它被误当作已解决：
+     * 若将来有人改进实现（如改为写入时同步锚定）使其可检出，本用例会失败，
+     * 从而提示同步更新对外的能力声明。
+     *
+     * <p>当前缓解手段是缩短窗口：每小时锚定一次 → 最坏情况下可无声删除的范围
+     * 是最近一小时内新增的记录。
+     */
+    @Test
+    void knownGap_deletingRecordsNewerThanLastAnchorIsNotDetected() throws Exception {
+        String tenantId = "t-anchor-gap";
+        for (int i = 0; i < 3; i++) {
+            emit(tenantId, "anchored" + i);
+        }
+        anchorService.anchorAllTenants();
+        long anchoredMaxId = db.queryLong(
+            "SELECT MAX(anchored_max_id) FROM audit_chain_anchors WHERE tenant_id = ?", tenantId);
+
+        // 追加 2 条尚未被锚定的记录
+        for (int i = 0; i < 2; i++) {
+            emit(tenantId, "unanchored" + i);
+        }
+
+        // 攻击：只删这些「锚点看不见」的最新记录
+        int deleted = db.executeAsAuditMaintenance(
+            "DELETE FROM audit_logs WHERE tenant_id = ? AND id > ?", tenantId, anchoredMaxId);
+        assertEquals(2, deleted, "应删掉两条未锚定记录");
+
+        var check = anchorService.verifyAgainstAnchor(tenantId);
+        assertTrue(check.intact(),
+            "已知边界：锚点只能证明锚定那一刻的状态，删除其后新增的记录无法检出。"
+                + "若本断言开始失败，说明实现已能覆盖该窗口——请同步更新 "
+                + "AuditChainAnchorService 的信任边界文档与对外能力声明");
+    }
+
+    /**
+     * ★「用清理通道自解层 3」攻击：删掉不利记录后，再删掉能揭发它的那个锚点。
+     *
+     * <p>此前 audit_logs 与 audit_chain_anchors 的 DELETE 共用同一个开关
+     * {@code aster.audit_retention_job}，于是攻击者在**同一个事务**里即可完成：
+     * <pre>
+     *   SET LOCAL aster.audit_retention_job = 'on';
+     *   DELETE FROM audit_logs        WHERE ...;   -- 删掉不利记录
+     *   DELETE FROM audit_chain_anchors WHERE ...; -- 删掉能揭发它的锚点
+     * </pre>
+     * 核对随即报告「完好」——层 3 被自己的清理通道解除。
+     *
+     * <p>修复两处：①锚点删除改用独立开关；②触发器要求锚定点对应的审计记录
+     * **确实已不存在**才允许删该锚点。本用例锁住第二条——它才是真正的不变量。
+     */
+    @Test
+    void anchorCannotBeDeletedWhileItsAuditRecordStillExists() throws Exception {
+        String tenantId = "t-anchor-selfclear";
+        for (int i = 0; i < 3; i++) {
+            emit(tenantId, "f" + i);
+        }
+        anchorService.anchorAllTenants();
+
+        // 记录仍在时，即便持有锚点退休开关也不得删除该锚点——
+        // 否则「改了记录 → 删掉证据」这条链就通了
+        RuntimeException e = assertThrows(RuntimeException.class,
+            () -> db.executeAsAnchorRetention(
+                "DELETE FROM audit_chain_anchors WHERE tenant_id = ?", tenantId),
+            "锚定点对应的审计记录仍存在时，不得删除该锚点");
+        assertTrue(rootMessage(e).contains("仍然存在"),
+            "应明确拒绝原因，实际: " + rootMessage(e));
+
+        // 审计表的保留期开关**不得**解锁锚点删除（两个通道必须分离）
+        RuntimeException e2 = assertThrows(RuntimeException.class,
+            () -> db.executeAsAuditRetention(
+                "DELETE FROM audit_chain_anchors WHERE tenant_id = ?", tenantId),
+            "审计表的清理开关不得同时解锁锚点删除");
+        assertTrue(rootMessage(e2).contains("append-only"),
+            "实际: " + rootMessage(e2));
+    }
+
+    /**
+     * ★「有审计记录却零锚点」必须上报为异常，而非静默判为完好。
+     *
+     * <p>最典型的成因是应用角色缺少 audit_chain_anchors 的 INSERT 权限——
+     * 锚定任务每小时抛异常、锚点表恒空，而核对返回 intact=true，
+     * 使「层 3 从未工作」与「确已完好」在 API 响应里不可区分（fail-open）。
+     */
+    @Test
+    void auditRecordsWithoutAnyAnchor_isReportedNotSilentlyIntact() throws Exception {
+        String tenantId = "t-no-anchor-but-records";
+        emit(tenantId, "f1");
+        // 刻意不锚定
+
+        var check = anchorService.verifyAgainstAnchor(tenantId);
+        assertFalse(check.intact(),
+            "有审计记录却一条锚点都没有 = 锚定从未成功，必须上报而非静默判为完好");
+        assertTrue(check.reason().contains("没有任何锚点"),
+            "应说明原因，实际: " + check.reason());
+    }
+
     @Test
     void anchorIsIdempotent_noNewRecordsNoNewAnchor() throws Exception {
         String tenantId = "t-anchor-idem";
@@ -277,8 +380,16 @@ class AuditImmutabilityTest {
      * （SQL 注入 / 凭据泄露）只要自己 {@code SET LOCAL aster.audit_tamper_simulation='on'}
      * 就能改写审计记录，整层保护形同虚设。
      *
-     * <p>本用例直接扫生产迁移目录的源文件——这是唯一能锁住「生产无后门」的方式，
+     * <p>本用例扫生产迁移目录的源文件——这是唯一能锁住「生产无后门」的方式，
      * 因为测试运行时加载的恰恰是带豁免的 test 版本，运行期行为测不出这一点。
+     *
+     * <p>★检查的是**结构**而非特定变量名：审查实测证明，扫
+     * {@code audit_tamper_simulation} 这个字面量至少有 4 种绕法
+     * （字符串拼接 {@code 'aster.audit_tamper' || '_simulation'}、换个变量名、
+     * {@code chr()} 拼装、直接复用保留期开关放行 UPDATE）。
+     * 现改为断言：生产迁移的 UPDATE 分支里**不得出现任何 current_setting(...)**
+     * ——「UPDATE 是否放行取决于某个 session 变量」这个形状本身就是后门，
+     * 与它读哪个变量无关。
      */
     @Test
     void productionMigrationsContainNoUpdateBypass() throws Exception {
@@ -292,14 +403,22 @@ class AuditImmutabilityTest {
                 .filter(p -> p.toString().endsWith(".sql"))
                 .filter(p -> {
                     try {
-                        // 只看**非注释行**：V6.22.0 的注释里说明了「为何不留后门」，
-                        // 那是文档不是通道。若某天有人真的写下
-                        // current_setting('aster.audit_tamper_simulation'...)，
-                        // 它一定出现在可执行的非注释行上。
-                        return java.nio.file.Files.readAllLines(p).stream()
+                        // ★不再扫特定变量名（那太容易绕开：字符串拼接、换个变量名、
+                        //   chr() 拼装、甚至复用保留期开关，实测均可逃过子串匹配）。
+                        //   改为扫**结构**：生产迁移的 UPDATE 分支里不得出现任何
+                        //   current_setting(...) —— 无论读的是哪个变量，
+                        //   「UPDATE 是否放行取决于某个 session 变量」本身就是后门形状。
+                        String sql = java.nio.file.Files.readAllLines(p).stream()
                             .map(String::trim)
                             .filter(line -> !line.startsWith("--"))
-                            .anyMatch(line -> line.contains("audit_tamper_simulation"));
+                            .reduce("", (a, b) -> a + "\n" + b);
+
+                        // 定位 UPDATE 分支：TG_OP = 'UPDATE' 之后到下一个 TG_OP 之前
+                        int start = sql.indexOf("TG_OP = 'UPDATE'");
+                        if (start < 0) return false;
+                        int next = sql.indexOf("TG_OP =", start + 16);
+                        String updateBranch = next > 0 ? sql.substring(start, next) : sql.substring(start);
+                        return updateBranch.contains("current_setting");
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
@@ -309,18 +428,23 @@ class AuditImmutabilityTest {
                 .toList();
 
             assertTrue(offenders.isEmpty(),
-                "生产迁移不得包含 audit_tamper_simulation 豁免（那是生产后门）；"
-                    + "该豁免只允许存在于 db/migration-test。违规文件: " + offenders);
+                "生产迁移的 UPDATE 分支不得依赖任何 session 变量（current_setting）——"
+                    + "那是生产后门，无论变量叫什么名字。豁免只允许存在于 db/migration-test。"
+                    + "违规文件: " + offenders);
         }
     }
 
     @Test
-    void noAnchorYet_isNotReportedAsTampering() {
-        // 尚未锚定的租户不应被误报为「已被篡改」——
-        // 「没有证据」与「证据显示被改」是两回事
-        var check = anchorService.verifyAgainstAnchor("t-never-anchored");
+    void tenantWithNoAuditRecordsAtAll_isNotReportedAsTampering() {
+        // 完全没有审计记录的租户：没有需要保护的东西，也就无所谓被篡改。
+        // 「没有数据」与「数据被改」是两回事，不得误报。
+        //
+        // ★注意与 auditRecordsWithoutAnyAnchor_isReportedNotSilentlyIntact 的区别：
+        //   那个场景是「有记录但零锚点」= 锚定从未工作 = 必须上报；
+        //   本场景是「连记录都没有」= 无结论，正常。
+        var check = anchorService.verifyAgainstAnchor("t-never-anchored-no-records");
         assertFalse(check.hasAnchor());
-        assertTrue(check.intact(), "无锚点应视为「无结论」，不得误报为篡改");
+        assertTrue(check.intact(), "无任何审计记录时应视为「无结论」，不得误报为篡改");
     }
 
     // ============================================================

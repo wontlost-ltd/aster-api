@@ -1,10 +1,11 @@
 -- 审计表写权限收缴（2026-08-17 安全审计，第 1 层）
 --
 -- 三层防御中的第 1 层。层 2（触发器 V6.22.0）已能拒绝一切 UPDATE/DELETE/TRUNCATE，
--- 但触发器可被超级用户 ALTER TABLE ... DISABLE TRIGGER ALL 关闭。
+-- 但触发器可被有 ALTER 权限者 DISABLE。
 -- 权限层与之互补：即便触发器被关，无 UPDATE/DELETE 权限的角色依然写不动。
 -- 反过来，权限层挡不住超级用户，那由触发器兜住。
--- 两层叠加后，改写审计记录需要显式的、可审计的特权操作，而非顺手一条 SQL。
+-- 两层叠加后，对**非 owner 的普通角色**而言，改写审计记录需要显式的、
+-- 可审计的特权操作，而非顺手一条 SQL。
 --
 -- 生产事实（已核实 k3s 清单）：
 --   应用连接角色 = aster_api_user（CNPG managed role，非超级用户：
@@ -55,3 +56,27 @@ SELECT apply_audit_logs_write_revoke();
 
 -- 函数用完即弃：它只在本次迁移执行一次，留着反而给了「再调一次改权限」的入口。
 DROP FUNCTION apply_audit_logs_write_revoke();
+
+-- ============================================================================
+-- ★★ 生产部署前置条件（当前**尚不满足**，本迁移的效果因此受限）
+-- ============================================================================
+--
+-- 本层要真正成立，audit_logs 的 **owner 必须不是应用连接角色**。
+--
+-- 实测（PG 16，全程非超级用户）：表 owner 只需两条 DDL 即可同时解除层 1 与层 2：
+--     GRANT UPDATE ON audit_logs TO <self>;             -- owner 可给自己重新授权
+--     ALTER TABLE audit_logs DISABLE TRIGGER trg_...;   -- owner 可关掉自己的触发器
+--     UPDATE audit_logs SET performed_by = '...';       -- 成功
+-- owner 还可直接 CREATE OR REPLACE 守卫函数为空实现（更隐蔽，无需两步）。
+--
+-- 而生产当前让 **同一个 aster_api_user 既跑 Flyway 迁移、又作应用运行时连接**，
+-- 因此它就是表 owner —— 层 1 与层 2 对它形同虚设，实际防线只剩层 3（锚定）
+-- 能在事后发现改动。
+--
+-- 收口方案（属部署侧改动，需单独一轮）：
+--   1. 新建 DDL 专用角色 aster_migrator，由它跑 Flyway 并持有各表 owner；
+--   2. aster_api_user 降为纯运行时角色：仅 INSERT/SELECT，非 owner、无 ALTER；
+--   3. 两者密码分别管理，运行时凭据泄露不再等于可改写审计。
+--
+-- 在此之前，对外能力声明应表述为「任何改动可被检测」，
+-- 而非「常规路径无法改动」——后者需要上述 owner 分离才成立。

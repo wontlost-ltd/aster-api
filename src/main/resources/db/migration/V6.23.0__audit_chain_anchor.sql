@@ -56,16 +56,34 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    -- DELETE 与 audit_logs 同口径：仅在显式声明的保留期清理事务内放行。
-    -- 锚点是派生数据，随审计记录一起到期清理是合理的；但常规路径必须删不掉，
-    -- 否则攻击者删完链尾再删锚点即可完全掩盖。
+    -- ★锚点删除必须用**独立**开关，不能与 audit_logs 的保留期通道共用。
+    --
+    --   共用会造成致命组合：攻击者在**同一个事务**里
+    --       SET LOCAL aster.audit_retention_job = 'on';
+    --       DELETE FROM audit_logs        WHERE ...;   -- 删掉不利记录
+    --       DELETE FROM audit_chain_anchors WHERE ...; -- 删掉能揭发它的那个锚点
+    --   核对随即报告「完好」——层 3 被自己的清理通道解除。
+    --   （实测复现：删已锚定记录后核对报 TAMPERED，再删对应锚点即翻回 INTACT。）
+    --
+    --   现改为独立开关 aster.audit_anchor_retention_job，并附加**前置条件**：
+    --   只有当锚定点对应的审计记录**确实已不存在**时才允许删该锚点。
+    --   这样锚点只能在其证明对象被合法清理后随之退休，
+    --   而无法被用来抹掉「记录还在、但已被改动」或「记录被非法删除」的证据。
     IF (TG_OP = 'DELETE') THEN
-        IF current_setting('aster.audit_retention_job', true) IS DISTINCT FROM 'on' THEN
+        IF current_setting('aster.audit_anchor_retention_job', true) IS DISTINCT FROM 'on' THEN
             RAISE EXCEPTION
                 'audit_chain_anchors 为 append-only：禁止 DELETE（锚点 id=%）。'
-                '删除锚点会掩盖审计链被截断的事实；保留期清理须显式声明 '
-                'SET LOCAL aster.audit_retention_job = ''on''。',
+                '删除锚点会掩盖审计链被截断的事实；锚点退休须显式声明 '
+                'SET LOCAL aster.audit_anchor_retention_job = ''on''（独立于审计表的清理开关）。',
                 OLD.id
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        IF EXISTS (SELECT 1 FROM audit_logs
+                   WHERE id = OLD.anchored_max_id AND tenant_id = OLD.tenant_id) THEN
+            RAISE EXCEPTION
+                'audit_chain_anchors：锚点 id=% 所指的审计记录（id=%）仍然存在，不得删除该锚点。'
+                '锚点只能在其证明对象被合法清理后随之退休。',
+                OLD.id, OLD.anchored_max_id
                 USING ERRCODE = 'insufficient_privilege';
         END IF;
         RETURN OLD;
@@ -104,3 +122,42 @@ CREATE TRIGGER trg_audit_anchors_no_truncate
     BEFORE TRUNCATE ON audit_chain_anchors
     FOR EACH STATEMENT
     EXECUTE FUNCTION reject_audit_log_truncate();
+
+-- ★锚点表必须显式授权给应用角色，否则层 3 在生产**从不运行**。
+--
+--   V6.22.1 只对 audit_logs 做了 GRANT；本表建于其后，若不补授权，
+--   非 owner 的 aster_api_user 会在 scheduledAnchor() 的 INSERT 上拿到
+--   `permission denied for table audit_chain_anchors`，锚点表恒空；
+--   而 verifyAgainstAnchor 命中 rows.isEmpty() 返回 noAnchor(intact=true)——
+--   「从未锚定」与「确已完好」在响应里不可区分，层 3 静默失效（fail-open）。
+--
+--   只授 INSERT + SELECT：锚点由应用追加、由核对读取；
+--   UPDATE/DELETE 走触发器的显式豁免通道，不需要表级权限支撑。
+CREATE OR REPLACE FUNCTION apply_audit_anchor_grants()
+RETURNS void
+LANGUAGE plpgsql
+AS $anchor_grant$
+DECLARE
+    app_role CONSTANT TEXT := 'aster_api_user';
+    seq_name TEXT;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = app_role) THEN
+        RAISE NOTICE 'audit_chain_anchors: 角色 % 不存在，跳过授权（本地/CI 预期如此）', app_role;
+        RETURN;
+    END IF;
+
+    EXECUTE format('GRANT INSERT, SELECT ON audit_chain_anchors TO %I', app_role);
+    -- exported_at 标记需要 UPDATE 权限；触发器仍只允许 NULL→非 NULL 这一种改动
+    EXECUTE format('GRANT UPDATE ON audit_chain_anchors TO %I', app_role);
+
+    SELECT pg_get_serial_sequence('audit_chain_anchors', 'id') INTO seq_name;
+    IF seq_name IS NOT NULL THEN
+        EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE %s TO %I', seq_name, app_role);
+    END IF;
+
+    RAISE NOTICE 'audit_chain_anchors: 已授予 % 的 INSERT/SELECT/UPDATE 权限', app_role;
+END;
+$anchor_grant$;
+
+SELECT apply_audit_anchor_grants();
+DROP FUNCTION apply_audit_anchor_grants();

@@ -30,7 +30,20 @@ import java.util.List;
  *
  * <h2>信任边界（重要，不要高估）</h2>
  *
- * <p>锚点存在同一个数据库里时，只能防「只改审计表、没想到还有锚点表」的粗糙攻击。
+ * <p><b>1) 锚定窗口盲区（固有性质，非缺陷）。</b>
+ * 锚点只能证明「锚定那一刻链是什么样」。删除 {@code id} 大于最新锚点
+ * {@code anchored_max_id} 的记录——即<b>尚未被锚定的最新记录</b>——不会被检出。
+ * 实测确认：删掉这些记录后，全部锚点的三项核对（记录存在 / hash 一致 / 计数未减）
+ * 依然通过。
+ *
+ * <p>这不是可以「修掉」的 bug，而是任何周期性锚定方案的本质：证据不可能覆盖
+ * 尚未产生证据的时间段。缓解手段只有缩短窗口（提高锚定频率）——当前每小时一次，
+ * 意味着最坏情况下可无声删除的范围 = 最近一小时内新增的记录。
+ * 若该窗口不可接受，应改为<b>写入时同步锚定</b>（每条审计记录落库即更新锚点），
+ * 代价是每次审计写入多一次锚点表写入。
+ *
+ * <p><b>2) 锚点存放位置。</b>
+ * 锚点与审计表同库时，只能防「只改审计表、没想到还有锚点表」的粗糙攻击。
  * 真正的强度来自把锚点<b>复制到数据库之外</b>（对象存储 / 外部时间戳服务 /
  * 另一套凭据的库）。本服务负责<b>生成</b>锚点并暴露待导出集合；
  * 导出目的地属于部署侧配置，未在本类内实现——
@@ -122,6 +135,29 @@ public class AuditChainAnchorService {
             .getResultList();
 
         if (rows.isEmpty()) {
+            // ★区分「本来就没有审计记录」与「有记录却一条锚点都没有」。
+            //
+            //   后者是**异常状态**：锚定任务每小时跑一次，有记录必然产生锚点。
+            //   一条都没有意味着锚定从未成功——最典型的原因是应用角色缺少
+            //   audit_chain_anchors 的 INSERT 权限（层 3 静默不工作），
+            //   也可能是攻击者设法阻止了锚定任务。
+            //
+            //   此前一律返回 intact=true，使「从未锚定」与「确已完好」
+            //   在 API 响应里不可区分 —— 那是 fail-open。现改为显式上报。
+            long auditedRecords = ((Number) entityManager.createNativeQuery("""
+                SELECT COUNT(*) FROM audit_logs
+                WHERE tenant_id = :tenant AND current_hash IS NOT NULL
+                """)
+                .setParameter("tenant", tenantId)
+                .getSingleResult()).longValue();
+
+            if (auditedRecords > 0) {
+                return AnchorCheck.tampered(String.format(
+                    "该租户有 %d 条审计记录但没有任何锚点——锚定任务从未成功执行"
+                        + "（常见原因：应用角色缺 audit_chain_anchors 写权限）。"
+                        + "在锚点建立前，无法证明审计链未被截断。",
+                    auditedRecords));
+            }
             return AnchorCheck.noAnchor();
         }
 
