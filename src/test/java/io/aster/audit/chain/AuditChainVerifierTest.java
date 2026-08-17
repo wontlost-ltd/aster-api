@@ -36,7 +36,7 @@ public class AuditChainVerifierTest {
 
     @BeforeEach
     void cleanup() {
-        db.execute("DELETE FROM audit_logs");
+        db.executeAsAuditMaintenance("DELETE FROM audit_logs");
     }
 
     @Test
@@ -63,8 +63,18 @@ public class AuditChainVerifierTest {
         assertNull(result.getReason());
     }
 
+    /**
+     * ★2026-08-17 审计订正：本用例原名 {@code testTamperedMetadata}，注释写
+     * 「篡改中间记录的 metadata」，但 SQL 实际改的是 {@code policy_module}
+     * ——一个**本来就在**哈希链内的字段。也就是说：名字承诺覆盖 metadata，
+     * 断言体从未验证过 metadata，而 metadata 恰恰当时**不在**链内。
+     * 这是「测试名承诺 ≠ 断言体」的典型假绿。
+     *
+     * <p>现按实际行为更名；对 metadata 的真实覆盖见
+     * {@link #tamperingMetadataIsDetected_v2ChainCoversAccountabilityFields}。
+     */
     @Test
-    void testTamperedMetadata() throws Exception {
+    void tamperingHashedFieldPolicyModuleIsDetected() throws Exception {
         // 创建链并篡改一条记录
         String tenantId = "tenant-tampered";
         Instant start = Instant.parse("2025-01-15T10:00:00Z");
@@ -76,8 +86,8 @@ public class AuditChainVerifierTest {
             Thread.sleep(50);
         }
 
-        // 篡改中间记录的 metadata（修改 policyModule）
-        db.execute("UPDATE audit_logs SET policy_module = 'hacked.module' WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
+        // 篡改中间记录的 policy_module（该字段 V1/V2 均在链内）
+        db.executeAsAuditTamper("UPDATE audit_logs SET policy_module = 'hacked.module' WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
 
         Instant end = Instant.now();
 
@@ -88,6 +98,47 @@ public class AuditChainVerifierTest {
         assertNotNull(result.getBrokenAt());
         assertTrue(result.getReason().contains("current_hash tampered"), "Should detect hash tampering");
         assertEquals(1, result.getRecordsVerified(), "Should verify 1 record before detecting tampering");
+    }
+
+    /**
+     * ★问责字段必须进链（2026-08-17 审计修复的核心）。
+     *
+     * <p>此前哈希链只覆盖 17 个业务字段中的 6 个，{@code performed_by}（谁做的）、
+     * {@code reason}（为什么）、{@code metadata}、{@code client_ip} 全部在链外——
+     * 直接 UPDATE 这些列后链验证仍返回 valid，而对外文案宣称「不可篡改」。
+     *
+     * <p>本用例逐列篡改并要求每一次都被检测到。在修复前它会失败（那正是漏洞）。
+     */
+    @Test
+    void tamperingMetadataIsDetected_v2ChainCoversAccountabilityFields() throws Exception {
+        String[] columns = {"performed_by", "reason", "metadata", "client_ip", "user_agent", "notes"};
+
+        for (int c = 0; c < columns.length; c++) {
+            String column = columns[c];
+            String tenantId = "tenant-acct-" + c;
+            Instant start = Instant.parse("2025-01-15T10:00:00Z");
+
+            for (int i = 0; i < 3; i++) {
+                AuditEvent event = createEvent(tenantId, "POLICY_EVALUATION", "test.module", "func" + i);
+                auditEventProducer.fireAsync(event);
+                waitForAuditRecord(tenantId, i + 1);
+                Thread.sleep(50);
+            }
+
+            // 直接改写问责字段——这正是「谁批准 / 为何批准」被静默改写的攻击形态
+            db.executeAsAuditTamper(
+                "UPDATE audit_logs SET " + column + " = 'TAMPERED'"
+                    + " WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ?"
+                    + " ORDER BY id LIMIT 1 OFFSET 1)",
+                tenantId);
+
+            ChainVerificationResult result = verifier.verifyChain(tenantId, start, Instant.now());
+
+            assertFalse(result.isValid(),
+                "篡改 " + column + " 必须被检测到——该字段属于问责信息，必须在哈希链内");
+            assertTrue(result.getReason().contains("current_hash tampered"),
+                "篡改 " + column + " 应报 current_hash tampered，实际: " + result.getReason());
+        }
     }
 
     @Test
@@ -104,7 +155,7 @@ public class AuditChainVerifierTest {
         }
 
         // 删除第2条记录（索引1）
-        db.execute("DELETE FROM audit_logs WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
+        db.executeAsAuditMaintenance("DELETE FROM audit_logs WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
 
         Instant end = Instant.now();
 

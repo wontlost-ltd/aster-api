@@ -39,6 +39,104 @@ public class BlockingDbTestHelper {
         }
     }
 
+    /**
+     * 在<b>显式声明的特权事务</b>内执行 DML，用于绕过 audit_logs 的 append-only 触发器
+     * （V6.22.0）。
+     *
+     * <p>★为什么不让 {@link #execute} 默认绕过：那等于让测试跑在一个与生产不同的
+     * 数据库语义上——生产禁止的操作在测试里静默成功，append-only 保护就永远测不到。
+     * 现在测试必须像保留期清理任务一样**显式声明意图**，与生产走同一条豁免通道。
+     *
+     * <p>用途仅限两类：
+     * <ol>
+     *   <li>测试夹具清理（{@code DELETE FROM audit_logs}）；</li>
+     *   <li>模拟攻击者篡改（{@code UPDATE audit_logs SET ...}），验证链能检出。</li>
+     * </ol>
+     *
+     * <p>注意：{@code SET LOCAL} 只在当前事务内生效，故这里显式关闭 autocommit、
+     * 手动提交，确保变量与 DML 处于同一事务；连接归还后不会泄漏到其他测试。
+     */
+    public int executeAsAuditMaintenance(String sql, Object... params) {
+        return executeWithAuditGrant("aster.audit_retention_job", sql, params);
+    }
+
+    /**
+     * 保留期清理通道：只应能 DELETE，<b>不应</b>能 UPDATE。
+     * 与 {@link #executeAsAuditMaintenance} 同通道，命名区分是为了让断言意图自明。
+     */
+    public int executeAsAuditRetention(String sql, Object... params) {
+        return executeWithAuditGrant("aster.audit_retention_job", sql, params);
+    }
+
+    /**
+     * 篡改模拟通道：唯一能对 audit_logs 执行 UPDATE 的路径，仅供
+     * 「验证篡改能被检出」类用例使用。
+     *
+     * <p>★与保留期通道**分开**是刻意的：两者性质不同，合用一个开关会让
+     * 「清理任务」顺带获得改写审计记录的能力。生产代码从不设置本变量。
+     */
+    public int executeAsAuditTamper(String sql, Object... params) {
+        return executeWithAuditGrant("aster.audit_tamper_simulation", sql, params);
+    }
+
+    /**
+     * 锚点退休通道：**独立于**审计表的保留期开关。
+     *
+     * <p>★两者分开是安全要求而非风格：共用一个开关时，攻击者可在同一事务里
+     * 「删掉不利记录 + 删掉能揭发它的那个锚点」，层 3 被自己的清理通道解除。
+     * 触发器另外要求锚定点对应的审计记录**确实已不存在**才允许删锚点。
+     */
+    public int executeAsAnchorRetention(String sql, Object... params) {
+        return executeWithAuditGrant("aster.audit_anchor_retention_job", sql, params);
+    }
+
+    private int executeWithAuditGrant(String settingName, String sql, Object... params) {
+        try (Connection c = dataSource.getConnection()) {
+            // ★不能无条件接管事务：调用方可能是 @Transactional 测试方法，
+            //   此时连接已被 JTA 登记（enlisted），手动 setAutoCommit/commit/rollback
+            //   会抛 "Attempting to rollback while enlisted in a transaction"。
+            //   用 getAutoCommit() 判断：false = 已在外部事务中，我们只搭车不接管。
+            boolean managedExternally = !c.getAutoCommit();
+
+            if (managedExternally) {
+                // 已在外部事务里：SET LOCAL 会在该事务内生效，由外部负责提交/回滚。
+                applyGrant(c, settingName);
+                try (PreparedStatement ps = c.prepareStatement(sql)) {
+                    bind(ps, params);
+                    return ps.executeUpdate();
+                }
+            }
+
+            // 自管事务：SET LOCAL 必须与 DML 同事务，故显式关掉 autocommit。
+            c.setAutoCommit(false);
+            try {
+                applyGrant(c, settingName);
+                int affected;
+                try (PreparedStatement ps = c.prepareStatement(sql)) {
+                    bind(ps, params);
+                    affected = ps.executeUpdate();
+                }
+                c.commit();
+                return affected;
+            } catch (SQLException e) {
+                c.rollback();
+                throw e;
+            } finally {
+                c.setAutoCommit(true);
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("test DB privileged execute failed: " + sql, e);
+        }
+    }
+
+    /** settingName 为本类内的字面量常量，不接受外部输入，无注入面。 */
+    private static void applyGrant(Connection c, String settingName) throws SQLException {
+        try (PreparedStatement grant = c.prepareStatement(
+                "SET LOCAL " + settingName + " = 'on'")) {
+            grant.execute();
+        }
+    }
+
     /** 执行 SELECT，对每一行调用 consumer（consumer 从 {@link Row} 读列）。 */
     public void query(String sql, Consumer<Row> rowConsumer, Object... params) {
         try (Connection c = dataSource.getConnection();

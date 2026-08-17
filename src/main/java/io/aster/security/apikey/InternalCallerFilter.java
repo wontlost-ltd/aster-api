@@ -163,7 +163,23 @@ public class InternalCallerFilter {
         boolean isAi = normalizedPath.startsWith("/api/v1/ai/")
             // 仅 LLM 代理路径，且必须有 "/ai/<something>" 后缀（防 /api/v1/ai 自身误匹配）
             && normalizedPath.length() > "/api/v1/ai/".length();
-        if (!isEvaluateSource && !isAi) return Classification.NOT_PROTECTED;
+        // ★安全审计修复（2026-08-17）：What-If 批次此前**服务端完全无保护**。
+        //
+        // cloud BFF 一直把它当作内部端点在签名（policy-api.ts 的 needsInternalCaller
+        // 对 /whatif-batches 为 true，并发送 X-Internal-Caller + HMAC 头），
+        // 但服务端 classify() 只认 evaluate-source 与 /ai/*，其余一律 NOT_PROTECTED
+        // ——**客户端签了名，服务端从不校验**。于是该端点仅剩可伪造的
+        // X-User-Id / X-User-Role 把守（生产已关闭全局 signature.enabled）。
+        //
+        // 注意：**不能**改用 ApiKeyAuthFilter 保护本路径——BFF 走的是内部 HMAC，
+        // 不携带 Bearer API key，纳入 API-key allowlist 会让 UI 的 What-If 全部 401。
+        // 正确做法是让服务端校验 BFF 已经在发的那套 HMAC 凭据。
+        boolean isWhatIfBatch =
+            normalizedPath.matches("/api/v1/policies/[^/]+/whatif-batches(?:/[^/]+)?");
+        if (!isEvaluateSource && !isAi && !isWhatIfBatch) return Classification.NOT_PROTECTED;
+        // What-If 无 public/trial 旁路：它按窗口重跑历史执行，属内部编排能力，
+        // 不对匿名浏览器流量开放。始终要求 HMAC。
+        if (isWhatIfBatch) return Classification.REQUIRE_HMAC;
         // 优先级：.public（全量旁路）> 内部调用 HMAC > .trial（匿名浏览器流量经 TrialEndpointGuard）。
         if (isEvaluateSource && evaluateSourcePublic) return Classification.BYPASS_OK;
         // 携带内部调用头（cloud-bff）的 evaluate-source 走 HMAC 校验，即使 trial 开启也不归

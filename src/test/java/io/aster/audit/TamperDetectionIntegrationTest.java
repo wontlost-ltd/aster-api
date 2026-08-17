@@ -26,6 +26,9 @@ import static org.hamcrest.Matchers.*;
 @QuarkusTestResource(PostgresTestResource.class)
 public class TamperDetectionIntegrationTest {
 
+    @jakarta.inject.Inject
+    io.aster.audit.chain.AuditChainAnchorService anchorService;
+
     @Inject
     BlockingDbTestHelper db;
 
@@ -34,7 +37,9 @@ public class TamperDetectionIntegrationTest {
 
     @BeforeEach
     void cleanup() {
-        db.execute("DELETE FROM audit_logs");
+        // 顺序不可颠倒：锚点触发器要求锚定点对应的审计记录已不存在才允许删锚点
+        db.executeAsAuditMaintenance("DELETE FROM audit_logs");
+        db.executeAsAnchorRetention("DELETE FROM audit_chain_anchors");
     }
 
     @Test
@@ -51,6 +56,12 @@ public class TamperDetectionIntegrationTest {
         }
 
         Instant end = Instant.now().plusSeconds(60); // +1 minute buffer
+
+        // ★必须先锚定：verify-chain 自 V6.23.0 起把「有审计记录却零锚点」判为
+        //   不可信（锚定从未成功执行，最常见成因是应用角色缺锚点表写权限）。
+        //   此前该场景静默返回 valid=true，使「层 3 从未工作」与「确已完好」
+        //   不可区分，属 fail-open。生产由每小时的定时任务锚定，此处显式触发。
+        anchorService.anchorAllTenants();
 
         // 调用 API 验证链
         given()
@@ -82,7 +93,7 @@ public class TamperDetectionIntegrationTest {
         }
 
         // 篡改中间记录
-        db.execute("UPDATE audit_logs SET policy_module = 'hacked.module' WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
+        db.executeAsAuditTamper("UPDATE audit_logs SET policy_module = 'hacked.module' WHERE id IN (SELECT id FROM audit_logs WHERE tenant_id = ? ORDER BY timestamp LIMIT 1 OFFSET 1)", tenantId);
 
         Instant end = Instant.now().plusSeconds(60); // +1 minute buffer
 

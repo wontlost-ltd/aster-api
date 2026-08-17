@@ -141,10 +141,25 @@ public class AuditLog extends PanacheEntityBase {
 
     /**
      * 当前记录的哈希值（SHA256 hex）
-     * 计算规则：SHA256(prev_hash + event_type + timestamp + tenant_id + policy_module + policy_function + success)
+     *
+     * <p>计算公式见 {@code io.aster.audit.chain.AuditHashPayload}——写侧与验侧
+     * <b>共用</b>该类，公式只存在一处（此前两侧各有一份拷贝且无一致性测试）。
      */
     @Column(name = "current_hash", length = 64)
     public String currentHash;
+
+    /**
+     * 哈希公式版本。
+     *
+     * <p>{@code 1} = 历史公式，仅覆盖 6 个字段（event_type / timestamp / tenant_id /
+     * policy_module / policy_function / success）。{@code 2} = 全业务字段 canonical 编码。
+     *
+     * <p>★存在的理由：历史行是用 V1 公式算出来的，换公式会让它们<b>全部</b>验证失败；
+     * 而重算历史 hash 等于改写审计记录本身，会销毁「链从未被动过」这一属性。
+     * 因此按行记录版本，验证器据此选择公式：旧行仍可验证，新行获得完整保护。
+     */
+    @Column(name = "hash_version", nullable = false)
+    public Short hashVersion = io.aster.audit.chain.AuditHashPayload.CURRENT_VERSION;
 
     // Constructors
     public AuditLog() {

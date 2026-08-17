@@ -56,7 +56,14 @@ public class ApiKeyCacheResource {
         // doSlowPathVerify 返回 verify_unavailable → 该用户的合法 key 全部 401。
         //
         // 同仓所有同类校验器在同一配置下都是 fail-closed（InternalCallerFilter:295、
-        // AdminHmacVerifier:76），本处是唯一的例外，现予对齐。
+        // AdminHmacVerifier:76），本处当时是其中之一，现予对齐。
+        //
+        // ★订正（2026-08-17 审计）：本注释此前断言「本处是唯一的例外」，该断言当时**为假**——
+        // SnapshotPushResource 与 PlanCacheResource 携带完全相同的 fail-open 模式，
+        // 当时未做全仓回扫故被漏掉，两者已于本次一并修复。
+        // 现已用正则 `(hmacKey|hmac|secret|signingKey|apiKey)\.(isPresent|isEmpty)\(\)`
+        // 扫描 src/main，10 处命中全部核对为 fail-closed，population 闭合。
+        // 后续新增同类校验器时请重跑该正则，勿再仅凭单点判断。
         if (hmacKey.isEmpty()) {
             LOG.warn("apikey-cache invalidate called without HMAC key configured; rejecting");
             return Response.status(403).entity("hmac_not_configured").build();

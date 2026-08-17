@@ -34,6 +34,11 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestProfile(PostgresAnalyticsTestProfile.class)
 public class PolicyRollbackResourceTest {
 
+    // audit_logs 自 V6.22.0 起为数据库层 append-only，
+    // 夹具清理须走显式保留期通道（与生产清理任务同一条豁免路径）。
+    @jakarta.inject.Inject
+    io.aster.test.BlockingDbTestHelper auditDb;
+
     @Inject
     PolicyVersionService policyVersionService;
 
@@ -45,7 +50,7 @@ public class PolicyRollbackResourceTest {
     void setUp() {
         // 清理旧数据
         PolicyVersion.delete("policyId", testPolicyId);
-        AuditLog.delete("policyId", testPolicyId);
+        auditDb.executeAsAuditMaintenance("DELETE FROM audit_logs WHERE policy_id = ?", testPolicyId);
 
         // 创建 3 个测试版本
         v1 = policyVersionService.createVersion(

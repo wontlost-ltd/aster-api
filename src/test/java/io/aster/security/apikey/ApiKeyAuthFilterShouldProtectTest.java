@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -220,4 +221,53 @@ class ApiKeyAuthFilterShouldProtectTest {
         // 大小写敏感：租户 ID 精确匹配，TENANT-A != tenant-a
         assertTrue(ApiKeyAuthFilter.isTenantMismatch("tenant-a", "TENANT-A"));
     }
+
+    // ============================================================
+    // ★假绿修复（2026-08-17 审计）：上面三条只枚举了几个字面量，
+    // 而 tenant-b / victim / TENANT-A 都**不是** tenant-a 的前缀延伸。
+    // 实测：把生产实现改成 `headerTenant.trim().startsWith(verifiedTenant)`
+    // 后，上述断言与 ApiKeyTenantIsolationIT 的 12 条 IT **全部仍然通过**，
+    // 意味着 tenant-a 的 key 可越权访问 tenant-a-evil / tenant-abc。
+    //
+    // 修法：不再枚举字面量，改为断言**不变量**——
+    // 「trim 后严格相等」是唯一允许放行的条件，其余一律 mismatch。
+    // ============================================================
+
+    @Test
+    void anyNonEqualTenantIsRejected_invariant() {
+        String verified = "tenant-a";
+        // 前缀延伸（startsWith 变异的杀手）
+        assertTrue(ApiKeyAuthFilter.isTenantMismatch(verified, "tenant-a-evil"));
+        assertTrue(ApiKeyAuthFilter.isTenantMismatch(verified, "tenant-abc"));
+        assertTrue(ApiKeyAuthFilter.isTenantMismatch(verified, "tenant-a1"));
+        // 被包含（endsWith / contains 变异的杀手）
+        assertTrue(ApiKeyAuthFilter.isTenantMismatch(verified, "evil-tenant-a"));
+        assertTrue(ApiKeyAuthFilter.isTenantMismatch(verified, "xtenant-a"));
+        // 尾部标点（历史变异：以 '.' 结尾即跳过校验）
+        assertTrue(ApiKeyAuthFilter.isTenantMismatch(verified, "tenant-a."));
+        assertTrue(ApiKeyAuthFilter.isTenantMismatch(verified, "tenant-a/"));
+        assertTrue(ApiKeyAuthFilter.isTenantMismatch(verified, "tenant-a\\"));
+        // 大小写变体（equalsIgnoreCase 变异的杀手）
+        assertTrue(ApiKeyAuthFilter.isTenantMismatch(verified, "Tenant-A"));
+        assertTrue(ApiKeyAuthFilter.isTenantMismatch(verified, "TENANT-a"));
+        // 内嵌空白不等于 trim
+        assertTrue(ApiKeyAuthFilter.isTenantMismatch(verified, "tenant -a"));
+    }
+
+    @Test
+    void onlyExactTrimmedEqualityPasses_invariant() {
+        // 穷举式不变量：对一批候选值，当且仅当 trim 后与已验证租户相等才放行。
+        String verified = "tenant-a";
+        String[] candidates = {
+            "tenant-a", "  tenant-a  ", "\ttenant-a\n",           // 应放行
+            "tenant-b", "tenant-a-evil", "tenant-abc", "TENANT-A", // 应拒绝
+            "tenant-a.", "evil-tenant-a", "tenant_a", "tenant-a "
+        };
+        for (String c : candidates) {
+            boolean expectedMismatch = !c.trim().equals(verified);
+            assertEquals(expectedMismatch, ApiKeyAuthFilter.isTenantMismatch(verified, c),
+                "租户比较必须是 trim 后严格相等；候选值=[" + c + "]");
+        }
+    }
+
 }

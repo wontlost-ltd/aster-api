@@ -94,6 +94,6 @@ public class AuditHashChainSchemaTest {
             "current_hash should be NULL for backward compatibility");
 
         // 清理测试数据
-        db.execute("DELETE FROM audit_logs WHERE id = ?", id);
+        db.executeAsAuditMaintenance("DELETE FROM audit_logs WHERE id = ?", id);
     }
 }

@@ -139,9 +139,19 @@ class ReplayBatchEntitlementContractTest {
         assertThat(getStart).isGreaterThan(0);
         String getBody = src.substring(getStart);
 
+        // ★2026-08-17 安全审计：此前断言 `userId = ?2` 并称之为「租户隔离」——
+        //   但 userId **不是** tenantId，且它来自 RequestIdentityResolver.performedBy()，
+        //   该函数在无 JAX-RS property 时回退读客户端的 X-User-Id 头
+        //   （其自身文档明写「授权判断一律不得依赖它」）。
+        //   真正的租户隔离必须以 tenantId 为谓词，userId 仅作纵深防御。
+        //   同时断言参数序号会让「加一个谓词」这种正确修复反而挂掉，故改为
+        //   只断言**语义不变量**：谓词里必须出现 tenantId。
         assertThat(getBody)
-            .as("★查询必须带 userId——租户隔离")
-            .contains("userId = ?2");
+            .as("★查询必须带 tenantId——这才是租户隔离（userId 来自可伪造的 X-User-Id 头）")
+            .contains("tenantId = ?");
+        assertThat(getBody)
+            .as("★userId 保留为纵深防御")
+            .contains("userId = ?");
         assertThat(getBody)
             .as("★不属于本用户的批次返回 404 而非 403——"
                 + "403 会泄露「这个批次存在」，让端点变成存在性探针")
