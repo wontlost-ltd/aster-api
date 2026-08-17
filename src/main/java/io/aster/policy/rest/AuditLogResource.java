@@ -154,7 +154,12 @@ public class AuditLogResource {
     @Path("/verify-chain")
     @io.smallrye.common.annotation.Blocking
     @Operation(summary = "验证审计哈希链完整性",
-        description = "检测审计记录是否被篡改或删除，通过验证哈希链的连续性和完整性")
+        description = "通过校验哈希链的连续性与逐条摘要，检测审计记录被修改或被中间删除。"
+            + "范围说明：（1）hash_version=2 的记录覆盖全部业务字段；"
+            + "hash_version=1 的历史记录仅覆盖 6 个字段（event_type/timestamp/tenant_id/"
+            + "policy_module/policy_function/success），其余字段的改动在这些历史行上不可检测。"
+            + "（2）删除链**尾部**记录不会破坏剩余链，故无法由本接口检出——"
+            + "该场景需依赖数据库层的 append-only 约束或外部锚定。")
     @APIResponse(responseCode = "200", description = "验证结果（包含 valid、brokenAt、reason、recordsVerified 字段）")
     @APIResponse(responseCode = "400", description = "缺少必需参数或参数格式错误")
     @APIResponse(responseCode = "500", description = "验证失败（服务器内部错误）")

@@ -9,7 +9,6 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.aster.test.BlockingDbTestHelper;
 import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
-import org.apache.commons.codec.digest.DigestUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -120,19 +119,43 @@ public class AuditHashChainTest {
 
         AuditLog log = AuditLog.findByTenant(tenantId).get(0);
 
-        // 手动计算预期哈希值
-        StringBuilder content = new StringBuilder();
-        // prevHash is null for genesis
-        content.append(log.eventType);
-        content.append(log.timestamp.toString());
-        content.append(log.tenantId);
-        content.append(log.policyModule != null ? log.policyModule : "");
-        content.append(log.policyFunction != null ? log.policyFunction : "");
-        content.append(log.success.toString());
+        // ★2026-08-17 审计：此处原本在测试里**手抄一遍 6 字段公式**再比对。
+        //   这既是「测试复刻算法」的假绿模式（比对的是测试自己的实现，
+        //   而非生产代码真的这么算），也让公式升级必然误报。
+        //   现改为调用生产代码的唯一公式入口 AuditHashPayload，
+        //   并按记录自身的 hash_version 选择算法。
+        assertEquals(
+            AuditHashPayload.digest(log, log.hashVersion),
+            log.currentHash,
+            "持久化的 current_hash 必须与 AuditHashPayload 对同一记录的计算一致"
+        );
 
-        String expectedHash = DigestUtils.sha256Hex(content.toString());
+        // 新写入必须使用 V2（全业务字段），否则问责字段又会滑出链外
+        assertEquals(AuditHashPayload.CURRENT_VERSION, log.hashVersion,
+            "新审计记录必须以 V2 全字段公式入链");
+    }
 
-        assertEquals(expectedHash, log.currentHash, "Current hash should match computed hash");
+    /**
+     * ★问责字段必须进链：直接比对「只改 performedBy」是否会改变摘要。
+     *
+     * <p>修复前 performedBy 不在哈希输入内，本断言会失败——那正是漏洞本身。
+     */
+    @Test
+    void accountabilityFieldsAreInsideTheChain() throws Exception {
+        String tenantId = "tenant-acct-inline";
+        auditEventProducer.fireAsync(createEvent(tenantId, "POLICY_EVALUATION", "m", "f"));
+        waitForAuditRecord(tenantId, 1);
+
+        AuditLog log = AuditLog.findByTenant(tenantId).get(0);
+        String before = AuditHashPayload.digest(log, log.hashVersion);
+
+        String original = log.performedBy;
+        log.performedBy = "mallory-" + System.nanoTime();
+        String after = AuditHashPayload.digest(log, log.hashVersion);
+        log.performedBy = original; // 复原内存对象，避免污染后续断言
+
+        assertNotEquals(before, after,
+            "改写 performedBy（谁做的）必须改变摘要——否则问责信息不在防篡改保护范围内");
     }
 
     @Test

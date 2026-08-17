@@ -47,26 +47,35 @@ public class PlanCacheResource {
         @HeaderParam("X-Aster-Timestamp") String timestamp,
         @HeaderParam("X-Aster-Signature") String signature
     ) {
-        // 配置了密钥则强制验签；dev 缺省时跳过（与 cloud 端策略对称）
-        if (hmacKey.isPresent()) {
-            if (timestamp == null || signature == null) {
-                return Response.status(401).entity("missing signature headers").build();
-            }
-            long ts;
-            try {
-                ts = Long.parseLong(timestamp);
-            } catch (NumberFormatException e) {
-                return Response.status(401).entity("invalid timestamp").build();
-            }
-            long now = System.currentTimeMillis() / 1000;
-            if (Math.abs(now - ts) > 300) {
-                return Response.status(401).entity("stale timestamp").build();
-            }
-            String path = "/api/internal/plan-cache/" + tenantId;
-            String expected = sign(hmacKey.get(), "DELETE\n" + path + "\n" + ts);
-            if (!constantTimeEquals(expected, signature)) {
-                return Response.status(401).entity("invalid signature").build();
-            }
+        // ★安全审计修复：原为 `if (hmacKey.isPresent()) { ...验签... }`——整个验签块在
+        // 密钥缺失时被跳过，随后无条件执行缓存失效。/api/internal/* 已被
+        // RequestSignatureFilter 与 TenantFilter:124 双双豁免，无任何其他层兜底；
+        // 而 aster.plan-gate.hmac-key 默认值为空且启动时不强制校验，故该路径可由配置到达。
+        // 未授权者可反复刷任意租户的 plan 缓存，把每个请求打成一次 cloud 往返；
+        // cloud 不可达时该租户 plan 查询降级。
+        //
+        // 与同仓其余校验器对齐为 fail-closed（ApiKeyCacheResource:60 等）。
+        if (hmacKey.isEmpty() || hmacKey.get().isBlank()) {
+            LOG.warn("plan-cache invalidate called without HMAC key configured; rejecting");
+            return Response.status(403).entity("hmac_not_configured").build();
+        }
+        if (timestamp == null || signature == null) {
+            return Response.status(401).entity("missing signature headers").build();
+        }
+        long ts;
+        try {
+            ts = Long.parseLong(timestamp);
+        } catch (NumberFormatException e) {
+            return Response.status(401).entity("invalid timestamp").build();
+        }
+        long now = System.currentTimeMillis() / 1000;
+        if (Math.abs(now - ts) > 300) {
+            return Response.status(401).entity("stale timestamp").build();
+        }
+        String path = "/api/internal/plan-cache/" + tenantId;
+        String expected = sign(hmacKey.get(), "DELETE\n" + path + "\n" + ts);
+        if (!constantTimeEquals(expected, signature)) {
+            return Response.status(401).entity("invalid signature").build();
         }
 
         planGate.invalidate(tenantId);

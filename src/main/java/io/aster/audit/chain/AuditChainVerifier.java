@@ -4,7 +4,6 @@ import io.aster.policy.entity.AuditLog;
 import io.quarkus.logging.Log;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
-import org.apache.commons.codec.digest.DigestUtils;
 
 import java.time.Instant;
 import java.util.List;
@@ -107,7 +106,16 @@ public class AuditChainVerifier {
                     return ChainVerificationResult.invalid(log.timestamp, message, totalVerified);
                 }
 
-                String computedHash = computeHash(log);
+                String computedHash;
+                try {
+                    computedHash = computeHash(log);
+                } catch (IllegalArgumentException unknownVersion) {
+                    // 未知 hash_version：无法验证该记录 → 判定链不可信（而非 500）。
+                    Log.warnf(unknownVersion, "unverifiable audit record id=%d", log.id);
+                    return ChainVerificationResult.invalid(log.timestamp,
+                        "unverifiable record id=" + log.id + ": " + unknownVersion.getMessage(),
+                        totalVerified);
+                }
                 if (!computedHash.equals(log.currentHash)) {
                     String message = String.format(
                         "current_hash tampered at record id=%d",
@@ -262,7 +270,16 @@ public class AuditChainVerifier {
             }
 
             // 检查 current_hash 计算
-            String computedHash = computeHash(log);
+            String computedHash;
+            try {
+                computedHash = computeHash(log);
+            } catch (IllegalArgumentException unknownVersion) {
+                // 未知 hash_version：无法验证该记录 → 判定链不可信（而非 500）。
+                Log.warnf(unknownVersion, "unverifiable audit record id=%d", log.id);
+                return ChainVerificationResult.invalid(log.timestamp,
+                    "unverifiable record id=" + log.id + ": " + unknownVersion.getMessage(),
+                    recordsVerified);
+            }
             if (!computedHash.equals(log.currentHash)) {
                 String message = String.format(
                     "current_hash tampered at record id=%d: expected=%s, got=%s (record modified)",
@@ -286,17 +303,14 @@ public class AuditChainVerifier {
      * 计算审计记录的哈希值（必须与 AuditEventListener.computeHashChain 保持一致）
      */
     private String computeHash(AuditLog log) {
-        StringBuilder content = new StringBuilder();
-        if (log.prevHash != null) {
-            content.append(log.prevHash);
-        }
-        content.append(log.eventType != null ? log.eventType : "");
-        content.append(log.timestamp != null ? log.timestamp.toString() : "");
-        content.append(log.tenantId != null ? log.tenantId : "");
-        content.append(log.policyModule != null ? log.policyModule : "");
-        content.append(log.policyFunction != null ? log.policyFunction : "");
-        content.append(log.success != null ? log.success.toString() : "");
-
-        return DigestUtils.sha256Hex(content.toString());
+        // ★委托给 AuditHashPayload —— 与写侧（AuditEventListener）共用同一份公式。
+        //   此前这里是写侧实现的第二份拷贝，两份之间没有一致性测试；
+        //   任一处漂移都会静默产生全链验签失败或篡改漏检。
+        //
+        // ★按记录自身的 hash_version 选择算法：
+        //   1 = 历史 6 字段公式（既有行，保持可验证）
+        //   2 = 全业务字段 canonical（新行，performedBy / reason / clientIp
+        //       / metadata / from-toVersion 等问责字段全部进链）
+        return AuditHashPayload.digest(log, log.hashVersion);
     }
 }

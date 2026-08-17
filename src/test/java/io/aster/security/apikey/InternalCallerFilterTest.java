@@ -51,6 +51,54 @@ class InternalCallerFilterTest {
             InternalCallerFilter.classify("/", false, false, false, false));
     }
 
+    // ============================================================
+    // ★安全审计修复（2026-08-17）：What-If 批次必须要求 HMAC。
+    //
+    // 历史缺陷：cloud BFF 一直把 /whatif-batches 当内部端点签名并发送
+    // X-Internal-Caller + HMAC 头（policy-api.ts 的 needsInternalCaller），
+    // 但服务端 classify() 只认 evaluate-source 与 /ai/*，其余一律 NOT_PROTECTED
+    // ——**客户端签了名，服务端从不校验**，该端点仅剩可伪造的 X-User-Id/X-User-Role
+    // 把守（生产已关闭全局 signature.enabled）。
+    //
+    // 注意不能改用 ApiKeyAuthFilter 保护：BFF 不带 Bearer API key，
+    // 纳入 API-key allowlist 会让 UI 的 What-If 全部 401。
+    // ============================================================
+
+    @Test
+    void whatIfBatchesRequireHmac() {
+        // 集合与单条路径都必须要求 HMAC
+        assertEquals(Classification.REQUIRE_HMAC,
+            InternalCallerFilter.classify("/api/v1/policies/pol-1/whatif-batches",
+                false, false, false, false));
+        assertEquals(Classification.REQUIRE_HMAC,
+            InternalCallerFilter.classify(
+                "/api/v1/policies/pol-1/whatif-batches/9f8e7d6c-1234-4a5b-8c9d-0e1f2a3b4c5d",
+                false, false, false, false));
+    }
+
+    @Test
+    void whatIfBatchesHaveNoPublicOrTrialBypass() {
+        // What-If 按窗口重跑历史执行，属内部编排能力，不对匿名浏览器流量开放：
+        // 即使 evaluate-source 的 public / trial 旁路全开，也必须 REQUIRE_HMAC。
+        assertEquals(Classification.REQUIRE_HMAC,
+            InternalCallerFilter.classify("/api/v1/policies/pol-1/whatif-batches",
+                true, true, true, true));
+    }
+
+    @Test
+    void whatIfGuardDoesNotOverMatchSiblings() {
+        // 不得误伤形近路径，否则会把无关端点拖进 HMAC 强制而 403
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/policies/pol-1/whatif-batchesX",
+                false, false, false, false));
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/policies/whatif-batches",
+                false, false, false, false));
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/policies/pol-1/whatif-batches/a/b",
+                false, false, false, false));
+    }
+
     @Test
     void aiPathWithoutSubResourceNotProtected() {
         // /api/v1/ai 本身（没有 sub-resource）不属于 LLM 端点，不在管辖

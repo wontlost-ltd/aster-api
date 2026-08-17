@@ -199,7 +199,9 @@ public class AuditEventListener {
      * - prevHash: 前一条记录的哈希值（genesis block 为 null）
      * - currentHash: 当前记录的哈希值
      *
-     * 哈希计算规则：SHA256(prev_hash + event_type + timestamp + tenant_id + policy_module + policy_function + success)
+     * 哈希计算规则见 {@link io.aster.audit.chain.AuditHashPayload}（写侧与验侧共用）。
+     * 新记录使用 V2：覆盖全部业务字段（含 performed_by / reason / metadata 等问责字段）；
+     * 历史行保持 V1（6 字段）不重算——重算等于改写审计记录本身。
      */
     private void computeHashChain(AuditLog log) {
         try {
@@ -207,19 +209,17 @@ public class AuditEventListener {
             String prevHash = AuditLog.findLatestHash(log.tenantId);
             log.prevHash = prevHash;
 
-            // 计算当前哈希
-            StringBuilder content = new StringBuilder();
-            if (prevHash != null) {
-                content.append(prevHash);
-            }
-            content.append(log.eventType != null ? log.eventType : "");
-            content.append(log.timestamp != null ? log.timestamp.toString() : "");
-            content.append(log.tenantId != null ? log.tenantId : "");
-            content.append(log.policyModule != null ? log.policyModule : "");
-            content.append(log.policyFunction != null ? log.policyFunction : "");
-            content.append(log.success != null ? log.success.toString() : "");
-
-            log.currentHash = DigestUtils.sha256Hex(content.toString());
+            // 计算当前哈希。
+            //
+            // ★公式来自 AuditHashPayload —— 写侧与验侧**共用同一份实现**。
+            //   此前两侧各自拼接了一遍相同的字符串，没有任何一致性测试锁定，
+            //   任一处漂移都会静默导致全链验签失败或篡改漏检。
+            //
+            // ★新记录一律用 CURRENT_VERSION(=2)：覆盖全部业务字段。
+            //   历史行保持 hash_version=1（旧 6 字段公式），不重算——
+            //   重算等于改写审计记录本身。
+            log.hashVersion = io.aster.audit.chain.AuditHashPayload.CURRENT_VERSION;
+            log.currentHash = io.aster.audit.chain.AuditHashPayload.digest(log, log.hashVersion);
 
             Log.debugf(
                 "Hash chain computed: tenant=%s, prevHash=%s, currentHash=%s",

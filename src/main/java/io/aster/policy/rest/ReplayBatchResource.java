@@ -231,6 +231,7 @@ public class ReplayBatchResource {
     @jakarta.ws.rs.Path("/{batchId}")
     public Response get(@PathParam("policyId") String policyId,
                         @PathParam("batchId") String batchId) {
+        String tenantId = identityResolver.tenantId();
         String userId = identityResolver.performedBy();
 
         UUID id;
@@ -240,10 +241,22 @@ public class ReplayBatchResource {
             return Response.status(Response.Status.NOT_FOUND).build();
         }
 
-        // ★查询带 userId：租户隔离。不属于本用户的批次一律 404（不是 403）——
-        //   403 会泄露「这个批次存在」，让端点变成存在性探针。
+        // ★安全审计修复：此前谓词为 `id = ?1 and userId = ?2`，注释称其为「租户隔离」——
+        //   但 userId 不是 tenantId，且它来自 RequestIdentityResolver.performedBy()，
+        //   该函数在无 JAX-RS property 时**回退读客户端的 X-User-Id 头**，其自身文档
+        //   （RequestIdentityResolver:113）明写「授权判断一律不得依赖它」。
+        //   而 ApiKeyAuthFilter.shouldProtect() 是严格 allowlist，本路径不在其中，
+        //   故 filter 的权威覆盖不会执行，攻击者传入的 X-User-Id 原样进入谓词。
+        //   同文件 :115-116 已因「按 userId 而非 tenantId」栽过一次（额度可被绕过），
+        //   读路径此前仍在重复同一错误。
+        //
+        //   现改为按 tenantId（有 filter 权威覆盖）为主谓词，并加入 policyId
+        //   （此前完全未参与查询，可跨策略读取）。userId 保留为纵深防御。
+        //   不属于本租户的批次一律 404（不是 403）——403 会泄露「这个批次存在」，
+        //   让端点变成存在性探针。
         ReplayBatchEntity batch = ReplayBatchEntity
-            .find("id = ?1 and userId = ?2", id, userId)
+            .find("id = ?1 and tenantId = ?2 and policyId = ?3 and userId = ?4",
+                  id, tenantId, policyId, userId)
             .firstResult();
         if (batch == null) {
             return Response.status(Response.Status.NOT_FOUND).build();
