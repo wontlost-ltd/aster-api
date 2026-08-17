@@ -268,6 +268,52 @@ class AuditImmutabilityTest {
         assertTrue(rootMessage(d).contains("append-only"));
     }
 
+    /**
+     * ★生产迁移中<b>不得</b>存在任何 UPDATE 豁免通道。
+     *
+     * <p>篡改模拟豁免只允许出现在 test-only 迁移位置
+     * （{@code db/migration-test}，仅 %test profile 加载）。若有人「为了方便」
+     * 把它挪进主迁移，生产库就会多出一条后门：拿到应用数据库连接的攻击者
+     * （SQL 注入 / 凭据泄露）只要自己 {@code SET LOCAL aster.audit_tamper_simulation='on'}
+     * 就能改写审计记录，整层保护形同虚设。
+     *
+     * <p>本用例直接扫生产迁移目录的源文件——这是唯一能锁住「生产无后门」的方式，
+     * 因为测试运行时加载的恰恰是带豁免的 test 版本，运行期行为测不出这一点。
+     */
+    @Test
+    void productionMigrationsContainNoUpdateBypass() throws Exception {
+        java.nio.file.Path prodMigrations = java.nio.file.Path.of("src/main/resources/db/migration");
+        assertTrue(java.nio.file.Files.isDirectory(prodMigrations),
+            "生产迁移目录应存在: " + prodMigrations.toAbsolutePath());
+
+        try (var paths = java.nio.file.Files.walk(prodMigrations)) {
+            var offenders = paths
+                .filter(java.nio.file.Files::isRegularFile)
+                .filter(p -> p.toString().endsWith(".sql"))
+                .filter(p -> {
+                    try {
+                        // 只看**非注释行**：V6.22.0 的注释里说明了「为何不留后门」，
+                        // 那是文档不是通道。若某天有人真的写下
+                        // current_setting('aster.audit_tamper_simulation'...)，
+                        // 它一定出现在可执行的非注释行上。
+                        return java.nio.file.Files.readAllLines(p).stream()
+                            .map(String::trim)
+                            .filter(line -> !line.startsWith("--"))
+                            .anyMatch(line -> line.contains("audit_tamper_simulation"));
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                })
+                .map(java.nio.file.Path::getFileName)
+                .map(Object::toString)
+                .toList();
+
+            assertTrue(offenders.isEmpty(),
+                "生产迁移不得包含 audit_tamper_simulation 豁免（那是生产后门）；"
+                    + "该豁免只允许存在于 db/migration-test。违规文件: " + offenders);
+        }
+    }
+
     @Test
     void noAnchorYet_isNotReportedAsTampering() {
         // 尚未锚定的租户不应被误报为「已被篡改」——

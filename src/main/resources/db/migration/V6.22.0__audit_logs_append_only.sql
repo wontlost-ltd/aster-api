@@ -25,29 +25,27 @@
 --   只有明确设置该变量的事务才能 DELETE。这样：
 --     1) 常规应用路径（不设该变量）无论如何都删不掉；
 --     2) 清理任务必须显式声明意图，且该意图在事务级生效、不会泄漏到其他连接；
---     3) UPDATE **永不放行** —— 保留期清理只需要删除，从不需要修改。
+--     3) UPDATE **永不放行**（本迁移无任何 UPDATE 豁免）——保留期清理只需要
+--        删除，从不需要修改。测试所需的篡改模拟豁免放在 test-only 迁移位置。
 
 CREATE OR REPLACE FUNCTION reject_audit_log_mutation()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    -- UPDATE 一律拒绝：审计记录写入后不可修改，没有任何**生产**用例。
+    -- UPDATE 无条件拒绝：审计记录写入后不可修改，没有任何合法用例，也没有豁免通道。
     --
-    -- ★唯一例外是自动化测试：验证「篡改能被链检出」必须先真的篡改一条记录。
-    --   该豁免走独立的 session 变量 aster.audit_tamper_simulation，
-    --   **与保留期清理的 audit_retention_job 分开**——两者是不同性质的操作，
-    --   合用一个开关会让「清理任务」顺带获得改写权限。
-    --   生产代码路径从不设置本变量（全仓仅测试辅助类 BlockingDbTestHelper 设置）。
+    -- ★这里刻意**不留**任何 session 变量开关。曾考虑加一个「篡改模拟」豁免供测试
+    --   使用（验证篡改能被链检出必须先真的篡改一条记录），但那等于在生产库里留了
+    --   一条后门：拿到应用数据库连接的攻击者只要自己 SET LOCAL 该变量即可改写审计。
+    --   正确做法是把该豁免放进 **test-only** 的迁移位置
+    --   （db/migration-test，仅 %test profile 加载），生产库根本不存在这条通道。
     IF (TG_OP = 'UPDATE') THEN
-        IF current_setting('aster.audit_tamper_simulation', true) IS DISTINCT FROM 'on' THEN
-            RAISE EXCEPTION
-                'audit_logs 为 append-only：禁止 UPDATE（记录 id=%）。'
-                '审计记录一经写入不可修改；如需更正请追加一条新的审计事件。',
-                OLD.id
-                USING ERRCODE = 'insufficient_privilege';
-        END IF;
-        RETURN NEW;
+        RAISE EXCEPTION
+            'audit_logs 为 append-only：禁止 UPDATE（记录 id=%）。'
+            '审计记录一经写入不可修改；如需更正请追加一条新的审计事件。',
+            OLD.id
+            USING ERRCODE = 'insufficient_privilege';
     END IF;
 
     -- DELETE 仅在保留期清理任务的显式豁免下放行。
