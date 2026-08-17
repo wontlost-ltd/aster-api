@@ -185,6 +185,52 @@ class AuditImmutabilityTest {
         assertTrue(after.reason().contains("重写"), "实际: " + after.reason());
     }
 
+    /**
+     * ★「等下一次锚定洗白」攻击：删链尾后继续追加，让新锚点覆盖旧证据。
+     *
+     * <p>此前 {@code verifyAgainstAnchor} 只取<b>最新</b>锚点
+     * （{@code ORDER BY anchored_max_id DESC LIMIT 1}），攻击者只需：
+     * <ol>
+     *   <li>等一次锚定落下（锚点 A 记录 max_id=N）</li>
+     *   <li>删掉链尾</li>
+     *   <li>让系统继续追加，下一次锚定写入锚点 B（max_id&gt;N）</li>
+     *   <li>此后只核对 B —— B 自洽，删除被彻底掩盖</li>
+     * </ol>
+     *
+     * <p>修复：遍历<b>全部</b>历史锚点。锚点是累积证据，新证据不得覆盖旧证据。
+     * 本用例在修复前会失败（返回 intact），是该修复的可执行证明。
+     */
+    @Test
+    void anchorDetectsTailDeletion_evenAfterNewerAnchorLands() throws Exception {
+        String tenantId = "t-anchor-washing";
+        for (int i = 0; i < 4; i++) {
+            emit(tenantId, "old" + i);
+        }
+        anchorService.anchorAllTenants();   // 锚点 A：覆盖这 4 条
+
+        long anchoredMaxId = db.queryLong(
+            "SELECT MAX(anchored_max_id) FROM audit_chain_anchors WHERE tenant_id = ?", tenantId);
+
+        // 攻击第 1 步：删掉链尾（锚点 A 覆盖范围内的最后一条）
+        db.executeAsAuditMaintenance(
+            "DELETE FROM audit_logs WHERE tenant_id = ? AND id = ?", tenantId, anchoredMaxId);
+
+        // 攻击第 2 步：继续追加新记录，使 max_id 超过锚点 A
+        for (int i = 0; i < 3; i++) {
+            emit(tenantId, "new" + i);
+        }
+
+        // 攻击第 3 步：等下一次锚定落下（锚点 B，max_id 更大且自洽）
+        anchorService.anchorAllTenants();
+        long anchorRows = anchorCount(tenantId);
+        assertTrue(anchorRows >= 2, "应已存在新旧两个锚点，实际 " + anchorRows);
+
+        // ★核心断言：新锚点不得掩盖旧锚点记录的删除
+        var check = anchorService.verifyAgainstAnchor(tenantId);
+        assertFalse(check.intact(),
+            "新锚点落下后仍必须检出链尾被删——锚点是累积证据，不能只看最新的一个");
+    }
+
     @Test
     void anchorIsIdempotent_noNewRecordsNoNewAnchor() throws Exception {
         String tenantId = "t-anchor-idem";

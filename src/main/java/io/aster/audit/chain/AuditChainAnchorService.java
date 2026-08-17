@@ -88,7 +88,7 @@ public class AuditChainAnchorService {
     }
 
     /**
-     * 用最新锚点核对该租户的审计链，检出「删除链尾」与「整链重写」。
+     * 用**全部历史锚点**核对该租户的审计链，检出「删除链尾」与「整链重写」。
      *
      * <p>这是 {@code AuditChainVerifier} 的<b>补充而非替代</b>：后者验证链内自洽性
      * （改字段、删中间、插伪造），本方法验证链<b>相对外部证据</b>是否被截断或重写。
@@ -98,12 +98,25 @@ public class AuditChainAnchorService {
      */
     @Transactional
     public AnchorCheck verifyAgainstAnchor(String tenantId) {
+        // ★必须核对**全部**历史锚点，不能只看最新的一个。
+        //
+        //   若只取最新锚点（ORDER BY ... LIMIT 1），存在「等下一次锚定洗白」攻击：
+        //     1. 锚点 A 记录 (max_id=5, count=5)
+        //     2. 攻击者删掉 id 4、5（链尾）——此时锚点 A 已能揭发
+        //     3. 系统继续追加新记录，下一次定时锚定写入锚点 B (max_id=9, count=7)
+        //     4. 只查最新锚点 → 只核对 B → B 自洽 → 返回「完好」，删除被彻底掩盖
+        //
+        //   实测（PG 16）该攻击成立：B 的核对全部通过，而 A 的 anchored_max_id=5
+        //   对应的记录已不存在。因此改为遍历全部锚点，任一不符即判定被篡改——
+        //   锚点是**累积**证据，新证据不能覆盖旧证据。
+        //
+        //   代价可控：锚点每租户每小时至多一条且只在链有新增时写入；
+        //   即便按年计也只有数千条，且查询走 (tenant_id, anchored_max_id) 索引。
         List<?> rows = entityManager.createNativeQuery("""
             SELECT anchored_max_id, anchored_hash, anchored_count
             FROM audit_chain_anchors
             WHERE tenant_id = :tenant
-            ORDER BY anchored_max_id DESC
-            LIMIT 1
+            ORDER BY anchored_max_id ASC
             """)
             .setParameter("tenant", tenantId)
             .getResultList();
@@ -111,46 +124,54 @@ public class AuditChainAnchorService {
         if (rows.isEmpty()) {
             return AnchorCheck.noAnchor();
         }
-        Object[] anchor = (Object[]) rows.get(0);
-        long anchoredMaxId = ((Number) anchor[0]).longValue();
-        String anchoredHash = (String) anchor[1];
-        long anchoredCount = ((Number) anchor[2]).longValue();
 
-        // 锚定点的记录是否还在、hash 是否还一致
-        List<?> current = entityManager.createNativeQuery("""
-            SELECT current_hash FROM audit_logs WHERE id = :id AND tenant_id = :tenant
-            """)
-            .setParameter("id", anchoredMaxId)
-            .setParameter("tenant", tenantId)
-            .getResultList();
+        long newestMaxId = 0;
+        long newestCount = 0;
 
-        if (current.isEmpty()) {
-            // 锚定过的那条记录消失了 —— 链尾被删（层 1/2 之外唯一能发现它的手段）
-            return AnchorCheck.tampered(
-                "锚定记录 id=" + anchoredMaxId + " 已不存在——审计链尾被删除");
+        for (Object row : rows) {
+            Object[] anchor = (Object[]) row;
+            long anchoredMaxId = ((Number) anchor[0]).longValue();
+            String anchoredHash = (String) anchor[1];
+            long anchoredCount = ((Number) anchor[2]).longValue();
+            newestMaxId = anchoredMaxId;
+            newestCount = anchoredCount;
+
+            // 锚定点的记录是否还在、hash 是否还一致
+            List<?> current = entityManager.createNativeQuery("""
+                SELECT current_hash FROM audit_logs WHERE id = :id AND tenant_id = :tenant
+                """)
+                .setParameter("id", anchoredMaxId)
+                .setParameter("tenant", tenantId)
+                .getResultList();
+
+            if (current.isEmpty()) {
+                // 锚定过的那条记录消失了 —— 链尾被删（层 1/2 之外唯一能发现它的手段）
+                return AnchorCheck.tampered(
+                    "锚定记录 id=" + anchoredMaxId + " 已不存在——审计链尾被删除");
+            }
+            String currentHash = (String) current.get(0);
+            if (!anchoredHash.equals(currentHash)) {
+                return AnchorCheck.tampered(
+                    "锚定记录 id=" + anchoredMaxId + " 的 hash 与锚点不符——该点及之前的链被重写");
+            }
+
+            // 记录数只增不减：变少说明有记录被删（可能删在锚定点之前的任意位置）
+            long currentCount = ((Number) entityManager.createNativeQuery("""
+                SELECT COUNT(*) FROM audit_logs
+                WHERE tenant_id = :tenant AND current_hash IS NOT NULL AND id <= :id
+                """)
+                .setParameter("tenant", tenantId)
+                .setParameter("id", anchoredMaxId)
+                .getSingleResult()).longValue();
+
+            if (currentCount < anchoredCount) {
+                return AnchorCheck.tampered(String.format(
+                    "锚定时该租户在 id<=%d 范围内有 %d 条记录，现仅剩 %d 条——有记录被删除",
+                    anchoredMaxId, anchoredCount, currentCount));
+            }
         }
-        String currentHash = (String) current.get(0);
-        if (!anchoredHash.equals(currentHash)) {
-            return AnchorCheck.tampered(
-                "锚定记录 id=" + anchoredMaxId + " 的 hash 与锚点不符——该点及之前的链被重写");
-        }
 
-        // 记录数只增不减：变少说明有记录被删（可能删在锚定点之前的任意位置）
-        long currentCount = ((Number) entityManager.createNativeQuery("""
-            SELECT COUNT(*) FROM audit_logs
-            WHERE tenant_id = :tenant AND current_hash IS NOT NULL AND id <= :id
-            """)
-            .setParameter("tenant", tenantId)
-            .setParameter("id", anchoredMaxId)
-            .getSingleResult()).longValue();
-
-        if (currentCount < anchoredCount) {
-            return AnchorCheck.tampered(String.format(
-                "锚定时该租户在 id<=%d 范围内有 %d 条记录，现仅剩 %d 条——有记录被删除",
-                anchoredMaxId, anchoredCount, currentCount));
-        }
-
-        return AnchorCheck.ok(anchoredMaxId, anchoredCount);
+        return AnchorCheck.ok(newestMaxId, newestCount);
     }
 
     /** 锚点核对结果。 */
