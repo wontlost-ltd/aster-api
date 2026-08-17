@@ -136,7 +136,14 @@ public class ExecutionWindowClient {
     private static WindowedExecution toExecution(JsonObject o) {
         return new WindowedExecution(
             o.getString("id"),
-            o.getValue("input"),
+            // ★必须转成**普通 Map/List**，不能直接传 Vert.x JsonObject。
+            //   Truffle 会把 JsonObject 当宿主对象包成 HostObject，而它没有配
+            //   HostAccess，于是策略里访问 `loan.creditScore` 直接报
+            //   「HostObject 不支持成员访问，成员：creditScore」。
+            //   生产实测：126 条重放 100% 失败，且被 classify() 默认分支归成
+            //   INPUT_INCOMPATIBLE——对用户显示成「你的历史输入与新版本不兼容」，
+            //   而同一份输入走 evaluate-source 是成功的（那条路传的是普通 Map）。
+            toPlainJava(o.getValue("input")),
             o.getString("decision"),
             o.getBoolean("success", false),
             o.getString("functionName"),
@@ -189,6 +196,30 @@ public class ExecutionWindowClient {
                 "拉取执行窗口失败，status=" + resp.statusCode());
         }
         return resp.bodyAsJsonObject();
+    }
+
+    /**
+     * 把 Vert.x 的 JsonObject/JsonArray 递归转成普通 Map/List。
+     *
+     * <p>★递归是必须的：`{"loan": {...}}` 的外层转了、内层仍是 JsonObject，
+     * 访问 `loan.creditScore` 照样炸。嵌套结构是本功能的常态。
+     */
+    private static Object toPlainJava(Object v) {
+        if (v instanceof JsonObject jo) {
+            java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+            for (java.util.Map.Entry<String, Object> e : jo) {
+                m.put(e.getKey(), toPlainJava(e.getValue()));
+            }
+            return m;
+        }
+        if (v instanceof JsonArray ja) {
+            java.util.List<Object> l = new ArrayList<>(ja.size());
+            for (int i = 0; i < ja.size(); i++) {
+                l.add(toPlainJava(ja.getValue(i)));
+            }
+            return l;
+        }
+        return v;
     }
 
     private static String enc(String s) {
