@@ -654,6 +654,18 @@ public class ReplayBatchService {
                     java.util.function.Function.identity(),
                     (a, b) -> a));
 
+        // ★取证日志：定位「冻结成功但重放全失败」。
+        //   生产实测 126 条全部走到下面的 e == null 分支，但冻结时同一窗口
+        //   明明取到了 126 条。是 upstream 空、还是 key 对不上，只有这一行能分辨。
+        if (upstream.size() != frozen.size()) {
+            String frozenSample = frozen.stream().limit(3)
+                .map(i -> i.executionId).collect(java.util.stream.Collectors.joining(","));
+            String upstreamSample = upstream.keySet().stream().limit(3)
+                .collect(java.util.stream.Collectors.joining(","));
+            Log.errorf("重放集合不匹配 batch=%s 冻结=%d 上游=%d 冻结样本=[%s] 上游样本=[%s]",
+                batch.id, frozen.size(), upstream.size(), frozenSample, upstreamSample);
+        }
+
         List<ReplayBatchRunner.ItemResult> results = new ArrayList<>(frozen.size());
         for (ReplayBatchItemEntity item : frozen) {
             ExecutionWindowClient.WindowedExecution e = upstream.get(item.executionId);
