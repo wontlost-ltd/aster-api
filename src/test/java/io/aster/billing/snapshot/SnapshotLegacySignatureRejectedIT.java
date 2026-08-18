@@ -121,6 +121,11 @@ class SnapshotLegacySignatureRejectedIT {
     void v2WithTamperedBodyIsRejectedWhenHardCutIsOn() {
         // v2 的核心价值就是绑 body：签名照原样发，但请求体被换成提权载荷。
         // 这正是 v1 挡不住、v2 必须挡住的攻击。
+        //
+        // ★这条用例的鉴别力有限（对抗性审查实测指出）：body 一改签名必然对不上，
+        //   401 恒成立——它实际测的是「HMAC 对输入敏感」（数学上恒真），
+        //   而非「服务端把 body 绑进了 canonical」。真正锁住 body 绑定的是
+        //   下面的 serverMustBindBodyAndNonceIntoCanonical。此条保留作端到端冒烟。
         long now = System.currentTimeMillis() / 1000;
         String nonce = UUID.randomUUID().toString();
         String sig = hmacHex("POST\n" + USER_PATH + "\n" + now + "\n" + nonce + "\n" + sha256Hex(BODY));
@@ -133,6 +138,35 @@ class SnapshotLegacySignatureRejectedIT {
             .header("X-Aster-Signature", sig)
             .header("Content-Type", "application/json")
             .body(tampered)
+            .when()
+            .post(USER_PATH)
+            .then()
+            .statusCode(401)
+            .body(containsString("invalid_signature"));
+    }
+
+    @Test
+    void serverMustBindBodyAndNonceIntoCanonical() {
+        // ★真正有鉴别力的那条：带上 nonce 头（走 v2 分支），但签名只覆盖
+        //   v1 的三段 `method\npath\nts`——**不含 nonce、不含 bodySha**。
+        //
+        //   若服务端确实把 nonce+bodySha 绑进了 canonical，这个签名必然对不上 → 401。
+        //   若服务端「漏绑」（例如 canonicalV2 少拼 bodySha、或对空串算 sha 而忽略真实
+        //   body、或干脆拿 v1 canonical 去比），它就会**通过** → 用例变红。
+        //
+        //   与上一条的区别：上一条改的是 body（签名必错，恒 401，测不出绑没绑）；
+        //   这一条改的是**签名覆盖的范围**，body 与 nonce 都如实发送——
+        //   于是「服务端有没有把它们算进去」成为唯一变量。
+        long now = System.currentTimeMillis() / 1000;
+        String nonce = UUID.randomUUID().toString();
+        String v1ShapedSig = hmacHex("POST\n" + USER_PATH + "\n" + now);
+
+        given()
+            .header("X-Aster-Timestamp", String.valueOf(now))
+            .header("X-Aster-Nonce", nonce)
+            .header("X-Aster-Signature", v1ShapedSig)
+            .header("Content-Type", "application/json")
+            .body(BODY)
             .when()
             .post(USER_PATH)
             .then()
