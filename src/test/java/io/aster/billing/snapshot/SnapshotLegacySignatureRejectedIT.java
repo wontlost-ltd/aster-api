@@ -146,7 +146,14 @@ class SnapshotLegacySignatureRejectedIT {
             .body(containsString("invalid_signature"));
     }
 
-    /** 用给定 canonical 签名发一次 v2 形态的请求（nonce 与 body 均如实发送）。 */
+    /**
+     * 用给定 canonical 签名发一次 v2 形态的请求（nonce 与 body 均如实发送），断言被拒。
+     *
+     * <p>★{@code why} 必须进入断言消息（终审发现）：此前它只出现在形参列表、
+     * 未传入任何 assert，四条断言若失败一律报 {@code Expected 401 but was 200}，
+     * 看不出是哪一项漏绑；且四条同处一个 {@code @Test} 顺序执行，
+     * 第一条失败即中止，会掩盖后续项的状态。
+     */
     private void expectRejected(String canonical, String why) {
         long now = System.currentTimeMillis() / 1000;
         String nonce = UUID.randomUUID().toString();
@@ -156,7 +163,7 @@ class SnapshotLegacySignatureRejectedIT {
             .replace("{nonce}", nonce)
             .replace("{sha}", sha256Hex(BODY));
 
-        given()
+        int status = given()
             .header("X-Aster-Timestamp", String.valueOf(now))
             .header("X-Aster-Nonce", nonce)
             .header("X-Aster-Signature", hmacHex(message))
@@ -165,8 +172,42 @@ class SnapshotLegacySignatureRejectedIT {
             .when()
             .post(USER_PATH)
             .then()
-            .statusCode(401)
-            .body(containsString("invalid_signature"));
+            .extract()
+            .statusCode();
+
+        org.junit.jupiter.api.Assertions.assertEquals(401, status,
+            "签名未覆盖该项时必须被拒 —— " + why);
+    }
+
+    /**
+     * 用「结构正确的 5 段 canonical，但 sha 取自**另一个 body**」发请求，断言被拒。
+     *
+     * <p>★这条锁住的是终审实测漏掉的 M3：服务端「绑了 body 但算错输入」
+     * （例如对空串算 sha 而忽略真实 body）。前面的逐项差分抓不到它——
+     * 那些签名段数少于 5，与 5 段 canonical 必然不匹配、401 恒成立；
+     * 而本条签名段数、顺序、nonce 全部正确，<b>唯一变量就是 sha 的输入</b>：
+     * 服务端若对空串（或任何非真实 body）算 sha，就会与本签名匹配 → 200 → 用例红。
+     */
+    private void expectRejectedWithForeignBodySha(String foreignBody, String why) {
+        long now = System.currentTimeMillis() / 1000;
+        String nonce = UUID.randomUUID().toString();
+        String message = "POST\n" + USER_PATH + "\n" + now + "\n" + nonce
+            + "\n" + sha256Hex(foreignBody);
+
+        int status = given()
+            .header("X-Aster-Timestamp", String.valueOf(now))
+            .header("X-Aster-Nonce", nonce)
+            .header("X-Aster-Signature", hmacHex(message))
+            .header("Content-Type", "application/json")
+            .body(BODY)          // 发的是 BODY，签名却基于 foreignBody
+            .when()
+            .post(USER_PATH)
+            .then()
+            .extract()
+            .statusCode();
+
+        org.junit.jupiter.api.Assertions.assertEquals(401, status,
+            "服务端必须对**真实 body** 计算 sha —— " + why);
     }
 
     @Test
@@ -192,5 +233,15 @@ class SnapshotLegacySignatureRejectedIT {
             "nonce 与 sha 顺序颠倒：canonical 是有序拼接");
         expectRejected("POST\n" + path + "\n{ts}",
             "整体退化成 v1 三段");
+        expectRejected("POST\n" + path + "\n{nonce}\n{sha}",
+            "缺 ts：时间戳同样必须进 canonical");
+
+        // ★M3：结构完全正确、仅 sha 的**输入**不同 —— 上面四条都抓不到它
+        //   （它们段数少于 5，与 5 段 canonical 必然不匹配、401 恒成立）。
+        expectRejectedWithForeignBodySha("",
+            "服务端对空串算 sha、忽略真实 body（终审实测的 M3）");
+        expectRejectedWithForeignBodySha(
+            "{\"planTier\":\"ENTERPRISE\",\"apiCallsLimit\":999999999}",
+            "服务端对另一个 body 算 sha");
     }
 }
