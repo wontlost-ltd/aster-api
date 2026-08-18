@@ -124,8 +124,9 @@ class SnapshotLegacySignatureRejectedIT {
         //
         // ★这条用例的鉴别力有限（对抗性审查实测指出）：body 一改签名必然对不上，
         //   401 恒成立——它实际测的是「HMAC 对输入敏感」（数学上恒真），
-        //   而非「服务端把 body 绑进了 canonical」。真正锁住 body 绑定的是
-        //   下面的 serverMustBindBodyAndNonceIntoCanonical。此条保留作端到端冒烟。
+        //   而非「服务端把 body 绑进了 canonical」。真正锁住逐项绑定的是
+        //   下面的 serverMustBindBodyAndNonceIntoCanonical（逐项差分）。
+        //   此条保留作端到端冒烟。
         long now = System.currentTimeMillis() / 1000;
         String nonce = UUID.randomUUID().toString();
         String sig = hmacHex("POST\n" + USER_PATH + "\n" + now + "\n" + nonce + "\n" + sha256Hex(BODY));
@@ -145,26 +146,20 @@ class SnapshotLegacySignatureRejectedIT {
             .body(containsString("invalid_signature"));
     }
 
-    @Test
-    void serverMustBindBodyAndNonceIntoCanonical() {
-        // ★真正有鉴别力的那条：带上 nonce 头（走 v2 分支），但签名只覆盖
-        //   v1 的三段 `method\npath\nts`——**不含 nonce、不含 bodySha**。
-        //
-        //   若服务端确实把 nonce+bodySha 绑进了 canonical，这个签名必然对不上 → 401。
-        //   若服务端「漏绑」（例如 canonicalV2 少拼 bodySha、或对空串算 sha 而忽略真实
-        //   body、或干脆拿 v1 canonical 去比），它就会**通过** → 用例变红。
-        //
-        //   与上一条的区别：上一条改的是 body（签名必错，恒 401，测不出绑没绑）；
-        //   这一条改的是**签名覆盖的范围**，body 与 nonce 都如实发送——
-        //   于是「服务端有没有把它们算进去」成为唯一变量。
+    /** 用给定 canonical 签名发一次 v2 形态的请求（nonce 与 body 均如实发送）。 */
+    private void expectRejected(String canonical, String why) {
         long now = System.currentTimeMillis() / 1000;
         String nonce = UUID.randomUUID().toString();
-        String v1ShapedSig = hmacHex("POST\n" + USER_PATH + "\n" + now);
+        // canonical 里的占位符在此实例化，确保时间戳/nonce 与请求头一致
+        String message = canonical
+            .replace("{ts}", String.valueOf(now))
+            .replace("{nonce}", nonce)
+            .replace("{sha}", sha256Hex(BODY));
 
         given()
             .header("X-Aster-Timestamp", String.valueOf(now))
             .header("X-Aster-Nonce", nonce)
-            .header("X-Aster-Signature", v1ShapedSig)
+            .header("X-Aster-Signature", hmacHex(message))
             .header("Content-Type", "application/json")
             .body(BODY)
             .when()
@@ -172,5 +167,30 @@ class SnapshotLegacySignatureRejectedIT {
             .then()
             .statusCode(401)
             .body(containsString("invalid_signature"));
+    }
+
+    @Test
+    void serverMustBindBodyAndNonceIntoCanonical() {
+        // ★逐项差分（2026-08-18 复评重写）：签名覆盖「正确 v2 **减去恰好一项**」。
+        //
+        //   上一版只发 v1 三段签名，复评实测其鉴别力**远弱于命名承诺**：
+        //   只要服务端 canonical 比三段多任何一段，签名就必然对不上、401 恒成立。
+        //   于是「漏绑 bodySha」（M2）、「对空串算 sha」（M3）、「漏绑 nonce」（M5）、
+        //   「nonce/sha 顺序颠倒」（M7）四个变异**它一个都抓不到**——
+        //   而注释里恰恰点名说能抓 M2/M3。这正是本轮要修的「注释声称 ≠ 实现」。
+        //
+        //   逐项差分让每一项的缺失都成为唯一变量：
+        //     缺 bodySha → 服务端若真绑了 body，签名必不匹配 → 401（否则用例红）
+        //     缺 nonce   → 同理
+        //     顺序颠倒   → canonical 是有序拼接，换序即不同消息
+        String path = USER_PATH;
+        expectRejected("POST\n" + path + "\n{ts}\n{nonce}",
+            "缺 bodySha：服务端必须把 body 算进 canonical");
+        expectRejected("POST\n" + path + "\n{ts}\n{sha}",
+            "缺 nonce：服务端必须把 nonce 算进 canonical");
+        expectRejected("POST\n" + path + "\n{ts}\n{sha}\n{nonce}",
+            "nonce 与 sha 顺序颠倒：canonical 是有序拼接");
+        expectRejected("POST\n" + path + "\n{ts}",
+            "整体退化成 v1 三段");
     }
 }
