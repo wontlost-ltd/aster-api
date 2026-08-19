@@ -100,13 +100,21 @@ dependencies {
     implementation asterLibs.validation
 
     // GraalVM Polyglot SDK (用于动态 CNL 执行)
-    implementation 'org.graalvm.polyglot:polyglot:25.0.4'
-    implementation 'org.graalvm.sdk:graal-sdk:25.0.4'
+    //
+    // ★版本由 aster-lang-platform 版本目录统一（asterLibs.graalvm.*，issue #193）。
+    //   此前本文件与 aster-lang-truffle 各自硬编码字面量，曾出现
+    //   本仓内部 25.0.3/25.0.4 混用 + truffle 仓落后到 25.0.1 的跨仓 drift。
+    //   GraalVM 组件混搭的症状是 NoClassDefFoundError →
+    //   ExceptionInInitializerError at Engine.java:559，且**逐个升看起来都绿、
+    //   合到最后才炸**（实测于 #191 单独升 polyglot）。
+    //   配套：.github/dependabot.yml 已建 graalvm group，全组件一个 PR 同升。
+    implementation asterLibs.graalvm.polyglot
+    implementation asterLibs.graalvm.sdk
     // truffle-api 需要作为 implementation 以便访问 VirtualFrame（DynamicCnlExecutor 需要）
-    implementation 'org.graalvm.truffle:truffle-api:25.0.4'
-    runtimeOnly 'org.graalvm.truffle:truffle-runtime:25.0.4'
-    runtimeOnly 'org.graalvm.truffle:truffle-compiler:25.0.4'
-    runtimeOnly 'org.graalvm.compiler:compiler:25.0.4'
+    implementation asterLibs.graalvm.truffle.api
+    runtimeOnly asterLibs.graalvm.truffle.runtime
+    runtimeOnly asterLibs.graalvm.truffle.compiler
+    runtimeOnly asterLibs.graalvm.compiler
 
     // 测试依赖
     testImplementation 'io.quarkus:quarkus-junit5'
@@ -133,6 +141,25 @@ dependencies {
 
 configurations.configureEach {
     exclude group: 'org.jboss.slf4j', module: 'slf4j-jboss-logmanager'
+
+    // ★GraalVM 组件必须 lockstep —— 覆盖 Quarkus BOM 的旧 pin（issue #193 实测）。
+    //
+    //   quarkus-bom 用 enforcedPlatform 引入，它对 org.graalvm.sdk 钉的是 **23.1.2**，
+    //   于是即便本文件声明 25.0.4 也会被**降级**：
+    //     org.graalvm.sdk:graal-sdk:25.0.4 -> 23.1.2
+    //     org.graalvm.sdk:nativeimage:25.0.4 -> 23.1.2
+    //   而 truffle-api / polyglot / compiler 仍是 25.0.4 —— 这正是
+    //   NoClassDefFoundError → ExceptionInInitializerError at Engine.java:559
+    //   那类「组件版本混搭」的成因。
+    //
+    //   ★replay/build.gradle 此前把 graal-sdk 硬编码成 23.1.2，就是在**迁就**
+    //     这个降级结果而非修因；本次一并改回目录别名并在此强制对齐。
+    resolutionStrategy.eachDependency { details ->
+        if (details.requested.group.startsWith('org.graalvm')) {
+            details.useVersion(asterLibs.versions.graalvm.get())
+            details.because('GraalVM 全组件 lockstep，覆盖 quarkus-bom 的 23.1.2 旧 pin（#193）')
+        }
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {

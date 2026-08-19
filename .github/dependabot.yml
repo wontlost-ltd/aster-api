@@ -46,6 +46,27 @@ updates:
           - "io.quarkus:*"
           - "io.quarkus.platform:*"
         update-types: ["minor", "patch"]
+      # ★GraalVM 全组件必须 lockstep（issue #193，实测）。
+      #
+      #   #191 单独升 polyglot 时 CI 真失败：
+      #     NoClassDefFoundError → ExceptionInInitializerError at Engine.java:559
+      #     （StandaloneReplayExecutorTest / RunnerMainIntegrationTest 4 例）
+      #   而 #188/#189/#190/#192 单独跑却全绿 —— **逐个合看起来都绿、合到最后一定炸**，
+      #   这是最危险的形态。Engine.java:559 是 GraalVM 组件版本混搭的典型症状。
+      #
+      #   归一组后 Dependabot 出**一个** PR 同时升全部组件，杜绝混搭。
+      #   与本文件已有的 quarkus group（plugin + bom 必须同版本）同理。
+      #
+      #   ★truffle-compiler 曾被 Dependabot 漏掉（#188-#192 五个 PR 里没有它），
+      #     导致 api 内部一度 25.0.3/25.0.4 混用。这里显式列出全部坐标前缀。
+      graalvm:
+        patterns:
+          - "org.graalvm.polyglot:*"
+          - "org.graalvm.sdk:*"
+          - "org.graalvm.truffle:*"
+          - "org.graalvm.compiler:*"
+          - "org.graalvm.buildtools:*"
+        update-types: ["minor", "patch"]
       hibernate:
         patterns:
           - "org.hibernate:*"
