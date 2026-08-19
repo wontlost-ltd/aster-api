@@ -16,7 +16,7 @@ dependencyResolutionManagement {
     }
     versionCatalogs {
         create('asterLibs') {
-            from('cloud.aster-lang:aster-lang-platform:1.0.20')
+            from('cloud.aster-lang:aster-lang-platform:1.0.21')
         }
     }
 }
