@@ -45,7 +45,7 @@ inputs:
     default: "true"
   sibling-ref:
     description: >-
-      兄弟仓的 checkout ref（issue #247）。默认 v1.0.20，与 settings.gradle 里
+      兄弟仓的 checkout ref（issue #247）。默认 v1.0.21，与 settings.gradle 里
       aster-lang-platform 的版本 pin 对应——生态 lockstep 发版，七个仓共用同一个
       版本号与 tag 名。
 
@@ -59,7 +59,7 @@ inputs:
       跨仓联调（需要兄弟仓未发版的改动）时，调用方显式传 main 即可，
       这让"用移动目标"从**默认行为**变成**显式选择**。
     required: false
-    default: "v1.0.20"
+    default: "v1.0.21"
 
 runs:
   using: composite
