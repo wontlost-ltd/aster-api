@@ -50,7 +50,7 @@
   "hero": {
     "title": "决策回放，一键还原。",
     "titleHighlight": "{locales}",
-    "description": "监管或客户问起某笔决策怎么来的，调出当时的规则和数据，重算出一模一样的结果——不是翻一条日志，是还原真正的答案。两个独立引擎逐字节证明执行一致，哈希链审计让记录不可篡改，AI 起草、人工审批。适用于贷款准入、KYC 例外、理赔与访问策略。",
+    "description": "监管或客户问起某笔决策怎么来的，调出当时的规则和数据，重算出一模一样的结果——不是翻一条日志，是还原真正的答案。两个独立引擎逐字节证明执行一致，哈希链审计让任何改动可被检测，AI 起草、人工审批。适用于贷款准入、KYC 例外、理赔与访问策略。",
     "builtOnAsterLang": "基于开源 Aster Lang 引擎构建。查看语言文档 →",
     "tryDemo": "回放一笔真实的信贷决策",
     "noCreditCard": "无需信用卡。"
@@ -1294,72 +1294,6 @@
       "viaTeam": "共享给 {team}",
       "fromOwner": "来自 {owner}",
       "updated": "更新于 {date}"
-    }
-  },
-  "reports": {
-    "title": "合规报告",
-    "subtitle": "为您的策略生成合规报告",
-    "generateNew": "生成新报告",
-    "noReports": "暂无报告",
-    "generateFirst": "在上方生成您的第一份合规报告。",
-    "upgradePlan": "升级计划",
-    "generating": "生成中...",
-    "generate": "生成 {type} 报告",
-    "status": {
-      "completed": "已完成",
-      "generating": "生成中...",
-      "failed": "失败"
-    },
-    "type": "类型：{type}",
-    "created": "创建于：{date}",
-    "policiesAnalyzed": "分析了 {count} 个策略",
-    "reportTypes": {
-      "gdpr": {
-        "name": "GDPR",
-        "description": "通用数据保护条例"
-      },
-      "hipaa": {
-        "name": "HIPAA",
-        "description": "健康保险可携性和责任法案"
-      },
-      "soc2": {
-        "name": "SOC 2",
-        "description": "服务组织控制 2"
-      },
-      "pci_dss": {
-        "name": "PCI-DSS",
-        "description": "支付卡行业数据安全标准"
-      }
-    },
-    "detail": {
-      "failedToLoad": "加载报告失败",
-      "reportNotFound": "未找到报告",
-      "backToReports": "返回报告列表",
-      "generatingMessage": "报告正在生成中，请稍后查看。",
-      "failedMessage": "报告生成失败，请尝试重新生成。",
-      "complianceScore": "合规评分",
-      "overallCompliance": "基于您的策略的整体合规评级",
-      "categories": {
-        "dataProtection": "数据保护",
-        "accessControl": "访问控制",
-        "auditLogging": "审计日志"
-      },
-      "summary": {
-        "totalPolicies": "策略总数",
-        "policiesWithPII": "包含PII的策略",
-        "totalExecutions": "执行总次数",
-        "riskLevel": "风险等级"
-      },
-      "riskLevel": {
-        "low": "低风险",
-        "medium": "中等风险",
-        "high": "高风险"
-      },
-      "piiAnalysis": "PII分析",
-      "detectedFields": "检测到的PII字段",
-      "recommendations": "建议",
-      "policiesAnalyzed": "已分析的策略",
-      "executionCount": "{count} 次执行"
     }
   },
   "settings": {
