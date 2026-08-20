@@ -256,11 +256,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: aster-api
-      - uses: actions/checkout@v7
+      - uses: aster-cloud/aster-lang-platform/.github/actions/checkout-sibling@main
         with:
           repository: aster-cloud/aster-lang-locales
           path: aster-lang-locales
-      - uses: actions/checkout@v7
+      - uses: aster-cloud/aster-lang-platform/.github/actions/checkout-sibling@main
         with:
           repository: aster-cloud/aster-lang-hi
           path: aster-lang-hi
