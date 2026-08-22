@@ -1,7 +1,11 @@
 # ADR 0035：把 Aster 做成 null-safe 语言
 
-- 状态：**PROPOSED**（2026-08-22。调研完成，代码未动，待用户拍板实施档位）
-- 决策者：待用户拍板
+- 状态：**档位 A + C IMPLEMENTED / 档位 B 待排期**（2026-08-22）
+  - 档位 A：Map 拒绝 null 键 —— 随 v1.0.24 上线，并在二轮审计补掉 `List.groupBy` 这个漏网入口（v1.0.25）
+  - 档位 C：`Map.get` 返回 `Maybe` —— **用户拍板直接改**，接受破坏 spec-1.0-freeze 的「Stable 1.x 内语义不变」承诺
+    （truffle#89 / ts#119 / test#93 / dev#27，待发版）
+  - 档位 B（编译期警告）：**未做**，需数据流分析，单独排期
+- 决策者：用户（2026-08-22 拍板档位 C 直接改）
 - 相关：truffle#74（第 1 项 null 键塌陷）、ADR 0031（Stable/Experimental 边界，决定破坏性变更能走多快）、ADR 0016（双引擎 parity）
 
 ---
@@ -75,8 +79,21 @@ Rule r given k as Text, produce Int:
 - 可能存在的用户策略
 
 **必须配套**：ADR 0031 的 Stable/Experimental 分级说明 `Map.*` 属 Stable →
-按 spec-freeze 承诺「Stable 集 1.x 内语义不变」，档位 C **不能在 1.x 内做**，
-需留到 2.0，或提供 `Map.getOrNone` 新 builtin 并把 `Map.get` 标记 deprecated。
+按 spec-freeze 承诺「Stable 集 1.x 内语义不变」，档位 C 与该承诺**直接冲突**。
+
+**★实施决定（2026-08-22，用户拍板）**：直接改，接受破坏该承诺。依据：
+- 真实用量已逐一核实**极小**——仅 3 个 corpus 文件；
+  `aster-cloud` 里那些 `Map.get` 是 **JS 的**、与 Aster 无关
+- 用户判定现存策略均为测试数据，不构成迁移负担
+
+实施结果：3 个 corpus policy 改用 `Maybe.withDefault` 解包后
+**golden 期望值全部不变**，基线未受扰动。
+
+★实现中的关键发现：**TS 侧 `None` 的运行期表示就是 `null`**
+（`evalExpr` 的 `case 'None'` 返回 null），故缺键分支无需改动即等价于 `None`；
+真正变的只有**命中**分支（包一层 `Some`）。这让改动面比预估小得多。
+
+另：「键存在但值为 null」与「键不存在」是两件事，不塌陷——前者仍是 `Some(null)`。
 
 ## 4. 建议
 
