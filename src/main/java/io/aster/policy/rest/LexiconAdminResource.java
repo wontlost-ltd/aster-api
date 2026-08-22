@@ -396,12 +396,17 @@ public class LexiconAdminResource {
     @SuppressWarnings("try")
     public Response delete(@Context HttpHeaders headers, @PathParam("fileName") String fileName) {
         String sanitized = sanitizeFileName(fileName);
+        // ★鉴权先于输入校验（api#276）：此前先查 .jar 后验 HMAC，于是**未鉴权**的
+        //   调用方能靠 400/403 区分「是不是 .jar」。虽然实测不泄漏文件存在性
+        //   （不存在的 .jar 与真实存在的返回同样的 403），也不构成路径穿越，
+        //   但同文件其它写端点（disable/enable/upload）都是先鉴权——这里对齐，
+        //   让「未通过鉴权就什么都问不出来」成为该资源的一致性质。
+        verifyHmac(headers, "DELETE", "/api/v1/admin/lexicons/" + sanitized,
+            null, 0, null, sanitized);
         // R3-delete-jar-restrict：DELETE 同样必须是 .jar
         if (!sanitized.endsWith(".jar")) {
             throw badRequest("invalid_extension", "only .jar files may be deleted");
         }
-        verifyHmac(headers, "DELETE", "/api/v1/admin/lexicons/" + sanitized,
-            null, 0, null, sanitized);
         // R12-Backend-Major-1 + Major-2: DELETE 走同样双层锁 (JVM + 跨 replica)。
         java.util.concurrent.locks.ReentrantLock fileLock = hotPlugLoader.acquireUploadLock(sanitized);
         fileLock.lock();
