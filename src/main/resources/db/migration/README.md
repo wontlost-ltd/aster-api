@@ -41,17 +41,25 @@ DROP TABLE IF EXISTS policy_catalog;   -- ← 这一行是可执行 SQL，不是
 
 ### 已知的历史遗留（勿模仿，也勿修改）
 
-以下三个文件的回滚块是**可执行 SQL**，属历史遗留。按铁律一，它们**不能被修改**，
-其影响已由前向补偿迁移 `V6.25.0__ensure_dynamic_policy_objects.sql` 幂等兜底：
+以下三个文件的回滚块是**可执行 SQL**，属历史遗留。按铁律一，它们**不能被修改**：
 
 | 文件 | 自毁内容 |
 |---|---|
-| `V6.1.0__add_dynamic_policy_fields.sql` | DROP 掉自己刚加的 5 个字段 + 1 个索引 |
+| `V6.1.0__add_dynamic_policy_fields.sql` | DROP 掉 4 个自己新增的字段 + **`source_hash`（V6.0.0 创建、已回填真实 SHA-256）** + 1 个索引 |
 | `V6.2.0__create_policy_catalog.sql` | DROP TABLE 掉自己刚建的 `policy_catalog` |
 | `V6.3.0__create_policy_artifacts.sql` | DROP TABLE 掉自己刚建的 `policy_artifacts` |
 
+★ `V6.1.0` 那一项最严重：`source_hash` 并非它新增的列，而是 `V6.0.0__truffle_security.sql`
+创建并回填了**真实哈希**、用于构造 `prev_hash` 链式信任的列。删掉它等于抹掉审计链的一环。
+
 该缺陷**已真实发生过一次**——`V6.4.0__recreate_policy_catalog_artifacts.sql`
 的标题就是「修复先前脚本中意外回滚导致的缺失」。
+
+**注意 `V6.25.0` 的有效性边界**：它是**防御性 no-op**，不是实际修复。
+`V6.1.0` 删掉 `policy_versions.tenant_id` 后，`V6.8.0`/`V6.9.0`/`V6.11.0` 都无保护地
+引用该列（`CREATE INDEX IF NOT EXISTS` 只保护索引名，不保护列引用），
+迁移链会在 **6.8.0 硬失败**（`42703 column "tenant_id" does not exist`），
+版本更高的 `V6.25.0` 根本没机会运行。真正的防护是本文件的编写规约。
 
 ## 铁律三：新建表/字段的定义要有唯一权威来源
 
@@ -63,15 +71,28 @@ DROP TABLE IF EXISTS policy_catalog;   -- ← 这一行是可执行 SQL，不是
 
 ## 本地验证方式
 
-改迁移前后，在临时库上整链回放一遍，确认最终状态符合预期：
+**必须用真 Flyway 引擎验证，不要用裸 psql 逐个跑。**
+
+裸 psql 循环给出的是「SQL 能不能执行」的弱信号：它不校验 checksum、不走版本序、
+不处理 `${...}` placeholder，因此**发现不了版本序类问题**——例如 V6.25.0 那个
+「补偿迁移排在 6.8.0 之后所以永远跑不到」的缺陷，就是裸 psql 测不出、
+真 Flyway 一跑就暴露的。
 
 ```bash
-docker exec aster-postgres psql -U postgres -c "DROP DATABASE IF EXISTS mig_probe;" -c "CREATE DATABASE mig_probe;"
-cd src/main/resources/db/migration
-for f in $(ls V*.sql | sort -V); do
-  docker exec -i aster-postgres psql -U postgres -d mig_probe -v ON_ERROR_STOP=1 -q < "$f"
-done
+# 克隆一个带真实 flyway_schema_history 的库（勿直接改动 aster_policy）
+docker exec aster-postgres psql -U postgres \
+  -c "CREATE DATABASE mig_probe TEMPLATE aster_policy;"
+
+# 用生产同款参数跑：validate 开、out-of-order 关
+docker run --rm --network host \
+  -v "$PWD/src/main/resources/db/migration:/flyway/sql:ro" flyway/flyway:10 \
+  -url=jdbc:postgresql://localhost:15432/mig_probe \
+  -user=postgres -password=postgres \
+  -placeholders.asterDemoSeedEnabled=false \
+  -validateOnMigrate=true -outOfOrder=false migrate
+
+docker exec aster-postgres psql -U postgres -c "DROP DATABASE mig_probe;"
 ```
 
-注意：含 `${...}` placeholder 的迁移（如 `V6.13.0`）在裸 psql 下会报语法错误，
-那是 Flyway 变量未被替换所致，**不是迁移本身的缺陷**。
+关键是看输出里的 **`Successfully validated N migrations`** —— 它证明既有迁移的
+checksum 全部完好，即你没有动过任何已应用的文件。
