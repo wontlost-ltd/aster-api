@@ -131,7 +131,14 @@ public class HealthcareConverter implements PolicyGraphQLConverter<HealthcareCon
     }
 
     private Object convertFromMap(Map<?, ?> resultMap) {
-        Object typeIndicator = resultMap.get("_type");
+        // 变体/结构体类型标签**同时容忍两种拼写**（aster-lang-ts#137）：
+        // TS 引擎产出 `__type`、Truffle 此前产出 `_type`，现已统一为 `__type`。
+        // 这里读两种是为跨版本兼容——若只认新标签，旧引擎（或缓存的旧结果）
+        // 会静默落到「没有类型标记」分支、退化成通用转换，而不是响亮失败。
+        Object typeIndicator = resultMap.get("__type");
+        if (typeIndicator == null) {
+            typeIndicator = resultMap.get("_type");
+        }
         if (typeIndicator != null) {
             String type = String.valueOf(typeIndicator);
             if ("claim".equalsIgnoreCase(type)) {

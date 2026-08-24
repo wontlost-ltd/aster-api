@@ -168,7 +168,9 @@ class TrufflePolicyRuntimeTest {
         assertThat(result.result()).isInstanceOf(java.util.Map.class);
         @SuppressWarnings("unchecked")
         java.util.Map<String, Object> map = (java.util.Map<String, Object>) result.result();
-        assertThat(map).containsEntry("_type", "Err");
+        // 标签已统一为 __type（aster-lang-ts#137）：TS 侧一直是 __type，
+        // 等价性语料的 cases 也全部以 __type 为准，故 Truffle 侧对齐过来。
+        assertThat(map).containsEntry("__type", "Err");
         assertThat(map).containsKey("value");
         assertThat(map.get("value")).isNull();
     }
