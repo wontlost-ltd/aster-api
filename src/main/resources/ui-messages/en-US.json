@@ -286,7 +286,17 @@
       "and": "and",
       "privacyPolicy": "Privacy Policy",
       "alreadyHaveAccount": "Already have an account?",
-      "signIn": "Sign in"
+      "signIn": "Sign in",
+      "emailLabel": "Email",
+      "passwordLabel": "Password",
+      "passwordHint": "At least 8 characters.",
+      "createAccount": "Create account",
+      "creating": "Creating…",
+      "or": "or",
+      "passwordTooShort": "Password must be at least 8 characters.",
+      "signupFailed": "Could not create the account. Please try again.",
+      "checkEmailTitle": "Account ready",
+      "checkEmailBody": "Sign in with your email and password. You can verify your email from Settings to unlock AI features."
     },
     "login": {
       "title": "Sign in to your account",
@@ -370,6 +380,15 @@
         "team": "Team policy collaboration",
         "integration": "API integration"
       }
+    },
+    "verifyEmail": {
+      "title": "Verify your email",
+      "verifying": "Verifying your email…",
+      "successTitle": "Email verified",
+      "successMessage": "Your email is verified. AI features are now unlocked.",
+      "invalidToken": "This verification link is invalid or has expired.",
+      "backToSettings": "Back to settings",
+      "goToDashboard": "Go to dashboard"
     }
   },
   "dashboardNav": {
@@ -1485,6 +1504,69 @@
       "title": "AI Keys",
       "subtitle": "Bring your own OpenAI / Anthropic / Vertex AI key. AI calls use your quota and bypass the platform monthly limit.",
       "manageKeys": "Manage AI Keys"
+    },
+    "emailVerification": {
+      "title": "Email verification",
+      "description": "Free accounts must verify their email before AI features unlock.",
+      "statusVerified": "Verified",
+      "statusUnverified": "Not verified",
+      "send": "Send verification email",
+      "sending": "Sending…",
+      "sent": "Verification email sent. Check your inbox — the link expires in 24 hours.",
+      "resend": "Resend email"
+    },
+    "changePassword": {
+      "title": "Change password",
+      "description": "Changing your password signs out all remembered devices.",
+      "currentPassword": "Current password",
+      "newPassword": "New password",
+      "confirmPassword": "Confirm new password",
+      "submit": "Change password",
+      "submitting": "Changing…",
+      "success": "Password changed. Remembered devices were signed out.",
+      "mismatch": "The two passwords do not match.",
+      "tooShort": "Password must be at least 8 characters.",
+      "noPassword": "This account signs in with a social provider and has no password. Use “Forgot password” to set one.",
+      "forgotPasswordLink": "Set a password"
+    },
+    "totp": {
+      "title": "Authenticator app",
+      "description": "Use a TOTP app instead of emailed codes for two-factor sign-in.",
+      "statusEnabled": "Authenticator enabled",
+      "statusDisabled": "Not set up",
+      "remainingCodes": "{count} recovery codes left",
+      "start": "Set up authenticator",
+      "starting": "Preparing…",
+      "scanHint": "Scan this QR code with your authenticator app, or enter the key manually.",
+      "manualKeyLabel": "Setup key",
+      "confirmLabel": "Code from your app",
+      "confirmHint": "Enter the 6-digit code to finish setup.",
+      "confirm": "Confirm",
+      "confirming": "Confirming…",
+      "confirmFailed": "That code did not match. Try again.",
+      "cancel": "Cancel",
+      "recoveryTitle": "Recovery codes",
+      "recoveryWarning": "Save these now — they are shown once and cannot be retrieved later. Each code works a single time.",
+      "recoveryDone": "I have saved them",
+      "disable": "Turn off",
+      "disabling": "Turning off…",
+      "disableHint": "Enter a current code or a recovery code to turn off.",
+      "disableFailed": "Could not turn off the authenticator. Check the code and try again.",
+      "loadFailed": "Could not load authenticator status.",
+      "alreadyEnabled": "An authenticator is already set up on this account."
+    },
+    "trustedDevices": {
+      "title": "Trusted devices",
+      "description": "Devices that skip two-factor prompts until they expire.",
+      "empty": "No trusted devices.",
+      "unknownDevice": "Unknown device",
+      "lastUsed": "Last used",
+      "never": "Never",
+      "expires": "Expires",
+      "remove": "Remove",
+      "removing": "Removing…",
+      "removeFailed": "Could not remove this device.",
+      "loadFailed": "Could not load trusted devices."
     }
   },
   "security": {

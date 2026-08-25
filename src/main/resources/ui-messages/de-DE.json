@@ -286,7 +286,17 @@
       "and": "und",
       "privacyPolicy": "Datenschutzrichtlinien",
       "alreadyHaveAccount": "Bereits ein Konto?",
-      "signIn": "Anmelden"
+      "signIn": "Anmelden",
+      "emailLabel": "E-Mail",
+      "passwordLabel": "Passwort",
+      "passwordHint": "Mindestens 8 Zeichen.",
+      "createAccount": "Konto erstellen",
+      "creating": "Wird erstellt…",
+      "or": "oder",
+      "passwordTooShort": "Das Passwort muss mindestens 8 Zeichen lang sein.",
+      "signupFailed": "Konto konnte nicht erstellt werden. Bitte erneut versuchen.",
+      "checkEmailTitle": "Konto bereit",
+      "checkEmailBody": "Melden Sie sich mit E-Mail und Passwort an. Bestätigen Sie Ihre E-Mail in den Einstellungen, um KI-Funktionen freizuschalten."
     },
     "login": {
       "title": "Bei Ihrem Konto anmelden",
@@ -370,6 +380,15 @@
         "team": "Team-Richtlinien-Zusammenarbeit",
         "integration": "API-Integration"
       }
+    },
+    "verifyEmail": {
+      "title": "E-Mail bestätigen",
+      "verifying": "E-Mail wird bestätigt…",
+      "successTitle": "E-Mail bestätigt",
+      "successMessage": "Ihre E-Mail-Adresse wurde bestätigt. KI-Funktionen sind jetzt freigeschaltet.",
+      "invalidToken": "Dieser Bestätigungslink ist ungültig oder abgelaufen.",
+      "backToSettings": "Zurück zu den Einstellungen",
+      "goToDashboard": "Zum Dashboard"
     }
   },
   "dashboardNav": {
@@ -1485,6 +1504,69 @@
       "title": "KI-Schlüssel",
       "subtitle": "Eigenen OpenAI- / Anthropic- / Vertex-AI-Schlüssel binden. KI-Aufrufe nutzen dein Kontingent und umgehen das Plattform-Monatslimit.",
       "manageKeys": "KI-Schlüssel verwalten"
+    },
+    "emailVerification": {
+      "title": "E-Mail-Verifizierung",
+      "description": "Kostenlose Konten müssen ihre E-Mail-Adresse bestätigen, um KI-Funktionen freizuschalten.",
+      "statusVerified": "Bestätigt",
+      "statusUnverified": "Nicht bestätigt",
+      "send": "Bestätigungs-E-Mail senden",
+      "sending": "Wird gesendet…",
+      "sent": "Bestätigungs-E-Mail gesendet. Der Link ist 24 Stunden gültig.",
+      "resend": "Erneut senden"
+    },
+    "changePassword": {
+      "title": "Passwort ändern",
+      "description": "Beim Ändern des Passworts werden alle gemerkten Geräte abgemeldet.",
+      "currentPassword": "Aktuelles Passwort",
+      "newPassword": "Neues Passwort",
+      "confirmPassword": "Neues Passwort bestätigen",
+      "submit": "Passwort ändern",
+      "submitting": "Wird geändert…",
+      "success": "Passwort geändert. Gemerkte Geräte wurden abgemeldet.",
+      "mismatch": "Die beiden Passwörter stimmen nicht überein.",
+      "tooShort": "Das Passwort muss mindestens 8 Zeichen lang sein.",
+      "noPassword": "Dieses Konto meldet sich über einen externen Anbieter an und hat kein Passwort. Nutzen Sie „Passwort vergessen“, um eines festzulegen.",
+      "forgotPasswordLink": "Passwort festlegen"
+    },
+    "totp": {
+      "title": "Authenticator-App",
+      "description": "TOTP-App statt E-Mail-Codes für die Zwei-Faktor-Anmeldung verwenden.",
+      "statusEnabled": "Authenticator aktiviert",
+      "statusDisabled": "Nicht eingerichtet",
+      "remainingCodes": "Noch {count} Wiederherstellungscodes",
+      "start": "Authenticator einrichten",
+      "starting": "Wird vorbereitet…",
+      "scanHint": "Scannen Sie den QR-Code mit Ihrer Authenticator-App oder geben Sie den Schlüssel manuell ein.",
+      "manualKeyLabel": "Einrichtungsschlüssel",
+      "confirmLabel": "Code aus Ihrer App",
+      "confirmHint": "Geben Sie den 6-stelligen Code ein, um die Einrichtung abzuschließen.",
+      "confirm": "Bestätigen",
+      "confirming": "Wird bestätigt…",
+      "confirmFailed": "Der Code stimmt nicht. Bitte erneut versuchen.",
+      "cancel": "Abbrechen",
+      "recoveryTitle": "Wiederherstellungscodes",
+      "recoveryWarning": "Jetzt speichern — sie werden nur einmal angezeigt und können später nicht abgerufen werden. Jeder Code ist einmalig gültig.",
+      "recoveryDone": "Ich habe sie gespeichert",
+      "disable": "Deaktivieren",
+      "disabling": "Wird deaktiviert…",
+      "disableHint": "Geben Sie einen aktuellen Code oder einen Wiederherstellungscode ein, um zu deaktivieren.",
+      "disableFailed": "Authenticator konnte nicht deaktiviert werden. Bitte Code prüfen und erneut versuchen.",
+      "loadFailed": "Authenticator-Status konnte nicht geladen werden.",
+      "alreadyEnabled": "Für dieses Konto ist bereits ein Authenticator eingerichtet."
+    },
+    "trustedDevices": {
+      "title": "Vertrauenswürdige Geräte",
+      "description": "Geräte, die bis zum Ablauf keine Zwei-Faktor-Abfrage benötigen.",
+      "empty": "Keine vertrauenswürdigen Geräte.",
+      "unknownDevice": "Unbekanntes Gerät",
+      "lastUsed": "Zuletzt verwendet",
+      "never": "Nie",
+      "expires": "Läuft ab",
+      "remove": "Entfernen",
+      "removing": "Wird entfernt…",
+      "removeFailed": "Gerät konnte nicht entfernt werden.",
+      "loadFailed": "Vertrauenswürdige Geräte konnten nicht geladen werden."
     }
   },
   "security": {
