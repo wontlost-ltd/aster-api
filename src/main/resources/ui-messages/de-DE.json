@@ -1465,7 +1465,22 @@
       "quotaUnlimited": "Unbegrenzt",
       "quotaUsage": "{used} / {quota}",
       "noExpiry": "Kein Ablauf",
-      "delete": "Löschen"
+      "delete": "Löschen",
+      "thPriority": "Priorität",
+      "moveUp": "Nach oben",
+      "moveDown": "Nach unten",
+      "reorderFailed": "Reihenfolge konnte nicht geändert werden.",
+      "edit": "Bearbeiten",
+      "editSave": "Speichern",
+      "editCancel": "Abbrechen",
+      "editSaved": "Gespeichert.",
+      "resetQuota": "Verbrauch zurücksetzen",
+      "quotaReset": "Verbrauchszähler zurückgesetzt.",
+      "resetFailed": "Verbrauchszähler konnte nicht zurückgesetzt werden.",
+      "resetDialogTitle": "Verbrauchszähler zurücksetzen?",
+      "resetDialogBody": "Dies setzt eine Wasserlinie nach vorn und leert damit die Anzeige „diesen Monat verbraucht“. Frühere Verbrauchsdaten bleiben erhalten — aus dem Audit-Trail wird nichts gelöscht.",
+      "resetDialogConfirm": "Zurücksetzen",
+      "resetDialogCancel": "Abbrechen"
     },
     "profile": {
       "title": "Profil",
@@ -3288,5 +3303,20 @@
     "emptyWindow": "Keine Ausführungen in {window} zum Wiederholen.",
     "rejectedTitle": "Würde in {window} neu ablehnen:",
     "rejectedNote": "Bitte vor der Veröffentlichung prüfen — jede davon kippt von Genehmigung zu Ablehnung."
+  },
+  "conditionFunnel": {
+    "title": "Bedingungs-Funnel",
+    "subtitle": "Wie oft jede Bedingung dieser Policy tatsächlich zutraf.",
+    "loading": "Wird geladen…",
+    "loadFailed": "Bedingungs-Funnel konnte nicht geladen werden.",
+    "empty": "Noch keine passenden Daten",
+    "emptyHint": "Sobald diese Version Ausführungen aufgezeichnet hat, erscheinen ihre Bedingungen hier.",
+    "evaluated": "Ausgewertet",
+    "matched": "Zugetroffen",
+    "sampleNote": "Basierend auf {count} aufgezeichneten Ausführungen — nicht Ihrem gesamten Geschäftsvolumen.",
+    "coverageNote": "Nur {covered} von {total} untersuchten Ausführungen enthalten Details auf Bedingungsebene.",
+    "truncatedNote": "{scanned} von {total} Ausführungen gescannt; die Bedingungen unten sind möglicherweise untererfasst.",
+    "neverMatchedTitle": "Nie zugetroffen",
+    "neverMatchedHint": "Diese Bedingungen wurden ausgewertet, trafen in der Stichprobe aber nie zu. Das kann bedeuten, dass sie unerreichbar sind — oder dass zuletzt einfach keine Ausführung sie erreicht hat."
   }
 }

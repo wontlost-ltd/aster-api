@@ -1465,7 +1465,22 @@
       "quotaUnlimited": "Unlimited",
       "quotaUsage": "{used} / {quota}",
       "noExpiry": "No expiry",
-      "delete": "Delete"
+      "delete": "Delete",
+      "thPriority": "Priority",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "reorderFailed": "Could not change the order.",
+      "edit": "Edit",
+      "editSave": "Save",
+      "editCancel": "Cancel",
+      "editSaved": "Saved.",
+      "resetQuota": "Reset usage",
+      "quotaReset": "Usage counter reset.",
+      "resetFailed": "Could not reset the usage counter.",
+      "resetDialogTitle": "Reset usage counter?",
+      "resetDialogBody": "This clears the “used this month” figure by moving a watermark forward. Past usage records are kept — nothing is deleted from the audit trail.",
+      "resetDialogConfirm": "Reset",
+      "resetDialogCancel": "Cancel"
     },
     "profile": {
       "title": "Profile",
@@ -3288,5 +3303,20 @@
     "emptyWindow": "No executions in the {window} to replay.",
     "rejectedTitle": "Would newly reject in the {window}:",
     "rejectedNote": "Review these before publishing — each one is a decision that flips from approve to reject."
+  },
+  "conditionFunnel": {
+    "title": "Condition funnel",
+    "subtitle": "How often each condition in this policy actually matched.",
+    "loading": "Loading…",
+    "loadFailed": "Could not load the condition funnel.",
+    "empty": "No matching data yet",
+    "emptyHint": "Once this version has recorded executions, its conditions appear here.",
+    "evaluated": "Evaluated",
+    "matched": "Matched",
+    "sampleNote": "Based on {count} recorded executions — not your full business volume.",
+    "coverageNote": "Only {covered} of {total} sampled executions carry condition-level detail.",
+    "truncatedNote": "Scanned {scanned} of {total} executions; conditions below may be undercounted.",
+    "neverMatchedTitle": "Never matched",
+    "neverMatchedHint": "These conditions were evaluated but never matched in the sample. That may mean they are unreachable — or simply that no recent execution hit them."
   }
 }

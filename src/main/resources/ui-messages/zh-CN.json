@@ -1465,7 +1465,22 @@
       "quotaUnlimited": "无限",
       "quotaUsage": "{used} / {quota}",
       "noExpiry": "永不过期",
-      "delete": "删除"
+      "delete": "删除",
+      "thPriority": "优先级",
+      "moveUp": "上移",
+      "moveDown": "下移",
+      "reorderFailed": "无法调整顺序。",
+      "edit": "编辑",
+      "editSave": "保存",
+      "editCancel": "取消",
+      "editSaved": "已保存。",
+      "resetQuota": "重置用量",
+      "quotaReset": "用量计数已重置。",
+      "resetFailed": "无法重置用量计数。",
+      "resetDialogTitle": "重置用量计数？",
+      "resetDialogBody": "这会把水位线前移，从而清空「本月已用」的显示。历史用量记录仍然保留——审计链上不会删除任何内容。",
+      "resetDialogConfirm": "重置",
+      "resetDialogCancel": "取消"
     },
     "profile": {
       "title": "个人资料",
@@ -3288,5 +3303,20 @@
     "emptyWindow": "{window}内没有可回放的执行记录。",
     "rejectedTitle": "{window}内会新增拒绝：",
     "rejectedNote": "发布前请逐条复核——每一条都是从通过翻转为拒绝的决策。"
+  },
+  "conditionFunnel": {
+    "title": "条件漏斗",
+    "subtitle": "这条策略里每个条件实际命中了多少次。",
+    "loading": "加载中…",
+    "loadFailed": "无法加载条件漏斗。",
+    "empty": "暂无匹配数据",
+    "emptyHint": "该版本有执行记录后，其条件会显示在这里。",
+    "evaluated": "已求值",
+    "matched": "已命中",
+    "sampleNote": "基于平台记录到的 {count} 条执行——不是你的全量业务数据。",
+    "coverageNote": "抽样的 {total} 条执行里，只有 {covered} 条带条件级明细。",
+    "truncatedNote": "已扫描 {total} 条中的 {scanned} 条，下方条件的计数可能偏低。",
+    "neverMatchedTitle": "从未命中",
+    "neverMatchedHint": "这些条件被求值过但在样本中从未命中。可能意味着它们不可达——也可能只是最近的执行没走到。"
   }
 }
