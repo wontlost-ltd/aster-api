@@ -1022,7 +1022,8 @@
       "policyContent": "Policy Content",
       "versionHistory": "Version History",
       "backToPolicies": "Back to policies",
-      "policyNotFound": "Policy not found"
+      "policyNotFound": "Policy not found",
+      "untitled": "Untitled policy"
     },
     "versions": {
       "title": "Versions & approvals",
@@ -3303,20 +3304,5 @@
     "emptyWindow": "No executions in the {window} to replay.",
     "rejectedTitle": "Would newly reject in the {window}:",
     "rejectedNote": "Review these before publishing — each one is a decision that flips from approve to reject."
-  },
-  "conditionFunnel": {
-    "title": "Condition funnel",
-    "subtitle": "How often each condition in this policy actually matched.",
-    "loading": "Loading…",
-    "loadFailed": "Could not load the condition funnel.",
-    "empty": "No matching data yet",
-    "emptyHint": "Once this version has recorded executions, its conditions appear here.",
-    "evaluated": "Evaluated",
-    "matched": "Matched",
-    "sampleNote": "Based on {count} recorded executions — not your full business volume.",
-    "coverageNote": "Only {covered} of {total} sampled executions carry condition-level detail.",
-    "truncatedNote": "Scanned {scanned} of {total} executions; conditions below may be undercounted.",
-    "neverMatchedTitle": "Never matched",
-    "neverMatchedHint": "These conditions were evaluated but never matched in the sample. That may mean they are unreachable — or simply that no recent execution hit them."
   }
 }

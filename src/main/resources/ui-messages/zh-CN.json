@@ -1022,7 +1022,8 @@
       "policyContent": "策略内容",
       "versionHistory": "版本历史",
       "backToPolicies": "返回策略列表",
-      "policyNotFound": "策略未找到"
+      "policyNotFound": "策略未找到",
+      "untitled": "未命名策略"
     },
     "versions": {
       "title": "版本与审批",
@@ -3303,20 +3304,5 @@
     "emptyWindow": "{window}内没有可回放的执行记录。",
     "rejectedTitle": "{window}内会新增拒绝：",
     "rejectedNote": "发布前请逐条复核——每一条都是从通过翻转为拒绝的决策。"
-  },
-  "conditionFunnel": {
-    "title": "条件漏斗",
-    "subtitle": "这条策略里每个条件实际命中了多少次。",
-    "loading": "加载中…",
-    "loadFailed": "无法加载条件漏斗。",
-    "empty": "暂无匹配数据",
-    "emptyHint": "该版本有执行记录后，其条件会显示在这里。",
-    "evaluated": "已求值",
-    "matched": "已命中",
-    "sampleNote": "基于平台记录到的 {count} 条执行——不是你的全量业务数据。",
-    "coverageNote": "抽样的 {total} 条执行里，只有 {covered} 条带条件级明细。",
-    "truncatedNote": "已扫描 {total} 条中的 {scanned} 条，下方条件的计数可能偏低。",
-    "neverMatchedTitle": "从未命中",
-    "neverMatchedHint": "这些条件被求值过但在样本中从未命中。可能意味着它们不可达——也可能只是最近的执行没走到。"
   }
 }
