@@ -95,6 +95,31 @@ class ApiKeyTenantIsolationIT {
     }
 
     @Test
+    void workflowAuditEndpoints_withoutApiKey_return401() {
+        // ★与 ApiKeyAuthFilterShouldProtectTest 不同轴：那边反射调 shouldProtect，
+        //   只证明「路径谓词命中」；这里发**真实请求**，证明请求确实被拒。
+        //   谓词对了但 filter 没接上，是这类修复最容易留下的假绿。
+        //
+        //   issue aster-api#296：这四个只读端点以 RequestIdentityResolver.tenantId()
+        //   为租户谓词，而该解析器末级回退是裸 X-Tenant-Id header；生产签名关闭后
+        //   无任何验证方，等于「带上受害者租户 ID 即可读其 workflow 事件与指标」。
+        for (String path : new String[] {
+            "/api/v1/workflows/3f2504e0-4f89-11d3-9a0c-0305e82c3301/events",
+            "/api/v1/workflows/3f2504e0-4f89-11d3-9a0c-0305e82c3301/state",
+            "/api/v1/workflows/metrics",
+            "/api/v1/workflows/by-status/RUNNING",
+        }) {
+            given()
+                .header("X-Tenant-Id", "victim-tenant")   // 伪造的受害者租户
+                .header("X-User-Role", "ADMIN")           // 伪造的角色
+            .when()
+                .get(path)
+            .then()
+                .statusCode(401);
+        }
+    }
+
+    @Test
     void auditEndpoint_withoutApiKey_returns401() {
         // 审计端点文档约定 Bearer 必填；无 key 必须 401（此前签名关闭时它
         // 不在鉴权覆盖内、bearer 形同虚设——现已纳入 ApiKeyAuthFilter）。
