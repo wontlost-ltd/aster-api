@@ -2,6 +2,7 @@ package io.aster.policy.replay;
 
 import aster.core.canonical.CanonicalJson;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -55,6 +56,13 @@ import java.util.Set;
  * <p>reasonCodes M1 为空 {@code []}（Codex #5）：引擎不产结构化 reason；业务返回字段 reasonCode
  * 是 CNL 业务字段非引擎 reason，不自动抽取。reasonCodes 非回放必需字段。
  */
+/*
+ * ★字段序显式钉成字母序——与 EvaluationResponse 同因：
+ *   Quarkus 3.38 → 3.39 后 record 序列化由字母序变为声明序，
+ *   使 PolicyEvaluationReplayOrderingTest 的字节级 golden 断言失败。
+ *   本类作为 replayMetadata 嵌套在响应体内，同样需要显式钉死。
+ */
+@JsonPropertyOrder(alphabetic = true)
 public record ReplayMetadata(
     String runtimeToolchainId,
     String canonicalizationVersion,

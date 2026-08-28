@@ -84,6 +84,28 @@ jobs:
       #   public，composite action 回退 github.token 即可 checkout。fork PR 的 job 里
       #   因此不存在任何跨仓凭据可窃取——这是结构性消除攻击面，不是靠条件语句遮挡。
       #   同理不设 require-cross-repo-token（那会要求 PAT 非空而立即 fail）。
+      # ★Quarkus plugin 与 quarkus-bom 必须同版本（build.gradle:4 的不变式）。
+      #   此前只有注释、没有门禁，dependabot 会把两者拆成**不同版本**的两个 PR
+      #   （#286 → plugin 3.39.0；#284 → BOM 3.38.3），任何组合都得不到一致的版本对，
+      #   而 CI 不会拦。git 历史 15a1a8d 正是上一次同类漂移的补救提交——已发生两次。
+      #   放在 setup 之前：这是纯文本检查，秒级，不该等构建跑完才报。
+      - name: Verify Quarkus plugin/BOM lockstep
+        working-directory: aster-api
+        run: |
+          set -euo pipefail
+          PLUGIN=$(grep -oE "id 'io\\.quarkus' version '[^']+'" build.gradle | grep -oE "[0-9]+\\.[0-9]+\\.[0-9]+")
+          BOM=$(grep -oE "io\\.quarkus\\.platform:quarkus-bom:[^']+" build.gradle | grep -oE "[0-9]+\\.[0-9]+\\.[0-9]+")
+          echo "plugin=$PLUGIN bom=$BOM"
+          if [ -z "$PLUGIN" ] || [ -z "$BOM" ]; then
+            echo "::error::无法从 build.gradle 解析出 Quarkus plugin/BOM 版本——锚点可能被改动，请更新本检查"
+            exit 1
+          fi
+          if [ "$PLUGIN" != "$BOM" ]; then
+            echo "::error::Quarkus plugin ($PLUGIN) != quarkus-bom ($BOM)。二者必须同版本升级（build.gradle:4）——plugin/BOM skew 会拉进不匹配的 codegen 与 runtime 制品。"
+            exit 1
+          fi
+          echo "✓ Quarkus plugin/BOM 一致：$PLUGIN"
+
       - name: Setup Aster build (siblings + JDK + version catalog)
         uses: ./aster-api/.github/actions/setup-aster-build
 

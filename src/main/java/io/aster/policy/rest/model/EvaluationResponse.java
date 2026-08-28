@@ -2,6 +2,7 @@ package io.aster.policy.rest.model;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import io.aster.policy.api.model.DecisionTrace;
 
 import java.util.List;
@@ -11,6 +12,25 @@ import java.util.List;
  *
  * 包含评估结果、执行时间、决策追踪和可能的错误信息。
  */
+/*
+ * ★字段序显式钉成字母序，不随 Jackson 默认值漂移。
+ *
+ * Quarkus 3.38 → 3.39 升级时，record 的序列化顺序由「字母序」变成了「声明序」，
+ * 导致 PolicyEvaluationReplayOrderingTest 的 golden 逐字节断言失败——
+ * **所有值都相同，只有字段排列变了**。
+ *
+ * 该测试有意做字节级断言（防「悄悄丢字段/改字段名」的协议漂移）。若每次升级都去改
+ * 测试，等于把「现状契约」的定义权交给依赖的默认值；显式注解才能让「字段序变了」
+ * 成为一次**有意的决定**，而非升级副作用。
+ *
+ * ★注意：MapperFeature.SORT_PROPERTIES_ALPHABETICALLY 对 record **不生效**
+ * （实测加了 ObjectMapperCustomizer 后测试依然失败），必须用本注解。
+ *
+ * ★影响范围仅限本响应信封的序列化。replay 的 canonical 哈希
+ * （canonicalInputHash / canonicalOutputHash / traceHash）由 canonical-json 自行
+ * 规范化、不依赖字段序——3.39 升级中三个哈希均逐字未变，已实测确认。
+ */
+@JsonPropertyOrder(alphabetic = true)
 public record EvaluationResponse(
     @JsonProperty("result")
     Object result,
