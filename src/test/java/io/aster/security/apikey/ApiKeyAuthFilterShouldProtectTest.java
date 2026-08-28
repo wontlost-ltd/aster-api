@@ -116,6 +116,40 @@ class ApiKeyAuthFilterShouldProtectTest {
     }
 
     // ============================================================
+    // workflow 审计端点：租户谓词的输入（X-Tenant-Id）与角色（X-User-Role）
+    // 在生产签名关闭后都无验证方，必须由 API key 提供可信身份。
+    // ============================================================
+
+    @Test
+    void workflowAuditEndpointsRequireApiKey() throws Exception {
+        assertTrue(call("/api/v1/workflows/3f2504e0-4f89-11d3-9a0c-0305e82c3301/events"));
+        assertTrue(call("/api/v1/workflows/3f2504e0-4f89-11d3-9a0c-0305e82c3301/state"));
+        assertTrue(call("/api/v1/workflows/metrics"));
+        assertTrue(call("/api/v1/workflows/by-status/RUNNING"));
+        // 集合根路径本身也不得敞开
+        assertTrue(call("/api/v1/workflows"));
+        // 无前导斜杠
+        assertTrue(call("api/v1/workflows/metrics"));
+    }
+
+    @Test
+    void workflowMatrixParamsAndTrailingSlashDoNotBypass() throws Exception {
+        // 与 policies 端点同款绕过面：matrix-param（含中间段）与尾斜杠。
+        assertTrue(call("/api/v1/workflows/metrics;x"));
+        assertTrue(call("/api/v1/workflows;v=1/metrics"));
+        assertTrue(call("/api/v1/workflows/foo;jsessionid=abc/events"));
+        assertTrue(call("/api/v1/workflows/metrics/"));
+        assertTrue(call("/api/v1/workflows/"));
+    }
+
+    @Test
+    void workflowSiblingPathsAreNotOverMatched() throws Exception {
+        // 前缀边界防误伤：equals + "/" 前缀不得吞掉兄弟路径。
+        assertFalse(call("/api/v1/workflowsXYZ"));
+        assertFalse(call("/api/v1/workflows-export"));
+    }
+
+    // ============================================================
     // R23-Critical-1: matrix-parameter bypass regression guards
     // ============================================================
 
