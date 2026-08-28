@@ -59,7 +59,7 @@ inputs:
       跨仓联调（需要兄弟仓未发版的改动）时，调用方显式传 main 即可，
       这让"用移动目标"从**默认行为**变成**显式选择**。
     required: false
-    default: "v1.0.27"
+    default: "v1.0.28"
 
 runs:
   using: composite
