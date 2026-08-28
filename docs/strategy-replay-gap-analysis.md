@@ -41,12 +41,23 @@
 | 版本 + 审批治理 | ✅ 已上线 | policy versions / approval workflow |
 | 历史执行留存 | ✅ 已上线 | `Execution` 表 40+ 字段 |
 | **执行输入留存** | ⚠️ **默认关闭** | `replayRetentionEnabled` **default(false)**；未开则 `inputJson=null` |
-| **回归用例/报告** | ❌ **仅 schema，零实现** | 四张表在 `schema.ts`，除自身外**全仓 0 引用**（无迁移/API/UI/服务层） |
-| 批量回放 | ❌ 不存在 | `/api/**` 无 batch/replay/compare/simulate/diff 路由 |
+| **回归用例/报告** | ✅ **已上线**（2026-08 更新） | `admin/rule-regression/rule-regression-content.tsx`；i18n `ruleRegression` 47 键。~~原判「仅 schema，零实现」~~ |
+| 批量回放 | ✅ **已上线**（2026-08 更新） | `api/v1/policies/[id]/whatif-batches`（ADR 0034 S4）——由 aster-api 反向分页拉取历史执行后进程内重跑。~~原判「无 batch/replay 路由」~~ |
 | 版本对比（A/B diff） | ❌ 不存在 | 同上 |
-| What-if 模拟 | ❌ 不存在 | 同上 |
+| What-if 模拟 | ✅ **已上线**（2026-08 更新） | `policies/[id]/policy-detail-content.tsx`；i18n `whatIf` 26 键。~~原判「不存在」~~ |
 | **规则冲突/歧义/死规则检测** | ❌ **不存在** | grep `conflict`/`overlap`/`unreachable` 命中的全是 nonce 冲突、HTTP 409、API key 校验，无一是规则分析 |
-| 业务指标（成交率/利润） | ❌ 不存在 | `Execution` 有 `decision`，**无 outcome** |
+| 业务指标（成交率/利润） | ⚠️ **部分**（2026-08 更新） | 新增独立表 `executionOutcomes`（`schema.ts:926`，`outcome` 为自由文本、刻意不做 enum）。`Execution` 本身**仍无 outcome 列**，故原判字面仍成立，但能力缺口已被另一张表补上 |
+
+> **2026-08-29 复核说明**：上表原写于 2026-08-05。三周内有 4 项交付，已按代码实证在表内更新
+> （回归用例/报告、What-if 模拟、批量回放、业务指标）。逐条核对后**仍然准确**的判断：
+> `traceJson` 无写入方（`policy-execution-log.ts:172` 显式写 `traceJson: null`，注释注明「M2 才落」）、
+> `replayRetentionEnabled` default(false)、平台不持有业务数据（现 55 张表，仍无
+> order/customer/transaction/dataset 类）。
+>
+> ★**规则冲突/歧义/死规则检测**是本文点名的三大缺口中，至今**唯一未动**的一项——
+> 也是下面第二节论证「最该先做」的那一项。
+>
+> 另新增本文未列的能力：证据导出（`dashboard-content.tsx`，i18n `evidenceExport` 34 键）。
 
 ### 已有的很扎实，缺的是"业务人员看得懂的那一层"
 
