@@ -2203,7 +2203,15 @@
     "diffGenerated": "Generiert",
     "acceptDiff": "Aenderungen uebernehmen",
     "rejectDiff": "Aenderungen verwerfen",
-    "inlineCompletionLoading": "KI-Vervollstaendigung wird geladen..."
+    "inlineCompletionLoading": "KI-Vervollstaendigung wird geladen...",
+    "errorEmailUnverified": "Bestätigen Sie Ihre E-Mail-Adresse, um KI-Funktionen freizuschalten.",
+    "errorBanned": "KI-Funktionen sind für dieses Konto deaktiviert. Bei Fragen wenden Sie sich an support@aster-lang.cloud.",
+    "errorQuotaExhausted": "Ihr KI-Kontingent für diesen Monat ist aufgebraucht. Es wird zu Monatsbeginn zurückgesetzt – oder wählen Sie einen höheren Tarif.",
+    "errorRateLimited": "Zu viele Anfragen. Bitte warten Sie einen Moment und versuchen Sie es erneut.",
+    "errorByokUnavailable": "Ihr eigener API-Schlüssel kann derzeit nicht verwendet werden. Bitte später erneut versuchen.",
+    "errorMisconfigured": "KI ist auf diesem Server nicht konfiguriert. Bitte wenden Sie sich an Ihren Administrator.",
+    "errorUnauthorized": "Ihre Sitzung ist abgelaufen. Bitte melden Sie sich erneut an.",
+    "goVerifyEmail": "Jetzt bestätigen"
   },
   "upgradeBlocker": {
     "viewPlans": "Pläne ansehen",
