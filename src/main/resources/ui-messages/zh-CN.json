@@ -839,6 +839,7 @@
         "evaluations50k": "每月 50,000 次评估",
         "aiDrafts500": "每席每月 500 次 AI 草稿（gpt-5.2）",
         "audit90days": "审计日志保留 90 天",
+        "auditUnlimited": "审计日志无限期保留",
         "inviteReviewersPaidSeat": "邀请审阅者——每席 ¥299 / 月",
         "reviewerNotAuthor": "Reviewer ≠ 提交人（≥ 2 席强制）",
         "soxCompliant": "满足 SOX 职责分离合规",

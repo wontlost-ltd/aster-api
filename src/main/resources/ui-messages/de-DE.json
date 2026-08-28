@@ -839,6 +839,7 @@
         "evaluations50k": "50.000 Auswertungen / Monat",
         "aiDrafts500": "500 KI-Entwürfe / Sitz / Monat (gpt-5.2)",
         "audit90days": "90-Tage-Audit-Log",
+        "auditUnlimited": "Unbegrenzte Aufbewahrung des Audit-Logs",
         "inviteReviewersPaidSeat": "Reviewer einladen — jeder Sitz ¥299 / Monat",
         "reviewerNotAuthor": "Reviewer ≠ Autor (ab 2 Sitzen erzwungen)",
         "soxCompliant": "SOX-konforme Funktionstrennung",

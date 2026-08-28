@@ -839,6 +839,7 @@
         "evaluations50k": "50,000 evaluations / month",
         "aiDrafts500": "500 AI drafts / seat / month (gpt-5.2)",
         "audit90days": "90-day audit log",
+        "auditUnlimited": "Unlimited audit log retention",
         "inviteReviewersPaidSeat": "Invite reviewers — each seat ¥299 / month",
         "reviewerNotAuthor": "Reviewer ≠ author (enforced for ≥ 2 seats)",
         "soxCompliant": "Meets SOX Segregation of Duties",
