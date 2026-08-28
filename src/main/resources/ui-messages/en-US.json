@@ -2203,7 +2203,15 @@
     "diffGenerated": "Generated",
     "acceptDiff": "Accept Changes",
     "rejectDiff": "Reject Changes",
-    "inlineCompletionLoading": "Fetching AI completion..."
+    "inlineCompletionLoading": "Fetching AI completion...",
+    "errorEmailUnverified": "Verify your email to unlock AI features.",
+    "errorBanned": "AI features are disabled for this account. Contact support@aster-lang.cloud if you believe this is a mistake.",
+    "errorQuotaExhausted": "You have used up this month’s AI quota. It resets at the start of next month, or upgrade your plan for more.",
+    "errorRateLimited": "Too many requests. Please wait a moment and try again.",
+    "errorByokUnavailable": "Your own API key could not be used right now. Please try again later.",
+    "errorMisconfigured": "AI is not configured on this server. Please contact your administrator.",
+    "errorUnauthorized": "Your session has expired. Please sign in again.",
+    "goVerifyEmail": "Verify now"
   },
   "upgradeBlocker": {
     "viewPlans": "View plans",
