@@ -282,4 +282,74 @@ class NamedContextMapperTest {
         assertEquals(1, result.positionalArgs().length);
         assertEquals(context, result.positionalArgs()[0]);
     }
+
+    /** 构造一个声明为某 Data 类型的单参数。 */
+    private List<CoreModel.Param> typedParam(String name, String typeName) {
+        CoreModel.Param p = new CoreModel.Param();
+        p.name = name;
+        CoreModel.TypeName tn = new CoreModel.TypeName();
+        tn.name = typeName;
+        p.type = tn;
+        return List.of(p);
+    }
+
+    private Map<String, java.util.Set<String>> decls(String typeName, String... fields) {
+        return Map.of(typeName, new java.util.LinkedHashSet<>(java.util.Arrays.asList(fields)));
+    }
+
+    @Test
+    void singleParam_keysCompletelyMismatch_reportsRealCause() {
+        // ★issue #244：单参数规则把整个 Map 当作那一个参数是**合法且常用**的。
+        //   但若参数声明为某 Data 类型、而 Map 的键与其字段**完全不相交**，
+        //   那就是调用方给错了形状。此前照样放行，错误被推迟到引擎里炸成
+        //     「HostObject 不支持成员访问，成员：age」
+        //   ——把排查方向指向 HostAccess 配置，而真因是键名对不上。
+        Map<String, Object> ctx = new HashMap<>();
+        ctx.put("wrongKey", Map.of("age", 30));
+
+        var r = NamedContextMapper.mapContext(ctx, typedParam("applicant", "Applicant"),
+            decls("Applicant", "id", "age", "name"));
+
+        assertFalse(r.success(), "键与字段完全不相交时应在映射层就失败");
+        assertTrue(r.error().contains("wrongKey"), "错误应回显实际键，实际：" + r.error());
+        assertTrue(r.error().contains("age"), "错误应回显期望字段，实际：" + r.error());
+    }
+
+    @Test
+    void singleParam_wholeMapAsStruct_stillWorks() {
+        // ★同等重要的一半：整体传入是正常用法，不得被误伤。
+        //   否则「单参数一律报错」也能让上面那条通过，那是假修复。
+        Map<String, Object> ctx = new HashMap<>();
+        ctx.put("id", "A1");
+        ctx.put("age", 30);
+
+        var r = NamedContextMapper.mapContext(ctx, typedParam("applicant", "Applicant"),
+            decls("Applicant", "id", "age", "name"));
+
+        assertTrue(r.success(), "键与字段相交时必须继续按整体 Map 传入");
+        assertEquals(1, r.positionalArgs().length);
+    }
+
+    @Test
+    void singleParam_partialOverlap_stillWorks() {
+        // 部分匹配（只给了必填字段）同样是正常用法。
+        Map<String, Object> ctx = new HashMap<>();
+        ctx.put("id", "A1");
+
+        var r = NamedContextMapper.mapContext(ctx, typedParam("applicant", "Applicant"),
+            decls("Applicant", "id", "age", "name"));
+
+        assertTrue(r.success(), "只要有交集就应放行");
+    }
+
+    @Test
+    void singleParam_noDeclsProvided_behaviourUnchanged() {
+        // 未提供声明表（旧签名/非 Data 类型）时不做校验，行为与改动前一致。
+        Map<String, Object> ctx = new HashMap<>();
+        ctx.put("wrongKey", 1);
+
+        var r = NamedContextMapper.mapContext(ctx, typedParam("applicant", "Applicant"));
+
+        assertTrue(r.success(), "无声明表时不得改变原有行为");
+    }
 }

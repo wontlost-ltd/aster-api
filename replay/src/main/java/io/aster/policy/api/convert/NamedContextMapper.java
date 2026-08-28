@@ -66,6 +66,16 @@ public class NamedContextMapper {
      * @return 映射结果
      */
     public static MappingResult mapContext(Object context, List<CoreModel.Param> params) {
+        return mapContext(context, params, null);
+    }
+
+    /**
+     * 带 Data 声明的重载：单参数规则可据此校验字段名（issue #244）。
+     *
+     * @param dataDecls 模块内的 Data 声明（类型名 → 字段名集合）；null 表示不做字段校验
+     */
+    public static MappingResult mapContext(Object context, List<CoreModel.Param> params,
+                                           Map<String, java.util.Set<String>> dataDecls) {
         if (context == null) {
             // 空上下文 -> 空数组
             return MappingResult.success(new Object[0], false, List.of());
@@ -85,7 +95,7 @@ public class NamedContextMapper {
 
         // 检测上下文格式
         if (context instanceof Map<?, ?> map) {
-            return tryNamedMapping(map, params);
+            return tryNamedMapping(map, params, dataDecls);
         }
 
         if (context instanceof List<?> list) {
@@ -107,7 +117,8 @@ public class NamedContextMapper {
      *
      * 检测 Map 的键是否与参数名匹配，如果匹配则按名称提取参数值。
      */
-    private static MappingResult tryNamedMapping(Map<?, ?> map, List<CoreModel.Param> params) {
+    private static MappingResult tryNamedMapping(Map<?, ?> map, List<CoreModel.Param> params,
+                                                Map<String, java.util.Set<String>> dataDecls) {
         // 收集参数名
         List<String> paramNames = params.stream()
             .map(p -> p.name)
@@ -140,6 +151,28 @@ public class NamedContextMapper {
             // ★单参数规则：把整个 Map 当作那一个参数（合法且常用——
             //   `given applicant` 配 {id:…, age:…} 就是这条路径）。
             if (params.size() == 1) {
+                // ★issue #244：把整个 Map 当作那一个参数是**合法且常用**的
+                //   （`given applicant` 配 {id:…, age:…}）。但若该参数声明为某个
+                //   Data 类型，而 Map 的键与该类型字段**完全不相交**，那就不是
+                //   「整体传入」而是调用方给错了形状 —— 此前这里照样放行，
+                //   错误被推迟到引擎里炸成
+                //   `HostObject 不支持成员访问，成员：age`，
+                //   把排查方向指向 HostAccess 配置，而真因是**键名对不上**。
+                java.util.Set<String> expectedFields = declaredFieldsOf(params.get(0), dataDecls);
+                if (expectedFields != null && !expectedFields.isEmpty()) {
+                    java.util.Set<String> actualKeys = new java.util.LinkedHashSet<>();
+                    for (Object k : map.keySet()) {
+                        if (k instanceof String ks) actualKeys.add(ks);
+                    }
+                    boolean anyOverlap = actualKeys.stream().anyMatch(expectedFields::contains);
+                    if (!actualKeys.isEmpty() && !anyOverlap) {
+                        String msg = "上下文键与参数 '" + paramNames.get(0) + "' 的字段不匹配。"
+                            + "上下文键: " + actualKeys
+                            + "，期望字段: " + expectedFields;
+                        LOG.errorf(msg);
+                        return MappingResult.error(msg);
+                    }
+                }
                 LOG.debugf("上下文键与参数名不匹配，按单参数 Map 处理。参数: %s", paramNames.get(0));
                 return MappingResult.success(new Object[] { map }, false, List.of());
             }
@@ -276,5 +309,15 @@ public class NamedContextMapper {
         }
 
         return null;
+    }
+
+    /**
+     * 取参数声明类型的字段名集合；非 Data 类型或未提供声明表时返回 null（= 不校验）。
+     */
+    private static java.util.Set<String> declaredFieldsOf(
+            CoreModel.Param param, Map<String, java.util.Set<String>> dataDecls) {
+        if (dataDecls == null || param == null || param.type == null) return null;
+        if (!(param.type instanceof CoreModel.TypeName tn) || tn.name == null) return null;
+        return dataDecls.get(tn.name);
     }
 }
