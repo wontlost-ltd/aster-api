@@ -172,6 +172,7 @@ public class ApiKeyAuthFilter {
      *   <li>{@code /{policyId}/versions} —— 历史查询：R21-Critical-1 起 API key 必填</li>
      *   <li>{@code /cache} —— 缓存清理：R21-Critical-1 起 API key 必填</li>
      *   <li>{@code /schema}、{@code /validate} —— 元数据查询：保持匿名（无副作用）</li>
+     *   <li>{@code /api/v1/workflows/*} —— workflow 审计只读：API key 必填（见下）</li>
      * </ul>
      */
     private static boolean shouldProtect(String path) {
@@ -192,6 +193,18 @@ public class ApiKeyAuthFilter {
         if (p.startsWith("/api/v1/audit/") || p.equals("/api/v1/audit")) return true;
         // 用 equals + "/" 前缀，避免 startsWith 误伤兄弟路径（/api/v1/metrics/waadrXYZ）。
         if (p.equals("/api/v1/metrics/waadr") || p.startsWith("/api/v1/metrics/waadr/")) return true;
+
+        // WorkflowAuditResource 的四个只读端点（events / state / metrics / by-status）。
+        // 它们全部以 RequestIdentityResolver.tenantId() 作为租户谓词，而该解析器的
+        // 末级回退就是裸 X-Tenant-Id header；类级 @RequireRole(MEMBER) 又只校验同样
+        // 可伪造的 X-User-Role。生产签名关闭后，这两个头没有任何验证方，等于
+        // 「带上受害者租户 ID 即可读其 workflow 事件历史（含 payload）、状态与聚合指标」。
+        //
+        // 2026-07-29 那次修复补的是「谓词缺失」（此前根本不按租户过滤），但谓词的
+        // **输入**仍是客户端自述值——纳入本 filter 后，X-Tenant-Id / X-User-Role 会被
+        // 已验证结果无条件覆盖（见 applyResultSync），谓词才真正有可信输入。
+        // 用 equals + "/" 前缀，避免误伤 /api/v1/workflowsXYZ 之类兄弟路径。
+        if (p.equals("/api/v1/workflows") || p.startsWith("/api/v1/workflows/")) return true;
 
         if (!p.startsWith("/api/v1/policies/")) return false;
         // 公开 evaluate 端点（按调用量计费）
