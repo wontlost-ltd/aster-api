@@ -16,10 +16,30 @@ import org.jboss.logging.Logger;
 import java.lang.reflect.Method;
 
 /**
- * JAX-RS 请求过滤器：检查 X-User-Role header 是否满足 @RequireRole 注解要求
+ * JAX-RS 请求过滤器：检查 X-User-Role header 是否满足 {@code @RequireRole} 注解要求。
  *
- * 角色来源：aster-cloud 在调用 aster-api 时，将用户的团队角色通过 X-User-Role header 传递。
- * aster-api 信任此 header（因为已通过 HMAC 签名验证请求来源）。
+ * <p>角色来源：aster-cloud 在调用 aster-api 时，把用户的团队角色通过 X-User-Role
+ * header 传递。
+ *
+ * <p><b>★信任模型的准确表述（issue #297）</b>——此前这里写的是
+ * 「aster-api 信任此 header（因为已通过 HMAC 签名验证请求来源）」，
+ * 那句话把保护范围说大了：
+ *
+ * <ul>
+ *   <li>{@code RequestSignatureFilter} 的 HMAC 覆盖的是<b>请求体与 nonce</b>，
+ *       <b>不覆盖 X-User-Role 这个 header</b>（实测：签名计算里没有它）。</li>
+ *   <li>因此签名能证明的只是「调用方持有共享密钥」（即 BFF），
+ *       <b>不能</b>证明「这个角色值是 BFF 按真实用户身份填的」。
+ *       任何持有该密钥的一方都可以自行声明任意角色。</li>
+ * </ul>
+ *
+ * <p>即 {@code @RequireRole} 是一道<b>面向可信 BFF 的一致性约束</b>
+ * （防止 BFF 侧漏传/错传），<b>不是</b>面向不可信调用方的授权边界。
+ * 真正的边界在 perimeter：签名 + TenantFilter。
+ *
+ * <p>要让它成为真边界，需要把 X-User-Role 纳入签名的规范化串（两侧同改），
+ * 或改为由 aster-api 自己从会话/令牌解析角色——属独立的安全设计变更，
+ * 不在本注释订正的范围内。
  */
 @Provider
 @Priority(Priorities.AUTHORIZATION)

@@ -155,9 +155,143 @@ class MigrationGovernanceTest {
             .isTrue();
     }
 
+    /**
+     * {@code policy_versions.tenant_id} 在被引用之前必须已被"补回"（issue #283）。
+     *
+     * <p>★背景（实测，非静态推理）：{@code V6.1.0} 的文件后半段是一段**可执行的**
+     * "回滚" SQL —— 它先 {@code ADD COLUMN} 五列、又在同一个文件里立刻
+     * {@code DROP COLUMN} 全删。干净库只跑到 V6.1.0 时实测
+     * {@code tenant_id} 的列数为 <b>0</b>。
+     *
+     * <p>而 {@code V6.8.0} / {@code V6.9.0} / {@code V6.11.0} 都引用 tenant_id 却
+     * <b>没有任何列存在性保护</b>——{@code CREATE INDEX IF NOT EXISTS} 只保护
+     * <b>索引名</b>，不保护<b>列引用</b>。链条目前不坏，唯一原因是
+     * {@code V6.4.0} 又把这五列补了回来（该文件开头写着"修复先前脚本中意外回滚
+     * 导致的缺失"），而 {@code 6.4.0 < 6.8.0}。全链实测 tenant_id 列数为 <b>1</b>。
+     *
+     * <p>即这是一条**靠版本号顺序维系的隐式不变量**，此前无人守护：一旦有人删掉
+     * 或改动 V6.4.0 的补回语句，迁移链会在 6.8.0 硬失败（SQLSTATE 42703），
+     * 而这类错误只在真实建库时才暴露。
+     *
+     * <p>Flyway 迁移一经发布不可改内容（校验和；本仓已刻意移除
+     * {@code repair-at-start}，见 application.properties 注释），故不能去修 V6.1.0，
+     * 只能用本测试把"补回必须早于引用"这条顺序钉死。
+     */
+    @Test
+    @DisplayName("tenant_id 的补回迁移必须早于所有引用它的迁移（issue #283）")
+    void tenantIdRestoredBeforeFirstUse() throws IOException {
+        // ★只匹配**明确把 tenant_id 归属到 policy_versions** 的两种写法：
+        //     1) ALTER TABLE policy_versions ... ADD COLUMN tenant_id   （提供者）
+        //     2) ON policy_versions (... tenant_id ...)                  （索引引用者）
+        //
+        //   为什么不做更宽的匹配（这一版是收窄后的结果，前几版都误报）：
+        //     · "同一语句里同时出现两词" → V5.2.0 的
+        //       `INSERT INTO workflow_state (... tenant_id ...) SELECT ... FROM policy_versions`
+        //       会命中，但那个 tenant_id 属于 workflow_state；
+        //     · `CREATE TABLE security_event (tenant_id ...)`（V6.0.0）同理。
+        //   tenant_id 这个列名在本库至少 4 张表上存在，任何不绑定表名的判据都会误报。
+        //
+        //   代价：`SELECT tenant_id ... FROM policy_versions` 这种形态不被计为引用者
+        //   （V6.8.0 的物化视图就是这样）。可以接受——该文件里同时有形态 2 的
+        //   CREATE INDEX，仍会被覆盖到；且本测试要守的是**顺序不变量**，
+        //   宁可漏判也不能误判（误判会让门禁在无辜改动上变红，最终被人关掉）。
+        Pattern provides = Pattern.compile(
+            "ALTER\\s+TABLE\\s+policy_versions\\b[\\s\\S]*?"
+                + "ADD\\s+COLUMN\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?tenant_id\\b",
+            Pattern.CASE_INSENSITIVE);
+        // ★同一个文件里若**又把列删掉**，它就不是有效提供者。
+        //   V6.1.0 正是这种：先 ADD 五列、再 DROP 五列，净效果是"没有该列"。
+        //   不排除它的话，earliestProvider 会停在 6.1.0，后面所有引用都被判为"已满足"，
+        //   门禁就永远不会变红——实测确认过：删掉 V6.4.0 的补回语句后本用例仍绿。
+        Pattern revokes = Pattern.compile(
+            "ALTER\\s+TABLE\\s+policy_versions\\b[\\s\\S]*?"
+                + "DROP\\s+COLUMN\\s+(?:IF\\s+EXISTS\\s+)?tenant_id\\b",
+            Pattern.CASE_INSENSITIVE);
+        Pattern indexOnPolicyVersions = Pattern.compile(
+            "ON\\s+policy_versions\\s*\\([^)]*\\btenant_id\\b", Pattern.CASE_INSENSITIVE);
+
+        String earliestProvider = null;
+        List<String> usersWithoutGuard = new ArrayList<>();
+
+        // ★必须按**语义版本**排序，不能用文件名字典序：字典序下
+        //   "V6.11.0" < "V6.4.0"（'1' < '4'），会把 V6.11.0 误判成"早于提供者"。
+        //   Flyway 自己走的是版本号顺序，这里必须与之一致。
+        for (Path f : migrationsInFlywayOrder()) {
+            String name = f.getFileName().toString();
+            String sql = stripComments(Files.readString(f, StandardCharsets.UTF_8));
+
+            boolean addsColumn = provides.matcher(sql).find();
+            boolean dropsColumn = revokes.matcher(sql).find();
+            if (addsColumn && !dropsColumn) {
+                if (earliestProvider == null) earliestProvider = name;
+                continue; // 净效果是"提供了该列"
+            }
+            if (addsColumn) {
+                continue; // 加了又删（V6.1.0）——净效果为无，既不是提供者也不算引用者
+            }
+
+            // 纯引用者：逐语句判断是否命中上述两种形态之一。
+            boolean referencesColumn = false;
+            for (String stmt : sql.split(";")) {
+                if (indexOnPolicyVersions.matcher(stmt).find()) {
+                    referencesColumn = true;
+                    break;
+                }
+            }
+            if (referencesColumn && earliestProvider == null) {
+                usersWithoutGuard.add(name);
+            }
+        }
+
+        assertThat(earliestProvider)
+            .as("没有任何迁移 ADD COLUMN tenant_id —— 不变量的前提消失了")
+            .isNotNull();
+
+        assertThat(usersWithoutGuard)
+            .as("这些迁移在 policy_versions 上引用 tenant_id，但在它们之前没有任何迁移"
+                + "提供该列（%s 是最早的提供者）。V6.1.0 会删掉该列，"
+                + "故引用者必须排在提供者之后，否则干净库建库时报 42703。",
+                earliestProvider)
+            .isEmpty();
+    }
+
     // ============================================================
     // helpers
     // ============================================================
+
+    /**
+     * 去掉 SQL 行注释。
+     *
+     * <p>★必需：多个 migration 的**注释里**提到 policy_versions 与 tenant_id
+     * （例如 V6.8.0 开头解释"按 tenant_id 聚合"），若不剥离会被当成真实引用而误报。
+     * 判据必须落在可执行 SQL 上，不能落在描述性文字上。
+     */
+    private static String stripComments(String sql) {
+        return sql.replaceAll("(?m)--.*$", "");
+    }
+
+    /**
+     * 按 Flyway 的**版本号顺序**（而非文件名字典序）列出迁移。
+     *
+     * <p>字典序下 {@code V6.11.0 < V6.4.0}（逐字符比较 '1' < '4'），
+     * 与 Flyway 的实际执行顺序相反。任何依赖"谁在谁之前"的断言都必须用本方法。
+     */
+    private static List<Path> migrationsInFlywayOrder() throws IOException {
+        return versionedMigrations().stream()
+            .sorted(Comparator.comparing(p -> versionKey(p.getFileName().toString())))
+            .toList();
+    }
+
+    /** 把 V6.11.0 变成可比较的定宽串（006.011.000），供版本号排序用。 */
+    private static String versionKey(String fileName) {
+        var m = MIGRATION_NAME.matcher(fileName);
+        if (!m.matches()) return fileName;
+        StringBuilder sb = new StringBuilder();
+        for (String part : m.group(1).split("\\.")) {
+            sb.append(String.format("%04d.", Integer.parseInt(part)));
+        }
+        return sb.toString();
+    }
 
     private static List<Path> versionedMigrations() throws IOException {
         try (Stream<Path> s = Files.list(MIGRATION_DIR)) {
