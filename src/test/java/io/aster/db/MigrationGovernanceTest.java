@@ -26,15 +26,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Flyway migration 治理守卫（纯文件系统，无需 Quarkus/DB）。
  *
- * <p>生产 Flyway 配置为 {@code out-of-order=true} + {@code ignore-migration-patterns=*:missing}，
- * 这对持续交付友好，但代价是：已应用的 migration 一旦被修改或乱序，Flyway 会**静默吞掉漂移**
- * 而非 fail-fast。本守卫把"migration 不可变 + 版本唯一 + 命名规范"这些 Flyway 原则
- * 用 CI 测试强制执行，即使运行时配置宽松也能在合并前捕获治理违规。
+ * <p>生产 Flyway 配置是 {@code out-of-order=false} 且**不设** {@code ignore-migration-patterns}
+ * （application.properties:194，及 :190-191 的说明），即生产本身就 fail-fast。宽松的
+ * {@code out-of-order=true} + {@code ignore-migration-patterns=*:missing} 只加在
+ * {@code %dev}/{@code %test}（:195-198）—— 而那正是开发者日常运行的 profile：
+ * migration 被改动或乱序会在本地被**静默吞掉**，推到生产才炸。
+ * 本守卫把"migration 不可变 + 版本唯一 + 命名规范"用测试强制执行，
+ * 让违规在宽松 profile 下也能于合并前暴露。
  *
  * <p><b>checksum golden</b>：每个 migration 的内容 SHA-256 锁定在
  * {@code src/test/resources/db/migration-checksums.golden}。修改已发布 migration 会触发失败，
  * 强制开发者：要么还原（migration 应不可变），要么新增 migration 表达变更 + 更新 golden 并说明理由。
- * 首次运行（golden 不存在）会自动生成。
+ * ★golden **只在文件不存在时整体生成**（见 migrationChecksumStable 的 !Files.exists 分支）；
+ * 文件已存在时不会自动追加或更新，新增/改动 migration 后须手工维护 golden 条目。
  */
 @DisplayName("Flyway migration 治理守卫")
 class MigrationGovernanceTest {
@@ -133,8 +137,10 @@ class MigrationGovernanceTest {
             }
         }
         assertThat(unregistered)
-            .as("新增 migration 未登记 golden——运行本测试一次会自动追加，"
-                + "请把更新后的 %s 一并提交（锁定其不可变性）", GOLDEN_FILE)
+            .as("新增 migration 未登记 golden——请手工把 `文件名=SHA256` 追加进 %s 并一并提交"
+                + "（锁定其不可变性）。注意：golden 只在**首次、文件不存在时**整体生成，"
+                + "已存在时不会自动追加，重跑本测试不会让它变绿。"
+                + "取 checksum：shasum -a 256 src/main/resources/db/migration/<文件名>", GOLDEN_FILE)
             .isEmpty();
     }
 
@@ -336,7 +342,8 @@ class MigrationGovernanceTest {
         StringBuilder sb = new StringBuilder();
         sb.append("# Flyway migration checksum golden (SHA-256, LF-normalized).\n");
         sb.append("# 已发布 migration 不可变——修改历史 migration 会触发 MigrationGovernanceTest 失败。\n");
-        sb.append("# 新增 migration：运行测试一次自动追加，连同本文件一起提交。\n");
+        sb.append("# 新增 migration：本文件已存在时**不会**自动追加，须手工加一行\n");
+        sb.append("#   `文件名=SHA256`（shasum -a 256 <migration 文件>），连同本文件一起提交。\n");
         checksums.forEach((name, hash) -> sb.append(name).append('=').append(hash).append('\n'));
         Files.writeString(GOLDEN_FILE, sb.toString(), StandardCharsets.UTF_8);
     }
