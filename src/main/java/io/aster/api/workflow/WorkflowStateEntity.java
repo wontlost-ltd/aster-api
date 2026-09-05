@@ -191,6 +191,25 @@ public class WorkflowStateEntity extends PanacheEntityBase {
     }
 
     /**
+     * 同上，但把行数上限**下推到 SQL**。
+     *
+     * <p>★为什么需要这个重载：调用方此前用 {@code findByStatus(...).stream().limit(n)}，
+     * 那是**先把整个租户的结果集读进堆、再在 Java 里截断** —— {@code limit} 参数
+     * 从未进入 SQL，只制造了「有上限」的错觉。本表的行含 jsonb 的
+     * {@code result}/{@code snapshot} 与 TEXT 的 {@code error_message}，
+     * 且经 REST 可达、随时间无限增长，在 1 vCPU 的 pod 上足以 OOM。
+     *
+     * @param status   状态类型
+     * @param tenantId 租户 ID，不可为 null
+     * @param limit    最大返回行数（下推到 SQL）
+     */
+    public static List<WorkflowStateEntity> findByStatus(String status, String tenantId, int limit) {
+        return find("status = ?1 AND tenantId = ?2", status, tenantId)
+                .page(0, limit)
+                .list();
+    }
+
+    /**
      * 查询就绪可调度的 workflow（支持 SELECT FOR UPDATE SKIP LOCKED）
      *
      * @param limit 最大返回数量

@@ -35,6 +35,9 @@ import java.util.List;
 @RequireRole(Role.ADMIN)
 public class AuditLogResource {
 
+    /** 链校验分页大小：单页行数上限，避免一次性把整窗日志读进堆。 */
+    private static final int CHAIN_VERIFY_PAGE_SIZE = 1000;
+
     private static final Logger LOG = Logger.getLogger(AuditLogResource.class);
 
     /**
@@ -208,7 +211,14 @@ public class AuditLogResource {
 
             // 执行验证（阻塞式调用）
             return Uni.createFrom().item(() -> {
-                ChainVerificationResult result = chainVerifier.verifyChain(tenantId, startTime, endTime);
+                // ★走分页版：无分页的 verifyChain 会把整个时间窗的审计日志一次性
+                //   读进堆。上面的 30 天护栏限的是**时间**不是**行数** ——
+                //   高流量租户 30 天的日志足以 OOM 一个 1 vCPU 的 pod。
+                //   分页实现（verifyChainPaginated）早已写好且有测试覆盖，
+                //   但此前**生产路径从不调用它**：测试证明了「方法是对的」，
+                //   没证明「系统用了这个方法」。
+                ChainVerificationResult result =
+                    chainVerifier.verifyChainPaginated(tenantId, startTime, endTime, CHAIN_VERIFY_PAGE_SIZE);
 
                 // ★锚点核对（V6.23.0）：链内自洽性无法发现「删除链尾」——
                 //   删掉最后 N 条后剩余部分依然首尾相接，verifyChain 会返回 valid。
