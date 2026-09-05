@@ -14,8 +14,7 @@ updates:
   - package-ecosystem: gradle
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "04:00"
       timezone: Australia/Melbourne
     open-pull-requests-limit: 6
@@ -89,8 +88,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "04:00"
       timezone: Australia/Melbourne
     open-pull-requests-limit: 4
