@@ -1024,4 +1024,249 @@ class ReplayBatchConcurrencyIT {
             .as("★同租户第二个活跃批次抢同一槽位，必须被唯一索引拒绝")
             .isInstanceOf(Exception.class);
     }
+
+    // ── issue #302 C1：执行期不得占用事务/连接 ────────────────────────────
+
+    /**
+     * ★C1 的**核心断言**：重放执行期间不得持有事务与 JDBC 连接。
+     *
+     * <p>被修的缺陷是 {@code runOneSegment} 曾用<b>单个事务</b>包住
+     * 「读待办 → 2 次出站 HTTP → 最多 10 次策略执行 → 写回」，按
+     * {@code SEGMENT_WORST_CASE} 最坏 915s ≈ 15.25 分钟全程钉住一条连接；
+     * 而 {@code jdbc.max-size=8}，8 个并发 segment 即耗尽整个 pod 的连接池。
+     *
+     * <p><b>怎么证明</b>：在桩住的 {@code fetchSegment} 里（那是执行窗口的入口，
+     * 此刻恰好处于「认领已提交、结果尚未写回」的中间态）——
+     * <ol>
+     *   <li>断言当前线程<b>没有活跃事务</b>；</li>
+     *   <li>从<b>另一条线程</b>用独立事务读该条目，
+     *       断言能看到 {@code claimed_by} 已落库。</li>
+     * </ol>
+     *
+     * <p>第 2 条是关键：认领若还压在一个未提交的长事务里，别的连接<b>读不到</b>它
+     * （PG 默认 READ COMMITTED）。能读到 ⇒ 认领事务已提交 ⇒ 连接已归还。
+     * 这两条合起来正是「执行期不占连接」的直接证据，而不是对代码形状的复述。
+     *
+     * <p>★这条断言在**拆分前必然失败**——那时整段都在一个事务里，
+     * 既有活跃事务，别的线程也读不到未提交的认领。
+     */
+    @Test
+    void 重放执行期间不得持有事务与连接() throws Exception {
+        targetVersionRowId = seedTargetVersion();
+        UUID id = seedRunning("t-notx", "owner-notx", 2);
+        QuarkusTransaction.requiringNew().run(() -> {
+            persistItem(id, "n1", true, null, null);
+            persistItem(id, "n2", true, null, null);
+        });
+
+        java.util.List<String> violations =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        java.util.concurrent.atomic.AtomicInteger observed =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+        Mockito.when(windowClient.fetchSegment(
+                Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(Instant.class), Mockito.any(Instant.class),
+                Mockito.any(), Mockito.anyInt()))
+            .thenAnswer(inv -> {
+                observed.incrementAndGet();
+
+                // (1) 执行窗口内不得有活跃事务
+                if (QuarkusTransaction.isActive()) {
+                    violations.add("fetchSegment 执行时仍有活跃事务——说明整段仍包在一个事务里");
+                }
+
+                // (2) 另一条线程能否看到已提交的认领？
+                java.util.concurrent.ExecutorService probe =
+                    java.util.concurrent.Executors.newSingleThreadExecutor();
+                try {
+                    Long claimedRows = probe.submit(() ->
+                        QuarkusTransaction.requiringNew().call(() ->
+                            ((Number) em.createNativeQuery(
+                                "SELECT count(*) FROM replay_batch_item"
+                                    + " WHERE batch_id = ?1 AND claimed_by = ?2")
+                                .setParameter(1, id)
+                                .setParameter(2, "owner-notx")
+                                .getSingleResult()).longValue()))
+                        .get(20, java.util.concurrent.TimeUnit.SECONDS);
+                    if (claimedRows == 0) {
+                        violations.add("另一线程看不到已落库的 claimed_by——"
+                            + "认领仍压在未提交事务里，连接未归还");
+                    }
+                } finally {
+                    probe.shutdownNow();
+                }
+
+                // 正常返回本段数据，让流程继续走完
+                String after = inv.getArgument(4);
+                int limit = inv.getArgument(5);
+                java.util.List<ExecutionWindowClient.WindowedExecution> out =
+                    new java.util.ArrayList<>();
+                for (String eid : java.util.List.of("n1", "n2")) {
+                    if (after != null && eid.compareTo(after) <= 0) {
+                        continue;
+                    }
+                    if (out.size() >= limit) {
+                        break;
+                    }
+                    out.add(new ExecutionWindowClient.WindowedExecution(
+                        eid, java.util.Map.of("amount", 150), "approved", true,
+                        "decide", "en-US", new io.vertx.core.json.JsonObject(),
+                        String.valueOf(targetVersionRowId)));
+                }
+                return out;
+            });
+
+        int done = service.runOneSegment(id, "owner-notx");
+
+        assertThat(observed.get())
+            .as("★探针必须真的跑过——没跑过的话下面的断言全是空的")
+            .isPositive();
+        assertThat(violations)
+            .as("★执行期必须已释放事务与连接（issue #302 C1）")
+            .isEmpty();
+        assertThat(done)
+            .as("推进条数应为 2——探针不能把正常流程弄坏")
+            .isEqualTo(2);
+
+        // 结果确实写回了，且认领已释放（不能靠「跑完就不管」）
+        Object[] row = QuarkusTransaction.requiringNew().call(() ->
+            (Object[]) em.createNativeQuery(
+                "SELECT count(*) FILTER (WHERE success IS NOT NULL),"
+                    + " count(*) FILTER (WHERE claimed_by IS NOT NULL)"
+                    + " FROM replay_batch_item WHERE batch_id = ?1")
+                .setParameter(1, id).getSingleResult());
+        assertThat(((Number) row[0]).longValue())
+            .as("★两条都必须落成败标记——无事务下实体是游离态，"
+                + "不显式写回就会静默丢结果")
+            .isEqualTo(2L);
+        assertThat(((Number) row[1]).longValue())
+            .as("★跑完必须释放认领，否则条目永远无人能再认领（批次卡死）")
+            .isZero();
+    }
+
+    /**
+     * ★worker 在「已认领、未写回」时崩溃，租约回收必须<b>一并释放僵尸认领</b>。
+     *
+     * <p>这是拆事务<b>新引入</b>的失败模式：{@code claimSegment} 只认领
+     * {@code claimed_by IS NULL} 的行，而 kill -9 / pod 驱逐不会走
+     * {@code releaseClaims} 的 catch 路径。认领若没人清，
+     * 新 owner 接手后<b>一条也认领不到</b>——批次永久卡死，
+     * 且表面看是「有租约、有 owner、就是不动」，极难诊断。
+     *
+     * <p>租约回收是系统里唯一能观测到「原 worker 已死」的地方，
+     * 故僵尸认领的释放必须挂在那里。
+     */
+    @Test
+    void 租约回收必须释放崩溃worker留下的僵尸认领() {
+        UUID id = seedRunning("t-zombie", "owner-dead", 2);
+        QuarkusTransaction.requiringNew().run(() -> {
+            persistItem(id, "z1", true, null, null);
+            persistItem(id, "z2", true, null, null);
+        });
+
+        // 模拟「已认领、未写回」时进程被 kill：直接把认领写进表，且不写结果
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery(
+                "UPDATE replay_batch_item SET claimed_by = 'owner-dead', claimed_at = NOW()"
+                    + " WHERE batch_id = ?1")
+            .setParameter(1, id).executeUpdate());
+        // 租约过期（原 worker 已死，不再续租）
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery(
+                "UPDATE replay_batch SET lease_expires_at = NOW() - INTERVAL '1 hour'"
+                    + " WHERE id = ?1")
+            .setParameter(1, id).executeUpdate());
+
+        int reclaimed = service.reclaimStaleLeases();
+        assertThat(reclaimed)
+            .as("★过期租约必须被回收——没回收的话下面的断言是空的")
+            .isPositive();
+
+        Long stillClaimed = QuarkusTransaction.requiringNew().call(() ->
+            ((Number) em.createNativeQuery(
+                "SELECT count(*) FROM replay_batch_item"
+                    + " WHERE batch_id = ?1 AND claimed_by IS NOT NULL")
+                .setParameter(1, id).getSingleResult()).longValue());
+        assertThat(stillClaimed)
+            .as("★僵尸认领必须随租约一并释放，否则新 owner 一条也认领不到、批次永久卡死")
+            .isZero();
+
+        // 直接证明「新 owner 确实能再认领」——比只看 claimed_by 为空更有说服力
+        QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery(
+                "UPDATE replay_batch SET lease_owner = 'owner-new', status = 'RUNNING',"
+                    + " lease_expires_at = NOW() + INTERVAL '1 hour' WHERE id = ?1")
+            .setParameter(1, id).executeUpdate());
+        var claimable = service.claimSegment(id, "owner-new");
+        assertThat(claimable)
+            .as("★回收后新 owner 必须能认领到那两条——这才是「没卡死」的直接证据")
+            .hasSize(2);
+    }
+
+    /**
+     * ★写回落空时必须<b>让位</b>，不得报告「已推进 N 条」。
+     *
+     * <p>{@code persistSegment} 的 {@code AND claimed_by = ?owner} 是防覆盖护栏：
+     * 认领若在无事务窗口里失效，写会命中 0 行。此时若仍返回 {@code todo.size()}，
+     * {@code runBatch} 的 {@code while(true)} 只在 {@code done == 0} 时退出，
+     * 于是「重新认领同一批 → 再跑一遍 → 再落空」<b>无限空转</b>：
+     * 每轮烧掉 1 次出站 HTTP、最多 10 次 Truffle 执行与 10 个容量闸门许可，
+     * 却永远不写结果、永远不终止。
+     *
+     * <p>本用例在无事务窗口里（{@code fetchSegment} 桩内）把认领清掉，
+     * 模拟这一状态，断言 {@code runOneSegment} 返回 -1（让位）而非正数。
+     */
+    @Test
+    void 写回落空必须让位而不是谎报推进条数() {
+        targetVersionRowId = seedTargetVersion();
+        UUID id = seedRunning("t-spin", "owner-spin", 2);
+        QuarkusTransaction.requiringNew().run(() -> {
+            persistItem(id, "s1", true, null, null);
+            persistItem(id, "s2", true, null, null);
+        });
+
+        Mockito.when(windowClient.fetchSegment(
+                Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(Instant.class), Mockito.any(Instant.class),
+                Mockito.any(), Mockito.anyInt()))
+            .thenAnswer(inv -> {
+                // ★在无事务窗口里清掉认领——模拟「租约改派并被新 owner 回收」
+                QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery(
+                        "UPDATE replay_batch_item SET claimed_by = NULL, claimed_at = NULL"
+                            + " WHERE batch_id = ?1")
+                    .setParameter(1, id).executeUpdate());
+
+                java.util.List<ExecutionWindowClient.WindowedExecution> out =
+                    new java.util.ArrayList<>();
+                String after = inv.getArgument(4);
+                int limit = inv.getArgument(5);
+                for (String eid : java.util.List.of("s1", "s2")) {
+                    if (after != null && eid.compareTo(after) <= 0) {
+                        continue;
+                    }
+                    if (out.size() >= limit) {
+                        break;
+                    }
+                    out.add(new ExecutionWindowClient.WindowedExecution(
+                        eid, java.util.Map.of("amount", 150), "approved", true,
+                        "decide", "en-US", new io.vertx.core.json.JsonObject(),
+                        String.valueOf(targetVersionRowId)));
+                }
+                return out;
+            });
+
+        int done = service.runOneSegment(id, "owner-spin");
+
+        assertThat(done)
+            .as("★写回落空必须返回 -1 让位——返回正数会让 runBatch 无限空转，"
+                + "每轮重跑一遍却永不写结果")
+            .isEqualTo(-1);
+
+        Long persisted = QuarkusTransaction.requiringNew().call(() ->
+            ((Number) em.createNativeQuery(
+                "SELECT count(*) FROM replay_batch_item"
+                    + " WHERE batch_id = ?1 AND success IS NOT NULL")
+                .setParameter(1, id).getSingleResult()).longValue());
+        assertThat(persisted)
+            .as("★认领已失效，结果不得落库（否则就是覆盖了别人的写）")
+            .isZero();
+    }
 }
