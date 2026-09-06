@@ -179,6 +179,11 @@ public class ReplayBatchService {
     @jakarta.inject.Inject
     WhatIfCapacityGate capacityGate;
 
+    // 认领/写回走原生 SQL：JPQL 的 UPDATE 不支持 LIMIT，而「一次原子认领至多
+    // SEGMENT_SIZE 条」正需要它（见 claimSegment）。
+    @jakarta.persistence.PersistenceContext
+    jakarta.persistence.EntityManager em;
+
     @jakarta.inject.Inject
     io.aster.policy.replay.ReplayExecutorAdapter replayExecutor;
 
@@ -306,7 +311,23 @@ public class ReplayBatchService {
             //   新 owner 覆盖回 PENDING。
             if (written == 1) {
                 reclaimed++;
-                Log.warnf("批次 %s 租约过期（第 %d 次尝试）已回收", id, attempts);
+                // ★同时释放该批次**所有尚未跑完的认领**（issue #302 C1）。
+                //   分段执行拆事务后，worker 在「已认领、未写回」的中间态崩溃
+                //   （kill -9 / pod 驱逐）时，claimed_by 会永久留在行上——
+                //   而 claimSegment 只认领 claimed_by IS NULL 的行，
+                //   于是新 owner 接手后一条也认领不到，**批次永久卡死**。
+                //   租约回收是唯一能观测到「原 worker 已死」的地方，
+                //   故认领的回收必须挂在这里。
+                //   只清 success IS NULL 的行：已跑完的行的 claimed_by
+                //   已在 persistSegment 里清过，不该被再动。
+                long freed = em.createNativeQuery(
+                        "UPDATE replay_batch_item SET claimed_by = NULL, claimed_at = NULL"
+                            + " WHERE batch_id = ?1 AND claimed_by IS NOT NULL"
+                            + " AND success IS NULL")
+                    .setParameter(1, id)
+                    .executeUpdate();
+                Log.warnf("批次 %s 租约过期（第 %d 次尝试）已回收，释放 %d 条僵尸认领",
+                    id, attempts, freed);
             }
         }
         return reclaimed;
@@ -379,47 +400,210 @@ public class ReplayBatchService {
                                  java.time.Instant windowFrom, java.time.Instant windowTo) {
     }
 
-    @Transactional
+    /**
+     * ★用 {@code QuarkusTransaction} 而非 {@code @Transactional}：让「这里开一个
+     * 独立短事务」在调用点就地可见——本方法会从<b>无事务</b>的
+     * {@code runClaimedSegment} 调用，事务边界是拆分后最要紧的性质。
+     * （注：Arc 靠子类拦截，自调用同样生效；这里换写法是为了可读，不是为了绕坑。）
+     */
     BatchSnapshot loadSnapshot(UUID batchId) {
-        ReplayBatchEntity b = ReplayBatchEntity.findById(batchId);
-        if (b == null) {
-            Log.warnf("批次 %s 不存在，跳过", batchId);
-            return null;
-        }
-        if (b.status != ReplayBatchStatus.RUNNING) {
-            Log.warnf("批次 %s 状态为 %s 而非 RUNNING，跳过", batchId, b.status);
-            return null;
-        }
-        return new BatchSnapshot(b.id, b.leaseOwner, b.plannedCount, b.tenantId,
-            b.targetVersionId, b.policyId, b.userId, b.windowFrom, b.windowTo);
+        return io.quarkus.narayana.jta.QuarkusTransaction.requiringNew().call(() -> {
+            ReplayBatchEntity b = ReplayBatchEntity.findById(batchId);
+            if (b == null) {
+                Log.warnf("批次 %s 不存在，跳过", batchId);
+                return null;
+            }
+            if (b.status != ReplayBatchStatus.RUNNING) {
+                Log.warnf("批次 %s 状态为 %s 而非 RUNNING，跳过", batchId, b.status);
+                return null;
+            }
+            return new BatchSnapshot(b.id, b.leaseOwner, b.plannedCount, b.tenantId,
+                b.targetVersionId, b.policyId, b.userId, b.windowFrom, b.windowTo);
+        });
     }
 
     /**
      * 跑一段（至多 {@link #SEGMENT_SIZE} 条）并**提交**，同时续租。
      *
-     * @return 本段实际跑的条数；0 表示没有待跑条目；<b>-1 表示租约已改派</b>
+     * <p>★<b>本方法刻意不带 {@code @Transactional}</b>（issue #302 C1）。
+     * 上一版用单个事务包住「读待办 → 2 次出站 HTTP → 最多 10 次策略执行 → 写回」，
+     * 按 {@link #SEGMENT_WORST_CASE} 最坏 915s ≈ 15.25 分钟全程钉住一条 JDBC
+     * 连接；而 {@code jdbc.max-size=8}，8 个并发 segment 即耗尽整个 pod 的连接池。
+     *
+     * <p>现在拆成三段，只有首尾持有连接：
+     * <ol>
+     *   <li>{@link #claimSegment} —— 短事务：续租 + 原子认领至多 10 条</li>
+     *   <li>本方法体 —— <b>无事务</b>：出站 HTTP + Truffle 执行（那 15 分钟在这里）</li>
+     *   <li>{@link #persistSegment} —— 短事务：写回结果并释放认领</li>
+     * </ol>
+     *
+     * <p>★拆开后 read-then-write 的原子性没有了，靠 {@code claimed_by} 补：
+     * 认领是一条 {@code UPDATE ... WHERE claimed_by IS NULL} 的原子写，
+     * 两个 worker 抢同一条时只有一个的 UPDATE 会命中。
+     *
+     * @return 本段实际<b>写回</b>的条数；0 表示没有待跑条目；
+     *         <b>-1 表示本 worker 应让位</b>（租约已改派，或认领在无事务窗口里失效）
      */
-    @Transactional(Transactional.TxType.REQUIRES_NEW)
     int runOneSegment(UUID batchId, String owner) {
-        // ★每段开头复核租约：改派后立即让位，不写任何东西
-        long stillMine = ReplayBatchEntity.update(
-            "leaseExpiresAt = ?1 where id = ?2 and leaseOwner = ?3 and status = ?4",
-            java.time.Instant.now().plus(LEASE_DURATION),
-            batchId, owner, ReplayBatchStatus.RUNNING);
-        if (stillMine == 0) {
-            return -1;
+        List<ReplayBatchItemEntity> todo = claimSegment(batchId, owner);
+        if (todo == null) {
+            return -1;      // 租约已改派
         }
-
-        List<ReplayBatchItemEntity> todo = ReplayBatchItemEntity
-            .find("batchId = ?1 and success is null order by executionId", batchId)
-            .page(0, SEGMENT_SIZE)
-            .list();
         if (todo.isEmpty()) {
-            return 0;
+            return 0;       // 没有可认领的待办
         }
+        // ★认领已提交。此后任何路径退出都必须释放认领，否则这些条目
+        //   在本 worker 崩溃后会被永久卡住（无人能再认领）。
+        try {
+            return runClaimedSegment(batchId, owner, todo);
+        } catch (RuntimeException | Error e) {
+            // ★释放认领本身若再抛，绝不能盖掉原始异常——那才是要诊断的东西。
+            //   即便这里释放失败，reclaimStaleLeases 仍会在租约过期后兜底释放。
+            try {
+                releaseClaims(batchId, owner, todo);
+            } catch (RuntimeException | Error releaseFailure) {
+                e.addSuppressed(releaseFailure);
+                Log.errorf(releaseFailure, "批次 %s 释放认领失败（原异常已保留）", batchId);
+            }
+            throw e;
+        }
+    }
 
+    /*
+     * ★以下几个短事务方法一律用 QuarkusTransaction.requiringNew() 显式开事务。
+     *
+     *   理由是**边界可见**，不是「@Transactional 会失效」：拆事务后，
+     *   「哪一段在事务里、哪一段不在」是本类最要紧的性质，
+     *   写成一行代码比写成方法上的注解更难被后续改动无声破坏
+     *   （注解可以被挪走、被继承关系遮蔽，而这行调用挪不走）。
+     *
+     *   ★不要把理由写成「自调用会绕过拦截器」——**那在 Quarkus 上不成立**。
+     *   Arc 用**子类**而非包装代理实现拦截：实测编译产物里有
+     *   ReplayBatchService_Subclass extends ReplayBatchService，
+     *   覆写了每个 @Transactional 方法（包私有的也会被提升为 public）。
+     *   运行时 this 就是该子类实例，故经 this 的自调用**照样被拦截**。
+     *   （Spring 的包装代理才有自调用失效问题，两者机制不同，勿套用。）
+     */
+
+    /**
+     * 短事务：续租 + <b>原子认领</b>至多 {@link #SEGMENT_SIZE} 条待办。
+     *
+     * <p>★认领用单条 {@code UPDATE ... WHERE claimed_by IS NULL} 完成，
+     * 不做「先查后写」——后者在两个 worker 之间仍有竞态窗口。
+     * 谓词里的 {@code claimed_by IS NULL} 由数据库在行级串行化，
+     * 抢同一条时只有一个 UPDATE 能命中。
+     *
+     * @return 本 worker 认领到的条目；空表示无待办；<b>{@code null} 表示租约已改派</b>
+     */
+    List<ReplayBatchItemEntity> claimSegment(UUID batchId, String owner) {
+        return io.quarkus.narayana.jta.QuarkusTransaction.requiringNew().call(() -> {
+            // ★每段开头复核租约：改派后立即让位，不写任何东西
+            long stillMine = ReplayBatchEntity.update(
+                "leaseExpiresAt = ?1 where id = ?2 and leaseOwner = ?3 and status = ?4",
+                java.time.Instant.now().plus(LEASE_DURATION),
+                batchId, owner, ReplayBatchStatus.RUNNING);
+            if (stillMine == 0) {
+                return null;
+            }
+
+            // ★用原生 UPDATE ... WHERE ctid IN (SELECT ... LIMIT n) 一次性认领。
+            //   JPQL 的 UPDATE 不支持 LIMIT，故走原生 SQL；ctid 子查询是 PG 上
+            //   「限量更新」的惯用写法。FOR UPDATE SKIP LOCKED 让并发 worker
+            //   直接跳过已被别人锁住的行，而不是排队等锁再发现已被认领。
+            int claimed = em.createNativeQuery(
+                    "UPDATE replay_batch_item SET claimed_by = ?1, claimed_at = ?2"
+                        + " WHERE ctid IN ("
+                        + "   SELECT ctid FROM replay_batch_item"
+                        + "   WHERE batch_id = ?3 AND success IS NULL AND claimed_by IS NULL"
+                        + "   ORDER BY execution_id"
+                        + "   LIMIT " + SEGMENT_SIZE
+                        + "   FOR UPDATE SKIP LOCKED)")
+                .setParameter(1, owner)
+                .setParameter(2, java.time.Instant.now())
+                .setParameter(3, batchId)
+                .executeUpdate();
+            if (claimed == 0) {
+                return List.of();
+            }
+            // ★读回前先 clear：上面的原生 UPDATE 绕过了持久化上下文，
+            //   本事务的一级缓存里若已有该行旧副本，find 会直接返回它，
+            //   claimedBy 仍是陈旧的 null。
+            //   ★不会误伤调用方的实体：requiringNew() 挂起外层事务并给内层
+            //     **独立的持久化上下文**，这里清的只是内层那个（已实测）。
+            em.clear();
+            return ReplayBatchItemEntity
+                .<ReplayBatchItemEntity>find(
+                    "batchId = ?1 and success is null and claimedBy = ?2 order by executionId",
+                    batchId, owner)
+                .list();
+        });
+    }
+
+    /**
+     * 短事务：写回本段结果并**释放认领**。
+     *
+     * <p>★写回条件带 {@code claimedBy = owner}：租约若在无事务窗口中被改派、
+     * 认领已被新 owner 回收，本 worker 的写就应当落空而不是覆盖别人的结果。
+     *
+     * <p>★<b>必须返回实际写入行数</b>：写落空时若仍向上报告「推进了 N 条」，
+     * {@code runBatch} 的 {@code while(true)} 只在 {@code done == 0} 时退出，
+     * 于是会「重新认领同一批 → 再跑一遍 → 再落空」无限空转——
+     * 每轮烧掉 1 次出站 HTTP、最多 10 次 Truffle 执行与 10 个容量闸门许可，
+     * 却永远不写结果、永远不终止。
+     *
+     * @return 实际写入的行数；0 表示本 worker 的认领已失效
+     */
+    int persistSegment(UUID batchId, String owner, List<ReplayBatchItemEntity> done) {
+        return io.quarkus.narayana.jta.QuarkusTransaction.requiringNew().call(() -> {
+            int written = 0;
+            for (ReplayBatchItemEntity r : done) {
+                written += em.createNativeQuery(
+                        "UPDATE replay_batch_item SET success = ?1, failure_kind = ?2,"
+                            + " target_approved = ?3, claimed_by = NULL, claimed_at = NULL"
+                            + " WHERE batch_id = ?4 AND execution_id = ?5 AND claimed_by = ?6")
+                    .setParameter(1, r.success)
+                    .setParameter(2, r.failureKind)
+                    .setParameter(3, r.targetApproved)
+                    .setParameter(4, batchId)
+                    .setParameter(5, r.executionId)
+                    .setParameter(6, owner)
+                    .executeUpdate();
+            }
+            return written;
+        });
+    }
+
+    /**
+     * 短事务：释放本 worker 的认领而<b>不写结果</b>（异常路径）。
+     *
+     * <p>不做这个的话，跑到一半抛异常的条目会永远带着 {@code claimed_by}，
+     * 之后没有任何 worker 能再认领它们——批次就此卡死。
+     */
+    void releaseClaims(UUID batchId, String owner, List<ReplayBatchItemEntity> items) {
+        io.quarkus.narayana.jta.QuarkusTransaction.requiringNew().run(() -> {
+            for (ReplayBatchItemEntity i : items) {
+                em.createNativeQuery(
+                        "UPDATE replay_batch_item SET claimed_by = NULL, claimed_at = NULL"
+                            + " WHERE batch_id = ?1 AND execution_id = ?2 AND claimed_by = ?3"
+                            + " AND success IS NULL")
+                    .setParameter(1, batchId)
+                    .setParameter(2, i.executionId)
+                    .setParameter(3, owner)
+                    .executeUpdate();
+            }
+        });
+    }
+
+    /**
+     * 跑已认领的一段：<b>全程无事务</b>，出站 HTTP 与 Truffle 执行都在这里。
+     *
+     * @return 本段实际跑的条数；-1 表示租约已改派
+     */
+    private int runClaimedSegment(UUID batchId, String owner,
+                                  List<ReplayBatchItemEntity> todo) {
         BatchSnapshot snap = loadSnapshot(batchId);
         if (snap == null) {
+            releaseClaims(batchId, owner, todo);
             return -1;
         }
         // ★向 cloud 取，不查本地表：本地 policy_versions 是执行期缓存，id 为
@@ -461,7 +645,19 @@ public class ReplayBatchService {
             item.failureKind = r.failureKind() == null ? null : r.failureKind().name();
             item.targetApproved = r.failureKind() == null ? r.targetApproved() : null;
         }
-        return todo.size();
+
+        // ★必须显式写回：本方法**无事务**，todo 里的实体是游离态（detached），
+        //   改字段不会被 Hibernate 脏检查自动刷库。上一版靠的正是那个隐式行为。
+        int written = persistSegment(batchId, owner, todo);
+        if (written == 0) {
+            // ★写落空 = 本 worker 的认领在无事务窗口里被清掉了（租约改派并回收，
+            //   或有人手工清理）。此时**必须让位**而不是报告「推进了 N 条」：
+            //   后者会让 runBatch 的 while(true) 重新认领同一批再跑一遍，
+            //   每轮烧掉出站 HTTP + Truffle 执行 + 容量许可，且永不终止。
+            Log.warnf("批次 %s 段写回落空（认领已失效），本 worker 让位", batchId);
+            return -1;
+        }
+        return written;
     }
 
     /**
@@ -472,13 +668,15 @@ public class ReplayBatchService {
      * 本段第一条就是全批第一条时返回 {@code null}（从头取）。
      */
     private String previousExecutionId(UUID batchId, String executionId) {
-        return ReplayBatchItemEntity
-            .<ReplayBatchItemEntity>find(
-                "batchId = ?1 and executionId < ?2 order by executionId desc",
-                batchId, executionId)
-            .firstResultOptional()
-            .map(i -> i.executionId)
-            .orElse(null);
+        // ★显式开短事务：本方法在拆分后从**无事务**的 runClaimedSegment 调用。
+        return io.quarkus.narayana.jta.QuarkusTransaction.requiringNew().call(() ->
+            ReplayBatchItemEntity
+                .<ReplayBatchItemEntity>find(
+                    "batchId = ?1 and executionId < ?2 order by executionId desc",
+                    batchId, executionId)
+                .firstResultOptional()
+                .map(i -> i.executionId)
+                .orElse(null));
     }
 
     /**

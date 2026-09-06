@@ -66,6 +66,25 @@ public class ReplayBatchItemEntity extends PanacheEntityBase {
     @Column(name = "target_approved")
     public Boolean targetApproved;
 
+    /**
+     * 认领该条目的 worker（= {@code replay_batch.lease_owner}）；{@code null} = 未被认领。
+     *
+     * <p>★<b>为什么必须持久化</b>：分段执行把「读待办 → 跑 → 写回」拆成
+     * 「短事务读 → <b>无事务跑</b> → 短事务写」，中间那段最坏 15 分钟没有事务。
+     * 原实现的 read-then-write 原子性由单事务隔离隐式保证，拆开后就没了——
+     * 并发 worker 会读到同一批待办并各跑一遍。
+     *
+     * <p>★<b>行锁救不了</b>：{@code PESSIMISTIC_WRITE} 的锁在读事务提交时释放，
+     * <b>恰恰不覆盖那个无事务窗口</b>。只有把认领落到表里，
+     * 才能在跨事务、跨副本、跨进程崩溃的情况下都成立。
+     */
+    @Column(name = "claimed_by", length = 255)
+    public String claimedBy;
+
+    /** 认领时刻；与 {@link #claimedBy} 一同写入，用于识别认领后崩溃的僵尸条目。 */
+    @Column(name = "claimed_at")
+    public java.time.Instant claimedAt;
+
     public ReplayBatchItemEntity() {
     }
 
