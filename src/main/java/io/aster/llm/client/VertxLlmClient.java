@@ -75,11 +75,25 @@ public class VertxLlmClient implements LlmClient {
                     provider, request.model(), baseUri.getHost(), port, chatPath, options.source());
 
                 // 使用底层 HttpClient 获取 response stream，避免 WebClient.sendJsonObject 缓冲整个响应体
+                //
+                // ★超时分两种，不能混用（issue #302 H0）：
+                //   - connectTimeout 用 timeout()（30s）：建连阶段的上限。
+                //     此前这里错填成 readTimeout()（120s），既让建连迟迟不失败，
+                //     又**根本没有配读超时**——provider 建连成功后挂住不发数据，
+                //     连接与请求就永久悬着，只能靠客户端断开或进程重启释放。
+                //   - readIdleTimeout 用 readTimeout()（120s）：**空闲**超时，
+                //     每收到一个 chunk 就重置。SSE 必须用空闲而非总时长，
+                //     否则一次正常的长回答会被拦腰砍断。
                 io.vertx.core.http.HttpClientOptions clientOptions = new io.vertx.core.http.HttpClientOptions()
                     .setSsl(ssl)
                     .setDefaultHost(baseUri.getHost())
                     .setDefaultPort(port)
-                    .setConnectTimeout((int) config.readTimeout().toMillis());
+                    .setConnectTimeout((int) config.timeout().toMillis())
+                    // ★单位显式设为毫秒：setReadIdleTimeout 默认按**秒**取整，
+                    //   若配成 500ms 会截断成 0，而 0 在 Vert.x 里表示「禁用超时」——
+                    //   一个本意收紧超时的配置反而把保护整个关掉。
+                    .setIdleTimeoutUnit(java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .setReadIdleTimeout((int) config.readTimeout().toMillis());
 
                 io.vertx.core.http.HttpClient httpClient = mutinyVertx.getDelegate().createHttpClient(clientOptions);
                 io.vertx.core.http.RequestOptions reqOptions = new io.vertx.core.http.RequestOptions()
