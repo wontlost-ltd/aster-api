@@ -137,8 +137,9 @@ public class WorkflowAuditResource {
     public List<String> getWorkflowsByStatus(
             @PathParam("status") String status,
             @QueryParam("limit") @DefaultValue("100") int limit) {
-        return WorkflowStateEntity.findByStatus(status, identity.tenantId()).stream()
-                .limit(limit)
+        // ★limit 下推到 SQL —— 原先是 .findByStatus(...).stream().limit(n)，
+        //   那会先把整个租户的结果集读进堆再截断，limit 参数从不进 SQL。
+        return WorkflowStateEntity.findByStatus(status, identity.tenantId(), limit).stream()
                 .map(state -> state.workflowId.toString())
                 .collect(Collectors.toList());
     }
