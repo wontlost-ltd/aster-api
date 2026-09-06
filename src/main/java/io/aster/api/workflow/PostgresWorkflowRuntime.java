@@ -54,8 +54,19 @@ public class PostgresWorkflowRuntime implements WorkflowRuntime {
     @ConfigProperty(name = "workflow.result-futures.ttl-hours", defaultValue = "24")
     int ttlHours;
 
-    // 内存中维护的结果 future，用于返回给调用方
-    // 实际生产环境可能需要分布式缓存（如 Redis）或轮询机制
+    /**
+     * 内存中维护的结果 future，用于返回给调用方。
+     *
+     * <p>★<b>这个 map 是 per-副本的，跨副本不可见</b>（issue #302 H1）。
+     * {@code aster-api} 跑 4 副本，请求可能落在副本 A（在这里建 future 并等待），
+     * 而 workflow 由副本 B 的调度器执行、在 <b>B 自己的 map</b> 上 complete。
+     * A 的 future <b>永远等不到结果</b>，直到 24 小时 TTL 清理时才以
+     * {@code WorkflowExpiredException} 收场——调用方看到的是「卡住」而非「失败」。
+     *
+     * <p>补法见 {@link #settleOrphanedFutures()}：以数据库里的终态为准，
+     * 周期性地把本副本这些「孤儿 future」结算掉。DB 状态是跨副本唯一的真相源，
+     * 内存 map 只是本副本的快捷通道。
+     */
     private final Map<String, CompletableFuture<Object>> resultFutures = new ConcurrentHashMap<>();
 
     /**
@@ -293,6 +304,70 @@ public class PostgresWorkflowRuntime implements WorkflowRuntime {
      */
     public CompletableFuture<Object> getResultFuture(String workflowId) {
         return resultFutures.computeIfAbsent(workflowId, id -> new CompletableFuture<>());
+    }
+
+    /**
+     * 结算<b>跨副本孤儿 future</b>（issue #302 H1）。
+     *
+     * <p>{@link #resultFutures} 是 per-副本的：请求落在副本 A 时在 A 上建 future，
+     * 而 workflow 可能由副本 B 的调度器执行、在 B 自己的 map 上 complete。
+     * A 的 future 于是永远等不到结果——只能等 24 小时 TTL 把它以
+     * {@code WorkflowExpiredException} 收掉。对调用方而言，
+     * 「一个已经成功的 workflow 让我卡了 24 小时然后报过期」是最难排查的一类故障。
+     *
+     * <p>补法：<b>以数据库终态为准</b>。DB 是跨副本唯一的真相源，
+     * 内存 map 只是本副本的快捷通道。本任务每秒扫一遍本副本尚未完成的 future，
+     * 只要 DB 里已是终态就地结算。
+     *
+     * <p>★与 {@link #cleanupExpiredFutures()} 的分工：那个管<b>内存回收</b>
+     * （TTL 到了就丢），这个管<b>结果送达</b>（终态一到就送）。
+     * 两者都要有：只有前者的话，跨副本的正常完成要等 24 小时才被发现。
+     */
+    @Scheduled(every = "1s",
+               skipExecutionIf = BackgroundSchedulerSkipPredicate.class)
+    void settleOrphanedFutures() {
+        if (resultFutures.isEmpty()) {
+            return;
+        }
+        int settled = 0;
+        for (Map.Entry<String, CompletableFuture<Object>> entry : resultFutures.entrySet()) {
+            CompletableFuture<Object> future = entry.getValue();
+            if (future.isDone()) {
+                continue;
+            }
+            String workflowId = entry.getKey();
+            try {
+                Optional<WorkflowStateEntity> stateOpt =
+                    WorkflowStateEntity.findByWorkflowId(UUID.fromString(workflowId));
+                if (stateOpt.isEmpty()) {
+                    continue;
+                }
+                WorkflowStateEntity state = stateOpt.get();
+                if ("COMPLETED".equals(state.status)) {
+                    // ★先移除再 complete：与 completeWorkflow 的顺序一致，
+                    //   避免本副本稍后又走一次 complete（CompletableFuture 幂等，
+                    //   但留着会让内存回收晚一个 TTL 周期）。
+                    resultFutures.remove(workflowId);
+                    // ★结果取 state.result，与「幂等键命中已完成 workflow」时
+                    //   返回 CompletedExecutionHandle(workflowId, state.result) 同一口径。
+                    //   注意它与本副本 completeWorkflow 传入的事件 payload **形状可能不同**
+                    //   （前者是持久化的结果字符串，后者是事件对象）——这是既有差异，
+                    //   非本次引入；跨副本本来就只能拿到持久化的那份。
+                    future.complete(state.result);
+                    settled++;
+                } else if ("FAILED".equals(state.status)) {
+                    resultFutures.remove(workflowId);
+                    future.completeExceptionally(new RuntimeException(
+                        "Workflow " + workflowId + " failed on another replica"));
+                    settled++;
+                }
+            } catch (Exception e) {
+                Log.warnf(e, "结算 workflow %s 的孤儿 future 失败，下轮重试", workflowId);
+            }
+        }
+        if (settled > 0) {
+            Log.debugf("结算了 %d 个跨副本孤儿 future", settled);
+        }
     }
 
     /**
