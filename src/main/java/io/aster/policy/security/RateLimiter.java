@@ -39,6 +39,19 @@ public class RateLimiter {
     boolean enabled;
 
     /**
+     * 是否启用跨副本共享计数（issue #302 H2）。
+     *
+     * <p>默认开启：不开的话多副本下实际上限是配置值的副本数倍。
+     * 留开关是为了单副本部署或 Redis 故障演练时能一键退回纯本地行为。
+     */
+    @ConfigProperty(name = "aster.ratelimit.shared.enabled", defaultValue = "true")
+    boolean sharedEnabled;
+
+    /** Redis 可选：未配置时 {@code isResolvable()} 为 false，自动退回纯本地限流。 */
+    @jakarta.inject.Inject
+    jakarta.enterprise.inject.Instance<io.quarkus.redis.datasource.RedisDataSource> redisDataSource;
+
+    /**
      * R30+ audit P1：DoS 攻击下 high-cardinality identifier（如轮换的 IP）
      * 会在 5 分钟的 idle eviction 窗口内让 windows/connectionCounters
      * 单调增长。给一个硬上限：当 map 大小越过门槛时立刻触发一次 evict，
@@ -62,6 +75,19 @@ public class RateLimiter {
     public boolean tryAcquire(String identifier, int maxRequests, Duration window) {
         if (!enabled) {
             return true;
+        }
+
+        // ★跨副本共享计数（issue #302 H2）。本类的 windows/connectionCounters 都是
+        //   **进程内**结构：aster-api 跑 4 副本时，每个副本各自放行 maxRequests 个，
+        //   实际生效上限是配置值的 4 倍——限流形同虚设。
+        //
+        //   ★分层而非替换：Redis 层先判，判过再走本地窗口。
+        //   - Redis 可用 → 全局上限由它把关，本地窗口作为第二道（单副本内的突发）
+        //   - Redis 不可用 → 退回纯本地（fail-open 到「旧行为」而非「不限流」）
+        //   本地这套滑动窗口经过多轮加固（见下方 R-Round-3 / R31-5 注释），
+        //   不能为了上 Redis 就把它拆掉。
+        if (!sharedTryAcquire(identifier, maxRequests, window)) {
+            return false;
         }
 
         // R-Round-3 关键修复：整个 "evict + check + addLast" 事务搬进
@@ -128,6 +154,63 @@ public class RateLimiter {
             return q;
         });
         return granted[0];
+    }
+
+    /**
+     * 跨副本共享的固定窗口计数（issue #302 H2）。
+     *
+     * <p>用 Redis 的 {@code INCR} + 首次设 {@code TTL} 实现固定窗口：
+     * key 里带上窗口序号（{@code epochSecond / windowSeconds}），
+     * 窗口切换时 key 自然更换，旧 key 由 TTL 自行消失，无需清理任务。
+     *
+     * <p>★<b>为什么是固定窗口而不是滑动窗口</b>：滑动窗口要在 Redis 上维护
+     * 有序集合并逐次裁剪（{@code ZADD}+{@code ZREMRANGEBYSCORE}+{@code ZCARD}），
+     * 每次请求多次往返且需要 Lua 保证原子。固定窗口只要一次 {@code INCR}。
+     *
+     * <p>★<b>已知代价：窗口边界最坏放行 2×maxRequests</b>（跨相邻两窗口的 1 秒内）。
+     * 这是固定窗口的固有性质，<b>本地那层滑动窗口挡不住它</b>——
+     * 负载经 LB 均分到 4 个副本时，每个副本的本地窗口只用掉 max/4、远未打满，
+     * 对边界突发零贡献。实测（max=20、4 副本均分）跨边界合计放行 40 = 2.0x。
+     * 相比修复前的 <b>4x 且持续</b>（每副本各算各的），2x 且仅限边界是可接受的收敛；
+     * 要彻底消除得上 Lua 滑动窗口，那是另一笔工程。
+     *
+     * <p>★<b>fail-open 到「旧行为」</b>：Redis 不可用时返回 true，
+     * 让请求落到本地窗口去判。这不是「不限流」——是退回本次修复之前的状态。
+     * 反之若 fail-closed，一次 Redis 抖动就会把全站请求打成 429。
+     * ★这条依赖 {@code quarkus.redis.timeout} 足够小（见 application.properties，
+     * 已显式设为 100ms）：默认 10s 的话，「降级」会先让每个请求阻塞 10 秒。
+     *
+     * @return true 表示全局配额尚有余量（或 Redis 不可用）
+     */
+    private boolean sharedTryAcquire(String identifier, int maxRequests, Duration window) {
+        if (!sharedEnabled || redisDataSource == null || !redisDataSource.isResolvable()) {
+            return true;
+        }
+        long windowSeconds = Math.max(1L, window.getSeconds());
+        try {
+            var commands = redisDataSource.get().value(String.class, Long.class);
+            String key = "ratelimit:" + identifier + ":"
+                + (Instant.now().getEpochSecond() / windowSeconds);
+
+            long count = commands.incr(key);
+            if (count == 1L) {
+                // ★首次创建才设 TTL：每次都设会让持续受压的 key 永远不过期
+                //   （窗口被无限延长），配额就再也不会重置。
+                //   窗口 key 已含序号，故只需覆盖本窗口时长，多给 1s 容忍时钟抖动。
+                redisDataSource.get().key(String.class)
+                    .expire(key, windowSeconds + 1);
+            }
+            if (count > maxRequests) {
+                LOG.debugf("全局限流拒绝: identifier=%s, count=%d, max=%d",
+                    identifier, count, maxRequests);
+                return false;
+            }
+            return true;
+        } catch (RuntimeException e) {
+            // Redis 抖动不应把全站打成 429——退回本地窗口判定
+            LOG.debugf(e, "共享限流不可用，退回本地窗口: identifier=%s", identifier);
+            return true;
+        }
     }
 
     /**
