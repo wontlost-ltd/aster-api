@@ -22,9 +22,20 @@ public class TimerSchedulerService {
     WorkflowSchedulerService workflowScheduler;
 
     /**
-     * 每秒轮询到期的 timers
+     * 每秒轮询到期的 timers。
      *
-     * 使用乐观锁避免重复执行（通过更新 status 字段）
+     * <p>★<b>多副本下必须逐个原子认领</b>（issue #302 B1）：此前是
+     * 「{@code find(status='PENDING')} → 改 {@code status='EXECUTING'} → persist」
+     * 的先查后写，注释称其为「乐观锁」，但
+     * {@link WorkflowTimerEntity} <b>没有 {@code @Version} 字段</b>，
+     * 表里也没有版本列 —— 根本没有任何锁。
+     * {@code aster-api} 跑 4 副本，四个调度器每秒各查一次，
+     * 都能查到同一批 PENDING 行，于是<b>同一个 timer 被触发 4 次</b>，
+     * workflow step 也就重复执行 4 次。
+     *
+     * <p>改为条件更新 {@code ... SET status='EXECUTING' WHERE timerId=? AND
+     * status='PENDING'}：由数据库在行级串行化，抢同一行时只有一个副本
+     * 的 UPDATE 会命中（返回 1），其余返回 0 直接跳过。
      */
     @Scheduled(every = "1s")
     @Transactional
@@ -35,12 +46,23 @@ public class TimerSchedulerService {
                 Instant.now()
             ).page(0, 100).list(); // 每次最多处理 100 个 timer
 
+            int claimed = 0;
             for (WorkflowTimerEntity timer : expired) {
+                // ★认领与执行必须是「先原子占坑、再干活」：查询结果只是候选，
+                //   真正的准入是下面这条 UPDATE 的命中行数。
+                long won = WorkflowTimerEntity.update(
+                    "status = 'EXECUTING' where timerId = ?1 and status = 'PENDING'",
+                    timer.timerId);
+                if (won == 0) {
+                    // 别的副本已经领走——本副本不得再碰，否则就是重复执行
+                    continue;
+                }
+                claimed++;
                 processExpiredTimer(timer);
             }
 
-            if (!expired.isEmpty()) {
-                Log.debugf("Processed %d expired timers", expired.size());
+            if (claimed > 0) {
+                Log.debugf("Processed %d expired timers (候选 %d)", claimed, expired.size());
             }
 
         } catch (Exception e) {
@@ -49,15 +71,17 @@ public class TimerSchedulerService {
     }
 
     /**
-     * 处理单个到期的 timer
+     * 处理单个已<b>认领</b>的到期 timer。
      *
-     * @param timer 到期的 timer 实体
+     * <p>调用前 {@code status} 已由 {@link #pollExpiredTimers} 的条件更新
+     * 原子地置为 {@code EXECUTING}，故这里不再重复置位。
+     *
+     * @param timer 已认领的 timer 实体
      */
     private void processExpiredTimer(WorkflowTimerEntity timer) {
         try {
-            // 乐观锁：先更新状态避免重复执行
+            // 认领已在调用方完成（条件 UPDATE 命中）；同步内存态以免后续 persist 写回旧值
             timer.status = "EXECUTING";
-            timer.persist();
 
             // 触发 workflow step 继续执行
             if (timer.stepId != null) {
