@@ -232,4 +232,107 @@ class TimerClaimConcurrencyIT {
             .as("★一次性 timer 消费后必须是终态，不得留在 PENDING")
             .isNotEqualTo("PENDING");
     }
+
+    // ── issue #308：认领后进程消失，EXECUTING 不得永久卡住 ──────────────
+
+    /**
+     * ★卡在 {@code EXECUTING} 的 timer 必须被回收并<b>真正重新触发 workflow</b>。
+     *
+     * <p>{@code pollExpiredTimers} 先原子认领（置 EXECUTING）再处理。
+     * 若进程在这两步之间被杀（{@code kill -9} / pod 驱逐 / OOM），
+     * 既不写终态也不走异常分支；而查询只捞 {@code PENDING}，
+     * 这行<b>再也不会被任何副本拾取</b> —— 一次性 timer 的 workflow 永久挂起。
+     *
+     * <p>★<b>判据是「workflow 有没有被再次恢复」</b>，不是「状态变回 PENDING」。
+     * 只断言状态的话，一个「把 EXECUTING 改成 PENDING 就完事」的实现也能变绿，
+     * 却可能因为别处的条件（比如 fireAt 已被改到未来）而永远轮不到它跑。
+     */
+    @Test
+    @DisplayName("卡在 EXECUTING 的 timer 被回收后必须真正重新触发 workflow")
+    void stuckExecutingTimerIsReclaimedAndRefired() {
+        countResumesInsteadOfRunning();
+
+        UUID workflowId = UUID.randomUUID();
+        UUID timerId = UUID.randomUUID();
+
+        QuarkusTransaction.requiringNew().run(() -> {
+            WorkflowStateEntity state = new WorkflowStateEntity();
+            state.workflowId = workflowId;
+            state.status = "PAUSED";
+            state.snapshot = "{}";
+            state.createdAt = Instant.now();
+            state.persist();
+
+            WorkflowTimerEntity t = new WorkflowTimerEntity();
+            t.timerId = timerId;
+            t.workflowId = workflowId;
+            t.stepId = null;
+            // 模拟「认领后进程被杀」：状态停在 EXECUTING，fireAt 是很久以前
+            t.fireAt = Instant.now().minusSeconds(3600);
+            t.status = "EXECUTING";
+            t.payload = "{}";
+            t.persist();
+        });
+
+        timerScheduler.pollExpiredTimers();
+
+        AtomicInteger n = resumeCounts.get(workflowId.toString());
+        assertThat(n)
+            .as("★卡住的 timer 必须被回收并**重新触发 workflow**——"
+                + "拿不到计数说明它仍然无人拾取，对应 workflow 永久挂起（issue #308）")
+            .isNotNull();
+        assertThat(n.get())
+            .as("★回收后应恰好触发 1 次")
+            .isEqualTo(1);
+    }
+
+    /**
+     * ★反向守卫：<b>刚认领、还在跑</b>的 timer 不得被回收。
+     *
+     * <p>没有这条，「无条件把所有 EXECUTING 退回 PENDING」也能让上一条变绿，
+     * 却会把正在处理中的 timer 抢回来重复触发 —— 那正是 #302 B1 修掉的问题，
+     * 等于用一个回收机制把它重新引入。
+     */
+    @Test
+    @DisplayName("刚认领仍在处理中的 timer 不得被回收")
+    void freshlyClaimedTimerIsNotReclaimed() {
+        countResumesInsteadOfRunning();
+
+        UUID workflowId = UUID.randomUUID();
+        UUID timerId = UUID.randomUUID();
+
+        QuarkusTransaction.requiringNew().run(() -> {
+            WorkflowStateEntity state = new WorkflowStateEntity();
+            state.workflowId = workflowId;
+            state.status = "PAUSED";
+            state.snapshot = "{}";
+            state.createdAt = Instant.now();
+            state.persist();
+
+            WorkflowTimerEntity t = new WorkflowTimerEntity();
+            t.timerId = timerId;
+            t.workflowId = workflowId;
+            t.stepId = null;
+            // 刚刚才到期并被认领（远未到 5 分钟阈值）
+            t.fireAt = Instant.now().minusSeconds(1);
+            t.status = "EXECUTING";
+            t.payload = "{}";
+            t.persist();
+        });
+
+        timerScheduler.pollExpiredTimers();
+
+        assertThat(resumeCounts.get(workflowId.toString()))
+            .as("★仍在处理中的 timer 不得被抢回来重跑——"
+                + "无条件回收会把 #302 B1 的重复触发问题重新引入")
+            .isNull();
+
+        String status = QuarkusTransaction.requiringNew().call(() ->
+            (String) em.createNativeQuery(
+                    "SELECT status FROM workflow_timers WHERE timer_id = ?1")
+                .setParameter(1, timerId).getSingleResult());
+        assertThat(status)
+            .as("★未超时的 EXECUTING 应保持不动")
+            .isEqualTo("EXECUTING");
+    }
 }
