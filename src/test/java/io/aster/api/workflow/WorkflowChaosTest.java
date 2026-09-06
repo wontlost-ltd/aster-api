@@ -164,6 +164,32 @@ class WorkflowChaosTest extends CrashRecoveryTestBase {
         assertThat(state.status).isEqualTo("COMPLETED");
     }
 
+    /**
+     * 并发调用 {@code processWorkflow} 时不得因连接获取失败而崩溃。
+     *
+     * <p>★<b>本用例曾是彻底的假绿</b>（「测试配置掩盖生产行为」专项扫描发现）。
+     * 实测：把 {@code processWorkflow} 开头改成无条件抛异常后，
+     * 本类 66 个用例红了 63 个，<b>唯独这一条仍绿</b>（0.336s）。
+     * 两处结构性缺陷让它<b>不可能</b>变红：
+     * <ol>
+     *   <li>{@code executor.submit(...)} 的返回值被丢弃，任务体里的异常
+     *       被吞进无人过问的 {@code Future}，永远传不到测试线程；
+     *       而 {@code finally { latch.countDown(); }} 保证即使全部抛异常，
+     *       latch 也照常归零、{@code assertDoesNotThrow} 照常通过。</li>
+     *   <li>终态断言 {@code status == "COMPLETED"} 与被测代码无关——
+     *       {@code appendWorkflowCompleted} 在调用 {@code processWorkflow}
+     *       <b>之前</b>就把完成事件写好了，状态达成不依赖被测执行路径。</li>
+     * </ol>
+     *
+     * <p>现在改为：收集 {@code Future} 并逐个 {@code get()} 让异常真正传播；
+     * 断言前把状态<b>重置为非终态</b>，使 COMPLETED 只可能由 {@code processWorkflow} 产生。
+     *
+     * <p>★关于池大小：测试环境 {@code jdbc.max-size=50}、生产是 8，故本用例
+     * <b>不声称</b>覆盖了「池耗尽」这一生产故障——它守的是「并发推进不崩、
+     * 且状态确由被测代码推进」。真正守住 C1「执行期不占连接」的是
+     * {@code ReplayBatchConcurrencyIT.重放执行期间不得持有事务与连接}。
+     * 用例名保留是为了不打断既有引用，但语义已在此说明。
+     */
     @Test
     void testDatabaseConnectionPoolExhaustion() throws Exception {
         // Given：准备 12 个 workflow 并发完成
@@ -177,28 +203,51 @@ class WorkflowChaosTest extends CrashRecoveryTestBase {
                 })
                 .toList();
 
-        // When：使用线程池同时触发 processWorkflow 模拟连接池耗尽
-        ExecutorService executor = Executors.newFixedThreadPool(workflows.size());
-        CountDownLatch latch = new CountDownLatch(workflows.size());
-        assertDoesNotThrow(() -> {
-            for (String workflowId : workflows) {
-                executor.submit(() -> {
-                    try {
-                        schedulerService.processWorkflow(workflowId);
-                    } finally {
-                        latch.countDown();
-                    }
-                });
-            }
-            latch.await(15, TimeUnit.SECONDS);
-        });
-        executor.shutdownNow();
+        // ★把状态压回非终态：否则 COMPLETED 是 appendWorkflowCompleted 给的，
+        //   与 processWorkflow 跑没跑无关，断言就是恒真的。
+        for (String workflowId : workflows) {
+            resetStatusTo(workflowId, "RUNNING");
+        }
 
-        // Then：所有 workflow 均完成，连接池未报错
+        // When：线程池并发触发 processWorkflow
+        ExecutorService executor = Executors.newFixedThreadPool(workflows.size());
+        List<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>();
+        try {
+            for (String workflowId : workflows) {
+                futures.add(executor.submit(() -> schedulerService.processWorkflow(workflowId)));
+            }
+            // ★逐个 get()：任务体里的异常在这里抛出来，测试才可能变红。
+            //   丢弃 Future 等于把被测代码的失败静音。
+            for (java.util.concurrent.Future<?> f : futures) {
+                f.get(30, TimeUnit.SECONDS);
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+
+        // Then：状态必须由 processWorkflow 真正推进到 COMPLETED
         for (String workflowId : workflows) {
             WorkflowStateEntity state = findWorkflowState(workflowId);
-            assertThat(state.status).isEqualTo("COMPLETED");
+            assertThat(state.status)
+                .as("★workflow %s 必须被 processWorkflow 推进到 COMPLETED——"
+                    + "断言前已重置为 RUNNING，故这里的 COMPLETED 只能来自被测代码", workflowId)
+                .isEqualTo("COMPLETED");
         }
+    }
+
+    /**
+     * 把 workflow 状态直接压回指定值（绕过事件重放，仅供测试重置基线用）。
+     *
+     * <p>★用 {@code QuarkusTransaction} 而非 {@code @Transactional}：
+     * 测试类里的自调用不走 CDI 拦截，注解在这里不生效。
+     */
+    private void resetStatusTo(String workflowId, String status) {
+        io.quarkus.narayana.jta.QuarkusTransaction.requiringNew().run(() -> {
+            WorkflowStateEntity s =
+                WorkflowStateEntity.findById(java.util.UUID.fromString(workflowId));
+            s.status = status;
+            s.persist();
+        });
     }
 
     @Test
