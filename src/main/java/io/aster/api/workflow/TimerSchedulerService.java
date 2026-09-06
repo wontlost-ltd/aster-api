@@ -22,6 +22,15 @@ public class TimerSchedulerService {
     WorkflowSchedulerService workflowScheduler;
 
     /**
+     * {@code EXECUTING} 超过这个时长即视为「认领后进程消失」，退回 {@code PENDING}。
+     *
+     * <p>正常处理是毫秒级（{@code resumeWorkflow} 走异步 submit，不在此等待），
+     * 故 5 分钟有极大余量，不会误伤在跑的 timer；同时也不至于让卡住的
+     * workflow 等太久。
+     */
+    private static final Duration STUCK_TIMEOUT = Duration.ofMinutes(5);
+
+    /**
      * 每秒轮询到期的 timers。
      *
      * <p>★<b>多副本下必须逐个原子认领</b>（issue #302 B1）：此前是
@@ -41,6 +50,8 @@ public class TimerSchedulerService {
     @Transactional
     public void pollExpiredTimers() {
         try {
+            reclaimStuckTimers();
+
             List<WorkflowTimerEntity> expired = WorkflowTimerEntity.find(
                 "fireAt <= ?1 AND status = 'PENDING' ORDER BY fireAt",
                 Instant.now()
@@ -67,6 +78,44 @@ public class TimerSchedulerService {
 
         } catch (Exception e) {
             Log.errorf(e, "Error polling expired timers");
+        }
+    }
+
+    /**
+     * 认领后进程消失时，{@code EXECUTING} 会永久卡住 —— 本方法把它们退回
+     * {@code PENDING}（issue #308）。
+     *
+     * <p><b>为什么会卡</b>：{@code pollExpiredTimers} 先原子认领（置 EXECUTING）
+     * 再处理。若进程在这两步之间被杀（{@code kill -9}、pod 驱逐、OOM），
+     * 既不会走到写终态、也不会走异常分支。而查询只捞 {@code status='PENDING'}，
+     * 这行<b>再也不会被任何副本拾取</b>：一次性 timer 的 workflow 永久挂起，
+     * 周期性 timer 整条周期链就此断掉。
+     *
+     * <p>★<b>表面毫无异常</b>：行还在、状态是合法值、没有任何错误日志 ——
+     * 这正是它难被发现的原因。
+     *
+     * <p><b>为什么用 {@code fireAt} 判定陈旧</b>：本表没有 {@code updated_at} 列，
+     * 而认领只改 {@code status}、<b>不动 {@code fireAt}</b>，故卡住的行会一直
+     * 保留它「本该运行的时刻」，随时间越来越旧：
+     * <ul>
+     *   <li>一次性：{@code fireAt} 是创建时的到期时刻，此后不再改；</li>
+     *   <li>周期性：上一轮成功才会把 {@code fireAt} 推到未来；在本轮认领后崩溃的话，
+     *       它仍停在本轮那个已过期的值。</li>
+     * </ul>
+     * 两种都满足「越卡越旧」，故无需加列。
+     *
+     * <p>★阈值取 {@link #STUCK_TIMEOUT}：{@code fireAt} 的语义是「该跑的时刻」
+     * 而非「认领的时刻」，两者最多差一个轮询周期（1 秒），故 5 分钟对正常处理
+     * （毫秒级，且 {@code resumeWorkflow} 是异步 submit）有极大余量，
+     * 不会误伤正在跑的 timer。
+     */
+    private void reclaimStuckTimers() {
+        long freed = WorkflowTimerEntity.update(
+            "status = 'PENDING' where status = 'EXECUTING' and fireAt < ?1",
+            Instant.now().minus(STUCK_TIMEOUT));
+        if (freed > 0) {
+            // warn 而非 debug：这意味着此前有副本在认领后异常消失，值得被看见
+            Log.warnf("回收 %d 个卡在 EXECUTING 的 timer（认领后进程消失），已退回 PENDING", freed);
         }
     }
 
