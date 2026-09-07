@@ -81,6 +81,10 @@ class NonDeterminismSourceTest {
         //   与 GenericOutboxScheduler 的租约令牌同理：每次领取一个随机 owner，
         //   终态写带 `AND leaseOwner = ?` 条件更新，使被误回收的旧 worker **写不进去**。
         //   随机性正是诉求（要能区分两次领取），且不入 workflow 重放状态。
+        // - RateLimiter: 生成本实例的 INSTANCE_ID，用于让共享滑动窗口的 ZSET 成员
+        //   **跨副本唯一**（issue #309）。成员若只用毫秒时间戳，同一毫秒内多个副本
+        //   的请求会塌成同一个成员被 ZADD 覆盖，窗口内计数偏低 → 放行超额。
+        //   随机性只用于区分实例身份，只进 Redis 成员名、不入 workflow 重放状态。
         Assertions.assertThat(uuidMatches.keySet())
                 .containsExactlyInAnyOrder(
                         "src/main/java/io/aster/policy/service/PolicyStorageService.java",
@@ -91,7 +95,8 @@ class NonDeterminismSourceTest {
                         "src/main/java/io/aster/audit/outbox/GenericOutboxScheduler.java",
                         "src/main/java/io/aster/security/internal/InternalCallSigner.java",
                         "src/main/java/io/aster/policy/rest/ReplayBatchResource.java",
-                        "src/main/java/io/aster/policy/replay/batch/ReplayBatchService.java"
+                        "src/main/java/io/aster/policy/replay/batch/ReplayBatchService.java",
+                        "src/main/java/io/aster/policy/security/RateLimiter.java"
                 );
 
         Map<String, List<Integer>> nanoMatches = scanPattern(

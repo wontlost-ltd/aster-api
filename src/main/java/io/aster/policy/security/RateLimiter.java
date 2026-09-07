@@ -157,25 +157,33 @@ public class RateLimiter {
     }
 
     /**
-     * 跨副本共享的固定窗口计数（issue #302 H2）。
+     * 跨副本共享的<b>滑动窗口</b>计数（issue #302 H2 引入，#309 由固定窗口改为滑动）。
      *
-     * <p>用 Redis 的 {@code INCR} + 首次设 {@code TTL} 实现固定窗口：
-     * key 里带上窗口序号（{@code epochSecond / windowSeconds}），
-     * 窗口切换时 key 自然更换，旧 key 由 TTL 自行消失，无需清理任务。
+     * <p>用一段 Lua 在 Redis 侧原子完成「裁剪 → 计数 → 判定 → 记账」：
+     * 有序集合的 score 是请求时刻（毫秒），先 {@code ZREMRANGEBYSCORE} 删掉
+     * 窗口外的，再 {@code ZCARD} 数窗口内的，未超限才 {@code ZADD} 记一笔。
      *
-     * <p>★<b>为什么是固定窗口而不是滑动窗口</b>：滑动窗口要在 Redis 上维护
-     * 有序集合并逐次裁剪（{@code ZADD}+{@code ZREMRANGEBYSCORE}+{@code ZCARD}），
-     * 每次请求多次往返且需要 Lua 保证原子。固定窗口只要一次 {@code INCR}。
+     * <p>★<b>为什么必须是 Lua 而不是几条命令顺序发</b>：「数完再决定加不加」
+     * 之间若有间隙，两个副本会同时读到未超限、双双放行。
+     * Lua 在 Redis 上单线程原子执行，这个间隙不存在。
      *
-     * <p>★<b>已知代价：窗口边界最坏放行 2×maxRequests</b>（跨相邻两窗口的 1 秒内）。
-     * 这是固定窗口的固有性质，<b>本地那层滑动窗口挡不住它</b>——
-     * 负载经 LB 均分到 4 个副本时，每个副本的本地窗口只用掉 max/4、远未打满，
-     * 对边界突发零贡献。实测（max=20、4 副本均分）跨边界合计放行 40 = 2.0x。
-     * 相比修复前的 <b>4x 且持续</b>（每副本各算各的），2x 且仅限边界是可接受的收敛；
-     * 要彻底消除得上 Lua 滑动窗口，那是另一笔工程。
+     * <p>★<b>为什么从固定窗口改过来</b>（#309）：固定窗口按 {@code epochSecond /
+     * windowSeconds} 分桶，窗口 N 末尾放行 max 个、窗口 N+1 开头再放行 max 个，
+     * 这 2×max 可以挤在<b>不到 1 秒</b>内发生。实测（max=20、4 副本均分负载）
+     * 跨边界合计放行 40 = 2.0x。滑动窗口不看桶号、只看「最近 window 内已放行几个」，
+     * 故任意时刻的 1 个窗口长度内都不超过 max。
+     *
+     * <p>★<b>本地那层滑动窗口挡不住边界突发</b>：负载经 LB 均分到 4 个副本时，
+     * 每个副本的本地窗口只用掉 max/4、远未打满，对边界零贡献。
+     * 这也是测这条时最容易自我欺骗的地方——用同一批已打满的副本重放会测出
+     * 1.0x 的假象。
+     *
+     * <p>★<b>成员唯一性</b>：ZSET 成员必须互不相同，否则同一毫秒的多个请求
+     * 会被当成同一个成员覆盖掉，计数偏低（放行超额）。故成员用
+     * {@code <毫秒>-<单调序号>}，序号来自进程内 {@link #memberSeq}。
      *
      * <p>★<b>fail-open 到「旧行为」</b>：Redis 不可用时返回 true，
-     * 让请求落到本地窗口去判。这不是「不限流」——是退回本次修复之前的状态。
+     * 让请求落到本地窗口去判。这不是「不限流」——是退回引入共享计数之前的状态。
      * 反之若 fail-closed，一次 Redis 抖动就会把全站请求打成 429。
      * ★这条依赖 {@code quarkus.redis.timeout} 足够小（见 application.properties，
      * 已显式设为 100ms）：默认 10s 的话，「降级」会先让每个请求阻塞 10 秒。
@@ -186,32 +194,80 @@ public class RateLimiter {
         if (!sharedEnabled || redisDataSource == null || !redisDataSource.isResolvable()) {
             return true;
         }
-        long windowSeconds = Math.max(1L, window.getSeconds());
+        long windowMillis = Math.max(1L, window.toMillis());
         try {
-            var commands = redisDataSource.get().value(String.class, Long.class);
-            String key = "ratelimit:" + identifier + ":"
-                + (Instant.now().getEpochSecond() / windowSeconds);
+            String key = "ratelimit:sw:" + identifier;
+            long nowMillis = Instant.now().toEpochMilli();
+            // ★成员必须**全局**唯一，不只是进程内唯一：两个副本在同一毫秒各自
+            //   取到序号 1，成员就会撞在一起被 ZADD 覆盖，计数偏低 → 放行超额。
+            //   故带上 instanceId（进程唯一）+ 进程内单调序号。
+            String member = nowMillis + "-" + INSTANCE_ID + "-" + memberSeq.incrementAndGet();
 
-            long count = commands.incr(key);
-            if (count == 1L) {
-                // ★首次创建才设 TTL：每次都设会让持续受压的 key 永远不过期
-                //   （窗口被无限延长），配额就再也不会重置。
-                //   窗口 key 已含序号，故只需覆盖本窗口时长，多给 1s 容忍时钟抖动。
-                redisDataSource.get().key(String.class)
-                    .expire(key, windowSeconds + 1);
+            io.vertx.mutiny.redis.client.Response resp = redisDataSource.get().execute(
+                "EVAL", SLIDING_WINDOW_LUA, "1", key,
+                String.valueOf(nowMillis),
+                String.valueOf(windowMillis),
+                String.valueOf(maxRequests),
+                member);
+
+            boolean granted = resp != null && resp.toInteger() == 1;
+            if (!granted) {
+                LOG.debugf("全局限流拒绝（滑动窗口）: identifier=%s, max=%d",
+                    identifier, maxRequests);
             }
-            if (count > maxRequests) {
-                LOG.debugf("全局限流拒绝: identifier=%s, count=%d, max=%d",
-                    identifier, count, maxRequests);
-                return false;
-            }
-            return true;
+            return granted;
         } catch (RuntimeException e) {
             // Redis 抖动不应把全站打成 429——退回本地窗口判定
             LOG.debugf(e, "共享限流不可用，退回本地窗口: identifier=%s", identifier);
             return true;
         }
     }
+
+    /**
+     * 滑动窗口的原子判定脚本。
+     *
+     * <p>{@code KEYS[1]} = 限流 key；{@code ARGV} 依次为
+     * 当前毫秒、窗口毫秒数、上限、本次成员标识。
+     *
+     * <p>★{@code PEXPIRE} 每次都重设是<b>对的</b>（与固定窗口那版相反）：
+     * 这里的 key 不含窗口序号，是一个持续滑动的集合，过期时间应当跟着最后一次
+     * 活动走。设成窗口长度的 2 倍，确保裁剪逻辑永远有数据可依；
+     * 空闲超过该时长后整个 key 自然消失，不留垃圾。
+     */
+    private static final String SLIDING_WINDOW_LUA =
+        "local now = tonumber(ARGV[1])\n"
+        + "local win = tonumber(ARGV[2])\n"
+        + "local max = tonumber(ARGV[3])\n"
+        + "redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, now - win)\n"
+        + "local used = redis.call('ZCARD', KEYS[1])\n"
+        + "if used >= max then\n"
+        + "  redis.call('PEXPIRE', KEYS[1], win * 2)\n"
+        + "  return 0\n"
+        + "end\n"
+        + "redis.call('ZADD', KEYS[1], now, ARGV[4])\n"
+        + "redis.call('PEXPIRE', KEYS[1], win * 2)\n"
+        + "return 1";
+
+    /**
+     * ZSET 成员去重用的<b>进程内</b>单调序号：同一毫秒的多个请求不能塌成同一个成员。
+     *
+     * <p>★<b>必须是 static</b>：与 {@link #INSTANCE_ID} 配对才能保证唯一。
+     * 若做成实例字段，同一 JVM 里的两个 {@code RateLimiter} 各自从 1 开始，
+     * 在同一毫秒就会生成相同成员而被 {@code ZADD} 覆盖 —— 计数偏低、放行超额。
+     * 生产上每副本一个 JVM 看似无碍，但测试正是用「同 JVM 多实例」模拟多副本的，
+     * 那样会测出一个<b>偏好的</b>假结果。
+     */
+    private static final java.util.concurrent.atomic.AtomicLong memberSeq =
+        new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * 本实例的唯一标识，用于保证 ZSET 成员<b>跨副本</b>不重复。
+     *
+     * <p>只有进程内序号是不够的：4 个副本在同一毫秒各自取到序号 1，
+     * 成员就会撞在一起被 {@code ZADD} 覆盖，窗口内计数偏低 → 放行超额。
+     */
+    private static final String INSTANCE_ID =
+        java.util.UUID.randomUUID().toString().substring(0, 8);
 
     /**
      * 是否为 IP/匿名限流桶（key 含 {@code :ip:}，如 rest:ip:、trial:ip:）。
