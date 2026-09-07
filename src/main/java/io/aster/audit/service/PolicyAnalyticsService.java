@@ -239,6 +239,19 @@ public class PolicyAnalyticsService {
         String zombieSubqueryTenantFilter = filterByTenant ? "AND tenant_id = ?1" : "";
         String zombieTenantFilterClause = filterByTenant ? "AND ws.tenant_id = ?1" : "";
 
+        // ★tenant_id 必须 COALESCE 到 pv.tenant_id（issue #315）：
+        //   本查询是 LEFT JOIN + `HAVING ... OR MAX(ws.started_at) IS NULL`，
+        //   **刻意包含「从未跑过」的版本**——僵尸检测的本意正是找出这些。
+        //   而那些行上每个 ws.* 都是 NULL，`MAX(ws.tenant_id)` 自然也是 NULL，
+        //   写进 anomaly_reports 就撞 NOT NULL 约束、整个事务回滚。
+        //
+        //   生产实测：aster_api 库里该查询出 54 行、**全部** tenant 为 NULL，
+        //   与日志「检测到 54 个异常」逐一对应；该表因此从未有过任何一行数据。
+        //
+        //   ★用 pv.tenant_id 而非放宽约束：一个从未跑过的版本，它的归属就是
+        //   **版本自己的租户**，本来就不该靠 workflow 反推。放宽 NOT NULL 会让
+        //   异常报告失去租户归属，别的租户就会看到不属于自己的异常。
+        //   （实测 policy_versions.tenant_id 全非空：0 null / 54 行。）
         String sqlZombieVersions = String.format("""
             SELECT
                 pv.id, pv.policy_id,
@@ -250,11 +263,11 @@ public class PolicyAnalyticsService {
                    %s
                  ORDER BY started_at DESC
                  LIMIT 1) AS sample_workflow_id,
-                MAX(ws.tenant_id) AS tenant_id
+                COALESCE(MAX(ws.tenant_id), pv.tenant_id) AS tenant_id
             FROM policy_versions pv
             LEFT JOIN workflow_state ws ON pv.id = ws.policy_version_id
             WHERE 1=1 %s
-            GROUP BY pv.id, pv.policy_id
+            GROUP BY pv.id, pv.policy_id, pv.tenant_id
             HAVING MAX(ws.started_at) < NOW() - INTERVAL '%d days' OR MAX(ws.started_at) IS NULL
             """, zombieSubqueryTenantFilter, zombieTenantFilterClause, days);
 

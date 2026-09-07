@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -165,6 +166,65 @@ class AnomalyDetectionWrapperIT {
         assertThat(stale)
             .as("★超出保留期的记录必须被清 —— 不清理会让表无限膨胀")
             .isZero();
+    }
+
+    /**
+     * ★<b>上游返回 tenantId=null 时，任务不得整体失败</b>（issue #315）。
+     *
+     * <p>生产故障复现：僵尸检测对「从未跑过的版本」用 {@code MAX(ws.tenant_id)}
+     * 回填租户，那些行上每个 {@code ws.*} 都是 NULL，于是 DTO 的 tenantId 是 null；
+     * 插入撞 {@code NOT NULL} 约束 → <b>整个事务回滚</b> → 54 条一条都没落库。
+     * 该表因此从未有过任何一行数据，而日志仍打印「检测到 54 个异常」。
+     *
+     * <p>★<b>为什么此前没测出来</b>：#311 补的用例全部用<b>自己构造的</b> DTO，
+     * tenantId 恒非空，恰好整片避开了这条真实路径。
+     * 「测试写得再仔细，只要输入是自己造的，就可能避开生产实际会遇到的形状」。
+     *
+     * <p>断言两件事：坏条目被跳过、<b>其余条目照常落库</b>。
+     */
+    @Test
+    @DisplayName("上游返回 null 租户时跳过该条，其余必须照常落库")
+    void nullTenantEntryIsSkippedWithoutFailingWholeRun() {
+        Mockito.when(analyticsService.detectAnomalies(Mockito.anyDouble(), Mockito.anyInt()))
+            .thenReturn(List.of(
+                dto("GOOD_A", "WARNING", "t1"),
+                dto("BAD_NULL", "WARNING", null),     // ← 生产里那 54 条的形状
+                dto("GOOD_B", "WARNING", "t2")));
+
+        // 不得抛出——抛出就意味着整批回滚
+        scheduler.detectAndPersistAnomalies();
+
+        List<?> types = QuarkusTransaction.requiringNew().call(() ->
+            em.createNativeQuery("SELECT anomaly_type FROM anomaly_reports ORDER BY anomaly_type")
+                .getResultList());
+
+        assertThat(types.stream().map(String::valueOf).toList())
+            .as("★坏条目跳过、好条目照常落库。整批为空 = 事务回滚了 = 故障复现；"
+                + "含 BAD_NULL = NOT NULL 约束没起作用")
+            .containsExactly("GOOD_A", "GOOD_B");
+    }
+
+    /**
+     * ★全部条目都缺租户时也不得抛出（整批跳过，但任务算完成）。
+     *
+     * <p>这正是生产上那 54 条的实际形态。修复前它让整个小时的检测归零。
+     */
+    @Test
+    @DisplayName("全部条目缺租户时任务仍须正常结束而非整批失败")
+    void allNullTenantsDoNotBreakTheRun() {
+        Mockito.when(analyticsService.detectAnomalies(Mockito.anyDouble(), Mockito.anyInt()))
+            .thenReturn(List.of(
+                dto("Z1", "INFO", null),
+                dto("Z2", "INFO", null)));
+
+        assertThatCode(() -> scheduler.detectAndPersistAnomalies())
+            .as("★不得抛出——抛出会触发回滚，让同批次的好条目也一起没了")
+            .doesNotThrowAnyException();
+
+        Long n = QuarkusTransaction.requiringNew().call(() ->
+            ((Number) em.createNativeQuery("SELECT count(*) FROM anomaly_reports")
+                .getSingleResult()).longValue());
+        assertThat(n).as("缺租户的条目不落库").isZero();
     }
 
     /**
