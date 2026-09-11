@@ -124,16 +124,18 @@ const IR_IGNORE_FIELDS = new Set(['origin']);
 
 **顺带查实了一个真实的 TS 缺陷**（已记入 `IR-DIVERGENCE-LEDGER`）：
 
-TS 按「注释被删掉之后」的行号编号。实证 `test_claims.aster`（24 行注释头）：
+TS canonicalize 会**吞掉行**，使其后所有 `origin.line` 整体偏移。
+实证 `test_claims.aster`（24 行注释头）：
 
-| | 首个 declaration |
-|---|---|
-| 原文 | line **27** |
-| `canonicalize()` 之后 | line **27**（行数 115 → 115 **不变**）|
-| Java `origin.start.line` | **27** ✅ |
-| TS `origin.start.line` | **3** ❌ |
+| | 首个 declaration | 文件行数 |
+|---|---|---|
+| 原文 | line **27** | 115 |
+| Java canonicalize 之后 | line **27** | 115（**不变**）|
+| TS canonicalize 之后 | line **3** | 91（**少 24**）|
+| → Java `origin.start.line` | **27** ✅ | |
+| → TS `origin.start.line` | **3** ❌ | |
 
-偏移恒为 **+24** = 注释头行数。9 个分歧样本中 7 个带注释头，与该成因一致。
+偏移恒为 **+24**（= 该注释头被折叠掉的行数）。9 个分歧样本中 7 个带注释头，与该成因一致。
 
 **确切机制（已追到最小复现，2026-09-12）**：不是「TS 跳过注释」，而是
 **TS canonicalize 把连续空行折叠成一行**，而注释在此之前已被置空：
