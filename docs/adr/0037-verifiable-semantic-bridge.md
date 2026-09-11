@@ -75,6 +75,75 @@ const IR_IGNORE_FIELDS = new Set(['origin']);
 **该理由经实测不成立**：两侧都是 1-based
 （Java `Lexer.java:69-70` 的 `line=1/col=1`；TS `frontend/lexer.ts:203-204` 同样 `line=1/col=1`）。
 
+#### 2.2.1 步骤 1 的实测结论（2026-09-12 补）
+
+把 `IR_IGNORE_FIELDS` 临时置空后重跑 `--mode=ir --full`，得到确定答案：
+
+```
+::error::tier1-parity (ir field-level) divergence: 150/223 sample(s) not identical
+```
+
+**150/223 样本在 origin 上分叉**——这条豁免掩盖的不是「编号习惯的细微差异」，而是一个**系统性、大面积**的分歧。
+
+按字段归类（1325 条 diff）：
+
+| 字段 | 条数 | 性质 |
+|---|---|---|
+| `origin.file` | **736** | 🟢 纯表示差异：`ts=undefined` vs `java="null"`。台账已有「missing == null」同类规则，可直接归一 |
+| `origin.end.col` | **450** | 🔴 真实语义分歧（见下） |
+| `origin.start.col` | **115** | 🔴 同上 |
+| `origin.start.line` / `end.line` | 各 **12** | 🟡 少量，需逐个 triage |
+
+**行号基本一致**（仅 24 条分歧），**列号是主要战场**。
+
+**根因（已证伪两个先验假设）**：
+
+- ❌ *假设一：固定偏移*。实测列差分布散乱（−8: 89 次、+3: 70 次、+4: 62 次、+8: 58 次、+11: 51 次…），**不是**简单的 base-index 差异。
+- ❌ *假设二：Canonicalizer 改写导致坐标偏移*。实测 `greet.aster` 的 `canonicalize(src).equals(src) == true`——该样本canonical 化后**逐字节不变**，故列差与 Canonicalizer 无关。
+  （⚠️ 这不推翻 §2.4：对**含注释/制表符**的源码，Canonicalizer 仍会移动坐标。只是说明它不是本次 150 个样本的成因。）
+- ✅ *实际成因*：**TS 侧的 `end` 位置很多是占位值而非真实计算结果**。典型：`greet.aster` 的
+  `$.origin.end.col`（Module 节点）与 `$.decls[0].origin.end.col`（Rule 声明）
+  在 TS 侧**都是 1**，而 Java 分别是 6 和 9（对应 `Module` 与 `Rule greet` 的真实结束列）。
+  TS 并非「用了另一套编号」，而是**没有在计算结束位置**。
+
+**对实施顺序的影响**：这条发现把步骤 3（TS 侧补 origin）的性质从「把已有位置接进 IR」
+改为「**TS 侧需要真正实现 end 位置的计算**」——工作量上调，但**方向依然可行**，
+因为 line 已基本一致、file 只是表示差异。
+
+**建议的收敛路径**（不必一次到位）：
+1. 先把 `origin.file` 的 `undefined`/`"null"` 归一（736/1325 条，纯表示，零风险）；
+2. 再把 `origin.*.line` 纳入门禁（仅 24 条分歧，先小后大）；
+3. `origin.*.col` 待 TS 侧实现真实 end 计算后再纳入。
+
+★关键是：**分阶段收紧豁免，而不是继续整体剥离**。每收紧一格，门禁就多守住一格。
+
+#### 2.2.2 步骤 3.5 的落地结果（2026-09-12 补，`aster-lang-test#137`）
+
+上述路径的第 1、2 阶段已实施：门禁默认口径改为 `file+line`，分歧从
+**150/223 降到 9/223**，且余下 9 个的 diff **全部**是 `origin.*.line`。
+
+**顺带查实了一个真实的 TS 缺陷**（已记入 `IR-DIVERGENCE-LEDGER`）：
+
+TS 按「注释被删掉之后」的行号编号。实证 `test_claims.aster`（24 行注释头）：
+
+| | 首个 declaration |
+|---|---|
+| 原文 | line **27** |
+| `canonicalize()` 之后 | line **27**（行数 115 → 115 **不变**）|
+| Java `origin.start.line` | **27** ✅ |
+| TS `origin.start.line` | **3** ❌ |
+
+偏移恒为 **+24** = 注释头行数。9 个分歧样本中 7 个带注释头，与该成因一致。
+
+⚠️ **这直接影响 ADR 0032**：0032 要把执行 trace 锚到源码位置。一个**指偏 24 行**
+的 span 会让「点击 trace 步骤跳转源码」**静默跳到错误的行**——与 0032 当初要解决的
+`stepId` 问题是同一类静默错误。**0032 落地前必须先修 TS 行号。**
+
+**门禁的技术债登记**：为该已知缺陷加了窄口径豁免 `divergent-known-origin-line`——
+**只**吸收 `origin.*.line`，任何其他字段、任何新分歧仍然变红（已用两次变异验证：
+strict 模式变红 150/223；注入非 origin.line 的假分歧变红）。它是**有主的技术债**
+（本 ADR 步骤 3），不是永久规则。
+
 ⚠️ 因此这条豁免要么已经过期，要么在掩盖**别的**真实分歧。**动手前必须查清它到底在挡什么**——否则会在一个来历不明的豁免之上盖房子。
 
 > 同类豁免不止一处：`CrossCompilerCoreIRTest` 的剪枝字段里同样包含
@@ -199,9 +268,10 @@ OriginMap → Stable IDs → Canonical Serialization → 接 LayoutMap → Mappi
 | # | 步骤 | 为什么在这个位置 | 状态 |
 |---|---|---|---|
 | **0** | **IR 确定性门禁** | 所有 traceability 建立在「IR 可复现」上，而该假设**已知为假**。成本极低（编译两次比字节），收益是立刻抓住 §3 两处缺陷 | ✅ **已完成** |
-| **1** | 查清 `IR_IGNORE_FIELDS=['origin']` 到底在挡什么 | 其注释理由已被证伪（两侧都 1-based）。不查清就加 OriginMap = 在来历不明的豁免上盖房子 | 待办（约半天） |
+| **1** | 查清 `IR_IGNORE_FIELDS=['origin']` 到底在挡什么 | 其注释理由已被证伪（两侧都 1-based）。不查清就加 OriginMap = 在来历不明的豁免上盖房子 | ✅ **已完成**，见 §2.2.1：**150/223 样本分叉**；file 736 条纯表示、col 565 条真实分歧、line 仅 24 条 |
 | **2** | Canonicalizer 保留 offset 映射（`String → (String, OffsetMap)`） | **origin 正确性的前置**。否则 OriginMap 对 canonical 文本正确、对人类原文错位 | 待办 |
-| **3** | TS 侧把 origin 补进 Core IR | 真正的工作量所在（Java 已就位，TS 从零） | 待办 |
+| **3** | TS 侧把 origin 补进 Core IR，**并真正实现 end 位置计算** | 真正的工作量所在。★步骤 1 的实测把它从「接线」上调为「实现」——TS 当前很多 `end.col` 是占位值（恒为 1）而非计算结果 | 待办（工作量已上调） |
+| **3.5** | **分阶段收紧 origin 豁免**（file → line → col） | 每收紧一格门禁就多守一格；避免「等全部对齐再启用」导致长期零守护 | ✅ **已完成**（`aster-lang-test#137`）：默认口径 `file+line`，分歧 150/223 → 9/223；余下 9 个全部是已登记的 TS 行号缺陷 |
 | **4** | Stable IR Node IDs | 唯一全新的一件 | 待办 |
 | **5** | Canonical IR serialization | **复用**已有 `CanonicalJson`，不要重写 | 复用 |
 | **6** | 接 LayoutMap（诗歌 PoC） | 注意它是新写一层 `canonical ↔ IRNode`，非升级现有 45 行 | 待办 |
