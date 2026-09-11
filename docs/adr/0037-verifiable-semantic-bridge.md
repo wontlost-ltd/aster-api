@@ -318,14 +318,31 @@ OriginMap → Stable IDs → Canonical Serialization → 接 LayoutMap → Mappi
 
 ### 4.2 修正后顺序
 
+
+### 4.1 优先级的一次重要变化（2026-09-12）
+
+步骤 3a（修 TS canonicalize 吞行）落地后，**步骤 2 的紧迫性显著下降**：
+
+- **行级映射已经成立**：canonicalize 现在恒等保持行数（实测四类改写——删行内
+  注释、tab→空格、智能引号、折叠多空格——行数全部不变）。ADR 0032 需要的
+  「trace 步骤 ↔ 源码行」锚定**现在就能做**，不必等 OffsetMap。
+- **列级映射仍缺**：同样四类改写**都会移动列**（`Return    x.` → `Return x.`）。
+  所以「点击 `"$10,000"` 高亮到精确字符」这类能力仍需 OffsetMap。
+
+★因此建议把步骤 2 从「OriginMap 正确性的前置」降级为「列级精度的前置」，
+排在 3b/3c 之后。理由：它涉及 **137 个调用点**（Java 116 / TS 19 / cloud 2），
+是三个步骤里爆炸半径最大的一个，而它现在解锁的增量只是列精度。
+
 | # | 步骤 | 为什么在这个位置 | 状态 |
 |---|---|---|---|
 | **0** | **IR 确定性门禁** | 所有 traceability 建立在「IR 可复现」上，而该假设**已知为假**。成本极低（编译两次比字节），收益是立刻抓住 §3 两处缺陷 | ✅ **已完成** |
 | **1** | 查清 `IR_IGNORE_FIELDS=['origin']` 到底在挡什么 | 其注释理由已被证伪（两侧都 1-based）。不查清就加 OriginMap = 在来历不明的豁免上盖房子 | ✅ **已完成**，见 §2.2.1：**150/223 样本分叉**；file 736 条纯表示、col 565 条真实分歧、line 仅 24 条 |
-| **2** | Canonicalizer 保留 offset 映射（`String → (String, OffsetMap)`） | **origin 正确性的前置**。否则 OriginMap 对 canonical 文本正确、对人类原文错位 | 待办 |
+| **2** | Canonicalizer 保留 offset 映射（`String → (String, OffsetMap)`） | **行级已不再需要**（3a 修复后行数恒等），**列级仍需要**：实测 canonicalize 仍会改列（`Return    x.` → `Return x.`、tab→2 空格、智能引号→直引号）。⚠️ 涉及 **137 个调用点**（Java 116 / TS 19 / cloud 2），是一次真正的 API 变更 | 待办（优先级已下调，见 §4.1） |
 | **3a** | ✅ **修 TS canonicalize 吞行**（`aster-lang-ts#170`） | 整文件 origin.line 偏移归零；ADR 0032 的前置已解除 | ✅ **已完成** |
-| **3b** | 修两个残留 TS span 缺陷：合成块 `line: 0`、多行声明 `end.line` 偏短 | 见 §2.2.4。比 3a 小两个数量级，但仍会让 0032 锚点在 inline-if / 多行声明上指偏 | 待办 |
-| **3c** | TS 侧把 origin 补进 Core IR，**并真正实现 end.col 计算** | 真正的工作量所在。★步骤 1 的实测把它从「接线」上调为「实现」——TS 当前很多 `end.col` 是占位值（恒为 1） | 待办 |
+| **3b-a** | ✅ **修合成块 `line: 0`**（`aster-lang-ts#170`） | inline-if 的 thenBlock/elseBlock/If 从未赋 span，带着 `createEmptySpan()` 的 line 0 进 Core IR。用既有 `spanFromSources` 从子节点推导。**跨引擎 `origin.*.line` 分歧归零** | ✅ **已完成** |
+| **3b-b1** | 修 Java 声明 span 吞掉尾部空行 | ★**TS 对、Java 错**（与原判断相反）。实证 hipaa `Define AccessLevel` 占 canonical 9–14 行，TS 报 14 ✅、Java 报 17 ❌。成因：`spanFrom(ctx)` 用 `ctx.getStop()`，声明的 stop 是尾随 NEWLINE/DEDENT 布局 token。⚠️ **66 个调用点**，改它等于动 Java 全部节点的 span 语义 | 待办（需独立 PR） |
+| **3b-b2** | 定义「续行表达式」的 span 语义 | `Return "Hello, " plus name plus "!"`（4–6 行）中 `args[0]`：TS 报 5、Java 报 6。**取决于 args[0] 指整条 plus 链还是首个字面量**——后者成立则两边都错（应为 4）。这是语言设计问题，不是补丁 | 待办（需你拍板语义） |
+| **3c** | 对齐 `origin.*.col` | ★**与步骤 2 纠缠，不能独立完成**。实测 727 条 col 分歧中：163 条是 `end.col=1` 的占位值（集中在 decls 79 / statements 29 / body 8），其余大量是 `start.col` 偏移（如 `ts=17 java=14`、`ts=19 java=16`）——后者正是 Canonicalizer 改列（折叠多空格、tab→2 空格）造成的，属**步骤 2** 的范畴。建议与步骤 2 合并规划 | 待办（应与步骤 2 合并） |
 | **3.5** | **分阶段收紧 origin 豁免**（file → line → col） | 每收紧一格门禁就多守一格；避免「等全部对齐再启用」导致长期零守护 | ✅ **已完成**（`aster-lang-test#137`）：默认口径 `file+line`，分歧 150/223 → 9/223；余下 9 个全部是已登记的 TS 行号缺陷 |
 | **4** | Stable IR Node IDs | 唯一全新的一件 | 待办 |
 | **5** | Canonical IR serialization | **复用**已有 `CanonicalJson`，不要重写 | 复用 |
