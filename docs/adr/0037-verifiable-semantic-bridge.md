@@ -319,6 +319,31 @@ OriginMap → Stable IDs → Canonical Serialization → 接 LayoutMap → Mappi
 ### 4.2 修正后顺序
 
 
+### 4.0 里程碑：`origin` 的行级映射已完全对齐、零豁免（2026-09-12）
+
+| 字段 | 状态 |
+|---|---|
+| `origin.file` | ✅ 对齐 |
+| `origin.start.line` | ✅ 对齐 |
+| `origin.end.line` | ✅ 对齐 |
+| `origin.*.col` | 🔴 仍 150 样本分歧（步骤 2 + 3c）|
+
+`end.line` 分歧的完整轨迹，值得作为「假绿」案例留档：
+
+```
+0   ← 两侧都错、方向一致而互相抵消（假绿）
+40  ← 仅 Java 修好 lastNonLayoutToken，TS 的错显形
+1   ← 两侧都修好 lastNonLayoutToken
+0   ← Java 再修二元表达式内层 span（真绿，且无豁免）
+```
+
+★中间那次 **0 → 40** 是关键教训：**等价性门禁绿 ≠ 两侧都对，也可能是两侧一起错。**
+它只能证明「一致」，不能证明「正确」——后者必须与第三方事实（源码文本本身）对照。
+若当时按「分歧变多就回滚」处理，会把正确的修复撤掉、把缺陷留在两边。
+
+**这意味着 ADR 0032 的前置条件现已全部解除**：trace 步骤可以按行锚定到源码，
+且两引擎给出同一答案。
+
 ### 4.1 优先级的一次重要变化（2026-09-12）
 
 步骤 3a（修 TS canonicalize 吞行）落地后，**步骤 2 的紧迫性显著下降**：
@@ -341,7 +366,7 @@ OriginMap → Stable IDs → Canonical Serialization → 接 LayoutMap → Mappi
 | **3a** | ✅ **修 TS canonicalize 吞行**（`aster-lang-ts#170`） | 整文件 origin.line 偏移归零；ADR 0032 的前置已解除 | ✅ **已完成** |
 | **3b-a** | ✅ **修合成块 `line: 0`**（`aster-lang-ts#170`） | inline-if 的 thenBlock/elseBlock/If 从未赋 span，带着 `createEmptySpan()` 的 line 0 进 Core IR。用既有 `spanFromSources` 从子节点推导。**跨引擎 `origin.*.line` 分歧归零** | ✅ **已完成** |
 | **3b-b1** | ✅ **两侧「span 吞尾随布局 token」均已修** | Java `aster-lang-core#160`（`lastNonLayoutToken`）+ TS `aster-lang-ts#171`（同名 helper，应用于 decl 3 处 + statement 22 处）。★**认知两次翻转**：先判「Java 错」→ 修 Java 后发现 TS 也错 → 实为**两边都错、方向一致而互相抵消**，门禁因此长期假绿。end.line 分歧 **0（假绿）→ 40（Java 修好）→ 1（两侧修好）** | ✅ **已完成** |
-| **3b-b2** | 定义「续行表达式」的 span 语义 | ★**唯一剩余的 end.line 分歧**（1 个样本）。`Return "Hello, " plus name plus "!"`（4–6 行）中 `args[0]`：TS 报 5、Java 报 6。**取决于 args[0] 指整条 plus 链（Java 对）还是首个字面量（则两边都错，应为 4）**。这是语言设计问题，盲目改会把未定问题固化成实现细节 | 🔴 **待你拍板语义** |
+| **3b-b2** | ✅ **修二元表达式内层 span**（`aster-lang-core#161`） | ★**原判「未定语义」是错的**。打印两侧 IR 结构后确认：两引擎结构一致，`args[0]` 都是内层 `Call`（`"Hello, " plus name`），真实范围 L4–L5，**TS 对、Java 错**——`visitAdditiveExpr`/`visitMultiplicativeExpr` 给每个中间节点用 `spanFrom(ctx)`（整条表达式），内层因此继承外层结尾。改用 `mergeSpans(left, right)`。★教训：不该停在「两边数字不同 ⇒ 语义未定」，应先打印结构核对 | ✅ **已完成** |
 | **3c** | 对齐 `origin.*.col` | ★**与步骤 2 纠缠，不能独立完成**。实测 727 条 col 分歧中：163 条是 `end.col=1` 的占位值（集中在 decls 79 / statements 29 / body 8），其余大量是 `start.col` 偏移（如 `ts=17 java=14`、`ts=19 java=16`）——后者正是 Canonicalizer 改列（折叠多空格、tab→2 空格）造成的，属**步骤 2** 的范畴。建议与步骤 2 合并规划 | 待办（应与步骤 2 合并） |
 | **3.5** | **分阶段收紧 origin 豁免**（file → line → col） | 每收紧一格门禁就多守一格；避免「等全部对齐再启用」导致长期零守护 | ✅ **已完成**（`aster-lang-test#137`）：默认口径 `file+line`，分歧 150/223 → 9/223；余下 9 个全部是已登记的 TS 行号缺陷 |
 | **4** | Stable IR Node IDs | 唯一全新的一件 | 待办 |
