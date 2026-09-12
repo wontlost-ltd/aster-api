@@ -17,11 +17,29 @@
 
 | 原提案的「三件基础设施」 | 实测状态 |
 |---|---|
-| OriginMap v1 | **Java 侧已完成大半**（`CoreLowering` 中 52 个 `spanToOrigin` 注入点，深入到字面量层）；**TS 侧为 0** |
+| OriginMap v1 | **两侧均已完成大半**（Java `CoreLowering` 52 处 `spanToOrigin`；TS `lower_to_core.ts` 54 处 `withOrigin`）。★「TS 侧为 0」是初稿的误判，因只 grep 了 `core_ir.ts`——见 §2.3.1 |
 | Stable IR Node IDs | **确实是零**——`CoreModel` 无任何 id/hash 字段。唯一全新的一件 |
 | Canonical IR Serialization | **已存在且有字节级 parity gate**（`CanonicalJson.java` ↔ `aster-cloud/src/lib/canonical-json.ts`） |
 
 而真正的拦路石**不在这三件里**，共三条（§3）。其中第一条已在本 ADR 提出过程中修复并补上门禁。
+
+### 0.1 二次复核结论（2026-09-12）
+
+方向判断维持不变；**距离判断需大幅上修**。自初稿以来落地 9 个 PR 后复核：
+
+| 初稿判断 | 复核结论 |
+|---|---|
+| TS 侧 origin「从零」 | ❌ **误判**（只 grep 了 `core_ir.ts`）。实为 54 处注入，且设计优于 Java —— §2.3.1 |
+| col 对齐需「Canonicalizer 全链路 OffsetMap」（137 个调用点）| ❌ **前提被推翻**。词形运算符翻译是**纯冗余**，正解是删掉它而非给它加偏移映射 —— §4.0.2 |
+| Provenance-preserving Canonicalizer 是 OriginMap 的**前置条件** | 🟡 **降级**。全语料 368 文件实测：行数 **100%** 保持，真正移动代码列的仅 **6** 个 `ugly*` 压力样本 —— §4.0.3 |
+| `origin` 跨引擎分歧 150/223 | 🟡 数字未变，但**成因已查清且高度集中**：两个**口径**问题（Module 占位 48 条 + 限定名范围 130 条），非语义分歧 —— §4.0.2 |
+
+★**净效果**：§10 的第一块基础设施 OriginMap v1，其剩余距离从「新建一套
+offset 基础设施 + TS 从零实现」缩小为「**统一两个 col 口径**」。
+`origin.file` / `start.line` / `end.line` 已**零豁免**跨引擎守护。
+
+★**未变的判断**：Stable IR Node IDs 仍是**真正从零**的一件（`CoreModel`
+无任何 id/hash 字段，已复核），它才是下一步的实际工作量所在。
 
 ---
 
@@ -213,6 +231,25 @@ TS 有完整前端（`frontend/lexer.ts`、`parser/`、`lower_to_core.ts`，位�
 
 **结论：工作量不是「两边各加一点」，而是 Java ≈ 已完成、TS ≈ 从零。**
 
+#### 2.3.1 ⚠️ 本节结论已于 2026-09-12 复核推翻
+
+上述判断**当时正确、现已过期**。步骤 3a/3b 落地后复核：
+
+| | Java | TS |
+|---|---|---|
+| origin 注入点 | `CoreLowering` 中 **52** 处 `spanToOrigin` | `lower_to_core.ts` 中 **54** 处 `withOrigin(...)` |
+| 实现风格 | 52 处**逐个手写**注入 | **1 个泛型包装器** `withOrigin<T>` + 1 个 `spanToOrigin`，54 处复用 |
+
+★原判断错在**只 grep 了 `core_ir.ts`**（该文件确实 0 命中），而 TS 的 origin
+注入根本不在那里，在 `lower_to_core.ts`。这是「按文件名猜位置」导致的误判——
+与本仓记录的「按名字 grep 判鉴权 54 个误报」同一类错误。
+
+**修正后的结论**：两侧 origin 覆盖面**基本对等**（52 vs 54），且 TS 的
+单一包装器设计**优于** Java 的 52 处手写注入（后者每加一种节点就多一个漏注入
+的机会）。`origin.file`/`start.line`/`end.line` 现已**零豁免**跨引擎对齐，即是明证。
+
+这把步骤 3 的剩余工作从「TS 侧从零实现」缩小为「**两个口径问题**」（见 §4.0.2）。
+
 ### 2.4 🔴 Canonicalizer 丢弃原文 offset 映射
 
 `Canonicalizer.canonicalize(String input) → String`（`Canonicalizer.java:628`）
@@ -326,7 +363,7 @@ OriginMap → Stable IDs → Canonical Serialization → 接 LayoutMap → Mappi
 | `origin.file` | ✅ 对齐 |
 | `origin.start.line` | ✅ 对齐 |
 | `origin.end.line` | ✅ 对齐 |
-| `origin.*.col` | 🔴 仍 150 样本分歧（步骤 2 + 3c）|
+| `origin.*.col` | 🟡 150 样本分歧，但**成因已全部查清且高度集中**，见 §4.0.2 |
 
 `end.line` 分歧的完整轨迹，值得作为「假绿」案例留档：
 
@@ -392,6 +429,88 @@ TS  规范  "  Return x plus y."     不翻译 → TS 报 17 ✅
   要对齐 col，要么 TS 也翻译（则两侧 origin 都偏离原文，等于把问题推后），
   要么两侧都做「翻译 + 回映」。**这是需要先定的设计问题。**
 
+### 4.0.2 步骤 2 的设计问题已由实测解答；col 分歧只剩两种机械成因（2026-09-12 复核）
+
+§4.0.1 末尾留了一个「需要先定的设计问题」：TS 不翻译运算符，两侧 canonical 文本
+本就不同，是**两侧都翻译**还是**两侧都做翻译+回映**？
+
+**这个问题已经不必回答了——正确解是第三条路：两侧都不翻译。**
+
+理由是实测出来的，不是选出来的：grammar 本就认词形 token（`AsterParser.g4:643`
+的 `PLUS_WORD`、`:647` 的 `TIMES_WORD`/`DIVIDED_BY_WORD` 等）。逐个比对
+8 个运算符「词形 vs 符号」的 Core IR **逐字节相同**——翻译不影响能否解析，
+也不影响语义，**唯一效果就是缩短行、移动列**。即它是纯冗余。
+
+于是步骤 2 根本不需要 OffsetMap：把冗余翻译删掉即可。已落地三处：
+
+| 修复 | 成因 | PR |
+|---|---|---|
+| 英语规范拼写运算符不再翻成符号 | `x plus y` → `x + y`，缩 3 字符 | `core#162` |
+| 移除冗余的 `is-comparator` 变换器 | `x is at least y` → `x at least y`，缩 3 字符（lexer 本就吸收可选 `is`） | `core#163` |
+| 标点归一化不吃 `!=` 前的空格 | `x != y` → `x!= y`，缩 1 字符（`!` 被当成句末感叹号） | `core#164` + `ts#172` |
+
+**结果：tier1 语料 223/223 的 canonical 文本与源文本逐行等长——列位零偏移。**
+即「canonicalize 改列」这一整类成因**已经消失**，步骤 2 实质完成，且代价是
+**删代码**而非新增 OffsetMap 基础设施。
+
+#### 剩余的 col 分歧：150 样本，但只有两种机械成因
+
+剩下的 150 是**跨引擎**分歧（TS 的 col vs Java 的 col），与上面那类
+（canonical vs 源文本）是不同的轴。逐条归类后：
+
+| 成因 | 条数 | 性质 |
+|---|---|---|
+| Module 节点 `end.col`：`ts=1` vs `java=6` | 48 | TS 侧占位值，未真实计算 |
+| 限定名 `target` 节点 `end.col` | 130 | 口径分歧，见下 |
+| 其余（`args`/`expr` 少量） | 26 | 同源，待逐条确认 |
+
+限定名那一类是**完全机械**的：`java − ts` 恰好等于限定前缀长度。
+
+```
+Return Text.concat("Hello, ", name).
+       └──┘                             "Text." = 5 字符
+ts=19  java=24   → 差 5
+```
+
+差值直方图 **5(45×) / 3(38×) / 6(32×) / 9 / 13 / 37** 与语料中实际出现的前缀
+长度（`Text.`/`Http.`/`Date.`=5，`Ai.`/`Db.`/`IO.`=3，`Files.`/`Admin.`=6，
+`Resource.`=9…）**逐一对应**。
+
+即：**TS 报的是方法名 `concat` 的范围，Java 报的是整个 `Text.concat` 的范围。**
+这是两侧对「`target` 节点指什么」的口径不同，不是任何一侧算错，也不是语义分歧——
+定一个口径、改一侧即可。
+
+★**对本 ADR 的意义**：§10 的第一块基础设施 OriginMap v1 要求
+「普通 Aster source 做到 100% deterministic traceability」。该目标现在的距离是
+**两个口径问题**（Module 占位 + 限定名范围），而不是原文假设的
+「Canonicalizer 全链路 OffsetMap」。**这是数量级的差别。**
+
+#### 4.0.3 §2.4「Canonicalizer 丢弃 offset 映射」的实际影响面（2026-09-12 全语料实测）
+
+§2.4 据此把「Provenance-preserving Canonicalizer」定为 OriginMap 的前置条件。
+对**全语料 368 个 `.aster`** 逐行实测后，影响面远小于该判断：
+
+| 指标 | 数值 |
+|---|---|
+| canonicalize 后**逐字节不变** | **298 / 368**（81%）★三处冗余翻译删除后由 228 升至 298 |
+| **行数不变** | **368 / 368（100%）** |
+| 行数 + 代码行列位均不变 | 329 / 368（89%）|
+
+其余 47 个逐行归类（判据：把原行的「注释及其前导空白」去掉后是否与 canonical 行等长）：
+
+| 成因 | 文件数 | 是否影响 origin 正确性 |
+|---|---|---|
+| **仅注释被去除**（行内 `//` / `#`） | **41** | ❌ **不影响**——注释不产生任何 IR 节点，其所占列上没有可映射的 token |
+| **真正移动了代码 token 的列** | **6** | ✅ 影响，但全部是 `ugly*.aster` 压力样本（连续双空格、行尾空白）|
+
+★**结论**：在**真实语料**上，「canonicalize 移动代码列位」只剩 6 个刻意构造的
+压力样本；Provenance-preserving Canonicalizer 因此**不是 OriginMap v1 的前置
+条件**，可降级为「处理 ugly 输入的健壮性增强」。
+
+⚠️ **但不可据此认为该问题不存在**：`ugly*.aster` 正是为「用户会写出难看代码」
+而准备的。一旦对外开放任意人类文本（本 ADR §6 的核心主张），这类输入的比例
+会远高于当前语料。**准确表述是「不阻塞 v1，但在开放任意 artifact 之前必须解决」。**
+
 ### 4.1 优先级的一次重要变化（2026-09-12）
 
 步骤 3a（修 TS canonicalize 吞行）落地后，**步骤 2 的紧迫性显著下降**：
@@ -410,12 +529,12 @@ TS  规范  "  Return x plus y."     不翻译 → TS 报 17 ✅
 |---|---|---|---|
 | **0** | **IR 确定性门禁** | 所有 traceability 建立在「IR 可复现」上，而该假设**已知为假**。成本极低（编译两次比字节），收益是立刻抓住 §3 两处缺陷 | ✅ **已完成** |
 | **1** | 查清 `IR_IGNORE_FIELDS=['origin']` 到底在挡什么 | 其注释理由已被证伪（两侧都 1-based）。不查清就加 OriginMap = 在来历不明的豁免上盖房子 | ✅ **已完成**，见 §2.2.1：**150/223 样本分叉**；file 736 条纯表示、col 565 条真实分歧、line 仅 24 条 |
-| **2** | 运算符翻译处记录列偏移并回映 | ★**原描述的归因已被实测推翻**，见 §4.0.1。真正成因是 **Java 把词形运算符翻成符号**（`x plus y` → `x + y`，缩 3 字符），而 TS 不翻译；50 个 col 分歧样本**全部**含词形运算符。范围因此从「137 个调用点的 API 变更」收窄到「`translateSegment` 一处 + origin 生成侧」。⚠️ 但需先定：TS 是否也翻译（影响两侧 canonical 文本是否同形） | 🔴 **待定设计** |
+| **2** | ~~运算符翻译处记录列偏移并回映~~ → **删除冗余翻译** | ★**归因两次修正**（§4.0.1 推翻原归因，§4.0.2 推翻「需要 OffsetMap」这一前提）。终局结论：词形运算符翻译是**纯冗余**——grammar 本就认 `PLUS_WORD` 等词形 token，8 个运算符「词形 vs 符号」的 Core IR **逐字节相同**，翻译唯一效果就是缩短行、移动列。故正解是**删掉它**，不是给它加偏移映射。同类另两处（`is-comparator` 变换器、`!=` 被当句末感叹号）一并删除 | ✅ **已完成**（core#162/#163/#164、ts#172）|
 | **3a** | ✅ **修 TS canonicalize 吞行**（`aster-lang-ts#170`） | 整文件 origin.line 偏移归零；ADR 0032 的前置已解除 | ✅ **已完成** |
 | **3b-a** | ✅ **修合成块 `line: 0`**（`aster-lang-ts#170`） | inline-if 的 thenBlock/elseBlock/If 从未赋 span，带着 `createEmptySpan()` 的 line 0 进 Core IR。用既有 `spanFromSources` 从子节点推导。**跨引擎 `origin.*.line` 分歧归零** | ✅ **已完成** |
 | **3b-b1** | ✅ **两侧「span 吞尾随布局 token」均已修** | Java `aster-lang-core#160`（`lastNonLayoutToken`）+ TS `aster-lang-ts#171`（同名 helper，应用于 decl 3 处 + statement 22 处）。★**认知两次翻转**：先判「Java 错」→ 修 Java 后发现 TS 也错 → 实为**两边都错、方向一致而互相抵消**，门禁因此长期假绿。end.line 分歧 **0（假绿）→ 40（Java 修好）→ 1（两侧修好）** | ✅ **已完成** |
 | **3b-b2** | ✅ **修二元表达式内层 span**（`aster-lang-core#161`） | ★**原判「未定语义」是错的**。打印两侧 IR 结构后确认：两引擎结构一致，`args[0]` 都是内层 `Call`（`"Hello, " plus name`），真实范围 L4–L5，**TS 对、Java 错**——`visitAdditiveExpr`/`visitMultiplicativeExpr` 给每个中间节点用 `spanFrom(ctx)`（整条表达式），内层因此继承外层结尾。改用 `mergeSpans(left, right)`。★教训：不该停在「两边数字不同 ⇒ 语义未定」，应先打印结构核对 | ✅ **已完成** |
-| **3c** | 对齐 `origin.*.col` | ★**与步骤 2 纠缠，不能独立完成**。实测 727 条 col 分歧中：163 条是 `end.col=1` 的占位值（集中在 decls 79 / statements 29 / body 8），其余大量是 `start.col` 偏移（如 `ts=17 java=14`、`ts=19 java=16`）——后者正是 Canonicalizer 改列（折叠多空格、tab→2 空格）造成的，属**步骤 2** 的范畴。建议与步骤 2 合并规划 | 待办（应与步骤 2 合并） |
+| **3c** | 对齐 `origin.*.col` | ★**已大幅推进，见 §4.0.2**。「canonicalize 改列」这一整类成因**已消除**（core#162/#163/#164 + ts#172，删冗余翻译而非加 OffsetMap）：**223/223 语料 canonical 与源文本逐行等长**。跨引擎残余 150 样本归为**两个口径问题**：Module `end.col` 占位（`ts=1` vs `java=6`，48 条）+ 限定名 `target` 范围口径（`java−ts` 恰等于 `Text.` 等前缀长度，130 条）。均为机械分歧，非语义 | 🟡 **部分完成**（步骤 2 部分已实质完成；余两个口径待定） |
 | **3.5** | **分阶段收紧 origin 豁免**（file → line → col） | 每收紧一格门禁就多守一格；避免「等全部对齐再启用」导致长期零守护 | ✅ **已完成并收尾**：`#137` 先收紧到 `file+line`（150/223 → 9/223），随 3b 各项修复逐步归零，最终 `aster-lang-test#140` **移除全部豁免**。现 parity gate 对 file / start.line / end.line **零豁免**守护 |
 | **4** | Stable IR Node IDs | 唯一全新的一件 | 待办 |
 | **5** | Canonical IR serialization | **复用**已有 `CanonicalJson`，不要重写 | 复用 |
