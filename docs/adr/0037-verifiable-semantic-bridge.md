@@ -1133,6 +1133,8 @@ SourceIR 定位 → Quantity 抽取 → MappingIR 判定
 - **Entity 抽取**——需要 LLM。这是整条 ADR 链上**唯一**还需要 AI 的位置。
   按 §10 的原则，应当**最后**才做，且必须走「LLM 提出 → verifier 判定 →
   人复核」的三段式，不得让 LLM 直接定义什么叫正确。
-- **Java 侧 Quantity 对等**——当前为 TS 单侧。
+- ~~**Java 侧 Quantity 对等**~~ → ✅ **已落地**（`core#173`）：同一份付款政策，
+  两引擎输出 **`diff` 无差异**（8 个数量的 kind/text/value/unit/span 全同，
+  含重叠判别用例 `$1.5%`）。
 - **更多 Quantity 类别**（重量/长度/温度…）——按真实文档需求增量加，
   不预先堆砌。
