@@ -1130,11 +1130,85 @@ SourceIR 定位 → Quantity 抽取 → MappingIR 判定
 
 ### 11.5 仍未做
 
-- **Entity 抽取**——需要 LLM。这是整条 ADR 链上**唯一**还需要 AI 的位置。
-  按 §10 的原则，应当**最后**才做，且必须走「LLM 提出 → verifier 判定 →
-  人复核」的三段式，不得让 LLM 直接定义什么叫正确。
+- ~~**Entity 抽取**~~ → ✅ **已落地**（`ts#181`），见 §12。
 - ~~**Java 侧 Quantity 对等**~~ → ✅ **已落地**（`core#173`）：同一份付款政策，
   两引擎输出 **`diff` 无差异**（8 个数量的 kind/text/value/unit/span 全同，
   含重叠判别用例 `$1.5%`）。
 - **更多 Quantity 类别**（重量/长度/温度…）——按真实文档需求增量加，
   不预先堆砌。
+
+---
+
+## 12. Entity 提出器：三段式落地（2026-09-13，`ts#181`）
+
+ADR 链上**唯一**需要 AI 的位置。用户拍板：**用当前的 LLM 机制**，
+**类别体系走三段式**（不预先定义）。
+
+### 12.1 复用既有机制，不新建
+
+`aster-lang-ts/src/ai/llm-provider.ts` 已有 `LLMProvider` 抽象与两个实现
+（openai / anthropic）。本次直接复用，没有引入新的 SDK 或配置层。
+
+`provenance.ts` 的 `ProvenanceMetadata`（model/provider/timestamp）与
+`ProofIR.ProofSubject` 天然对应——`proposedBy` 形如
+`llm:anthropic/claude-...`，可直接落进 proof 记录。
+
+### 12.2 三段式在代码里可见
+
+| 段 | 由谁 | 产物 |
+|---|---|---|
+| ① 提出 | LLM（`proposeEntities`）| `EntityCandidate` —— **候选**，不是结论 |
+| ② 判定 | `verifyEntityCandidate()` | **恒 `REVIEW_REQUIRED`** |
+| ③ 复核 | 人 | `ProofIR`（`subject=DOMAIN_EXPERT`）|
+
+★§3 的原话是「AI 可以提出映射，但**不能定义什么叫正确**」。本次把它写进
+**类型系统**：返回类型是 `EntityCandidate` 而非 `Proof`，调用方拿不到任何
+「已验证」的东西。
+
+★第②段写成**显式函数**而非省略——为了让「谁也不能跳过它」在代码里可见。
+它恒返回 `REVIEW_REQUIRED` 不是偷懒，是 §5.1 的直接结论：verifier 只能读
+`kind`/`value`/`name`/`origin`/`nodeId`，而 Entity 的目标是**语义**对应
+（「财务经理」↔ `Role.FinanceManager`），类型层不在可依赖范围内。
+
+### 12.3 ★幻觉闸门是确定性的，不依赖模型自觉
+
+LLM 声称的每条候选都机械校验 `document.slice(start, end) === text`，
+对不上直接丢弃，**不做纠正**——「猜一下它想说什么」比丢弃更危险。
+
+拦下的两类最常见幻觉：
+
+- **文本对但位置错** → 会让双向导航指向错误的地方
+- **文档里根本没有的文本** → 凭空编造的实体
+
+被丢弃的条目**如实报告**（`rejected` 字段）：静默吞掉会让「LLM 产出了不合规
+内容」这件事消失，而那恰恰是评估模型可靠性最重要的信号。
+
+### 12.4 类别体系：刻意不定义
+
+`proposedKind` 是 LLM 给的**自由字符串**，本模块不校验、不归一化、不映射到枚举。
+
+★理由：类别体系是**领域决策**，由第③段的人确定。过早把它固化成枚举，会让
+LLM 的输出被硬塞进错误的格子里——而那种错误比「类别不统一」难发现得多。
+
+### 12.5 其他设计约束
+
+- **`temperature=0`**：同一文档反复提出应**可复现**。否则「上次为什么提了这条」
+  永远说不清，审计无从谈起。
+- **不重试 / 不自我修正**：格式不合规直接丢弃并报告。
+- **不碰 Quantity**：systemPrompt 明确要求不输出金额/日期等——那是 §11 的
+  确定性模块的职责，两边都抽会产生重复候选。
+
+### 12.6 验证
+
+全量 1753 + 87 passing，golden 0 FAIL。**测试用假 provider 驱动，不打真实
+LLM**——判定逻辑必须可离线验证。变异 5 个全红（撤幻觉闸门 3 红 / 静默丢弃
+3 红 / temperature 改 0.7 / scope 偏移不平移 / verifier 改判 VERIFIED）。
+
+### 12.7 仍未做
+
+- **Java 侧对等**——当前 TS 单侧。★但与前几层不同：Entity 提出依赖 LLM，
+  而 LLM 输出**本就不要求跨引擎一致**（§7 原文：「LLM 生成的 candidate 不要求
+  一致，**Verifier 的结果必须一致**」）。故 Java 侧真正需要对等的是
+  `verifyEntityCandidate`（恒 REVIEW_REQUIRED）与幻觉闸门，而非提出器本身。
+- **真实 LLM 的端到端验证**——需要凭据与配额，且结果不可复现，不适合进 CI。
+  建议作为手工验收步骤。
