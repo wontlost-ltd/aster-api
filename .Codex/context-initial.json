@@ -1,0 +1,36 @@
+{
+  "recorded_at": "2026-08-07T10:15:00+12:00",
+  "scope": {
+    "cloud_diff": "/tmp/r11-cloud.diff",
+    "api_diff": "/tmp/r11-api.diff",
+    "cloud_tree": "/tmp/cloud-fix",
+    "api_tree": "/Users/rpang/IdeaProjects/aster-api",
+    "cloud_head": "e20fddb",
+    "api_head": "16061a5"
+  },
+  "technology": {
+    "cloud": "TypeScript / Next.js / React / Drizzle / Vitest / PostgreSQL",
+    "api": "Java / Quarkus / Mutiny / Micrometer / Gradle / JUnit"
+  },
+  "changed_areas": [
+    "What-if 统计字段、门槛、taxonomy、deadline 与 UI",
+    "replay-retention 授权入口与设置页文案",
+    "evaluate-source simulate 指标门控与契约测试",
+    "Vocabulary 恢复链与 ADR 0033"
+  ],
+  "existing_patterns": [
+    "PolicyApiClient 已有内部 AbortController，但没有接收调用方 AbortSignal",
+    "secure-executor 会 fail-aware 地加载 Vocabulary 并传给 evaluateSource",
+    "What-if route 使用真实 PostgreSQL 查询，但集成测试 mock 下游 evaluateSource",
+    "RegressionCase freeze 读取 replayRetentionEnabled，run 阶段不重新读取"
+  ],
+  "initial_observations": [
+    "replaySuccessRate 与 sampleCoverage 后端公式已分开",
+    "UI total 与 percent 使用不同分母，ADR 仍与实现冲突",
+    "taxonomy 检查发生在昂贵重跑之后",
+    "deadline Promise.race 未传播取消信号",
+    "成功与异常 timer stop 已由 effectiveSimulate 门控",
+    "部分失败行仍进入 estimateWhatIf 的 outcome/value 基线"
+  ],
+  "tool_fallback": "当前工具集未暴露 sequential-thinking、shrimp-task-manager、code-index、exa 或 Codex MCP；按 AGENTS.md 异常路径使用原生计划、rg、三个独立 Codex 子审查者、本地测试与逐项还原变异补偿。"
+}

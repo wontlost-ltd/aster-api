@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "recorded_at": "2026-08-07T10:15:00+12:00",
+    "recorder": "Codex 第十一轮交叉审查者",
+    "source": "用户第十一轮 Phase 4 What-if 复审请求"
+  },
+  "objective": "独立验证第十轮四项 P0 修复、deadline 与 Vocabulary 遗留，并以可还原变异和本地测试决定 Phase 4 是否可发布",
+  "scope": {
+    "in_scope": [
+      "/tmp/r11-cloud.diff",
+      "/tmp/r11-api.diff",
+      "/tmp/cloud-fix",
+      "/Users/rpang/IdeaProjects/aster-api",
+      ".claude/adr/0033-whatif-replay-correlation-model.md"
+    ],
+    "out_of_scope": [
+      "Phase 1/2/3 重新审查",
+      "修改被审产品实现",
+      "提交、推送、远程 CI 或生产发布"
+    ]
+  },
+  "deliverables": [
+    ".claude/review-report-round11.md",
+    ".Codex/operations-log.md",
+    ".Codex/review-report.md"
+  ],
+  "dependencies": [
+    "Next.js/React/Drizzle/Vitest/PostgreSQL",
+    "Java/Quarkus/Mutiny/Micrometer/Gradle/JUnit",
+    "PolicyApiClient 与 evaluate-source 跨仓契约",
+    "User.replayRetentionEnabled 与 RegressionCase.inputJson"
+  ],
+  "risks": [
+    "部分失败样本仍进入估算并改变业务数字方向",
+    "不同分母在 UI 中拼成同一个 coverage 百分比",
+    "Promise.race 不取消下游请求且计数不守恒",
+    "Vocabulary 加载失败 fail-open",
+    "使用授权关闭后既有 RegressionCase 仍可重跑",
+    "测试只覆盖 mock/字段存在而未覆盖最终效果"
+  ],
+  "questions": [
+    "四项 P0 是真实闭环还是只改名/文案？",
+    "cloud 能否取消 fetch，aster-api 是否有执行超时？",
+    "Vocabulary 与 deadline 删除后测试是否仍绿？",
+    "Phase 4 的最小可发路径是什么？"
+  ]
+}
