@@ -536,7 +536,7 @@ ts=19  java=24   → 差 5
 | **3b-b2** | ✅ **修二元表达式内层 span**（`aster-lang-core#161`） | ★**原判「未定语义」是错的**。打印两侧 IR 结构后确认：两引擎结构一致，`args[0]` 都是内层 `Call`（`"Hello, " plus name`），真实范围 L4–L5，**TS 对、Java 错**——`visitAdditiveExpr`/`visitMultiplicativeExpr` 给每个中间节点用 `spanFrom(ctx)`（整条表达式），内层因此继承外层结尾。改用 `mergeSpans(left, right)`。★教训：不该停在「两边数字不同 ⇒ 语义未定」，应先打印结构核对 | ✅ **已完成** |
 | **3c** | 对齐 `origin.*.col` | ★**已大幅推进，见 §4.0.2**。「canonicalize 改列」这一整类成因**已消除**（core#162/#163/#164 + ts#172，删冗余翻译而非加 OffsetMap）：**223/223 语料 canonical 与源文本逐行等长**。跨引擎残余 150 样本归为**两个口径问题**：Module `end.col` 占位（`ts=1` vs `java=6`，48 条）+ 限定名 `target` 范围口径（`java−ts` 恰等于 `Text.` 等前缀长度，130 条）。均为机械分歧，非语义 | 🟡 **部分完成**（步骤 2 部分已实质完成；余两个口径待定） |
 | **3.5** | **分阶段收紧 origin 豁免**（file → line → col） | 每收紧一格门禁就多守一格；避免「等全部对齐再启用」导致长期零守护 | ✅ **已完成并收尾**：`#137` 先收紧到 `file+line`（150/223 → 9/223），随 3b 各项修复逐步归零，最终 `aster-lang-test#140` **移除全部豁免**。现 parity gate 对 file / start.line / end.line **零豁免**守护 |
-| **4** | Stable IR Node IDs | 唯一全新的一件。★前置问题（是否真要做跨版本 change impact）**用户已拍板：要做**；ADR 0032 §6.1 同步修订 | 🟡 **Java 侧已完成**（`core#166`：复合键 `nodeId` + `contentHash`，5 变异验证 + 跨 JVM 确定性）；**TS 侧已完成**（`ts#173` + `test#141` 共享归一化，全语料 **223/223 样本、100% 节点一致**，见 §8.7/§8.8）|
+| **4** | Stable IR Node IDs ✅ | 唯一全新的一件。★前置问题（是否真要做跨版本 change impact）**用户已拍板：要做**；ADR 0032 §6.1 同步修订 | 🟡 **Java 侧已完成**（`core#166`：复合键 `nodeId` + `contentHash`，5 变异验证 + 跨 JVM 确定性）；**TS 侧已完成**（`ts#173` + `test#141` 共享归一化，全语料 **223/223 样本、100% 节点一致**，见 §8.7/§8.8）|
 | **5** | Canonical IR serialization | **复用**已有 `CanonicalJson`，不要重写 | 复用 |
 | **6** | 接 LayoutMap（诗歌 PoC） | 注意它是新写一层 `canonical ↔ IRNode`，非升级现有 45 行 | 待办 |
 | **7** | MappingIR / ProofIR + 双引擎 verifier | 见 §5 的硬约束 | 待办 |
@@ -658,7 +658,7 @@ contentHash = 结构 hash     ← 回答「它变了没有」（change impact �
 ### 8.5 未决
 
 - 上述矩阵基于**一个**合成样本（16 节点）。推广到全语料前应扩样本。
-- 重命名的「显式声明」机制（rename map？还是靠 VCS 的 rename 检测？）尚未设计。
+- ~~重命名的「显式声明」机制尚未设计~~ → ✅ **已落地**（`core#168` + `ts#175`），见 §8.9。
 - ~~**前置问题仍是 §8.1**~~ → ✅ **用户已拍板：要做**（2026-09-12）。ADR 0032 §6.1 已同步修订。
 
 ### 8.6 落地（2026-09-12，`aster-lang-core#166`）
@@ -776,6 +776,62 @@ evalExempt 的本意 = 这个样本不参与 eval-parity（不执行它）
 - §7 的 `Verify_TS == Verify_Java` 在 Stable Node ID 这一层达到 **100%**。
 - ★教训：**豁免清单里的条目默认应假设是待办，而不是已确认无害。**
   「已知分歧」这个标签本身不含任何证据，时间越久越像结论。
+
+
+### 8.9 显式 rename 声明（2026-09-12，`core#168` + `ts#175`）
+
+§8.5 的最后一项未决。
+
+#### 问题
+
+命名作用域路径对重命名敏感。实测 16 节点样本：改一条规则的名字 →
+**31 条变更**（15 REMOVED + 15 ADDED + 1 MODIFIED），而其中
+**14/16 个节点的 contentHash 逐字节未变**。
+
+#### ★为什么必须显式声明，不能自动推断
+
+直觉方案是「按 contentHash 自动配对」。**实测不成立——contentHash 不唯一**：
+
+```
+Rule alpha, produce:      Rule beta, produce:
+  Return 1.                 Return 1.
+
+→ $.decls{alpha}.body 与 $.decls{beta}.body 的 contentHash **完全相同**
+```
+
+把 `alpha` 改名为 `gamma` 后，`beta.body` 的 hash 在新版能匹配到**两个**候选，
+无法判定谁是谁——自动配对会把两条规则的身份**互换**，而且**不报错**。
+
+★**把两个不同的节点当成同一个，比「识别为新节点」危险得多**：前者给出
+**错误**的溯源答案，后者只是丢失历史关联。故定为：**宁可少认，不可错认**。
+
+该判断由专门用例钉住（`contentHashIsNotUniqueSoAutoMatchingIsUnsound`）——
+若将来 hash 变得唯一，它会变红，届时可重新评估自动方案。
+
+#### 实现
+
+「路径段替换」：把旧版 `$.decls{oldName}…` 改写成 `$.decls{newName}…` 再做
+常规 diff，**整棵子树一次性迁移**。两个边界：只替换完整 `{name}` 段
+（否则 `approve` 误伤 `approveAll`）；冲突声明直接拒绝，不静默取其一。
+
+#### 效果
+
+| | 变更条数 |
+|---|---|
+| 无声明 | **31** |
+| 有声明 | **2**（`Func` 自身 + `Module` 根，均 MODIFIED）|
+
+★剩下这 2 条**不是**残留噪声：`name` 是节点内容的一部分，改名本身就是真实
+变更。初稿断言「零变更」被测试打回——那是把「消解改名噪声」错当成了
+「假装什么都没发生」。
+
+#### 验证
+
+core 1601 passing、TS 1698+87 passing + golden 0 FAIL；两侧各 3 个变异全红；
+**跨引擎一致**：Java 与 TS 对同一输入均 `31 → 2`，nodeId 与 kind 逐条相同。
+
+★**至此 §8.5 三项未决全部清空**，Stable IR Node ID（步骤 4）完成。
+下一步是 §7 的 MappingIR / ProofIR 与双引擎 verifier。
 
 ---
 
