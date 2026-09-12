@@ -1004,5 +1004,64 @@ proof 锚定  $.decls{approve}.body.statements[0].cond.args[1]  hash=33234ccc…
 
 - **候选映射的自动生成**（§3 里 LLM/启发式的部分）——按 ADR §10 应当**最后**才做。
 - **主体优先级仲裁**——需要产品决策：机器判 `REJECTED` 而专家判 `VERIFIED` 时谁赢？
-- **SourceIR**（Document/Section/Span/Entity 的结构化表示）——本次 verifier 直接
-  吃「文本 + 字符偏移」，尚未建 SourceIR 层。
+- ~~**SourceIR**~~ → ✅ **已落地**（`ts#179`），见 §10。
+
+---
+
+## 10. SourceIR：人类文档的结构化表示（2026-09-13，`ts#179`）
+
+§9.5 的最后一项。
+
+### 10.1 它与 LayoutMap 不是同一个问题
+
+| | LayoutMap（`aster-dev/src/lib/layout-map.ts`）| SourceIR |
+|---|---|---|
+| 对象 | **本来就是 Aster 源码**的文本（《静夜思》）| **从未是 Aster** 的人类文档 |
+| 构造 | **手写** span 列表 | **机械推导** |
+| 形状 | 平铺、全文档逐字符覆盖 | **嵌套**（标题层级）|
+| 规模 | 20 字的诗可以 | 50 页 Policy 也可以 |
+
+实测 `JINGYESI_LAYOUT` 是 12 条手写 span、每个字符都要列出——该模型在真实
+Policy 上不成立。
+
+★这澄清了 ADR §5 原文「LayoutMap → Transformation/Origin Map」的升级路径：
+LayoutMap **不是** SourceIR 的前身，两者并存、各管一段。
+
+### 10.2 唯一硬约束：offset 必须可回切原文
+
+`MappingIR.TextSpan` 是**字符偏移**的，故 SourceIR 每个节点都必须携带能逐字节
+切回原文的 span。本模块**不做任何文本改写**——不 trim、不规范化、不转义。
+
+`verifyCoverage` 机械验证三条不变式：
+
+1. `text` 逐字节等于 `document.slice(span)`
+2. 叶子 span 互不重叠
+3. **父的 span 覆盖子**
+
+### 10.3 ★第三条是实测踩出来的
+
+`HEADING` 原本只覆盖标题那一行：
+
+```
+doc.h[0]             [0,8)      ← 标题行
+  doc.h[0].h[0].p[0] [17,42)    ← 子段落，在父之外！
+```
+
+→ `nodeAtOffset` 无法下降 → 「点击 `$10,000` 定位所在节点」返回 `DOCUMENT`
+而不是那个段落，**双向导航直接失效**。撤掉修复后 `verifyCoverage` 报 26 处违规。
+
+### 10.4 真实文档验证
+
+`aster-cloud/docs/p0a-signability-policy.md`（8KB、8 标题、8 列表项、19 段落块）：
+解析出 **28 个节点，覆盖违规 0**。
+
+### 10.5 仍未做
+
+- ~~**Java 侧对等实现**~~ → ✅ **已落地**（`core#172`）：真实 Policy 文档上
+  两引擎各解析出 28 个节点、**逐行一致 28/28**（nodeId + kind + span 全同），
+  覆盖违规均为 0。至此 §7 的 SourceIR / MappingIR / ProofIR **三层均双引擎对等**。
+- **Entity/Quantity 层**——ADR §2 原文提到 `Document/Section/Span/Entity/Quantity`，
+  本次只做到 Section/Span。Entity（角色、金额、日期这类**语义实体**）需要
+  识别而非切分，是 LLM 真正该上场的地方。
+- **非 Markdown 载体**（docx/pdf）——应当先转 Markdown 再进本模块，而不是在
+  这里堆解析器。
