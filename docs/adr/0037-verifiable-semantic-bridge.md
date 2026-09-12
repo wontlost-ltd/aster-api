@@ -561,13 +561,65 @@ ts=19  java=24   → 差 5
 
 **本约束必须现在写进 ADR，而不是等实现时发现。**
 
+### 5.1 实测：verifier 的合法输入面到底是什么（2026-09-13）
+
+§5 写于「202/207 field-identical」的年代。现在跨引擎 **223/223 identical**——
+但那是**归一化之后**的数字。归一化（`ir-normalize.ts`，两引擎与 parity 门禁
+共用的单一真相源）剥掉的正是 derived analysis：
+
+```
+type, ret, retType, typeParams, typeInferred, retTypeInferred,
+constraints, piiCategories, piiLevel, effectCaps, effectCapsExplicit, captures
+```
+
+即 §5 的约束**依然成立**，只是边界现在被这份清单**精确划定**了。
+
+#### ★ADR §7 自己举的例子不可验证
+
+原文举例 `"$10,000" ↔ Money(10000)`。实测：
+
+| 要读的东西 | 归一化后是否存在 | 可否用于 verifier |
+|---|---|---|
+| `param.type` / `ret` | ❌ **被剥掉** | 不可 |
+| 节点 `kind`（`Int`/`Decimal`/`Call`…）| ✅ 保留 | **可** |
+| 字面量 `value` | ✅ 保留 | **可** |
+| `origin`（file/line/col）| ✅ 保留 | **可** |
+| `name`（函数名/变量名）| ✅ 保留 | **可** |
+
+实测输出（`params[0]`）：
+
+```
+原始:     name, type, constraints, typeInferred
+归一化后: name, annotations, retAnnotations, effects     ← type 已不在
+```
+
+所以：
+
+- `"$10,000" ↔ Money(10000)` **不可验证**——`Money` 是**类型**，而类型层是
+  合法分叉层，两引擎本就不一致。
+- `"$10,000" ↔ Decimal("10000")` **可验证**——`Decimal` 是**节点 kind**，
+  归一化后保留（实测 `{"kind":"Decimal","value":"100"}`）。
+
+★这不是措辞问题：按原例实现，verifier 会在第三阶段才炸，而且炸在
+「两引擎给出不同答案」这种最难排查的形态上。**MappingIR 的目标节点标识必须
+用 `kind` + `value` + `nodeId`，不得用类型名。**
+
+#### ★第二个坑：canonical 形态 ≠ 源码文本
+
+`100.00m` 在 IR 里是 `{"kind":"Decimal","value":"100"}`——**尾随零被规范化掉**。
+数值相同，文本不同。
+
+对「文本 ↔ IR」的 verifier 意味着：**不能做字符串相等比较**，必须按值比较
+（Decimal 按十进制数值、Int 按整数）。否则 `"$10,000.00"` 会验不过一个
+数值上完全正确的 `Decimal("10000")`。
+
 ---
 
 ## 6. 尚未回答的问题
 
-1. `IR_IGNORE_FIELDS=['origin']` 的真实原因（步骤 1 的产出）。在此之前，**跨引擎 origin 一致性是否可达**仍是未知数。
+1. ~~`IR_IGNORE_FIELDS=['origin']` 的真实原因~~ → ✅ **已查清并解决**（§2.2.1 查明是 150/223 系统性分歧，§4.0/§8.7 逐项修完）。现 `origin` 的 file/line/col **零豁免**跨引擎守护，「跨引擎 origin 一致性可达」已由 223/223 实证。
 2. ~~Stable Node ID 的生成规则~~ → **已实测，见 §8**。三种候选方案在六种真实编辑下的存活率矩阵已量化；结论是**没有单一方案能通吃**，必须做复合键。
-3. `ProofIR` 的失效语义：原文修改后，既有 proof 应当标 stale 还是直接失效？与本仓既有的「不可变审计 + 水位线」模式如何对齐？
+3. ~~`ProofIR` 的失效语义~~ → **已有可落地的答案，见 §6.1**。
 
 ---
 
@@ -832,6 +884,64 @@ core 1601 passing、TS 1698+87 passing + golden 0 FAIL；两侧各 3 个变异�
 
 ★**至此 §8.5 三项未决全部清空**，Stable IR Node ID（步骤 4）完成。
 下一步是 §7 的 MappingIR / ProofIR 与双引擎 verifier。
+
+
+### 6.1 ProofIR 失效语义：沿用本仓既有的「不可变 + 水位线」（2026-09-13）
+
+原问题：「原文修改后，既有 proof 应当标 stale 还是直接失效？」
+
+**答案：都不删，只加水位线。** 这不是新发明——本仓已有成熟先例，且两处机制
+均已在当前代码中核实存在：
+
+| 既有机制 | 位置 | 语义 |
+|---|---|---|
+| BYOK 额度重置 | `users.byokQuotaResetAt` | 重置 **≠** 删用量记录；只盖水位线，此后只统计 `createdAt >= max(当月初, resetAt)` 的行 |
+| 审计日志 | `lib/audit-log.ts` 的 `logAuditEvent` | 只追加，不修改、不删除 |
+
+映射到 ProofIR：
+
+```
+proof 记录本身      不可变、只追加      ← 它是「当时确实验证过」的历史事实
+proof 的有效性      由水位线判定        ← 不改写历史，只标注「自某版本起不再适用」
+```
+
+具体规则：
+
+- **不标 stale，也不删**。proof 带 `verifiedAgainst: {nodeId, contentHash}`。
+- **有效性是算出来的，不是存出来的**：当前 IR 里该 `nodeId` 的 `contentHash`
+  若与 proof 记录的不同 → 该 proof **对当前版本不适用**（但它对当时那个版本
+  依然是真的，历史不被否定）。
+- 判定直接复用**已落地**的 `ChangeImpact.diff`（§8.6/§8.9）：`MODIFIED` 即
+  「内容变了 → 旧 proof 不再适用」；`staleAncestors` 即「哪些上层结论需要重审」。
+
+★**为什么不能标 stale（原地改写）**：proof 的价值恰恰在于「在某个确定的版本上、
+由某个确定的主体、按某条确定的规则验证过」。原地把它改成 stale 会**销毁这条
+历史事实**——下次审计时无法回答「那次到底验没验过」。这与本仓审计链
+不可改写的既有立场一致。
+
+★**为什么 `ChangeImpact` 已经够用**：它回答的正是「这个节点变了没有」，而
+proof 的失效判定就是这个问题。不需要为 ProofIR 另造一套失效检测——那会变成
+第二套规则，与 `ChangeImpact` 必然漂移（本仓已有多起单源漂移事故）。
+
+#### 端到端实测（2026-09-13）
+
+不是纸面推演，已用真实 IR 跑通：
+
+```
+proof 锚定  $.decls{approve}.body.statements[0].cond.args[1]  hash=33234ccc…
+改阈值 10000 → 20000
+新版同 nodeId  hash=04ad2d19…
+→ proof 对当前版本仍适用? false          ← 正确判定为不适用
+→ ChangeImpact 判定:      MODIFIED       ← 不是 REMOVED+ADDED，身份稳住了
+→ 需重审的上层:  cond → statements[0] → body → decls{approve} → $
+```
+
+最后一行正是 §4 要的「谁已经 stale」：由内向外的完整祖先链，**无需新增任何
+机制**。
+
+**仍未决**：proof 的**主体与规则**如何编码（谁验的、按什么规则），以及
+多 proof 冲突时的仲裁。这属于 MappingIR/ProofIR 的数据模型设计，不在本条
+（失效语义）范围内。
 
 ---
 
