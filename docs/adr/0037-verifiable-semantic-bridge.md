@@ -1206,9 +1206,10 @@ LLM**——判定逻辑必须可离线验证。变异 5 个全红（撤幻觉闸
 
 ### 12.7 仍未做
 
-- **Java 侧对等**——当前 TS 单侧。★但与前几层不同：Entity 提出依赖 LLM，
-  而 LLM 输出**本就不要求跨引擎一致**（§7 原文：「LLM 生成的 candidate 不要求
-  一致，**Verifier 的结果必须一致**」）。故 Java 侧真正需要对等的是
-  `verifyEntityCandidate`（恒 REVIEW_REQUIRED）与幻觉闸门，而非提出器本身。
+- ~~**Java 侧对等**~~ → ✅ **已落地**（`core#174`）：按 §7 的区分**只移植判定**
+  （`verifyCandidate` 恒 REVIEW_REQUIRED + `validateProposals` 幻觉闸门），
+  **不移植 LLM 调用**——「LLM 生成的 candidate 不要求一致，Verifier 的结果
+  必须一致」。跨引擎测试钉的是**判定**：四种类别（含「完全没见过的类别」）
+  两侧都给 REVIEW_REQUIRED。
 - **真实 LLM 的端到端验证**——需要凭据与配额，且结果不可复现，不适合进 CI。
   建议作为手工验收步骤。
