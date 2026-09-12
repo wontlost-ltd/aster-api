@@ -536,7 +536,7 @@ ts=19  java=24   → 差 5
 | **3b-b2** | ✅ **修二元表达式内层 span**（`aster-lang-core#161`） | ★**原判「未定语义」是错的**。打印两侧 IR 结构后确认：两引擎结构一致，`args[0]` 都是内层 `Call`（`"Hello, " plus name`），真实范围 L4–L5，**TS 对、Java 错**——`visitAdditiveExpr`/`visitMultiplicativeExpr` 给每个中间节点用 `spanFrom(ctx)`（整条表达式），内层因此继承外层结尾。改用 `mergeSpans(left, right)`。★教训：不该停在「两边数字不同 ⇒ 语义未定」，应先打印结构核对 | ✅ **已完成** |
 | **3c** | 对齐 `origin.*.col` | ★**已大幅推进，见 §4.0.2**。「canonicalize 改列」这一整类成因**已消除**（core#162/#163/#164 + ts#172，删冗余翻译而非加 OffsetMap）：**223/223 语料 canonical 与源文本逐行等长**。跨引擎残余 150 样本归为**两个口径问题**：Module `end.col` 占位（`ts=1` vs `java=6`，48 条）+ 限定名 `target` 范围口径（`java−ts` 恰等于 `Text.` 等前缀长度，130 条）。均为机械分歧，非语义 | 🟡 **部分完成**（步骤 2 部分已实质完成；余两个口径待定） |
 | **3.5** | **分阶段收紧 origin 豁免**（file → line → col） | 每收紧一格门禁就多守一格；避免「等全部对齐再启用」导致长期零守护 | ✅ **已完成并收尾**：`#137` 先收紧到 `file+line`（150/223 → 9/223），随 3b 各项修复逐步归零，最终 `aster-lang-test#140` **移除全部豁免**。现 parity gate 对 file / start.line / end.line **零豁免**守护 |
-| **4** | Stable IR Node IDs | 唯一全新的一件。★前置问题（是否真要做跨版本 change impact）**用户已拍板：要做**；ADR 0032 §6.1 同步修订 | 🟡 **Java 侧已完成**（`core#166`：复合键 `nodeId` + `contentHash`，5 变异验证 + 跨 JVM 确定性）；**TS 侧待办** |
+| **4** | Stable IR Node IDs | 唯一全新的一件。★前置问题（是否真要做跨版本 change impact）**用户已拍板：要做**；ADR 0032 §6.1 同步修订 | 🟡 **Java 侧已完成**（`core#166`：复合键 `nodeId` + `contentHash`，5 变异验证 + 跨 JVM 确定性）；**TS 侧已完成**（`ts#173` + `test#141` 共享归一化，全语料 **223/223 样本、100% 节点一致**，见 §8.7/§8.8）|
 | **5** | Canonical IR serialization | **复用**已有 `CanonicalJson`，不要重写 | 复用 |
 | **6** | 接 LayoutMap（诗歌 PoC） | 注意它是新写一层 `canonical ↔ IRNode`，非升级现有 45 行 | 待办 |
 | **7** | MappingIR / ProofIR + 双引擎 verifier | 见 §5 的硬约束 | 待办 |
@@ -683,8 +683,99 @@ contentHash = 结构 hash     ← 回答「它变了没有」（change impact �
 **跨 JVM 确定性**（三次独立启动，24 个节点 id+hash 逐字节相同——专防
 `Map.copyOf` SALT 那类随启动漂移的缺陷，否则 change impact 会全量报 stale）。
 
-**仍未做**：显式 rename 声明机制、**TS 侧对等实现**（跨引擎 verifier 的前提）、
-全语料推广（当前矩阵基于一个 16 节点合成样本）。
+**仍未做**：显式 rename 声明机制。
+
+### 8.7 TS 侧对等实现与全语料实证（2026-09-12）
+
+`aster-lang-ts#173` 补齐 TS 侧，`aster-lang-test#141` 抽出两侧共用的归一化规则。
+
+#### 一个必须先解决的约束
+
+两引擎的**原始** Core IR 字段本就不同，且这是 ADR 0016 §B/§C 认定的**合法分岔**：
+
+| | 独有字段 |
+|---|---|
+| Java `Func` | `annotations` / `retAnnotations` / `piiLevel` / `piiCategories` |
+| TS `Func` | `retTypeInferred` |
+| Java `Param` | `annotations` |
+| TS `Param` | `constraints` / `typeInferred` |
+
+所以 **contentHash 必须对「归一化后」的 IR 取 hash**。而归一化规则此前只存在于
+`parity-tier1.mjs` 内部（未导出）。若在 TS 侧另写一份，就会出现本仓反复记录过的
+**单源漂移**：两处规则各自演进后，门禁说「一致」而 contentHash 说「不一致」，
+**且两边都不报错**。故先把规则原样抽到 `packages/js/src/ir-normalize.ts`（`#141`），
+门禁改为 import；抽取前后 parity 结果逐字节一致。
+
+#### 全语料实证（补上 §8.5 的「全语料推广」）
+
+两侧走**同一份**归一化规则与**各自**的 nodeId 实现，对 tier1 全部 223 个样本比对：
+
+| 指标 | 初次测得 | **修完 5 个缺陷后** |
+|---|---|---|
+| 完全一致的样本 | 218 / 223 | **223 / 223** |
+| 节点级一致率 | 8600 / 8661（99.3%） | **8645 / 8645（100%）** |
+| TS 解析失败 | 0 | 0 |
+
+初次测得的 5 个分歧样本（`eff_valid_all_caps` / `fetch_dashboard` /
+`interop_overload` / `interop_sum` / `login`）与 parity 门禁报告的
+`divergent-exempt` 样本逐一对应。**当时判为「既有技术债」，随后逐个排查发现
+这个判断过于宽容——它们是 5 个互不相同的真缺陷**，详见 §8.8。
+
+另有两条独立证据：
+
+- **未归一化时 21/24 一致**，不一致的 3 个恰好是携带推导层字段的节点
+  （`ret` 及其祖先）——这从反面印证了「必须归一化」的判断是对的，而不是
+  一个为了让数字好看而加的步骤。
+- **canonical hash 黄金向量**：5 组输入的期望值取自 Java `CanonicalJson`
+  实跑，TS 侧逐字节相同。★期望值**不是**从 TS 自产输出回填的——那会让测试
+  退化成「TS 和它自己一致」，恒绿且毫无意义。
+
+**结论**：ADR 0037 §7 的 `Verify_TS == Verify_Java` 在 Stable Node ID 这一层
+**已有实证基础**。
+
+### 8.8 那 5 个分歧样本：5 个真缺陷，0 个合法差异（2026-09-12）
+
+§8.7 初测时把它们归为「既有技术债」。逐个追到**运行时**后，这个判断被推翻：
+
+| 样本 | 真实缺陷 | 性质 |
+|---|---|---|
+| `interop_sum` / `interop_overload` | `Long` 序列化成 JSON number → JS 侧 `9007199254740993` 静默变 `…992`；且超范围 Long 让 `canonicalHash` 抛错 → **本 ADR 的 Stable Node ID 在这类程序上完全不可用** | 高 |
+| `eff_valid_all_caps` | 裸表达式语句被降成 `Return` → **函数提前返回**，其后的写文件/写库永不执行且不报错 | **最高（执行期行为错误）** |
+| `login` | TS 缺 UFCS → 两引擎**实际传参个数不同**（2 vs 3） | 高 |
+| `fetch_dashboard` | `as async` 被当成函数调用，而运行时没有 `async` 这个函数 | 中（该形态从未被执行，属潜伏） |
+
+修复：`aster-lang-core#167`、`aster-lang-ts#174`。
+
+#### ★门禁为什么没发现：两个不相干的概念被混为一谈
+
+`divergent-exempt` 此前被排除在失败集合之外，注释称其为「推导分析层差异，
+仅供参考」。**实测不成立**——该标记并非人工确认，而是**自动**由样本元数据里的
+`evalExempt` 推导（见 `classifyIr`）：
+
+```
+evalExempt 的本意 = 这个样本不参与 eval-parity（不执行它）
+被当成的含义      = 这个样本的 IR 分歧可以接受
+```
+
+73 个样本因为「不执行」而顺带获得了「IR 可以随便分叉」的通行证。
+
+变异验证（注入同一个 async 缺陷）：
+
+| | 退出码 |
+|---|---|
+| 保留豁免 | **0（绿——看不见）** |
+| 移除豁免 | **1（红）** |
+
+即门禁**结构上就不会**因这类缺陷变红。豁免已移除（`aster-lang-test#142`），
+移除后 main 上 `--mode=ir --full` 与 `parse` 均退出 0。
+
+#### 对本 ADR 的意义
+
+- `origin` 的 **file / start.line / end.line / col** 与 **Stable Node ID**
+  现在都在**零豁免**的门禁守护下。
+- §7 的 `Verify_TS == Verify_Java` 在 Stable Node ID 这一层达到 **100%**。
+- ★教训：**豁免清单里的条目默认应假设是待办，而不是已确认无害。**
+  「已知分歧」这个标签本身不含任何证据，时间越久越像结论。
 
 ---
 
