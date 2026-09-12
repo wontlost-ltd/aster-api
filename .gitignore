@@ -17,3 +17,6 @@ build/
 
 # CCG workflow scaffolding (local-only task/state, never committed)
 .ccg/
+
+# Gradle review 临时工作目录（native 二进制/锁文件/通知缓存，不应入库）
+.gradle-review/
