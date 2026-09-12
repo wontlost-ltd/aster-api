@@ -1057,8 +1057,9 @@ doc.h[0]             [0,8)      ← 标题行
 
 ### 10.5 仍未做
 
-- **Java 侧对等实现**——§7 的 `Verify_TS == Verify_Java` 目前只覆盖
-  MappingIR/ProofIR；SourceIR 尚为 TS 单侧。
+- ~~**Java 侧对等实现**~~ → ✅ **已落地**（`core#172`）：真实 Policy 文档上
+  两引擎各解析出 28 个节点、**逐行一致 28/28**（nodeId + kind + span 全同），
+  覆盖违规均为 0。至此 §7 的 SourceIR / MappingIR / ProofIR **三层均双引擎对等**。
 - **Entity/Quantity 层**——ADR §2 原文提到 `Document/Section/Span/Entity/Quantity`，
   本次只做到 Section/Span。Entity（角色、金额、日期这类**语义实体**）需要
   识别而非切分，是 LLM 真正该上场的地方。
