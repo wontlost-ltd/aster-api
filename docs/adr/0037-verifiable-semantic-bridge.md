@@ -536,7 +536,7 @@ ts=19  java=24   → 差 5
 | **3b-b2** | ✅ **修二元表达式内层 span**（`aster-lang-core#161`） | ★**原判「未定语义」是错的**。打印两侧 IR 结构后确认：两引擎结构一致，`args[0]` 都是内层 `Call`（`"Hello, " plus name`），真实范围 L4–L5，**TS 对、Java 错**——`visitAdditiveExpr`/`visitMultiplicativeExpr` 给每个中间节点用 `spanFrom(ctx)`（整条表达式），内层因此继承外层结尾。改用 `mergeSpans(left, right)`。★教训：不该停在「两边数字不同 ⇒ 语义未定」，应先打印结构核对 | ✅ **已完成** |
 | **3c** | 对齐 `origin.*.col` | ★**已大幅推进，见 §4.0.2**。「canonicalize 改列」这一整类成因**已消除**（core#162/#163/#164 + ts#172，删冗余翻译而非加 OffsetMap）：**223/223 语料 canonical 与源文本逐行等长**。跨引擎残余 150 样本归为**两个口径问题**：Module `end.col` 占位（`ts=1` vs `java=6`，48 条）+ 限定名 `target` 范围口径（`java−ts` 恰等于 `Text.` 等前缀长度，130 条）。均为机械分歧，非语义 | 🟡 **部分完成**（步骤 2 部分已实质完成；余两个口径待定） |
 | **3.5** | **分阶段收紧 origin 豁免**（file → line → col） | 每收紧一格门禁就多守一格；避免「等全部对齐再启用」导致长期零守护 | ✅ **已完成并收尾**：`#137` 先收紧到 `file+line`（150/223 → 9/223），随 3b 各项修复逐步归零，最终 `aster-lang-test#140` **移除全部豁免**。现 parity gate 对 file / start.line / end.line **零豁免**守护 |
-| **4** | Stable IR Node IDs | 唯一全新的一件 | 待办 |
+| **4** | Stable IR Node IDs | 唯一全新的一件。★前置问题（是否真要做跨版本 change impact）**用户已拍板：要做**；ADR 0032 §6.1 同步修订 | 🟡 **Java 侧已完成**（`core#166`：复合键 `nodeId` + `contentHash`，5 变异验证 + 跨 JVM 确定性）；**TS 侧待办** |
 | **5** | Canonical IR serialization | **复用**已有 `CanonicalJson`，不要重写 | 复用 |
 | **6** | 接 LayoutMap（诗歌 PoC） | 注意它是新写一层 `canonical ↔ IRNode`，非升级现有 45 行 | 待办 |
 | **7** | MappingIR / ProofIR + 双引擎 verifier | 见 §5 的硬约束 | 待办 |
@@ -659,7 +659,32 @@ contentHash = 结构 hash     ← 回答「它变了没有」（change impact �
 
 - 上述矩阵基于**一个**合成样本（16 节点）。推广到全语料前应扩样本。
 - 重命名的「显式声明」机制（rename map？还是靠 VCS 的 rename 检测？）尚未设计。
-- **前置问题仍是 §8.1**：先确认「跨版本 change impact」是否真要做。
+- ~~**前置问题仍是 §8.1**~~ → ✅ **用户已拍板：要做**（2026-09-12）。ADR 0032 §6.1 已同步修订。
+
+### 8.6 落地（2026-09-12，`aster-lang-core#166`）
+
+复合键方案已实现，**未改 `CoreModel`**——ID 是从 Core IR JSON 派生的独立产物，
+故不触动 IR parity 基线。hash 复用既有 `CanonicalJson.canonicalHash`
+（已有版本前缀 + 已做 TS↔Java parity），不自造。
+
+| 类 | 职责 |
+|---|---|
+| `NodeIdMap` | 计算 `nodeId`（命名作用域路径）+ `contentHash`（子树指纹，剥 origin）|
+| `ChangeImpact` | 跨版本 diff → `MODIFIED` / `ADDED` / `REMOVED` + `staleAncestors` |
+
+两条非显然的设计决定：
+
+- **stale 只向上传播**。改了 if 里的阈值，是**包含它的规则**需要重审；
+  把后代也标 stale 会把影响面夸大到整棵子树。
+- **重命名如实暴露为 `REMOVED` + `ADDED`，不猜测**。猜错会把两个不同节点
+  当成同一个——那比「识别为新节点」更危险。
+
+验证：Java 全量 **1603 passing**；**5 个变异全部变红**且由预期用例捕获；
+**跨 JVM 确定性**（三次独立启动，24 个节点 id+hash 逐字节相同——专防
+`Map.copyOf` SALT 那类随启动漂移的缺陷，否则 change impact 会全量报 stale）。
+
+**仍未做**：显式 rename 声明机制、**TS 侧对等实现**（跨引擎 verifier 的前提）、
+全语料推广（当前矩阵基于一个 16 节点合成样本）。
 
 ---
 
