@@ -1027,6 +1027,10 @@ Policy 上不成立。
 ★这澄清了 ADR §5 原文「LayoutMap → Transformation/Origin Map」的升级路径：
 LayoutMap **不是** SourceIR 的前身，两者并存、各管一段。
 
+★但那句措辞掩盖了一个**真实存在**的缺口——「原文 → 变换 → canonical」这一步
+的 offset 映射从未被记录。该缺口已单独立项：**ADR 0038（DEFERRED）**，
+触发条件是「对外开放任意人类文本」。
+
 ### 10.2 唯一硬约束：offset 必须可回切原文
 
 `MappingIR.TextSpan` 是**字符偏移**的，故 SourceIR 每个节点都必须携带能逐字节
@@ -1065,3 +1069,6 @@ doc.h[0]             [0,8)      ← 标题行
   识别而非切分，是 LLM 真正该上场的地方。
 - **非 Markdown 载体**（docx/pdf）——应当先转 Markdown 再进本模块，而不是在
   这里堆解析器。
+- **transform 层（原文 ↔ canonical 的 offset 映射）**——见 **ADR 0038**，
+  状态 DEFERRED。今天不需要是因为本仓所有实际输入要么就是 canonical、要么与
+  canonical 逐行对齐（223/223 行、217/223 列）。
