@@ -344,6 +344,54 @@ OriginMap → Stable IDs → Canonical Serialization → 接 LayoutMap → Mappi
 **这意味着 ADR 0032 的前置条件现已全部解除**：trace 步骤可以按行锚定到源码，
 且两引擎给出同一答案。
 
+### 4.0.1 步骤 2 的前提被实测推翻（2026-09-12）
+
+原文把步骤 2 写成「Canonicalizer 会 tab→空格、删注释、折叠多空格，所以坐标会偏」。
+**逐项实测后，这个归因是错的**：
+
+| 假设的成因 | 实测 |
+|---|---|
+| 删注释 | 只把注释行**置空**，行数与代码行的列都不变 |
+| tab→2 空格 | 语料中未触发 |
+| 折叠多空格 | 语料中未触发 |
+
+全语料 368 个 `.aster`：228 个 canonicalize 后**逐字节不变**；140 个有改动，
+其中 **139 个只是注释被置空**（不影响代码列），仅 19 个代码行真有变化。
+
+**真正的成因是另一件事：Java 的 Canonicalizer 把词形运算符翻译成符号。**
+
+```
+原文      "  Return x plus y."     y 在第 17 列
+Java 规范 "  Return x + y."        行缩短 3 字符 → Java 报 y 在第 14 列
+TS  规范  "  Return x plus y."     不翻译 → TS 报 17 ✅
+```
+
+实证：50 个 col 分歧样本中，**全部**含词形运算符（`plus`/`minus`/`and`/`or`/
+`modulo`/`at least` 等）。即 150 条分歧几乎来自**这一个**行为差异，
+而非原文列举的那几项。
+
+#### 尝试过但行不通的简化方案
+
+试过「翻译时右补空格到等长」以保住列位（改动极小，无需 OffsetMap）。
+实测：补空格后文本**照常解析**，且 `y` 的 `start.col` 正确回到 17。
+
+**但该方案与既有设计冲突**：`finalWhitespaceNormalization`（canonicalize 的最后
+一步）会调用 `normalizeWhitespaceWithState` 把连续空格折叠掉，padding 当场被抹平。
+实测 `[PAD] src=plus tgt=+ consumed=4 emitted=1` 确实执行了，但最终输出仍是
+`Return x + y.`。
+
+绕开它需要让空白归一化「认得」padding 并放过——那等于在两个相互矛盾的不变量
+（「列位保持」vs「空白归一化」）之间打补丁，比老老实实做 OffsetMap 更脆弱。
+
+#### 结论：步骤 2 的正确范围
+
+- **不是**「给 canonicalize 全链路加 OffsetMap」（137 个调用点）；
+- **是**「在**运算符翻译**这一处记录 canonical↔原文的列偏移，并在生成 origin 时回映」。
+  作用点收窄到 `translateSegment` 一个函数 + origin 生成侧。
+- ⚠️ 仍需回答：TS 侧**不翻译**运算符，所以两侧的 canonical 文本本就不同。
+  要对齐 col，要么 TS 也翻译（则两侧 origin 都偏离原文，等于把问题推后），
+  要么两侧都做「翻译 + 回映」。**这是需要先定的设计问题。**
+
 ### 4.1 优先级的一次重要变化（2026-09-12）
 
 步骤 3a（修 TS canonicalize 吞行）落地后，**步骤 2 的紧迫性显著下降**：
@@ -362,7 +410,7 @@ OriginMap → Stable IDs → Canonical Serialization → 接 LayoutMap → Mappi
 |---|---|---|---|
 | **0** | **IR 确定性门禁** | 所有 traceability 建立在「IR 可复现」上，而该假设**已知为假**。成本极低（编译两次比字节），收益是立刻抓住 §3 两处缺陷 | ✅ **已完成** |
 | **1** | 查清 `IR_IGNORE_FIELDS=['origin']` 到底在挡什么 | 其注释理由已被证伪（两侧都 1-based）。不查清就加 OriginMap = 在来历不明的豁免上盖房子 | ✅ **已完成**，见 §2.2.1：**150/223 样本分叉**；file 736 条纯表示、col 565 条真实分歧、line 仅 24 条 |
-| **2** | Canonicalizer 保留 offset 映射（`String → (String, OffsetMap)`） | **行级已不再需要**（3a 修复后行数恒等），**列级仍需要**：实测 canonicalize 仍会改列（`Return    x.` → `Return x.`、tab→2 空格、智能引号→直引号）。⚠️ 涉及 **137 个调用点**（Java 116 / TS 19 / cloud 2），是一次真正的 API 变更 | 待办（优先级已下调，见 §4.1） |
+| **2** | 运算符翻译处记录列偏移并回映 | ★**原描述的归因已被实测推翻**，见 §4.0.1。真正成因是 **Java 把词形运算符翻成符号**（`x plus y` → `x + y`，缩 3 字符），而 TS 不翻译；50 个 col 分歧样本**全部**含词形运算符。范围因此从「137 个调用点的 API 变更」收窄到「`translateSegment` 一处 + origin 生成侧」。⚠️ 但需先定：TS 是否也翻译（影响两侧 canonical 文本是否同形） | 🔴 **待定设计** |
 | **3a** | ✅ **修 TS canonicalize 吞行**（`aster-lang-ts#170`） | 整文件 origin.line 偏移归零；ADR 0032 的前置已解除 | ✅ **已完成** |
 | **3b-a** | ✅ **修合成块 `line: 0`**（`aster-lang-ts#170`） | inline-if 的 thenBlock/elseBlock/If 从未赋 span，带着 `createEmptySpan()` 的 line 0 进 Core IR。用既有 `spanFromSources` 从子节点推导。**跨引擎 `origin.*.line` 分歧归零** | ✅ **已完成** |
 | **3b-b1** | ✅ **两侧「span 吞尾随布局 token」均已修** | Java `aster-lang-core#160`（`lastNonLayoutToken`）+ TS `aster-lang-ts#171`（同名 helper，应用于 decl 3 处 + statement 22 处）。★**认知两次翻转**：先判「Java 错」→ 修 Java 后发现 TS 也错 → 实为**两边都错、方向一致而互相抵消**，门禁因此长期假绿。end.line 分歧 **0（假绿）→ 40（Java 修好）→ 1（两侧修好）** | ✅ **已完成** |
