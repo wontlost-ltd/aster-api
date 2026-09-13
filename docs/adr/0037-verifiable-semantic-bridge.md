@@ -1731,8 +1731,20 @@ input.replace(/^\s*Return\s+<[^>]+>\s*\./gm, 'Return none.')
    **LSP 侧确实不可达**（`src/lsp/formatting.ts:34,60` 默认走 `'lossless'`，
    且是**直接调** `buildCstLossless` 而非经 `formatCNL`；构建抛异常时
    被外层 `catch` 接住返回 `[]`，实测 0.8ms 快速失败）。
-   但 `scripts/format-examples.ts:31` 是 `formatCNL(src)` **无 opts**
-   ——该脚本未挂任何 npm script，只跑仓库自有文件，严重度低，但**属可达路径**。
+   **内部调用方清单（全仓穷举，已实测核对）**：
+
+   | 调用点 | mode | 可达？ |
+   |---|---|---|
+   | `src/lsp/formatting.ts:41,65` | `normalize` | 仅 LSP 显式选 normalize 时 |
+   | `scripts/format-examples.ts:31` | **无 opts（=默认）** | ✔ |
+   | `scripts/test-comments-golden.ts:21` | `normalize` | ✔ |
+   | `scripts/test-lossless*.ts` | `lossless` | ✘ 不可达 |
+
+   后两个脚本都**未挂任何 npm script**、只读仓库自有 fixture，严重度低。
+
+   ★**最强的一条缓解**（审查者补充，我已核实）：`formatCNL`
+   **不在 `src/index.ts` 的公开导出面内**（`dist/src/index.js` 零命中）
+   → **第三方消费者无法直接调到**。
 
    ★另注：`formatCNL` 的 lossless 分支在 `buildCstLossless` 抛异常时会
    **fall through 到 normalize**（用 `U+FFFF` 可触发，实测 5212ms）。
@@ -1808,3 +1820,77 @@ input.replace(/^\s*Return\s+<[^>]+>\s*\./gm, 'Return none.')
 我上一轮"修复"守卫时**新引入了两处漏判**，而那两处恰恰是上一版
 （更笨的写法）天然免疫的。**每一次让代码"更聪明"，都要问一句
 「它现在能出什么新的错」。**
+
+---
+
+## §12.14 ★更正：parity 口径不实（223/223 实为 221/223）
+
+独立审查者在最终一轮跑了我一直没跑的那条命令，发现**我报的 parity 数字是错的**。
+
+### 事实
+
+| 命令 | 结果 |
+|---|---|
+| `parity-tier1.mjs --mode=ir --full` | **223/223 identical** ← 我一直跑的 |
+| `parity-tier1.mjs --mode=ir`（浅层指纹） | **221/223，divergent 2** ← 我从未跑过 |
+
+两处分歧：
+
+```
+tier1-equivalence/policies/eff_alias_import.aster    declNames.tsOnly: ["Db","Http","Time"]
+tier1-equivalence/policies/eff_alias_unmapped.aster  declNames.tsOnly: ["Http"]
+```
+
+且**均未登记**在 `IR-DIVERGENCE-LEDGER.md` / `DIVERGENT-MANIFEST.md`
+（我实测确认：两文件里 grep `eff_alias` 零命中，它们只出现在语料 manifest 里）。
+
+### 归因：既有分歧，非本轮引入
+
+切到本轮工作之前的 `main` 重跑浅层模式，得到**完全相同的 221/223 与同样那 2 个样本**。
+→ 与本轮 ReDoS 工作**无关**，不是回归。
+
+### ★我错在哪
+
+`--full` 与不带 `--full` **量的不是同一件事**：前者是 ADR 0016 的
+**字段级归一化 IR diff**，后者是**浅层结构指纹**。两者都真实，但我：
+
+1. **只跑了其中一条**，却把结论写成无限定词的「双引擎 IR parity 223/223」；
+2. 十几轮里反复引用这个数字为自己的改动背书，**从未交叉验证另一条**。
+
+这与本轮反复抓到的假绿同源——**单一量具 + 不交叉验证 = 结论比证据强**。
+审查者前两轮都如实写了「parity 未验证（需跨仓 runner）」，我却默认自己那条就够了。
+
+### 正确口径
+
+> **双引擎 IR parity：字段级（`--full`）223/223 identical；
+> 浅层指纹（`--mode=ir`）221/223，2 处既有分歧待登记。**
+
+本 ADR 前文 §12.9〜§12.13 中所有「223/223 identical」均指**字段级**口径，
+此处统一更正说明；**不回改历史小节**（那些记录本身没错，只是缺限定词）。
+
+### 待办（独立事项，非本轮范围）
+
+- 把 `eff_alias_import` / `eff_alias_unmapped` 登记进 ledger，或修复该分歧
+- 发版/汇报口径统一为「221/223 + 2 处已登记分歧」
+
+---
+
+## §12.15 收尾：最终评审 95/100 的剩余扣分
+
+### (a) `src/formatter.ts:69` 注释与 ADR 互相矛盾（已修）
+
+我花 4 分在 ADR 里改正了「只在 `mode: 'normalize'` 下执行」这个窄措辞，
+但**源码注释里还留着一份旧的**。审查者指出：同一个点，两处文档互相矛盾。
+
+成因：我本轮刻意不碰生产代码（这个决定本身是对的），导致注释没同步。
+→ 已补改。
+
+### (b) `scripts/test-comments-golden.ts:21` 未列入可达路径清单（已补）
+
+与 `format-examples.ts` 同类（未挂 npm script、只读仓库自有 golden fixture），
+ADR 的定性覆盖它，但按名单完整性该列出。
+
+### ★(c) 审查者补充的一条**对结论有利**的事实
+
+`formatCNL` **不在 `src/index.ts` 的公开导出面内**（`dist/src/index.js` 零命中）
+→ **第三方消费者无法直接调到**。这比 ADR 现有的两条缓解都更强，已补记。
