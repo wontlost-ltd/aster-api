@@ -1718,9 +1718,26 @@ input.replace(/^\s*Return\s+<[^>]+>\s*\./gm, 'Return none.')
 
 真正的缓解有两条，都已实证：
 
-1. **可达路径受限**：sanitize 链只在 `formatCNL(..., { mode: 'normalize' })`
-   下执行，而 LSP 的默认是 `'lossless'`（`src/lsp/formatting.ts:34,60` 的
-   mode 分支）。
+1. **可达路径受限**：sanitize 链在 `mode !== 'lossless'` 时执行
+   ——★**包括不传 opts 的默认调用**。我第一版写成「只在
+   `{ mode: 'normalize' }` 下执行」，**漏了默认那一档**。实测：
+
+   | 调用形态 | n=40000 |
+   |---|---|
+   | `formatCNL(s)`（默认，不传 opts） | **5232ms** ← 我原措辞未涵盖 |
+   | `formatCNL(s, { mode: 'normalize' })` | 5233ms |
+   | `formatCNL(s, { mode: 'lossless' })` | 4ms |
+
+   **LSP 侧确实不可达**（`src/lsp/formatting.ts:34,60` 默认走 `'lossless'`，
+   且是**直接调** `buildCstLossless` 而非经 `formatCNL`；构建抛异常时
+   被外层 `catch` 接住返回 `[]`，实测 0.8ms 快速失败）。
+   但 `scripts/format-examples.ts:31` 是 `formatCNL(src)` **无 opts**
+   ——该脚本未挂任何 npm script，只跑仓库自有文件，严重度低，但**属可达路径**。
+
+   ★另注：`formatCNL` 的 lossless 分支在 `buildCstLossless` 抛异常时会
+   **fall through 到 normalize**（用 `U+FFFF` 可触发，实测 5212ms）。
+   即「传了 `lossless` 也不等于绝对安全」。
+
 2. **触发面窄**：全仓 `.aster`/`.cnl` 语料中 `Return <` **零命中**，
    占位符确属历史遗留格式。
 
@@ -1764,6 +1781,27 @@ input.replace(/^\s*Return\s+<[^>]+>\s*\./gm, 'Return none.')
 函数与测试块已一并删除。
 
 ### (c) 缓解论证错误 —— 见 §12.12
+
+### (d) 一条「装饰性」用例被我记成了守卫
+
+我给字符类修复补的反向用例 `([)])(a)*b`，审查者指出它**没有证明力**。
+我复刻「跳过 / 不跳过字符类」两版逐条对拍，证实了：
+
+```
+([)])(a)*b        跳过=false  不跳过=false   ← 两态相同，变异时照样绿
+([)])*([)])*b     跳过=true   不跳过=false   ★能区分
+([)]a)*([)]a)*b   跳过=true   不跳过=false   ★能区分
+```
+
+**所有能区分两态的样本都在「攻击」方向**；误伤方向**结构上不存在**可区分样本
+——因为字符类跳过只会让**更多**模式被识别为原子，不会让合法模式被拒。
+
+处置：保留该用例（它仍是有效的**非回归**样本），但在注释里写明
+「不得计入反向守卫证据」，并另补 `([)]a)*([)]a)*b`（原子内字符类与普通字符
+混排）作为真正能区分的攻击样本。两仓同步。
+
+★**教训：「我加了一条反向用例」不等于「反向有守卫」。**
+判据仍是那一条——**撤掉被守的修复，它会不会红**。
 
 ### ★本轮最该记住的一条
 
