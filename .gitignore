@@ -20,3 +20,7 @@ build/
 
 # Gradle review 临时工作目录（native 二进制/锁文件/通知缓存，不应入库）
 .gradle-review/
+
+# 本地调查用的临时沙箱（含编译产物 dist/，勿入库）
+.Codex/redos-gates-evidence/
+.gradle-review/
