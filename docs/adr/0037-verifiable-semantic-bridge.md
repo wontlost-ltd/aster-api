@@ -1286,8 +1286,28 @@ verifier 都发现不了（文本本身是合法的，只是位置错了）。
 | Java | `ResultIsTransformer.RESULT_IS_LINE_START` | 同上 | 同上 | 1ms |
 | Java | `Canonicalizer` 三条空白正则 | `\s+` 无左锚 | 87717ms | 2ms |
 
-**端到端可达性**：`canonicalize()` 整条链路在「全空行源文件」下
-**7027ms → 18ms**（n=40000，且已由二次转为常数）。
+**端到端可达性（★两侧结论不同，必须分开说）**：
+
+| 引擎 | 全空行源文件 n=40000 | 撤修后增长率 | 端到端可达？ |
+|---|---|---|---|
+| Java | 6906ms → 14ms | 3.9× | **是** |
+| TS | 5.2ms → 5.5ms | 1.8×（撤修后仍线性） | **否** |
+
+★TS 侧 `set-to`/`result-is` **单点是二次的**（直接打 transformer：
+10000→166ms、20000→641ms、40000→2605ms，×3.9），但**端到端打不穿**——
+默认 `canonicalize()` 根本不启用这两个 transformer（实测：输入
+`Set x to 1` 输出原样不变）。Java 侧 `builtin/en-US.json` 的
+`postTranslationTransformers` 里有它们，TS 侧默认词典没有。
+
+★**这是一处既有的跨引擎装配分叉**（`main` 上行为相同，非本次引入），
+与 ReDoS 无关，但它意味着：同一份源码在两个引擎里走的 transformer 链不同。
+`tier1-parity` 223/223 绿说明现有语料没覆盖到 `Set x to` 这类写法。
+**建议单开 issue 跟进**，不在本次修复范围内。
+
+故 TS 侧这两处修复应如实定性为「**纵深防御**：单点二次已消除，
+但当前装配下不可达」——一旦哪天 TS 词典补上这两个 transformer，
+修复即刻生效。`POSSESSIVE_RE` 与 `formatter` 两处则是**真实可达**的
+（`english-possessive` 在 en/zh/de 三个生产词典里都启用）。
 
 ★两侧的所有格 / set-to / result-is 模式必须**逐字一致**——它们都在
 canonicalize 链路上，两引擎输出要字节相同（tier1-parity 门禁把这条钉住了）。
