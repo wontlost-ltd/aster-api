@@ -2029,3 +2029,166 @@ ADR 的定性覆盖它，但按名单完整性该列出。
 
 **七次失败的代价，本可以用一次十分钟的刻画实验避免。**
 「我以为这个正则是这么工作的」——那个「以为」值得先花十分钟证实。
+
+---
+
+## §13 接线：从「六个死模块」到一条可观测的链路
+
+### 问题：地基铺好了，线没接
+
+§7–§12 建了六个模块（SourceIR / QuantityIR / MappingIR / ProofIR /
+CandidateGenerator / EntityProposer），每个都有测试、两引擎都有对等实现。
+**但实测它们的生产调用数全为 0，也不在 `src/index.ts` 的导出面内** ——
+六个模块全是死代码。
+
+这也解释了此前「UI 需要改吗」那个问题的答案为什么是"不需要"：
+**没有任何东西能到达 UI**。
+
+### `runSemanticBridge`：主链路
+
+```
+人类文档
+  ├─ parseSourceIr ──────────► 文档结构（Document/Section/Span）
+  ├─ extractQuantities ──────► 数量实体（确定性，零 AI）
+  └─ canonicalize→lex→parse→lower
+        ├─ computeNodeIds ───► 稳定节点 ID
+        ├─ generateCandidates► 候选映射（机械切片，不猜）
+        └─ verifyMapping ────► VERIFIED / REVIEW_REQUIRED / REJECTED
+```
+
+★**分层降级**是关键设计：前两层对**任意文本**都成立（它们只依赖形态特征），
+第 3 层需要可编译源码。编译失败时前两层结果**保留**，
+并在 `diagnostics` 里说明第 3 层为何跳过。
+
+实测：
+
+| 输入 | 结果 |
+|---|---|
+| 可编译 Aster 源码 | 2 条候选全 **VERIFIED** |
+| 纯人类文档（不可编译） | SourceIR 正常；抽出 **4 个数量**（`$10,000` / `3 天` / `15%` / `2026-01-01`）；第 3 层如实报告跳过 |
+
+**这就是「任意文字可执行化」的现实形态**：不是"任意文字都能编译"，
+而是**分层地、如实地**给出能给的部分，并说清哪部分给不了。
+
+### ★接线时踩的坑：单测全绿，错的是"那根线"
+
+第一版我从 `computeNodeIds()` 的返回值取 `value` 做 `resolve`。
+但 `NodeIdentity` 只有 `{nodeId, contentHash, kind}` —— **根本没有 value**。
+结果 `verifyMapping` 拿不到值，把**每一条候选都判成 REJECTED**。
+
+★此时两侧模块的单元测试**全是绿的**：`candidate-generator` 切片正确、
+`mapping-ir` 判定正确 —— **错的是它们之间的那根线**。
+只有端到端跑一次才暴露。
+
+> 这正是本仓反复记录的「**验了对象，没验连线**」。
+> 已改为从 IR 本身取值，并补 `pipeline.test.ts` 把连线钉死
+> （变异验证：复刻该错误 → 红，且报出"多半是 resolve 取不到 value"）。
+
+### 双引擎 verifier 一致性门禁（§7 的硬要求）
+
+§7 对一致性的要求是**有区分**的：
+
+```
+LLM 生成的 candidate  →  不要求一致
+Verifier 的结果       →  **必须一致**
+```
+
+新增**共享语料** `aster-lang-test/corpus/mapping-verdict/cases.json`（12 例，
+覆盖三种 verdict），两侧读**同一个文件**：
+`verdict-parity.test.ts`（TS）与 `MappingIrVerdictParityTest`（Java）。
+
+★**单源**：若两侧各抄一份语料，它们会各自漂移，
+"一致性门禁"就退化成两个互不相干的测试 —— 看着都绿，实际什么都没保证。
+
+#### ★一个 no-op 变异的教训
+
+变异验证时我先试「给 Java 的 `EXACT_VALUE_KINDS` 加 `Text`」制造分叉 ——
+**门禁没红**，我一度以为它失效了。查下去发现：加进 kind 列表后仍会卡在
+`parseLiteralFromText`（它不认识 `Text`）返回 null，最终仍判 `REVIEW_REQUIRED`
+—— **那是个 no-op 变异，行为根本没变**。
+
+换成「移除 `Bool`」这个真变异 → 门禁**立刻变红**，报出判定不符。
+
+> **变异必须能真正改变行为，否则"门禁没红"证明不了任何事。**
+> 这条已写进语料的 `_doc`，避免后人重走。
+
+---
+
+## §14 三段式第③段：人工复核队列
+
+### 把「AI 不能定义什么叫正确」写进类型
+
+ADR §3 的原则此前只是文字。`review-queue.ts` 把它变成**类型约束**：
+
+| 函数 | 能产出什么 |
+|---|---|
+| `buildReviewQueue` | 只产出 `ReviewItem`（待复核项），**不产出 Proof** |
+| `recordHumanProof` | 唯一能产出 Proof 的入口；`subject` 被 `Extract` 限制为 `DOMAIN_EXPERT \| ENGINEER` |
+
+★**机器无法调用 `recordHumanProof` 给自己发证书** —— 类型系统不允许传
+`VERIFIER`。这比写在文档里的约定强得多。
+
+另外两条硬约束：
+
+- **空理由直接抛错** —— 没有理由的批准等于没有复核，宁可拒绝记录也不留空壳 proof
+- **时间由调用方传入**，不取系统时钟 —— 取时钟会让同一输入产出不同记录，无法复现、无法测试
+
+### LLM 是**可选增强**，不是主链路依赖
+
+```
+不传 provider    → 映射类验证完整，无 Entity 待复核项
+provider 抛错    → 只记 diagnostics，映射类结果**保留**（已测）
+LLM 幻觉         → 幻觉闸门丢弃 + **如实报告**进 diagnostics
+```
+
+★最后一条尤其重要：丢弃**必须**可见。
+「LLM 产出了不合规内容」是评估模型可靠性最重要的信号，静默吞掉等于丢掉它。
+
+### Proof 的时效性是**算出来**的
+
+Proof 锚定到**判定时**那一版的 `contentHash`。内容一变，
+`isApplicableTo` 算出 `CONTENT_CHANGED`；节点没了算出 `NODE_GONE`
+—— 而**不是**悄悄沿用旧结论。proof 记录本身永不修改（三态均已测）。
+
+### ★这就是 UI 的数据契约
+
+```
+ReviewQueue = {
+  counts:      { verified, reviewRequired, rejected }   ← 三类计数
+  items:       [{ text, span, reason, source }]          ← 每条待复核项
+  diagnostics: [...]                                     ← 所有"没做成"的事
+}
+```
+
+一个复核界面要展示的就是这个：**原文片段 ↔ 目标节点 ↔ 为什么机器证不了**。
+UI 拿到它即可开工，**无需再猜输入形态** —— 这正是我此前建议
+「先接线再设计 UI」的原因。
+
+### 端到端实测
+
+```
+① + ② 机器： {"verified":2,"reviewRequired":1,"rejected":0}
+   [ENTITY] "approve_payment" @29-44
+      Entity「approve_payment」的类别 Role 属**语义**判断，机器只能确认该文本
+      存在于声称位置，证明不了它指代该实体 —— 须领域专家确认。
+
+③ 人复核（DOMAIN_EXPERT）：
+   Proof: DOMAIN_EXPERT by alice@example.com
+   锚定 hash: 6f1d937173328dd6...
+   内容未变 → 适用: true
+   内容已变 → 适用: false
+```
+
+### 回归
+
+- TS **1896 tests** 全绿（+20）；Java **1669 tests** 全绿（+2）
+- 双引擎 IR parity：字段级 **223/223**、浅层指纹 **223/223**
+- 每处接线均做变异验证（复刻错误实现 → 变红 → 还原 → 变绿）
+
+### 下一步（未做，需产品决策）
+
+1. **UI 复核界面** —— 数据契约已就位（`ReviewQueue`），可以开工了
+2. **ProofIR 持久化** —— 目前 proof 是内存对象，落库需要 schema 与
+   append-only 约束（参考本仓 `audit-log` 的做法）
+3. **Java 侧 pipeline 对等** —— 目前只有 TS 侧有 `runSemanticBridge`；
+   §7 只要求 **verifier 结果**一致（已有门禁），主链路是否也要对等是个开放问题
