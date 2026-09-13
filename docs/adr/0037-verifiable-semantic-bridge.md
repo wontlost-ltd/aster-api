@@ -2192,3 +2192,80 @@ UI 拿到它即可开工，**无需再猜输入形态** —— 这正是我此�
    append-only 约束（参考本仓 `audit-log` 的做法）
 3. **Java 侧 pipeline 对等** —— 目前只有 TS 侧有 `runSemanticBridge`；
    §7 只要求 **verifier 结果**一致（已有门禁），主链路是否也要对等是个开放问题
+
+---
+
+## §15 三项待决事项的决议（2026-09-14）
+
+### ① Java 侧主链路 —— **要对等**，已完成
+
+**决议依据**（用户）：「有些人只用 Java 引擎，有些人只用 JavaScript 引擎」。
+
+★我此前把它写成"开放问题"是**误判**：§7 只要求 **verifier 判定**一致，
+那说的是「同一候选两侧判一样」；而**能力**是另一回事——
+只在 TS 侧接线，等于只用 Java 引擎的用户拿不到语义桥。
+**一致性 ≠ 能力对等。**
+
+已补 `CandidateGenerator`（Java 侧六个模块里唯一缺的）与 `SemanticBridge`。
+
+**实测两引擎输出逐字节一致**（同输入 dump 对拍 7/7 全同，含 nodeId 与 span）：
+
+```
+SUMMARY 2,0,0
+CAND VERIFIED|10000|$.decls{approve_payment}.body.statements[0].expr|64-69
+QTY  MONEY|$10,000|17-24|10000   DURATION|3 天|41-44|3
+     PERCENT|15%|56-59|15        DATE|2026-01-01|69-79|2026-01-01
+```
+
+新增**共享语料** `bridge-cases.json`，两侧读同一文件，覆盖
+「可编译源码」与「不可编译文档（分层降级）」两种形态。
+
+★变异验证：Java 侧 resolve 改从 `NodeIdentity` 取值 → 门禁变红（verified 2→0）。
+★并记一个 **no-op 变异**：改 `segmentOf` 的 `_` 规则**不会**变红
+——当前语料没有 `_` 节点，该改动**不可观测**。
+**变异必须能被语料观察到**，否则"没红"证明不了任何事（本轮第二次撞见）。
+
+### ② UI 复核界面 —— 三项决策已定
+
+★先纠正我自己：我此前把 UI 列为"需大量产品决策"是**说大了**。
+查过 `aster-cloud` 后发现现成范式很清楚——`decision-trace-panel.tsx`
+等面板都是**纯展示组件**（props 进、JSX 出，取数在上层），
+`ReviewQueue` 的形状本就是这类组件的 props。**90% 是照约定实现**。
+
+真正需要决策的只有三项，均已拍板：
+
+| 决策 | 选择 | 含义 |
+|---|---|---|
+| 界面位置 | **策略详情页新增 tab**（与 versions/analytics 并列） | 复核是策略的一个视角，不是独立实体 |
+| 复核权限 | **仅特定角色**（`DOMAIN_EXPERT`），**团队管理员可指定** | 需在团队成员上增加该角色位 |
+| 结论可撤销性 | **不可撤销，只能追加新 Proof 覆盖** | 与 ProofIR 不可变设计一致；撤销＝再记一条，历史完整保留 |
+
+★第三条与 `ProofIr.resolveEffective` 天然契合：
+「当前有效结论」是**算出来**的（取最新适用的 proof），不是改出来的。
+
+### ③ ProofIR 持久化 —— 落 `aster-cloud`
+
+**判定依据**（查代码得出，非猜测）：
+
+- `policies` 表在 **`aster-cloud`**（`src/db/schema.ts:569`）
+- 团队角色枚举也在 cloud：`teamRoleEnum = ['owner','admin','member','viewer']`（`:102`）
+- Proof 必须 join **策略** 与 **复核人身份**，两者都在 cloud
+
+→ 放 `aster-api` 会制造跨库 join。虽然 `aster-api` 有成熟的
+append-only 审计表先例（`V4.2.0__add_audit_hash_chain.sql`），
+但**数据归属**优先于**技术先例**。
+
+★需新增：
+1. `proofs` 表（append-only：无 UPDATE/DELETE，撤销＝追加）
+2. `teamRoleEnum` 增加 `domain_expert`，或用独立的 `policy_reviewers` 关联表
+   （★后者更可取：复核权限是**按策略**授予的，不是全团队一刀切）
+
+---
+
+## §16 下一步（按依赖顺序）
+
+1. **`policy_reviewers` 表 + 角色授予**（团队管理员指定 DOMAIN_EXPERT）
+2. **`proofs` 表**（append-only）+ BFF 路由
+3. **复核 tab UI**（数据契约 `ReviewQueue` 已就位）
+
+★第 1 步是第 2/3 步的前提：没有"谁能复核"，`ProofSubject.by` 就没有可信来源。
