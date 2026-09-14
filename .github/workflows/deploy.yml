@@ -10,6 +10,22 @@ on:
     # run 接手 → A 的代码永不上线。让每个 commit 都触发 deploy，docs-only 提交会正常成为 tip
     # 并无害地重部署（rollout restart 幂等）。省"无害重部署"的收益不值这个正确性死角。
   workflow_dispatch:
+    inputs:
+      trainId:
+        description: >-
+          发布列车标识。**由 release train 传入**，表示本次 dispatch 是发版链路的
+          一环，需要走完整闭环（含 image-pin PR）。
+
+          ★为什么需要它：image-pin-pr 原本只认 `github.event_name == 'push'`，
+          而列车用 workflow_dispatch —— 于是列车触发的部署**永远不会开 pin PR**，
+          集群不换版本，而列车那头只表现为一个「等待超时」（platform#82）。
+          1.0.29 能上线纯属侥幸：当时恰好另有一个 PR 合进 main，那次 push
+          顺带跑完了整条链路。
+
+          手工 dispatch（调试/重跑）留空即可：不开 pin PR，也不会被判失败。
+        type: string
+        required: false
+        default: ''
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -302,9 +318,20 @@ jobs:
   #
   # 前置（人工，见 k3s SETUP.md）：本仓需配 vars.IMAGE_PIN_APP_ID +
   # secrets.IMAGE_PIN_APP_PRIVATE_KEY（image-pin App id 4253193 的私钥）。未配置则本 job skip。
+  # ★「该 pin」的判定（与下面 pin-closure-guard 共用同一套语义，改一处必改两处）：
+  #   push 到 main            → 该 pin（原有行为）
+  #   带 trainId 的 dispatch  → 该 pin（发版列车，platform#82 前它被静默跳过）
+  #   手工无参 dispatch        → 不该 pin（调试/重跑，保持 skip 且不判失败）
+  #
+  #   另两个条件是**真实的不该 pin**，非缺陷：
+  #   - stale == 'true'：github.sha 已不是 origin/main tip，开 PR 会 pin 旧 digest
+  #   - IMAGE_PIN_APP_ID == ''：未配 App 凭据（见 k3s SETUP.md），开不出 PR
   image-pin-pr:
     needs: deploy
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.deploy.outputs.stale != 'true' && vars.IMAGE_PIN_APP_ID != '' }}
+    # ★两侧显式加括号：GitHub 表达式里 && 确实比 || 紧，但靠优先级读代码容易被后人误改。
+    if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+             || (github.event_name == 'workflow_dispatch' && inputs.trainId != ''))
+            && needs.deploy.outputs.stale != 'true' && vars.IMAGE_PIN_APP_ID != '' }}
     runs-on: ubuntu-latest
     concurrency:
       group: image-pin-pr-aster-api        # per-image：不与 aster-cloud 的 job 互相取消
@@ -358,3 +385,73 @@ jobs:
         run: |
           bash scripts/ci/open-image-pin-pr.sh \
             docker.io/wontlost/aster-api image-pin/aster-api
+
+  # ══ 部署闭环自检：该 pin 而没 pin ⇒ 显式失败 ═══════════════════════════════
+  #
+  # ★为什么必须有这一道（platform#82）：
+  #   image-pin-pr 的 `if:` 为假时 GitHub 把它记为 **skipped**，而 skipped 不会让
+  #   workflow 变红。1.0.29 实测：列车 dispatch 的那次部署 build-and-test/deploy 全绿、
+  #   image-pin-pr 静默 skipped，集群因此**根本没换版本**，列车那头只看到一个「超时」。
+  #   三个信号拼在一起，看起来像「只是慢了点」。
+  #
+  #   条件放宽（上面那个 if）只是让列车能走到 pin；它本身**不会在回归时变红**——
+  #   若将来有人改坏那个条件，pin 又会静默消失。故这里用一道独立的、
+  #   **不共享那个条件**的自检来兜底：只要「本次该 pin」，就要求 pin 真的跑成功了。
+  #
+  # if: always() —— 必须，否则 image-pin-pr 被 skip 时本 job 也跟着 skip，白守。
+  pin-closure-guard:
+    needs: [deploy, image-pin-pr]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 断言「该 pin 则已 pin」
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          TRAIN_ID: ${{ inputs.trainId }}
+          STALE: ${{ needs.deploy.outputs.stale }}
+          APP_ID: ${{ vars.IMAGE_PIN_APP_ID }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          PIN_RESULT: ${{ needs.image-pin-pr.result }}
+        run: |
+          set -euo pipefail
+          echo "event=$EVENT ref=$REF trainId='${TRAIN_ID:-}' stale=$STALE"
+          echo "deploy=$DEPLOY_RESULT image-pin-pr=$PIN_RESULT"
+
+          # deploy 自己没成功时不归本 job 管（它已经红了，别叠加噪音）
+          if [ "$DEPLOY_RESULT" != "success" ]; then
+            echo "deploy 未成功（${DEPLOY_RESULT}）——闭环判定不适用，跳过"; exit 0
+          fi
+
+          # ── 本次是否「该 pin」──────────────────────────────────────
+          due=false
+          if [ "$EVENT" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
+            due=true; why="push 到 main"
+          elif [ "$EVENT" = "workflow_dispatch" ] && [ -n "${TRAIN_ID:-}" ]; then
+            due=true; why="发布列车 dispatch (trainId=$TRAIN_ID)"
+          fi
+
+          # 真实的「不该 pin」：过时提交 / 未配 App 凭据。二者都**明确说明**，
+          # 不静默放过——这两种情况下集群同样不会换版本，只是原因正当。
+          if [ "$STALE" = "true" ]; then
+            echo "::warning::本次 github.sha 已非 origin/main tip（stale），按设计不开 pin PR。集群不会换到本次镜像，由更新的 commit 的 deploy 接手。"
+            exit 0
+          fi
+          if [ -z "${APP_ID:-}" ]; then
+            echo "::warning::未配置 vars.IMAGE_PIN_APP_ID，无法开 pin PR（见 k3s SETUP.md）。集群不会换版本。"
+            exit 0
+          fi
+
+          if [ "$due" != "true" ]; then
+            echo "本次不该 pin（手工无参 dispatch）——集群不换版本属预期"; exit 0
+          fi
+
+          # ── 该 pin：要求 image-pin-pr 真的成功 ────────────────────
+          if [ "$PIN_RESULT" = "success" ]; then
+            echo "✓ 闭环成立：$why → image-pin PR 已开出"; exit 0
+          fi
+
+          echo "::error::部署闭环断裂：本次该 pin（${why}），但 image-pin-pr=${PIN_RESULT}。"
+          echo "::error::镜像已构建并推送，但 k3s image-lock **未更新** —— 集群仍跑旧版本。"
+          echo "::error::若 PIN_RESULT=skipped，说明 image-pin-pr 的 if: 条件与本 job 的判定不一致（改一处必改两处）。"
+          exit 1
