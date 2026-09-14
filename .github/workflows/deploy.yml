@@ -62,6 +62,17 @@ jobs:
         with:
           path: aster-api
 
+      # ★必须在 setup-aster-build **之前**跑：该 action 按 sibling-ref checkout 兄弟仓
+      #   源码并 publishToMavenLocal。若它与 settings.gradle 的 catalog 版本不一致，
+      #   mavenLocal 里放的就是错版本，直到 Build & Test 才报
+      #   `Could not find aster-lang-platform:X`——而那时 release train 已经把前面
+      #   12 个制品全发出去了（1.0.29 实测）。在此拦住，失败得早、代价小。
+      - name: 兄弟仓 ref 与 catalog 版本一致性（含反向自检）
+        working-directory: aster-api
+        run: |
+          ./scripts/ci/verify-sibling-ref-pin.sh --self-test
+          ./scripts/ci/verify-sibling-ref-pin.sh
+
       - name: Create aster_test database
         run: |
           PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE aster_test;" || true
