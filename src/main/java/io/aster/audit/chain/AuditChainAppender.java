@@ -54,6 +54,9 @@ public class AuditChainAppender {
     /**
      * 独立事务同步追加：提交成功后返回收据；任何失败抛 {@link AuditAppendException}，
      * 事务回滚，表中不留行。
+     *
+     * <p>只能在非事务的 worker 线程调用：若外层事务已持有同租户链锁，requiringNew 会在另一连接上
+     * 等待该锁而自死锁（PostgreSQL 无法检测跨连接的这种等待）。
      */
     public AppendedRecord appendSync(AuditEvent event) {
         try {
