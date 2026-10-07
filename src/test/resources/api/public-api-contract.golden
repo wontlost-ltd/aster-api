@@ -20,6 +20,7 @@ GET /api/v1/audit/stats/version-usage
 GET /api/v1/audit/type/{eventType}
 GET /api/v1/audit/verify-chain
 GET /api/v1/audit/workflows/{workflowId}/version-history
+GET /api/v1/guard/approvals
 GET /api/v1/lexicons
 GET /api/v1/lexicons/stream
 GET /api/v1/messages-manifest
@@ -43,6 +44,8 @@ POST /api/v1/ai/complete
 POST /api/v1/ai/generate
 POST /api/v1/ai/suggest
 POST /api/v1/audit/anomalies/{id}/actions/verify
+POST /api/v1/guard/approvals/{id}/approve
+POST /api/v1/guard/approvals/{id}/reject
 POST /api/v1/policies/compile
 POST /api/v1/policies/evaluate
 POST /api/v1/policies/evaluate-json

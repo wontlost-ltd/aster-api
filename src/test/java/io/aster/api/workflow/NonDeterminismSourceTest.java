@@ -85,6 +85,9 @@ class NonDeterminismSourceTest {
         //   **跨副本唯一**（issue #309）。成员若只用毫秒时间戳，同一毫秒内多个副本
         //   的请求会塌成同一个成员被 ZADD 覆盖，窗口内计数偏低 → 放行超额。
         //   随机性只用于区分实例身份，只进 Redis 成员名、不入 workflow 重放状态。
+        // - GuardDecisionService: 生成 Action Guard 的 decisionId / approvalId（ADR 0040）——
+        //   是 guard_decisions / guard_approvals 治理账本的业务主键，并写进审计收据供追溯；
+        //   重试去重靠 Idempotency-Key 而不是 id，且不入 workflow 重放状态。
         Assertions.assertThat(uuidMatches.keySet())
                 .containsExactlyInAnyOrder(
                         "src/main/java/io/aster/policy/service/PolicyStorageService.java",
@@ -96,7 +99,8 @@ class NonDeterminismSourceTest {
                         "src/main/java/io/aster/security/internal/InternalCallSigner.java",
                         "src/main/java/io/aster/policy/rest/ReplayBatchResource.java",
                         "src/main/java/io/aster/policy/replay/batch/ReplayBatchService.java",
-                        "src/main/java/io/aster/policy/security/RateLimiter.java"
+                        "src/main/java/io/aster/policy/security/RateLimiter.java",
+                        "src/main/java/io/aster/guard/GuardDecisionService.java"
                 );
 
         Map<String, List<Integer>> nanoMatches = scanPattern(
@@ -108,10 +112,13 @@ class NonDeterminismSourceTest {
         // - PolicyEvaluationService: 评估耗时测量起点（不入 workflow 重放状态）
         // - PolicyVersionResolutionCache: 短 TTL 缓存的单调过期时钟（仅用于缓存淘汰，
         //   不持久化、不参与 workflow 确定性重放，安全）
+        // - GuardDecisionService: waitSeconds 轮询的单调截止时钟（ADR 0040 §3.1），
+        //   只决定何时停止回读，不持久化、不参与 workflow 确定性重放
         Assertions.assertThat(nanoMatches.keySet())
                 .containsExactlyInAnyOrder(
                         "src/main/java/io/aster/policy/api/PolicyEvaluationService.java",
-                        "src/main/java/io/aster/policy/cache/PolicyVersionResolutionCache.java"
+                        "src/main/java/io/aster/policy/cache/PolicyVersionResolutionCache.java",
+                        "src/main/java/io/aster/guard/GuardDecisionService.java"
                 );
     }
 
