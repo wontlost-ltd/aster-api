@@ -1,7 +1,8 @@
 # ADR 0039：Verdict 原语与规则元数据（AI 治理方向·子项目 1）
 
-- 状态：**PROPOSED**（2026-10-07。方向与路径已由用户拍板，实施计划待出）
+- 状态：**IMPLEMENTING**（2026-10-07，子项目 1 六仓分支已实现，待 release train）
 - 决策者：用户已拍板「内置类型，不动语法」
+- 实施计划：`docs/superpowers/plans/2026-10-07-verdict-primitive-and-rule-metadata.md`；六仓分支 `feat/adr-0039-verdict`。验证证据见 §7；逐仓提交明细记在本地操作日志（工作文件，不入库）
 - 相关：ADR 0037（可验证语义桥：提出 / 判定 / 复核三段式）、ADR 0032（Core IR span 贯通 trace 锚定）、ADR 0031（错误码单源注册表）、ADR 0034（What-if 的 DecisionInterpreter 三态）、ADR 0009（PII 类型系统一等公民）
 
 ---
@@ -82,7 +83,7 @@ APPROVED / DENIED / INDETERMINATE 的方式：
 **为什么叫 Verdict 而不叫 Decision**：实测 `Decision` 已被用户侧占用——22 个文件使用
 `Define Decision has approved, reason` 这种自定义记录（parity 语料 `tier1-equivalence/policies/*.aster`、
 tier3 fixtures、`aster-cloud/src/data/policy-examples.ts` 的策略模板）。把它收为内置类型名会让这些模块编译报重定义，
-租户复制过模板的现网策略也会在升级后变红。`Verdict` 在全部语料、模板、测试里零命中，且 aster-api 内部已用
+租户复制过模板的现网策略也会在升级后变红。`Verdict` 在决策时的全部语料、模板、测试里零命中（现仅本子项目新增的 Verdict 用法），且 aster-api 内部已用
 `Verdict` 命名判定结果，语义一致。
 
 ### 2.2 签名
@@ -97,6 +98,19 @@ tier3 fixtures、`aster-cloud/src/data/policy-examples.ts` 的策略模板）。
 `Verdict` 是新的内置类型名（TypeName），**不可**与 Boolean 隐式互转，两侧类型检查按既有 `TYPE_MISMATCH` 报错。
 reason 对 deny / require_approval / escalate 为**必填**：没有理由的拒绝在审计上等于没有决策（与 ADR 0037 复核路由
 「理由非空」的立场一致）。
+
+两侧类型检查器都没有通用的内置函数签名表，`Verdict.*` 在 Java `BaseTypeChecker` 与 TS `typecheck/expression.ts` 中特判，口径一致：
+
+| 情形 | 诊断 |
+|---|---|
+| 参数个数与上表不符（如 `Verdict.deny()`、`Verdict.allow("x")`） | `E703 GOV_VERDICT_CALL_ARITY`（参数 `func` / `expected` / `actual`），返回类型仍为 `Verdict` |
+| 个数相符但参数不是 Text（如 `Verdict.deny(42)`） | 既有 `TYPE_MISMATCH` |
+| 未知成员 `Verdict.xxx` | 未定义变量错误，不回落为 Unknown |
+| 用户写 `Define Verdict …` | 既有 `DUPLICATE_SYMBOL`：Java 在符号表中先于用户声明预占 `Verdict`；TS 由治理检查报出 |
+
+`Verdict` 同时加入两侧解析器的内置类型名集合——Java `AstBuilder.BUILTIN_TYPE_NAMES`、TS `decl-parser` 的 `BUILTINS`
+（TS 另加入 `typecheck/generics.ts` 的 `KNOWN_SCALARS`）。两侧解析器会把未知的大写类型名推断为类型参数，
+不加入则 `produce Verdict` 被当成泛型 `T`（TS 报 E006）。
 
 CNL 写法（不新增任何关键字）：
 
@@ -125,6 +139,10 @@ Rule check_pii_export given request, provider, customer, produce:
 键顺序固定为 `__type`、`outcome`、`role`、`reason`（存在者按此序），进 `CanonicalJson` 与 parity 门禁。
 未出现的键**不写 null**（与 ADR 0037 §2.2.1 对 `origin.file` 的 `undefined`/`"null"` 分叉教训一致）。
 
+parity 语料为 aster-lang-test `tier1-equivalence/policies/verdict-basic.aster`（四种 outcome × 有无 role，5 例）。
+IR 门禁比对前，`packages/js/src/ir-normalize.ts` 把注解参数的容器形状归一（TS `args` 数组折叠为 `params` 映射），
+只改形状不改值；两引擎注解 IR 形状本身尚未统一，见 §10。
+
 ### 2.4 读取 Verdict
 
 CNL 侧读取用既有字段访问：`d.outcome`、`d.reason`、`d.role`。不为 Verdict 增加模式匹配——这是路径 B 的触点，
@@ -134,13 +152,25 @@ CNL 侧读取用既有字段访问：`d.outcome`、`d.reason`、`d.role`。不�
 
 ## 3. 决策二：规则元数据注解
 
-复用既有注解语法（`annotation : AT name annotationArgs?`，参数支持字符串字面量），**不动语法**。
+复用既有注解语法（`annotation : AT name annotationArgs?`，参数支持字符串字面量），**不动 ANTLR 语法**。
+
+位置参数：Java `AstBuilder` 原本即接受 `@id("X")`，把第一个位置参数命名为 `$0`（Core IR `params:{"$0":"X"}`）；
+TS 解析器原本只接受具名参数 `@id(value: "X")`，现改为同样接受位置参数并以 `$0` 命名（Core IR `args:[{name:'$0',value:'X'}]`）。
+两侧治理检查都只读键名 `$0`；IR 容器形状的分歧见 §10。
 
 | 注解 | 参数 | 约束 | 用途 |
 |---|---|---|---|
 | `@id("PII-001")` | 一个字符串字面量 | 模块内唯一 | 规则稳定身份，进 trace 与执行记录 |
 | `@reason("…")` | 一个字符串字面量 | 可选 | 规则级人类可读理由；与 Verdict 的实例级 reason 分层 |
 | `@control("EU_AI_ACT:ART14")` | 一个字符串字面量 | 可重复 | 挂到法规 / 控制项；子项目 5 的 Control 注册表以此为键 |
+
+两引擎必须一致的校验口径：
+
+- `@id` 每条规则**恰好一个**：出现多个 `@id` 报 E702；空串或仅空白的 `@id` 视为无效，报 E702（返回 Verdict 的规则因此同时报 W700）。
+- 注解名为 null 的注解直接跳过，不得抛异常。
+- 「规则返回 Verdict」的判定：声明返回类型为 TypeName `Verdict`，**或**函数体内任一 `Return` 的表达式是 `Verdict.*` 的直接调用。
+  扫描进入 `Block`、`Scope`、`If` 两支与 `Match` 各分支；**不**追踪变量（`Let d = Verdict.allow(). Return d.` 只靠声明返回类型识别）。
+- 规则名不能是冠词 `a` / `an` / `the`：canonicalizer 会去掉冠词，用作规则名会使声明消失。
 
 ### 3.1 为什么不加 `@version`
 
@@ -150,8 +180,8 @@ CNL 侧读取用既有字段访问：`d.outcome`、`d.reason`、`d.role`。不�
 
 ### 3.2 Core IR
 
-`CoreModel.Func.annotations` 已存在，**无结构改动**。lowering 增加校验：`@id` / `@reason` / `@control` 的参数必须是
-恰好一个字符串字面量，否则报错（见 §4）。
+`CoreModel.Func.annotations` 已存在，**无结构改动**，lowering 不做校验。`@id` / `@reason` / `@control` 的参数必须是
+恰好一个字符串字面量，由两侧类型检查器中的治理检查（Java `GovernanceChecker`、TS `typecheck/governance.ts`）报 E702 / W700（见 §4）。
 
 ---
 
@@ -161,32 +191,49 @@ CNL 侧读取用既有字段访问：`d.outcome`、`d.reason`、`d.role`。不�
 |---|---|---|---|
 | `W700` | governance | warning | 返回类型为 `Verdict` 的 Rule 缺少 `@id` |
 | `E701` | governance | error | 同一模块内 `@id` 重复 |
-| `E702` | governance | error | `@id` / `@reason` / `@control` 参数不是恰好一个字符串字面量 |
+| `E702` | governance | error | `@id` / `@reason` / `@control` 参数不是恰好一个字符串字面量；`@id` 为空白或同一规则出现多个 `@id` |
+| `E703` | governance | error | `Verdict.*` 调用参数个数不符（`GOV_VERDICT_CALL_ARITY`，见 §2.2） |
 
 走 `aster-lang-ts/shared/error_codes.json` 单源 + generator 同时产出 TS 与 Java 常量（ADR 0031），
 **不**重蹈 W600 / W601 在各仓硬编码的覆辙。`governance` 是新类别；E7xx / W7xx 为治理段，W6xx 仍留给诊断类告警。
 
 W700 为 warning 而非 error：现有策略库里返回 Boolean 的规则不受影响，新写 Verdict 规则的人会立即看到提示。
 
+返回类型不一致（一支 `Return Verdict.allow().`、另一支 `Return true.`）不新增码：两侧 `checkIf` 在分支汇合处报既有
+`IF_BRANCH_MISMATCH`（E008）并以 then 支类型继续，测试接受 E008 或 `RETURN_TYPE_MISMATCH`（E003）任一出现。
+要求是「必须报类型错误、不能靠 Unknown 放过」，不要求特定码。
+
 ---
 
 ## 5. aster-api 的变化
 
-### 5.1 `PolicyEvaluationResult` 增加结构化字段
+### 5.1 两条评估路径增加结构化字段
+
+aster-api 有两条评估路径，都附加 `decision` / `ruleId` / `controls`：
+
+| 路径 | 入口 | 携带方式 |
+|---|---|---|
+| 源码即时评估 | `POST /evaluate-source`；`POST /evaluate-json`；runner `StandaloneReplayExecutor` | `DynamicCnlExecutor.ExecutionResult` → `EvaluationResponse` |
+| 部署策略 | `POST /evaluate`、`POST /evaluate/batch` | `PolicyEvaluationResult`（含缓存副本）→ 复制进 `EvaluationResponse` |
 
 ```json
 {
   "result": {"__type":"Verdict","outcome":"REQUIRE_APPROVAL","role":"Senior Underwriter","reason":"…"},
-  "decision": {"outcome":"REQUIRE_APPROVAL","role":"Senior Underwriter","reason":"…"},
+  "decision": {"outcome":"REQUIRE_APPROVAL","reason":"…","role":"Senior Underwriter"},
   "ruleId": "LOAN-017",
   "controls": ["EU_AI_ACT:ART14"],
-  "executionTimeMs": 12,
-  "error": null
+  "executionTimeMs": 12
 }
 ```
 
-`result` 原样保留（不破坏现有调用方）；`decision` / `ruleId` / `controls` 为新增字段，非 Verdict 结果时为 null / 空数组。
-`ruleId` 与 `controls` 来自被执行入口函数的 Core IR 注解，经 `CompilationResult.getMetadata()` 带出，不在运行时反查源码。
+- `result` 原样保留，不破坏现有调用方。
+- `ruleId` / `controls` 反映**被执行规则**的 `@id` / `@control` 注解，与结果类型无关（Boolean 规则同样带出）；无注解时为 null / 空列表。
+- `decision`（`VerdictView`）**仅**在结果是 `__type == "Verdict"` 的值时非 null，不做任何猜测。
+- 序列化：`decision` 内不写 null 键、按字母序；`EvaluationResponse` 中三个字段缺省时（null / 空列表）不输出，非治理策略的响应字节不变
+  （`PolicyEvaluationReplayOrderingTest` 逐字节 golden 通过）。
+- 元数据来源：部署路径在每次实际执行后把 `coreJson` 解析为 `CoreModel.Module`、按入口函数名读注解（`RuleMetadata.of`）；
+  源码路径直接读已编译的 `CoreModel.Module`。**不**经 `CompilationResult.getMetadata()`，不在运行时反查源码。
+  `coreJson` 解析失败记 warn 并按无元数据处理，绝不让评估因元数据失败。元数据随已编译策略一起缓存为后续工作（§10）。
 
 ### 5.2 DecisionInterpreter 收缩为三条确定性规则
 
@@ -197,16 +244,23 @@ W700 为 warning 而非 error：现有策略库里返回 Boolean 的规则不受
 | `Map` 且 `approved` 键为 `Boolean` | true → APPROVED，false → DENIED（模板约定 `Define Decision has approved, reason`，类型确定，无损） |
 | 其余 | INDETERMINATE |
 
-三条规则都是**类型驱动**的确定性映射，不再有字符串语义猜测。`DecisionInterpreter.Verdict` 枚举增加
-`REQUIRE_APPROVAL` 与 `ESCALATE`。字符串、`decision` 键、反射三条路径**删除**。
-What-if 回放（ADR 0033 / 0034）的 base / target 比较随之自动获得新两态。
+三条规则都是**类型驱动**的确定性映射，不再有字符串语义猜测。`DecisionInterpreter.Verdict` 枚举为五值：
+APPROVED、DENIED、REQUIRE_APPROVAL、ESCALATE、INDETERMINATE。字符串、`decision` 键、反射三条路径**删除**
+（已实现，`DecisionInterpreterTest` 15 例）。规则按上表顺序判定：Verdict 值优先于 `approved` 字段。
+What-if 回放（ADR 0033 / 0034）的 base / target 比较随之获得新两态：`ReplayBatchService` 把 REQUIRE_APPROVAL / ESCALATE
+当作**真实的非批准决策**参与比较（target 记为未通过），而不是 INDETERMINATE 式的「无法判定」。
 
 ### 5.3 不在本子项目范围
 
 - 待审批动作的挂起 / 恢复实体与 API（子项目 2）
 - guard 端点与 MCP 代理（子项目 2）
 - aster-cloud `ExecutionDecision` 枚举扩展与证据包字段（子项目 3）
+- `policy-examples.ts` 模板改写为 Verdict 推荐写法、`credit-risk-demo.ts` 信贷演示迁移（子项目 4，见 §6.1）
 - WHEN / THEN 语法糖（子项目 6）
+
+本子项目对 aster-cloud 只做一处兼容：`cnl-executor.ts` 的 `parseApprovalFromResult` 识别 Verdict 值——
+ALLOW → approved；DENY → denied 并带 reason；REQUIRE_APPROVAL / ESCALATE（及未知 outcome）→ `approved:false, indeterminate:true`，
+直到子项目 3 扩展 cloud 枚举。此前 cloud 把 Verdict 对象判为 `Unknown result format` → denied。
 
 ---
 
@@ -216,13 +270,14 @@ What-if 回放（ADR 0033 / 0034）的 base / target 比较随之自动获得新
 
 | 变更 | 受影响方 | 处理 |
 |---|---|---|
-| DecisionInterpreter 不再识别 `"APPROVED"` 等字符串 | 返回字符串档位的策略（已知：`credit-risk-demo.ts` 信贷演示） | 演示策略改为返回 Verdict，档位文本放进 reason；What-if 历史比较对这类策略的结论从 APPROVED/DENIED 变为 INDETERMINATE，属**纠正**而非回归 |
+| DecisionInterpreter 不再识别 `"APPROVED"` 等字符串 | 返回字符串档位的策略（已知：`credit-risk-demo.ts` 信贷演示） | What-if 历史比较对这类策略的结论从 APPROVED/DENIED 变为 INDETERMINATE，属**纠正**而非回归；演示策略改为返回 Verdict（档位文本放进 reason）随子项目 4 进行 |
 | DecisionInterpreter 不再读 Map 的 `decision` 字符串键 | 语料、模板、测试中**零命中** | 无需迁移；留痕 |
 | DecisionInterpreter 不再反射找 `isApproved()` | 仅宿主对象可能命中，CNL 策略不可能产生 | 无需迁移；留痕 |
 | `Verdict` 成为保留的内置类型名 | 用户自定义 `Define Verdict …` 的模块 | 语料、模板、测试中零命中；编译期报既有重定义错误 |
 
 **不破坏**：`Define Decision has approved, reason` 模板约定继续被 §5.2 第三条规则识别；现网策略无需改动。
-`policy-examples.ts` 的模板在本子项目中改为推荐写法 `Verdict.allow()` / `Verdict.deny(reason)`，旧写法仍合法。
+`policy-examples.ts` 模板改为推荐写法 `Verdict.allow()` / `Verdict.deny(reason)` **推迟到子项目 4**：多语言模板使用本地化关键字，
+改写涉及 zh / de 词法，与信贷演示迁移一并处理；旧写法仍合法。本子项目只让 cloud 结果解析器正确识别 Verdict（§5.3）。
 
 ### 6.2 回滚
 
@@ -234,14 +289,35 @@ What-if 回放（ADR 0033 / 0034）的 base / target 比较随之自动获得新
 
 | 层 | 验证 |
 |---|---|
-| aster-lang-core | 单测：四个构造函数签名、`Verdict` 不可与 Boolean 互转、W700 / E701 / E702 触发与不触发；golden：注解 lowering |
+| aster-lang-core | 单测：四个构造函数签名、`Verdict` 不可与 Boolean 互转、W700 / E701 / E702 / E703 触发与不触发；golden：注解 lowering |
 | aster-lang-ts | 同上镜像；interpreter 产出的值形状逐键断言 |
 | aster-lang-truffle | Builtins 单测：四种 outcome 的 Map 形状与键序 |
 | aster-lang-test | parity 语料新增 Verdict 用例（四种 outcome × 有无 role），`--mode=ir --full` 与执行 parity 均须零分歧 |
 | aster-api | DecisionInterpreter 三条路径单测；`evaluate-source` 集成测试断言 `decision` / `ruleId` / `controls`；What-if 回放对 Verdict 策略的比较 |
 | 错误码 | `validate_error_codes.ts` 通过；generator 产物两侧一致 |
 
-本地验证顺序：core `./gradlew build goldenTest` → ts `pnpm test:unit` → truffle `./gradlew test` → aster-lang-test parity → api `./gradlew test`。
+本地验证顺序：core `./gradlew --offline test` 与 `goldenTest` 分开运行 → ts `pnpm typecheck && pnpm lint && pnpm test:unit` → truffle `./gradlew --offline test`
+→ core `publishToMavenLocal -x test` + ts `pnpm build` → aster-lang-test 三道门禁 → api `:replay:test` 与 `:test` → cloud `pnpm vitest run src/__tests__/services`。
+
+实测结果（2026-10-07，各仓 `feat/adr-0039-verdict`）：
+
+| 仓 | 命令 | 结果 |
+|---|---|---|
+| aster-lang-core | `./gradlew --offline test` | 1724 tests，0 失败，7 跳过（既有）；governance 22/22 |
+| aster-lang-core | `./gradlew --offline goldenTest --rerun-tasks` | 11 tests，0 失败，5 跳过（既有）。`test goldenTest` 组合运行因 goldenTest 未声明对 `:jar` 的依赖被 Gradle 9.6.1 拒绝，属既有构建问题 |
+| aster-lang-ts | `pnpm typecheck && pnpm lint && pnpm test:unit` | typecheck 通过；lint 0 error（1 条既有 warning）；unit 1905/1905 |
+| aster-lang-ts | 错误码 generator `--check`、`validate_error_codes`、parity 测试 | 一致；76 个码；8/8 |
+| aster-lang-truffle | `./gradlew --offline test` | 869 tests，0 失败，3 跳过（既有）；`VerdictBuiltinsTest` 8/8 |
+| aster-lang-test | `parity-tier1.mjs --mode=ir --full` | 224/224 identical |
+| aster-lang-test | `parity-tier1.mjs --mode=eval` | 718/718 identical（verdict-basic 5 例全部一致） |
+| aster-lang-test | `test-eval-guard.mjs`；`packages/js` `pnpm test` | 22 过 / 0 失败；13/13 |
+| aster-api | `./gradlew --offline :replay:test --rerun` | 96/96 |
+| aster-api | `:test --tests 'io.aster.policy.rest.*' --tests 'io.aster.policy.api.*'`（Podman `postgres:17-alpine` 临时库） | 30 个类 229/229 |
+| aster-api | `:test --tests 'io.aster.policy.replay.batch.*'` | 94/94（`DecisionInterpreterTest` 15） |
+| aster-api | `./gradlew --offline :test`（无 DB） | 1445 tests，12 失败均为 `@QuarkusTest` 连不上 Postgres（Flyway ConnectException），434 跳过；待有 DB 环境复跑 |
+| aster-cloud | `pnpm vitest run`（policy + cnl-result-parser） | 12 files / 172 passed；`tsc --noEmit` 通过 |
+
+parity 脚本需 Node ≥ 23.6（加载 `.ts` 归一器；本机默认 22.13 报 `ERR_UNKNOWN_FILE_EXTENSION`），CI 用 Node 24。
 
 ---
 
@@ -262,8 +338,28 @@ What-if 回放（ADR 0033 / 0034）的 base / target 比较随之自动获得新
 | 2026-10-07 | 错误码走单源注册表，新类别 governance，E7xx / W7xx | Claude 提议，用户随设计定稿 |
 | 2026-10-07 | 内置名改为 `Verdict`（`Decision` 已被 22 个用户侧文件占用） | 用户 |
 | 2026-10-07 | DecisionInterpreter 保留「记录含布尔 `approved` 字段」为第三条确定性规则 | 用户 |
+| 2026-10-07 | 新增 `E703 GOV_VERDICT_CALL_ARITY`：两侧类型检查器没有内置签名表，`Verdict.*` 参数个数原本无人检查 | Claude（实施计划） |
+| 2026-10-07 | TS 解析器接受位置参数注解并以 `$0` 命名；ANTLR 语法不动。理由：Java `AstBuilder` 本已接受 `@id("X")` 并命名为 `$0`，TS 只接受具名参数会让同一源码在两侧一边通过一边报错；统一为 `$0` 后两侧治理检查读同一键名 | Claude（实施计划） |
+| 2026-10-07 | `Verdict` 加入两侧解析器内置类型名集合（及 TS `KNOWN_SCALARS`），否则 `produce Verdict` 被推断为类型参数 | Claude（实施计划；TS `KNOWN_SCALARS` 为实施中发现，评审确认必要） |
+| 2026-10-07 | 「两分支返回类型不一致」接受 E008 或 E003 任一：要求的是必须报类型错误；两侧 `checkIf` 已在分支层报 E008，改为逐条校验 Return 会给既有语料新增诊断且超出范围。风险：Match 分支等结构可能仍放过，由 TS 镜像用例与终审覆盖 | Claude（执行控制） |
+| 2026-10-07 | `returnsVerdict` 的 Return 扫描进入 `CoreModel.Scope`（独立语句类型，不扫会漏报 W700）；TS 同口径，避免两引擎 W700 分叉 | Claude（执行控制） |
+| 2026-10-07 | 空白 `@id`、同一规则多个 `@id` 均报 E702（「恰好一个」）；null 注解名不得抛异常。先在 Java 定口径，TS 镜像照此；若过严可放宽 | Claude（执行控制） |
+| 2026-10-07 | IR 门禁对注解参数形状分叉只在 aster-lang-test `ir-normalize.ts` 归一（TS `args` 折叠为 `params`），不改任一引擎 IR 形状：值逐条相同、eval 718/718 一致，形状统一牵涉 TS IR 消费者与 cloud。归一只改形状不改值，值分叉仍会被抓到 | Claude（执行控制） |
+| 2026-10-07 | `ruleId` / `controls` 反映被执行规则的注解，不限于 Verdict 结果（规则身份对任何决策记录都有用）；`decision` 仅对 Verdict 结果非空。代价：非 Verdict 策略的响应多两个可空字段（缺省不输出） | Claude（执行控制） |
+| 2026-10-07 | `/evaluate-json` 与 runner `StandaloneReplayExecutor` 一并透传新字段：同一路径的不同入口，不透传会出现同一结果不同形状 | Claude（执行控制） |
+| 2026-10-07 | `policy-examples.ts` 模板改写与信贷演示迁移推迟到子项目 4；本子项目只让 cloud 结果解析器识别 Verdict（此前判为 Unknown → denied） | Claude（实施计划） |
 
 ## 10. 尚未回答的问题
 
 - `REQUIRE_APPROVAL` 的 `role` 是自由文本还是受控词表？本子项目按 Text 处理；子项目 2 定义待审批实体时若需要受控词表，在 Verdict 之外用 `@control` 或 manifest 约束，不改本 ADR 的签名。
 - `Verdict` 是否应携带 `obligations`（如「执行前脱敏」）？YAGNI：没有消费方之前不加；子项目 2 的 guard 端点若需要，再以追加键的方式扩展，不破坏既有四键。
+- **注解 IR 容器形状分歧**：TS 注解 IR 为 `args:[{name,value}]`，Java 为 `params:{key:value}`，原本被 cross-compiler 对 `annotations` 的剪枝掩盖。
+  本子项目两侧治理检查各读自己的形状（键名 `$0` 一致），parity IR 门禁只在 aster-lang-test `ir-normalize.ts` 归一。
+  真正统一（改 TS lowering 或 Java 输出）牵涉 TS IR 消费者与 aster-cloud，与 ADR 0037 节点身份工作合并处理。
+- **分配预算计量不对称**：TS `chargeAllocation` 对普通对象计 0，Truffle 对 Map 计 size + 字符串长度；Verdict 值随之继承该不对称。
+  该不对称对 Ok/Err 等既有值早已存在，两引擎输出仍逐字节一致，只影响逼近 `MAX_ALLOCATION_BUDGET` 时的失败时机，本子项目不处理。
+- **热路径 `coreJson` 解析**：部署路径每次实际执行都把 `coreJson` 解析为 `CoreModel.Module` 以读注解，多一次 JSON 反序列化。
+  应在编译缓存中与已编译策略一起保存 `RuleMetadata`。
+- **休眠的 Redis 缓存值类型**：`application.properties` 声明 `quarkus.cache.redis.policy-results.value-type=PolicyEvaluationResult`，
+  但当前缓存类型为 caffeine（存对象引用，不序列化）。若切到 Redis，新字段会被写成 `"decision":null,"ruleId":null,"controls":[]`，
+  且该类没有无参构造或 `@JsonCreator`，Redis 模式在本子项目之前即无法反序列化——属既有潜在问题，切换缓存前须一并修正。
