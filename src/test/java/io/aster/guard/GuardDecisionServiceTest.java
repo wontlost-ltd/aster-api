@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -452,6 +454,127 @@ class GuardDecisionServiceTest {
 
     assertThat(service.get(TENANT, id)).contains(stored);
     assertThat(service.get("other", id)).isEmpty();
+  }
+
+  /** 已落库的 PENDING 决策行（含审批视图），并挂到 store 上。 */
+  private GuardApprovalEntity storedPending(UUID decisionId, Instant expiresAt, GuardApprovalStatus status) throws Exception {
+    GuardApprovalEntity a = new GuardApprovalEntity();
+    a.id = UUID.randomUUID();
+    a.tenantId = TENANT;
+    a.decisionId = decisionId;
+    a.status = status;
+    a.expiresAt = expiresAt;
+    GuardDecisionResponse stored = new GuardDecisionResponse(
+        new GuardDecisionResponse.ApprovalView(expiresAt.toString(), a.id.toString(), "DPO", "PENDING"),
+        List.of(), decisionId.toString(), "PENDING", "REQUIRE_APPROVAL", null, null, null, null, "DPO", null);
+    GuardDecisionEntity e = new GuardDecisionEntity();
+    e.id = decisionId;
+    e.responseJson = json.writeValueAsString(stored);
+    when(store.findDecision(TENANT, decisionId)).thenReturn(Optional.of(e));
+    return a;
+  }
+
+  @Test
+  void get对PENDING且已过期返回DENY且不写库() throws Exception {
+    UUID id = UUID.randomUUID();
+    GuardApprovalEntity a = storedPending(id, Instant.now().minusSeconds(1), GuardApprovalStatus.PENDING);
+    when(store.findApprovalByDecision(id)).thenReturn(Optional.of(a));
+
+    GuardDecisionResponse r = service.get(TENANT, id).orElseThrow();
+
+    assertThat(r.effectiveOutcome()).isEqualTo("DENY");
+    assertThat(r.approval().status()).isEqualTo("EXPIRED");
+    verify(store, never()).completeApproval(any(), any());
+  }
+
+  @Test
+  void get对PENDING未过期仍为PENDING() throws Exception {
+    UUID id = UUID.randomUUID();
+    GuardApprovalEntity a = storedPending(id, Instant.now().plusSeconds(600), GuardApprovalStatus.PENDING);
+    when(store.findApprovalByDecision(id)).thenReturn(Optional.of(a));
+
+    GuardDecisionResponse r = service.get(TENANT, id).orElseThrow();
+
+    assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
+    assertThat(r.approval().status()).isEqualTo("PENDING");
+  }
+
+  @Test
+  void get对PENDING但无审批行按DENY() throws Exception {
+    UUID id = UUID.randomUUID();
+    storedPending(id, Instant.now().plusSeconds(600), GuardApprovalStatus.PENDING);
+    when(store.findApprovalByDecision(id)).thenReturn(Optional.empty());
+
+    assertThat(service.get(TENANT, id).orElseThrow().effectiveOutcome()).isEqualTo("DENY");
+  }
+
+  @Test
+  void waitSeconds钳制到0到30() {
+    assertThat(GuardDecisionService.clampWaitSeconds(null)).isZero();
+    assertThat(GuardDecisionService.clampWaitSeconds(-5)).isZero();
+    assertThat(GuardDecisionService.clampWaitSeconds(7)).isEqualTo(7);
+    assertThat(GuardDecisionService.clampWaitSeconds(31)).isEqualTo(30);
+    assertThat(GuardDecisionService.clampWaitSeconds(Integer.MAX_VALUE)).isEqualTo(30);
+  }
+
+  private static GuardActionRequest requestWaiting(int waitSeconds) {
+    GuardActionRequest base = request();
+    return new GuardActionRequest(base.policyModule(), base.policyFunction(), base.action(), waitSeconds);
+  }
+
+  @Test
+  void waitSeconds期间被批准则返回ALLOW() throws Exception {
+    verdict("REQUIRE_APPROVAL", "DPO", "needs review");
+    // 决策落库后，回读到的审批行已被批准
+    AtomicReference<GuardDecisionEntity> decision = new AtomicReference<>();
+    AtomicReference<GuardApprovalEntity> approval = new AtomicReference<>();
+    doAnswer(inv -> {
+      decision.set(inv.getArgument(0));
+      approval.set(inv.getArgument(1));
+      approval.get().status = GuardApprovalStatus.APPROVED;
+      return null;
+    }).when(store).saveDecision(any(), any());
+    when(store.findDecision(eq(TENANT), any())).thenAnswer(inv -> Optional.ofNullable(decision.get()));
+    when(store.findApprovalByDecision(any())).thenAnswer(inv -> Optional.ofNullable(approval.get()));
+    long start = System.nanoTime();
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", requestWaiting(5), null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
+    assertThat(r.approval().status()).isEqualTo("APPROVED");
+    assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(3));
+  }
+
+  @Test
+  void waitSeconds超时仍为PENDING() throws Exception {
+    verdict("REQUIRE_APPROVAL", "DPO", "needs review");
+    AtomicReference<GuardDecisionEntity> decision = new AtomicReference<>();
+    AtomicReference<GuardApprovalEntity> approval = new AtomicReference<>();
+    doAnswer(inv -> {
+      decision.set(inv.getArgument(0));
+      approval.set(inv.getArgument(1));
+      return null;
+    }).when(store).saveDecision(any(), any());
+    when(store.findDecision(eq(TENANT), any())).thenAnswer(inv -> Optional.ofNullable(decision.get()));
+    when(store.findApprovalByDecision(any())).thenAnswer(inv -> Optional.ofNullable(approval.get()));
+    long start = System.nanoTime();
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", requestWaiting(1), null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
+    assertThat(Duration.ofNanos(System.nanoTime() - start)).isGreaterThanOrEqualTo(Duration.ofMillis(900));
+  }
+
+  @Test
+  void waitSeconds对非PENDING结果不等待() {
+    verdict("ALLOW", null, null);
+    long start = System.nanoTime();
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", requestWaiting(30), null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
+    assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(2));
+    verify(store, never()).findDecision(any(), any());
   }
 
   @Test

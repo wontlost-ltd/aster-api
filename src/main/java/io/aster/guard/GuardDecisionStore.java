@@ -1,5 +1,7 @@
 package io.aster.guard;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -24,4 +26,23 @@ public interface GuardDecisionStore {
    * @param approvalOrNull REQUIRE_APPROVAL / ESCALATE 时的待审批行，其余为 null
    */
   void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull);
+
+  /** 按租户限定查找审批；跨租户返回 empty。 */
+  Optional<GuardApprovalEntity> findApproval(String tenantId, UUID approvalId);
+
+  /** 租户内按状态分页，按创建时间倒序；size 上限 200。 */
+  List<GuardApprovalEntity> listApprovals(String tenantId, GuardApprovalStatus status, int page, int size);
+
+  /** 跨租户取出 {@code expires_at < now} 的 PENDING 审批，最多 limit 条，按到期时间升序。 */
+  List<GuardApprovalEntity> findExpiredPending(Instant now, int limit);
+
+  /**
+   * 在<b>一个事务</b>内完成审批状态迁移：以 {@code PESSIMISTIC_WRITE} 锁住审批行，确认它仍是 PENDING，
+   * 且（目标不是 EXPIRED 时）在 {@code decided.decidedAt} 时刻尚未过期，然后写入 {@code decided} 的
+   * status / decidedBy / decidedAt / comment / receiptAuditId，并把关联决策行的 response_json 替换为
+   * {@code newResponseJson}。
+   *
+   * @return false 表示加锁后发现已不可迁移（已被处理或已过期），此时不做任何修改
+   */
+  boolean completeApproval(GuardApprovalEntity decided, String newResponseJson);
 }

@@ -2,6 +2,7 @@ package io.aster.guard.api;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+import io.aster.guard.GuardApprovalStatus;
 
 import java.util.List;
 
@@ -32,6 +33,16 @@ public record GuardDecisionResponse(
   /** controls 归一为不可变列表：空列表不写出，回读得到 null，归一后首次响应与重放响应 equals。 */
   public GuardDecisionResponse {
     controls = controls == null ? List.of() : List.copyOf(controls);
+  }
+
+  /**
+   * 按审批状态重算：{@code approval.status} 改为 {@code status}，{@code effectiveOutcome} 取该状态对应的结论。
+   * 对同一状态重复调用结果不变；只用于带审批视图的（REQUIRE_APPROVAL / ESCALATE）响应。
+   */
+  public GuardDecisionResponse withApprovalStatus(GuardApprovalStatus status) {
+    ApprovalView a = new ApprovalView(approval.expiresAt(), approval.id(), approval.requiredRole(), status.name());
+    return new GuardDecisionResponse(a, controls, decisionId, status.effectiveOutcome(), outcome, policyVersion,
+        reason, reasonCode, receipt, role, ruleId);
   }
 
   /** 待审批视图；{@code expiresAt} 为 ISO-8601 字符串，{@code requiredRole} 为 null 表示任意复核人。 */

@@ -25,6 +25,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
@@ -42,6 +43,9 @@ public class GuardDecisionService {
   private static final Logger LOG = Logger.getLogger(GuardDecisionService.class);
   static final Duration EVALUATION_TIMEOUT = Duration.ofSeconds(10);
   static final int MAX_COLUMN_TEXT = 255;
+  /** waitSeconds 上限与轮询间隔（ADR 0040 §3.1）：等待只是省掉客户端轮询，不能长时间占住 worker 线程。 */
+  static final int MAX_WAIT_SECONDS = 30;
+  static final long WAIT_POLL_MILLIS = 500;
 
   /** 活跃版本查询的事务边界：生产为 requiringNew，单测直接执行（不启动 Quarkus）。 */
   @FunctionalInterface
@@ -89,12 +93,19 @@ public class GuardDecisionService {
 
   /**
    * 对一个提议动作作出决策。同一租户同一幂等键重放返回首次响应（含同一 decisionId 与收据）；
-   * 并发同键时后写者回读先到者的响应。
+   * 并发同键时后写者回读先到者的响应。结果为 PENDING 且 {@code waitSeconds > 0} 时，
+   * 在时限内等待人工结论，返回等待结束时的最新响应。
    *
    * @throws GuardInvalidActionException  请求体校验失败
    * @throws GuardPolicyNotFoundException 策略不存在或无活跃版本
    */
   public GuardDecisionResponse decide(String tenantId, String performedBy, GuardActionRequest req, String rawIdempotencyKey) {
+    GuardDecisionResponse response = decideOnce(tenantId, performedBy, req, rawIdempotencyKey);
+    return awaitApproval(tenantId, response, clampWaitSeconds(req == null ? null : req.waitSeconds()));
+  }
+
+  private GuardDecisionResponse decideOnce(String tenantId, String performedBy, GuardActionRequest req,
+                                           String rawIdempotencyKey) {
     String idempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
     Optional<GuardDecisionResponse> replay = findByIdempotencyKey(tenantId, idempotencyKey);
     if (replay.isPresent()) {
@@ -125,16 +136,57 @@ public class GuardDecisionService {
     return response;
   }
 
-  /** 回读决策响应；跨租户返回 empty。 */
+  /** 回读决策的当前响应（含审批结论与读取时的过期判定）；跨租户返回 empty。 */
   public Optional<GuardDecisionResponse> get(String tenantId, UUID decisionId) {
-    return store.findDecision(tenantId, decisionId).map(this::readResponse);
+    return store.findDecision(tenantId, decisionId).map(this::currentResponse);
+  }
+
+  /** null 与负数为 0（不等待），超过上限按 {@link #MAX_WAIT_SECONDS}。 */
+  static int clampWaitSeconds(Integer waitSeconds) {
+    return waitSeconds == null ? 0 : Math.max(0, Math.min(MAX_WAIT_SECONDS, waitSeconds));
+  }
+
+  /** 每 {@link #WAIT_POLL_MILLIS} 回读一次，直到不再 PENDING 或到时；线程被中断则立即返回已知最新响应。 */
+  private GuardDecisionResponse awaitApproval(String tenantId, GuardDecisionResponse response, int waitSeconds) {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(waitSeconds);
+    GuardDecisionResponse latest = response;
+    while (GuardDecisionDraft.PENDING.equals(latest.effectiveOutcome()) && System.nanoTime() < deadline) {
+      long remainingMillis = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+      try {
+        Thread.sleep(Math.max(1, Math.min(WAIT_POLL_MILLIS, remainingMillis)));
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return latest;
+      }
+      latest = get(tenantId, UUID.fromString(latest.decisionId())).orElse(latest);
+    }
+    return latest;
   }
 
   private Optional<GuardDecisionResponse> findByIdempotencyKey(String tenantId, String idempotencyKey) {
     if (idempotencyKey == null) {
       return Optional.empty();
     }
-    return store.findByIdempotencyKey(tenantId, idempotencyKey).map(this::readResponse);
+    return store.findByIdempotencyKey(tenantId, idempotencyKey).map(this::currentResponse);
+  }
+
+  /**
+   * 存储响应 + 审批现状。审批迁移会同步改写 response_json，所以只有仍显示 PENDING 的响应需要再看审批行：
+   * 读取时判定过期，不依赖调度器及时（ADR 0040 §4.3），不写库。
+   */
+  private GuardDecisionResponse currentResponse(GuardDecisionEntity e) {
+    GuardDecisionResponse stored = readResponse(e);
+    if (!GuardDecisionDraft.PENDING.equals(stored.effectiveOutcome())) {
+      return stored;
+    }
+    return stored.withApprovalStatus(approvalStatus(e.id, Instant.now()));
+  }
+
+  /** PENDING 却没有审批行（原子落库后不应出现）按 EXPIRED 处理：fail-closed，且再也无法被批准。 */
+  private GuardApprovalStatus approvalStatus(UUID decisionId, Instant now) {
+    return store.findApprovalByDecision(decisionId)
+        .map(a -> a.isExpired(now) ? GuardApprovalStatus.EXPIRED : a.status)
+        .orElse(GuardApprovalStatus.EXPIRED);
   }
 
   /** 空白视为未提供；超长（列宽 255）或含控制字符在评估与写收据之前就拒绝。 */
