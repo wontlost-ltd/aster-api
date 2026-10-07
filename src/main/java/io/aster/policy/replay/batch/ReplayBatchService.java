@@ -980,6 +980,7 @@ public class ReplayBatchService {
                     e.executionId(), frozenBaseApproved, frozenBaseApproved, null);
             }
 
+            // REQUIRE_APPROVAL / ESCALATE 是真实的非批准决策，按「未通过」参与比较
             boolean targetApproved = targetVerdict == DecisionInterpreter.Verdict.APPROVED;
             return ReplayBatchRunner.ItemResult.ok(
                 e.executionId(), frozenBaseApproved, targetApproved, null);

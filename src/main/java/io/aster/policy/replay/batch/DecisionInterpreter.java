@@ -1,21 +1,23 @@
 package io.aster.policy.replay.batch;
 
-import java.util.Locale;
+import io.aster.policy.governance.VerdictView;
+
 import java.util.Map;
 
 /**
- * 把策略执行结果解读成「是否通过」（ADR 0034）。
+ * 把策略执行结果解读成决策口径（ADR 0039 §5.2）。
  *
- * <p><b>为什么单独抽一个类</b>：What-If 要比较 base 与 target 两个版本的决策，
- * 而「什么算通过」必须与线上口径**完全一致**——否则比较出来的「变化」
- * 可能只是两套解读规则的差异，而不是策略本身的变化。
- *
- * <p>那会是最糟的一种错误：数字看起来合理，实际测量的是错的东西。
- *
- * <p>★三态而非二态：{@link Verdict#INDETERMINATE} 表示「这不是一个准入决策」
- * （如策略返回一个数字或文本）。把它当成「拒绝」会凭空造出大量「变化」——
- * 本仓在 executions 表上踩过同样的坑（见 {@code decision} 列注释：
- * 值输出被 {@code success=false} 误记成失败）。
+ * <p>What-If 要比较 base 与 target 两个版本的决策，「什么算通过」必须与线上完全一致，
+ * 否则比较出的「变化」可能只是解读规则的差异。因此只保留三条类型驱动的确定性规则，
+ * 不做任何字符串语义猜测：
+ * <ol>
+ *   <li>Verdict 值（{@code __type == "Verdict"}）按 {@code outcome} 直映；</li>
+ *   <li>{@code Boolean} 直映；</li>
+ *   <li>{@code Map} 含 Boolean 类型的 {@code approved} 键直映
+ *       （{@code Define Decision has approved, reason} 模板约定）。</li>
+ * </ol>
+ * 其余一律 {@link Verdict#INDETERMINATE}：它表示「这不是一个准入决策」，
+ * 不参与比较，避免把值输出误当成拒绝而造出假的「变化」。
  */
 public final class DecisionInterpreter {
 
@@ -23,75 +25,40 @@ public final class DecisionInterpreter {
     }
 
     public enum Verdict {
-        /** 明确通过。 */
+        /** 明确通过（Verdict ALLOW，或布尔/approved 为 true）。 */
         APPROVED,
-        /** 明确拒绝。 */
+        /** 明确拒绝（Verdict DENY，或布尔/approved 为 false）。 */
         DENIED,
-        /**
-         * 不是准入决策（值输出、计算结果等）。
-         *
-         * <p>★这类执行**不参与** approved/denied 的比较——
-         * 它们既不是通过也不是拒绝，强行归入任一边都会造出假的「变化」。
-         */
+        /** 需要人工批准：真实的非通过决策，参与比较。 */
+        REQUIRE_APPROVAL,
+        /** 需要上报：真实的非通过决策，参与比较。 */
+        ESCALATE,
+        /** 不是准入决策（值输出、未知 outcome 等），不参与比较。 */
         INDETERMINATE
     }
 
-    /**
-     * 解读执行结果。
-     *
-     * <p>支持的形态与线上一致：
-     * <ul>
-     *   <li>{@code Boolean} —— true=通过</li>
-     *   <li>{@code String} —— "APPROVED"/"true" 通过，"REJECTED"/"DENIED"/"false" 拒绝</li>
-     *   <li>{@code Map} —— 读 {@code approved} / {@code decision} 键</li>
-     *   <li>带 {@code isApproved()} 的对象 —— 反射读取</li>
-     * </ul>
-     * 其余一律 {@link Verdict#INDETERMINATE}——★<b>不猜</b>。
-     */
+    /** 按三条规则解读执行结果；无法解读时返回 {@link Verdict#INDETERMINATE}。 */
     public static Verdict interpret(Object result) {
-        if (result == null) {
-            return Verdict.INDETERMINATE;
+        var view = VerdictView.from(result);
+        if (view.isPresent()) {
+            return switch (view.get().outcome()) {
+                case "ALLOW" -> Verdict.APPROVED;
+                case "DENY" -> Verdict.DENIED;
+                case "REQUIRE_APPROVAL" -> Verdict.REQUIRE_APPROVAL;
+                case "ESCALATE" -> Verdict.ESCALATE;
+                default -> Verdict.INDETERMINATE;
+            };
         }
         if (result instanceof Boolean b) {
-            return b ? Verdict.APPROVED : Verdict.DENIED;
+            return fromBoolean(b);
         }
-        if (result instanceof String s) {
-            return fromString(s);
-        }
-        if (result instanceof Map<?, ?> m) {
-            Object approved = m.get("approved");
-            if (approved instanceof Boolean b) {
-                return b ? Verdict.APPROVED : Verdict.DENIED;
-            }
-            Object decision = m.get("decision");
-            if (decision instanceof String s) {
-                return fromString(s);
-            }
-            return Verdict.INDETERMINATE;
-        }
-        try {
-            var method = result.getClass().getMethod("isApproved");
-            if (method.getReturnType() == boolean.class || method.getReturnType() == Boolean.class) {
-                Object v = method.invoke(result);
-                if (v instanceof Boolean b) {
-                    return b ? Verdict.APPROVED : Verdict.DENIED;
-                }
-            }
-        } catch (ReflectiveOperationException ignored) {
-            // 没有这个方法：不是准入结果，落 INDETERMINATE
+        if (result instanceof Map<?, ?> m && m.get("approved") instanceof Boolean b) {
+            return fromBoolean(b);
         }
         return Verdict.INDETERMINATE;
     }
 
-    private static Verdict fromString(String raw) {
-        String s = raw.trim().toLowerCase(Locale.ROOT);
-        if ("approved".equals(s) || "true".equals(s) || "approve".equals(s)) {
-            return Verdict.APPROVED;
-        }
-        if ("rejected".equals(s) || "denied".equals(s) || "false".equals(s) || "deny".equals(s)) {
-            return Verdict.DENIED;
-        }
-        // ★任意其他字符串是**值输出**（如 "Hello"、"42"），不是决策
-        return Verdict.INDETERMINATE;
+    private static Verdict fromBoolean(boolean approved) {
+        return approved ? Verdict.APPROVED : Verdict.DENIED;
     }
 }
