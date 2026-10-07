@@ -55,12 +55,13 @@ class GuardReceiptBuilderTest {
     assertThat(event.performedBy()).isEqualTo("user-1");
     assertThat(event.metadata()).containsKeys("decisionId", "outcome", "effectiveOutcome", "ruleId", "controls",
         "principalId", "principalType", "actionName", "resourceType", "resourceId", "contextHash", "agentModel",
-        "policyVersionId", "sourceHash", "approvalId", "idempotencyKey", "reason");
+        "policyVersionId", "sourceHash", "approvalId", "idempotencyKey", "reason", "principalRoles");
     assertThat(event.metadata()).containsEntry("decisionId", decisionId.toString())
         .containsEntry("approvalId", approvalId.toString())
         .containsEntry("outcome", "REQUIRE_APPROVAL")
         .containsEntry("effectiveOutcome", "PENDING")
         .containsEntry("controls", List.of("GDPR:ART17", "SOX:404"))
+        .containsEntry("principalRoles", List.of("ops-bot"))
         .containsEntry("policyVersionId", 1730890123456L)
         .containsEntry("sourceHash", HASH)
         .containsEntry("contextHash", d.contextHash())
@@ -102,7 +103,8 @@ class GuardReceiptBuilderTest {
   @Test
   void 最坏情况metadata不超过预算且身份字段完好() throws Exception {
     String text = nasty(255);
-    Action a = new Action(new Principal(text, text, List.of(text)), new ActionName(text), new Resource(text, text),
+    List<String> roles = IntStream.range(0, 16).mapToObj(i -> text).toList();
+    Action a = new Action(new Principal(text, text, roles), new ActionName(text), new Resource(text, text),
         Map.of("amount", 250000), new Agent(text, text));
     List<String> controls = IntStream.range(0, 16).mapToObj(i -> "\"\\".repeat(32)).toList();
     String contextHash = mapper.contextHash(Map.of("amount", 250000));
@@ -125,6 +127,28 @@ class GuardReceiptBuilderTest {
         .containsEntry("effectiveOutcome", "PENDING")
         .containsEntry("sourceHash", HASH);
     assertThat(event.performedBy()).hasSizeLessThanOrEqualTo(100);
+    // roles 只会从末尾整项删除，剩下的是原列表的前缀
+    @SuppressWarnings("unchecked")
+    List<String> keptRoles = (List<String>) event.metadata().get("principalRoles");
+    assertThat(roles.subList(0, keptRoles.size())).isEqualTo(keptRoles);
+  }
+
+  @Test
+  void principalRoles缩短时从末尾逐项删除且不截断单项() {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("decisionId", "d");
+    m.put("principalRoles", IntStream.range(0, 16).mapToObj(i -> i + "-" + "r".repeat(250)).toList());
+
+    Map<String, Object> fitted = builder.fitBudget(m);
+
+    @SuppressWarnings("unchecked")
+    List<String> kept = (List<String>) fitted.get("principalRoles");
+    assertThat(builder.measure(fitted)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat(kept).isNotEmpty().hasSizeLessThan(16);
+    for (int i = 0; i < kept.size(); i++) {
+      assertThat(kept.get(i)).isEqualTo(i + "-" + "r".repeat(250));
+    }
+    assertThat(fitted).containsEntry("decisionId", "d");
   }
 
   @Test

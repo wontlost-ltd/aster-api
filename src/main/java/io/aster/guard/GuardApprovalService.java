@@ -11,7 +11,6 @@ import org.jboss.logging.Logger;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -20,7 +19,8 @@ import java.util.UUID;
  *
  * <p>每次迁移的顺序固定为三步，且审计追加不在任何持有审批行锁的事务里进行：
  * <ol>
- *   <li>读（短事务）：取审批行与决策行，做全部校验——存在 → PENDING 且未过期 → 四眼 → 角色 → comment；</li>
+ *   <li>读（短事务）：取审批行与决策行，做全部校验——存在 → PENDING 且未过期 → 四眼（发起主体、请求方用户、
+ *       请求所用 API key）→ 角色 → comment；</li>
  *   <li>{@link AuditChainAppender#appendSync} 写 {@code ACTION_GUARD_APPROVAL} 事件（自身独立事务），
  *       metadata 的 decisionReceiptHash 指回决策收据；失败则 {@code receipt_unavailable}，状态不变；</li>
  *   <li>{@link GuardDecisionStore#completeApproval}：加 {@code PESSIMISTIC_WRITE} 锁复核仍可迁移，
@@ -61,22 +61,27 @@ public class GuardApprovalService {
   /**
    * 批准或拒绝一条待审批，返回重算后的决策响应（批准 ALLOW，拒绝 DENY）。
    *
-   * @param decidedBy    审批人（{@code X-User-Id}），不得等于发起主体
-   * @param businessRole 审批人的业务角色（{@code X-User-Business-Role}）；审批指定角色时必须相等
-   * @param comment      拒绝时必填
+   * @param decidedBy        审批人（{@code RequestIdentityResolver.performedBy}）：不得等于发起主体或提交请求的用户
+   * @param approverApiKeyId 审批请求所用的已验证 API key：不得等于提交决策请求所用的 key
+   * @param businessRole     审批人的业务角色（{@code X-User-Business-Role}，可信 BFF 标签）；审批指定角色时必须相等
+   * @param comment          拒绝时必填
    * @throws GuardApprovalConflictException 校验失败、并发冲突或审批事件写入失败
    */
-  public GuardDecisionResponse decideApproval(String tenantId, UUID approvalId, String decidedBy, String businessRole,
-                                              boolean approve, String comment) {
+  public GuardDecisionResponse decideApproval(String tenantId, UUID approvalId, String decidedBy,
+                                              String approverApiKeyId, String businessRole, boolean approve,
+                                              String comment) {
     GuardApprovalEntity approval = store.findApproval(tenantId, approvalId)
         .orElseThrow(() -> conflict("approval_not_found", "审批不存在: " + approvalId));
+    GuardDecisionEntity decision = decisionOf(approval);
     Instant now = Instant.now();
-    validate(approval, now, decidedBy, businessRole, approve, comment);
+    checkPending(approval, now);
+    checkSegregation(approval, decision, decidedBy, approverApiKeyId);
+    checkRoleAndInput(approval, decidedBy, businessRole, approve, comment);
     approval.status = approve ? GuardApprovalStatus.APPROVED : GuardApprovalStatus.REJECTED;
     approval.decidedBy = decidedBy;
     approval.decidedAt = now;
     approval.comment = isBlank(comment) ? null : comment;
-    return complete(approval).orElseThrow(() -> notPending(approvalId));
+    return complete(approval, decision).orElseThrow(() -> notPending(approvalId));
   }
 
   /** 租户内按状态分页列出审批（按创建时间倒序）；PENDING 只含当前仍可审批的行。 */
@@ -106,22 +111,37 @@ public class GuardApprovalService {
     approval.decidedAt = now;
     approval.comment = null;
     try {
-      return complete(approval).isPresent();
+      return complete(approval, decisionOf(approval)).isPresent();
     } catch (RuntimeException e) {
       LOG.errorf(e, "Action Guard 审批过期处理失败，下一轮重试: approval=%s", approval.id);
       return false;
     }
   }
 
-  /** 校验顺序即 ADR 0040 §4.2 的规则顺序：存在 → PENDING 且未过期 → 四眼 → 角色 → comment。 */
-  private static void validate(GuardApprovalEntity a, Instant now, String decidedBy, String businessRole,
-                               boolean approve, String comment) {
+  // 校验顺序即 ADR 0040 §4.2 的规则顺序：存在 → PENDING 且未过期 → 四眼 → 角色 → comment → 列宽。
+
+  private static void checkPending(GuardApprovalEntity a, Instant now) {
     if (a.status != GuardApprovalStatus.PENDING || a.isExpired(now)) {
       throw notPending(a.id);
     }
-    if (Objects.equals(decidedBy, a.principalId)) {
-      throw conflict("segregation_of_duties", "发起主体不能审批自己的动作");
+  }
+
+  /**
+   * 四眼：审批人不得是发起主体（principal_id）、提交决策请求的用户（requested_by），
+   * 也不得与提交请求共用同一个已验证 API key（requested_api_key_id）。只比对双方都非空白的值：
+   * 本列引入之前的决策行没有请求方身份，只按 principal_id 比对。
+   */
+  private static void checkSegregation(GuardApprovalEntity a, GuardDecisionEntity d, String decidedBy,
+                                       String approverApiKeyId) {
+    if (sameIdentity(decidedBy, a.principalId) || sameIdentity(decidedBy, d.requestedBy)
+        || sameIdentity(approverApiKeyId, d.requestedApiKeyId)) {
+      throw conflict("segregation_of_duties", "动作的发起主体或提交方不能审批该动作");
     }
+  }
+
+  /** 角色 → 拒绝须带 comment → 列宽（审批人 1–255、comment ≤ 1000，超长拒绝而不是截断）。 */
+  private static void checkRoleAndInput(GuardApprovalEntity a, String decidedBy, String businessRole,
+                                        boolean approve, String comment) {
     if (a.requiredRole != null && !a.requiredRole.equals(businessRole)) {
       throw conflict("role_mismatch", "该审批需要业务角色: " + a.requiredRole);
     }
@@ -133,14 +153,21 @@ public class GuardApprovalService {
     }
   }
 
+  private static boolean sameIdentity(String a, String b) {
+    return !isBlank(a) && a.equals(b);
+  }
+
+  private GuardDecisionEntity decisionOf(GuardApprovalEntity approval) {
+    return store.findDecision(approval.tenantId, approval.decisionId).orElseThrow(
+        () -> new IllegalStateException("审批 " + approval.id + " 关联的决策不存在: " + approval.decisionId));
+  }
+
   /**
    * 第 2、3 步：先入链，再加锁迁移。approval 已带目标状态；返回 empty 表示加锁后发现已不可迁移。
    *
    * @throws GuardApprovalConflictException {@code receipt_unavailable}：审批事件未入链，状态不变
    */
-  private Optional<GuardDecisionResponse> complete(GuardApprovalEntity approval) {
-    GuardDecisionEntity decision = store.findDecision(approval.tenantId, approval.decisionId).orElseThrow(
-        () -> new IllegalStateException("审批 " + approval.id + " 关联的决策不存在: " + approval.decisionId));
+  private Optional<GuardDecisionResponse> complete(GuardApprovalEntity approval, GuardDecisionEntity decision) {
     approval.receiptAuditId = appendEvent(approval, decision.receiptHash).auditId();
     GuardDecisionResponse response = readResponse(decision).withApprovalStatus(approval.status);
     if (!store.completeApproval(approval, writeJson(response))) {

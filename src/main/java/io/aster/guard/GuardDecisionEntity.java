@@ -13,7 +13,10 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Action Guard 决策记录（ADR 0040 §3.3）。response_json 保存首次响应，幂等重放原样返回。 */
+/**
+ * Action Guard 决策记录（ADR 0040 §3.3）。response_json 是<b>当前</b>响应：审批迁移时与审批行同一事务改写，
+ * 幂等重放与回读都从它读取。requested_by / requested_api_key_id 记录提交请求的已解析身份，供审批四眼校验。
+ */
 @RegisterForReflection
 @Entity
 @Table(name = "guard_decisions")
@@ -39,6 +42,8 @@ public class GuardDecisionEntity extends PanacheEntityBase {
   @Column(name = "receipt_audit_id") public Long receiptAuditId;
   @Column(name = "receipt_hash") public String receiptHash;
   @JdbcTypeCode(SqlTypes.JSON) @Column(name = "response_json", columnDefinition = "jsonb", nullable = false) public String responseJson;
+  @Column(name = "requested_by") public String requestedBy;
+  @Column(name = "requested_api_key_id") public String requestedApiKeyId;
   @Column(name = "created_at", nullable = false) public Instant createdAt = Instant.now();
 
   public static Optional<GuardDecisionEntity> findByIdempotencyKey(String tenantId, String key) {

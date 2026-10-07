@@ -195,6 +195,22 @@ class GuardDecisionResourceTest {
   }
 
   @Test
+  void 同键不同动作返回422_同键同体仍重放() {
+    String key = "idem-mismatch-" + UUID.randomUUID();
+
+    Response first = post(TENANT, allowBody(), key);
+    Response otherAction = post(TENANT, body(ALLOW_MODULE, FUNCTION, "export_customer_record", "agent-42"), key);
+    Response replay = post(TENANT, allowBody(), key);
+
+    assertThat(first.statusCode()).isEqualTo(200);
+    assertThat(otherAction.statusCode()).isEqualTo(422);
+    assertThat(otherAction.jsonPath().getString("error")).isEqualTo("idempotency_mismatch");
+    assertThat(otherAction.jsonPath().getString("message")).isNotBlank();
+    assertThat(replay.statusCode()).isEqualTo(200);
+    assertThat(replay.jsonPath().getString("decisionId")).isEqualTo(first.jsonPath().getString("decisionId"));
+  }
+
+  @Test
   void 并发同键只产生一个决策() throws Exception {
     String key = "idem-concurrent-" + UUID.randomUUID();
     int threads = 8;

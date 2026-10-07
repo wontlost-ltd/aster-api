@@ -20,6 +20,7 @@ import java.util.Objects;
  * <ul>
  *   <li>键序固定：principal_id, principal_type, principal_roles, action, resource_type, resource_id, context, agent_model；</li>
  *   <li>文本字段 ≤ 255 字符且不含控制字符——与 guard_decisions 列宽一致，并保证收据 metadata 有确定上界；</li>
+ *   <li>principal.roles ≤ 16 项，每项同文本字段规则（roles 进入收据 metadata）；</li>
  *   <li>context 深度 ≤ 8、序列化 ≤ 65536 字节、不允许 null 值；</li>
  *   <li>context 与 roles 深拷贝为不可变集合：规则运行时开启了 Map/List 访问，可变集合会被 interop 写入（Task 1 裁定）。</li>
  * </ul>
@@ -29,6 +30,7 @@ public class GuardActionMapper {
   static final int MAX_CONTEXT_DEPTH = 8;
   static final int MAX_CONTEXT_BYTES = 65_536;
   static final int MAX_TEXT_LENGTH = 255;
+  static final int MAX_ROLES = 16;
   /** sha256-sorted-json/v1：Map 键排序后序列化，摘要与 context 的键写入顺序无关。 */
   private static final ObjectMapper SORTED = new ObjectMapper().configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
 
@@ -82,13 +84,18 @@ public class GuardActionMapper {
     return value;
   }
 
+  /** 至多 {@link #MAX_ROLES} 项，每项按文本字段校验；返回不可变副本。 */
   private static List<String> roles(List<String> roles) {
     if (roles == null) {
       return List.of();
     }
+    if (roles.size() > MAX_ROLES) {
+      throw new GuardInvalidActionException("principal.roles 超过 " + MAX_ROLES + " 项");
+    }
     if (roles.stream().anyMatch(Objects::isNull)) {
       throw new GuardInvalidActionException("principal.roles 不允许 null 元素");
     }
+    roles.forEach(role -> text("principal.roles", role, ""));
     return List.copyOf(roles);
   }
 

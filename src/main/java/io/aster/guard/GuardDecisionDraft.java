@@ -47,6 +47,12 @@ public record GuardDecisionDraft(
     controls = controls == null ? List.of() : List.copyOf(controls);
   }
 
+  /** 补上评估前解析到的活跃策略版本（幂等查重在版本解析之前完成）。 */
+  public GuardDecisionDraft withPolicyVersion(PolicyVersionView version) {
+    return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash,
+        version, outcome, role, reason, ruleId, controls, reasonCode);
+  }
+
   /** 记录被执行规则的身份（{@code @id} / {@code @control}），与结论无关。 */
   public GuardDecisionDraft withRule(String newRuleId, List<String> newControls) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash,
@@ -90,6 +96,13 @@ public record GuardDecisionDraft(
 
   public String principalType() {
     return text("principal_type");
+  }
+
+  /** {@link GuardActionMapper#flatten} 已校验并冻结的 principal.roles；缺失时为空列表。 */
+  public List<String> principalRoles() {
+    return action.get("principal_roles") instanceof List<?> roles
+        ? roles.stream().map(String::valueOf).toList()
+        : List.of();
   }
 
   public String actionName() {

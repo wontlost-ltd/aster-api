@@ -2,6 +2,7 @@ package io.aster.guard.api;
 
 import io.aster.billing.ApiQuotaGuard;
 import io.aster.guard.GuardDecisionService;
+import io.aster.guard.GuardIdempotencyMismatchException;
 import io.aster.guard.GuardInvalidActionException;
 import io.aster.guard.GuardPolicyNotFoundException;
 import io.aster.policy.rest.RequestIdentityResolver;
@@ -30,14 +31,19 @@ import java.util.UUID;
  * 决策服务内部同步等待规则评估与审计链写入。不加 {@code @Transactional}：服务内部各写入步骤
  * 自行开启独立事务。路径由 {@code ApiKeyAuthFilter} 统一纳入 API key 鉴权。
  */
-@Path(GuardDecisionResource.PATH)
+@Path("/api/v1/guard/decisions")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @RequireRole(Role.MEMBER)
 public class GuardDecisionResource {
 
-  /** 计量与日志使用的端点路径。 */
+  /**
+   * 计量与日志使用的端点路径，与类级 {@code @Path} 相同。类级注解必须写字符串字面量：
+   * 公开 API 契约守卫（{@code PublicApiContractTest}）只识别字面量，写常量会让本端点逃出契约。
+   */
   static final String PATH = "/api/v1/guard/decisions";
+  /** JAX-RS {@link Response.Status} 没有 422 常量。 */
+  private static final int UNPROCESSABLE_ENTITY = 422;
 
   @Inject
   RequestIdentityResolver identityResolver;
@@ -49,8 +55,9 @@ public class GuardDecisionResource {
   ApiQuotaGuard apiQuotaGuard;
 
   /**
-   * 对提议动作作出决策；{@code Idempotency-Key} 可选，同租户同键重放返回首次响应。
-   * 返回决策（200）时按 {@link #PATH} 计量一次调用，与 {@code /evaluate} 同一计费口径；400 / 404 不计量。
+   * 对提议动作作出决策；{@code Idempotency-Key} 可选，同租户同键重放同一决策（审批状态取当前值），
+   * 同键不同动作返回 422 {@code idempotency_mismatch}。
+   * 返回决策（200）时按 {@link #PATH} 计量一次调用，与 {@code /evaluate} 同一计费口径；400 / 404 / 422 不计量。
    */
   @POST
   public Response decide(@Valid GuardActionRequest req, @HeaderParam("Idempotency-Key") String idempotencyKey) {
@@ -64,14 +71,16 @@ public class GuardDecisionResource {
       return quotaRejection.get();
     }
     try {
-      GuardDecisionResponse decision = service.decide(tenantId, performedBy, req, idempotencyKey);
+      GuardDecisionResponse decision = service.decide(tenantId, performedBy, apiKeyId, req, idempotencyKey);
       apiQuotaGuard.recordAsync(performedBy, tenantId, apiKeyId, PATH, "success",
           System.currentTimeMillis() - startTime);
       return Response.ok(decision).build();
     } catch (GuardInvalidActionException bad) {
-      return error(Response.Status.BAD_REQUEST, "invalid_action", bad.getMessage());
+      return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_action", bad.getMessage());
+    } catch (GuardIdempotencyMismatchException mismatch) {
+      return error(UNPROCESSABLE_ENTITY, "idempotency_mismatch", mismatch.getMessage());
     } catch (GuardPolicyNotFoundException nf) {
-      return error(Response.Status.NOT_FOUND, "policy_not_found", nf.getMessage());
+      return error(Response.Status.NOT_FOUND.getStatusCode(), "policy_not_found", nf.getMessage());
     }
   }
 
@@ -136,7 +145,7 @@ public class GuardDecisionResource {
         .build());
   }
 
-  private static Response error(Response.Status status, String code, String message) {
+  private static Response error(int status, String code, String message) {
     return Response.status(status).entity(Map.of("error", code, "message", message)).build();
   }
 }

@@ -186,6 +186,21 @@ class GuardApprovalResourceTest {
   }
 
   @Test
+  void 提交决策的同一用户换principal也不能自批_403_segregation_of_duties() {
+    // 决策由 user-guard-approval 提交、principal.id 为 agent-42；同一用户带上所需角色头来批准
+    String[] ids = createPending();
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity
+        .<GuardDecisionEntity>findById(UUID.fromString(ids[0])).requestedBy)).isEqualTo("user-guard-approval");
+
+    Response r = decide(ids[1], "approve", "user-guard-approval", DPO, null);
+
+    assertThat(r.statusCode()).isEqualTo(403);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("segregation_of_duties");
+    assertThat(approvalRow(ids[1]).status).isEqualTo(GuardApprovalStatus.PENDING);
+    assertThat(getDecision(ids[0]).jsonPath().getString("effectiveOutcome")).isEqualTo("PENDING");
+  }
+
+  @Test
   void 缺角色头返回403_role_mismatch() {
     String[] ids = createPending();
 

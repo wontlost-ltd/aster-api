@@ -19,7 +19,7 @@ import java.util.UUID;
  * 构造 Action Guard 的审计收据事件（ADR 0040 §5.2）。
  *
  * <p>metadata 序列化必须 ≤ 4096 字节：追加器超限会截断成非法 JSON。因此每个字符串值都按上界截断，
- * controls 限条数与单条长度——请求侧文本已由 {@link GuardActionMapper} 限为 255 字符，
+ * controls 与 principalRoles 限条数与单条长度——请求侧文本已由 {@link GuardActionMapper} 限为 255 字符，
  * 这里的截断兜住规则侧（reason / ruleId / controls）与调用方身份等不受请求校验约束的值。
  * 明文 context 绝不进入收据，只写 contextHash。
  *
@@ -41,13 +41,13 @@ public class GuardReceiptBuilder {
   static final int METADATA_BUDGET = 3800;
   /**
    * 超出预算时的缩短顺序：先缩对追溯价值最低、来源最不受控的自由文本。
-   * reason（规则说明）→ agentModel → resourceId → principalId → actionName → resourceType → principalType；
-   * 每轮把当前字段缩到不超过一半，直到达标或该字段为空，再处理下一个。
+   * reason（规则说明）→ agentModel → resourceId → principalId → actionName → resourceType → principalType
+   * → principalRoles；文本每轮缩到不超过一半，列表每轮删掉最后一项，直到达标或该字段为空，再处理下一个。
    * 身份与完整性字段（decisionId、approvalId、contextHash、outcome、effectiveOutcome、reasonCode、
    * ruleId、policyVersionId、sourceHash、idempotencyKey）永不改动；自由文本全部清空仍超限时，最后才删除 controls。
    */
-  static final List<String> SHRINK_ORDER =
-      List.of("reason", "agentModel", "resourceId", "principalId", "actionName", "resourceType", "principalType");
+  static final List<String> SHRINK_ORDER = List.of("reason", "agentModel", "resourceId", "principalId", "actionName",
+      "resourceType", "principalType", "principalRoles");
   /** 只用于测量长度：对 String / List / Long 值，序列化结果与 Quarkus 托管的 ObjectMapper 相同。 */
   private static final ObjectMapper MEASURE = new ObjectMapper();
   private final PIIRedactor piiRedactor = new PIIRedactor();
@@ -64,6 +64,7 @@ public class GuardReceiptBuilder {
     put(m, "controls", controls(draft.controls()));
     put(m, "principalId", clip(draft.principalId(), MAX_TEXT));
     put(m, "principalType", clip(draft.principalType(), MAX_TEXT));
+    put(m, "principalRoles", roles(draft.principalRoles()));
     put(m, "actionName", clip(draft.actionName(), MAX_TEXT));
     put(m, "resourceType", clip(draft.resourceType(), MAX_TEXT));
     put(m, "resourceId", clip(draft.resourceId(), MAX_TEXT));
@@ -103,8 +104,8 @@ public class GuardReceiptBuilder {
   /** 按 {@link #SHRINK_ORDER} 缩短自由文本直到测量长度 ≤ {@link #METADATA_BUDGET}；仍超限则删除 controls。 */
   Map<String, Object> fitBudget(Map<String, Object> m) {
     for (String key : SHRINK_ORDER) {
-      while (measure(m) > METADATA_BUDGET && m.get(key) instanceof String s && !s.isEmpty()) {
-        m.put(key, half(s));
+      while (measure(m) > METADATA_BUDGET && shrinkable(m.get(key))) {
+        m.put(key, shrink(m.get(key)));
       }
     }
     if (measure(m) > METADATA_BUDGET) {
@@ -128,6 +129,18 @@ public class GuardReceiptBuilder {
     }
   }
 
+  private static boolean shrinkable(Object v) {
+    return v instanceof String s && !s.isEmpty() || v instanceof List<?> l && !l.isEmpty();
+  }
+
+  /** 文本缩到一半；列表删掉最后一项（保留前面的项原文，不截断单项）。 */
+  private static Object shrink(Object v) {
+    if (v instanceof List<?> l) {
+      return List.copyOf(l.subList(0, l.size() - 1));
+    }
+    return half((String) v);
+  }
+
   /** 缩到一半，不切开代理对。 */
   private static String half(String s) {
     int cut = s.length() / 2;
@@ -142,6 +155,14 @@ public class GuardReceiptBuilder {
     if (value != null) {
       m.put(key, value instanceof UUID u ? u.toString() : value);
     }
+  }
+
+  /** roles 已由 {@link GuardActionMapper} 限为 ≤ 16 项、每项 ≤ 255 字符；这里同样设上界，空列表不写。 */
+  private static List<String> roles(List<String> roles) {
+    if (roles.isEmpty()) {
+      return null;
+    }
+    return roles.stream().limit(GuardActionMapper.MAX_ROLES).map(r -> clip(r, MAX_TEXT)).toList();
   }
 
   private static List<String> controls(List<String> controls) {

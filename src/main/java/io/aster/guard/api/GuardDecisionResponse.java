@@ -9,7 +9,7 @@ import java.util.List;
 /**
  * Action Guard 决策响应体（ADR 0040 §3.1）。字段按字母序输出，null 与空集合不写出。
  *
- * <p>同一 decisionId 的响应会原样存入 {@code guard_decisions.response_json}，供幂等重放与回读，
+ * <p>同一 decisionId 的当前响应存于 {@code guard_decisions.response_json}（审批迁移时改写），供幂等重放与回读，
  * 因此本类型必须能被 Jackson 无损往返（record 组件即 JSON 字段）。
  *
  * @param effectiveOutcome Agent 唯一需要看的字段：{@code ALLOW | DENY | PENDING}
@@ -30,7 +30,7 @@ public record GuardDecisionResponse(
     String role,
     String ruleId) {
 
-  /** controls 归一为不可变列表：空列表不写出，回读得到 null，归一后首次响应与重放响应 equals。 */
+  /** controls 归一为不可变列表：空列表不写出，回读得到 null，归一后写入前与回读后的响应 equals。 */
   public GuardDecisionResponse {
     controls = controls == null ? List.of() : List.copyOf(controls);
   }

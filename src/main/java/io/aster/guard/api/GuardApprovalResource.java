@@ -30,8 +30,9 @@ import java.util.UUID;
 /**
  * Action Guard 待审批端点（ADR 0040 §4.2）：列出租户内待审批，人工批准 / 拒绝。
  *
- * <p>审批人身份取 {@link RequestIdentityResolver#performedBy()}（{@code X-User-Id}，API key 鉴权时被覆盖为已验证用户），
- * 业务角色取 {@code X-User-Business-Role}，与规则给出的 required_role 精确比对。
+ * <p>审批人身份取 {@link RequestIdentityResolver#performedBy()}（{@code X-User-Id}，API key 鉴权时被覆盖为已验证用户）
+ * 与 {@link RequestIdentityResolver#apiKeyId()}，用于四眼比对；业务角色取 {@code X-User-Business-Role}——
+ * 这是可信 BFF 传入的标签，aster-api 不校验其真实性——与规则给出的 required_role 精确比对。
  * 方法为阻塞签名，由 worker 线程执行：服务内部同步写审计链，不加 {@code @Transactional}。
  */
 @Path("/api/v1/guard/approvals")
@@ -107,7 +108,7 @@ public class GuardApprovalResource {
     try {
       UUID approvalId = parseId(id);
       GuardDecisionResponse r = service.decideApproval(identityResolver.tenantId(), approvalId,
-          identityResolver.performedBy(), businessRole, approve, comment);
+          identityResolver.performedBy(), identityResolver.apiKeyId(), businessRole, approve, comment);
       return Response.ok(r).build();
     } catch (GuardApprovalConflictException e) {
       return error(statusOf(e.code()), e.code(), e.getMessage());

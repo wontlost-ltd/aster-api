@@ -106,6 +106,27 @@ class GuardActionMapperTest {
     assertThatThrownBy(() -> mapper.flatten(nullRole)).isInstanceOf(GuardInvalidActionException.class);
   }
 
+  private static Action withRoles(List<String> roles) {
+    return new Action(new Principal("agent-42", null, roles), new ActionName("x"), null, null, null);
+  }
+
+  @Test
+  void roles超过16项或单项超长或含控制字符报invalid_action() {
+    List<String> seventeen = java.util.Collections.nCopies(17, "r");
+    assertThatThrownBy(() -> mapper.flatten(withRoles(seventeen))).isInstanceOf(GuardInvalidActionException.class);
+    assertThatThrownBy(() -> mapper.flatten(withRoles(List.of("ok", "r".repeat(256)))))
+        .isInstanceOf(GuardInvalidActionException.class);
+    assertThatThrownBy(() -> mapper.flatten(withRoles(List.of("ops\nbot"))))
+        .isInstanceOf(GuardInvalidActionException.class);
+  }
+
+  @Test
+  void roles恰为16项且每项255字符可用() {
+    List<String> roles = java.util.Collections.nCopies(16, "r".repeat(255));
+
+    assertThat(mapper.flatten(withRoles(roles))).containsEntry("principal_roles", roles);
+  }
+
   @Test
   void context超深度报invalid_action() {
     Action ok = new Action(new Principal("agent-42", null, null), new ActionName("x"), null, nested(8), null);

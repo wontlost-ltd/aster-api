@@ -29,7 +29,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
- * Action Guard 决策编排（ADR 0040 §2–§5）：幂等查重 → 扁平化 → 解析活跃版本 → 评估 → 同步收据 → 决策行与待审批行同一事务落库。
+ * Action Guard 决策编排（ADR 0040 §2–§5）：扁平化 → 幂等查重（指纹比对）→ 解析活跃版本 → 评估 → 同步收据 →
+ * 决策行与待审批行同一事务落库。
  *
  * <p>fail-closed：非 Verdict、评估异常 / 超时、收据写入失败一律判 DENY 并给出 reasonCode；
  * 收据写入失败时不创建待审批，保证「没有入链的决策不会被人批准放行」。
@@ -92,31 +93,36 @@ public class GuardDecisionService {
   }
 
   /**
-   * 对一个提议动作作出决策。同一租户同一幂等键重放返回首次响应（含同一 decisionId 与收据）；
-   * 并发同键时后写者回读先到者的响应。结果为 PENDING 且 {@code waitSeconds > 0} 时，
+   * 对一个提议动作作出决策。同一租户同一幂等键重放同一决策（同一 decisionId 与收据，审批状态取当前值）；
+   * 同键但动作指纹不同则拒绝；并发同键时后写者回读先到者的决策。结果为 PENDING 且 {@code waitSeconds > 0} 时，
    * 在时限内等待人工结论，返回等待结束时的最新响应。
    *
-   * @throws GuardInvalidActionException  请求体校验失败
-   * @throws GuardPolicyNotFoundException 策略不存在或无活跃版本
+   * @param performedBy 请求方用户，与 {@code apiKeyId} 一起记入决策行，供审批四眼校验
+   * @param apiKeyId    已验证的 API key（未经 API key 鉴权时为 null）
+   * @throws GuardInvalidActionException        请求体或幂等键校验失败
+   * @throws GuardIdempotencyMismatchException  幂等键已绑定另一个提议动作
+   * @throws GuardPolicyNotFoundException       策略不存在或无活跃版本
    */
-  public GuardDecisionResponse decide(String tenantId, String performedBy, GuardActionRequest req, String rawIdempotencyKey) {
-    GuardDecisionResponse response = decideOnce(tenantId, performedBy, req, rawIdempotencyKey);
+  public GuardDecisionResponse decide(String tenantId, String performedBy, String apiKeyId, GuardActionRequest req,
+                                      String rawIdempotencyKey) {
+    GuardDecisionResponse response = decideOnce(tenantId, performedBy, apiKeyId, req, rawIdempotencyKey);
     return awaitApproval(tenantId, response, clampWaitSeconds(req == null ? null : req.waitSeconds()));
   }
 
-  private GuardDecisionResponse decideOnce(String tenantId, String performedBy, GuardActionRequest req,
+  private GuardDecisionResponse decideOnce(String tenantId, String performedBy, String apiKeyId, GuardActionRequest req,
                                            String rawIdempotencyKey) {
     String idempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
-    Optional<GuardDecisionResponse> replay = findByIdempotencyKey(tenantId, idempotencyKey);
+    validateAddress(req);
+    Map<String, Object> flat = mapper.flatten(req.action());
+    GuardDecisionDraft base = new GuardDecisionDraft(tenantId, req.policyModule(), req.policyFunction(),
+        idempotencyKey, flat, mapper.contextHash(req.action().context()), null, null, null, null, null, null, null);
+    IdempotencyFingerprint fingerprint = IdempotencyFingerprint.of(base);
+    Optional<GuardDecisionResponse> replay = findByIdempotencyKey(tenantId, idempotencyKey, fingerprint);
     if (replay.isPresent()) {
       return replay.get();
     }
-    validateAddress(req);
-    Map<String, Object> flat = mapper.flatten(req.action());
-    String contextHash = mapper.contextHash(req.action().context());
     PolicyVersionView version = resolveVersion(tenantId, req.policyModule(), req.policyFunction());
-    GuardDecisionDraft draft = evaluate(new GuardDecisionDraft(tenantId, req.policyModule(), req.policyFunction(),
-        idempotencyKey, flat, contextHash, version, null, null, null, null, null, null));
+    GuardDecisionDraft draft = evaluate(base.withPolicyVersion(version));
 
     UUID decisionId = UUID.randomUUID();
     UUID approvalId = draft.needsApproval() ? UUID.randomUUID() : null;
@@ -129,11 +135,28 @@ public class GuardDecisionService {
     GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt);
     GuardApprovalEntity approval = approvalId == null ? null : toApproval(approvalId, decisionId, draft, expiresAt);
     try {
-      store.saveDecision(toEntity(decisionId, draft, receipt, response), approval);
+      store.saveDecision(toEntity(decisionId, draft, receipt, response, performedBy, apiKeyId), approval);
     } catch (GuardIdempotencyRaceException race) {
-      return findByIdempotencyKey(tenantId, idempotencyKey).orElseThrow(() -> race);
+      return findByIdempotencyKey(tenantId, idempotencyKey, fingerprint).orElseThrow(() -> race);
     }
     return response;
+  }
+
+  /**
+   * 幂等指纹（ADR 0040 §3.1）：同一键只能重放同一个提议动作。比对策略地址、主体、动作、资源与 context 摘要；
+   * principal.type / roles / agent.model 不参与（它们不改变「对什么做什么」）。
+   */
+  record IdempotencyFingerprint(String policyModule, String policyFunction, String principalId, String actionName,
+                                String resourceType, String resourceId, String contextHash) {
+    static IdempotencyFingerprint of(GuardDecisionDraft d) {
+      return new IdempotencyFingerprint(d.policyModule(), d.policyFunction(), d.principalId(), d.actionName(),
+          d.resourceType(), d.resourceId(), d.contextHash());
+    }
+
+    static IdempotencyFingerprint of(GuardDecisionEntity e) {
+      return new IdempotencyFingerprint(e.policyModule, e.policyFunction, e.principalId, e.actionName,
+          e.resourceType, e.resourceId, e.contextHash);
+    }
   }
 
   /** 回读决策的当前响应（含审批结论与读取时的过期判定）；跨租户返回 empty。 */
@@ -163,11 +186,17 @@ public class GuardDecisionService {
     return latest;
   }
 
-  private Optional<GuardDecisionResponse> findByIdempotencyKey(String tenantId, String idempotencyKey) {
+  /** 键命中且指纹一致才重放；指纹不一致说明调用方把同一个键用在了另一个动作上。 */
+  private Optional<GuardDecisionResponse> findByIdempotencyKey(String tenantId, String idempotencyKey,
+                                                               IdempotencyFingerprint fingerprint) {
     if (idempotencyKey == null) {
       return Optional.empty();
     }
-    return store.findByIdempotencyKey(tenantId, idempotencyKey).map(this::currentResponse);
+    Optional<GuardDecisionEntity> stored = store.findByIdempotencyKey(tenantId, idempotencyKey);
+    if (stored.isPresent() && !fingerprint.equals(IdempotencyFingerprint.of(stored.get()))) {
+      throw new GuardIdempotencyMismatchException("Idempotency-Key 已用于另一个提议动作，请为新动作使用新键");
+    }
+    return stored.map(this::currentResponse);
   }
 
   /**
@@ -269,8 +298,12 @@ public class GuardDecisionService {
         draft.ruleId());
   }
 
+  /**
+   * 请求方身份按列宽截到 255：只用于四眼「相等即拒绝」比对，截断只会多拒绝、不会放过同一人
+   * （审批人标识本身限 1–255 字符）。
+   */
   private GuardDecisionEntity toEntity(UUID decisionId, GuardDecisionDraft draft, AppendedRecord receipt,
-                                       GuardDecisionResponse response) {
+                                       GuardDecisionResponse response, String performedBy, String apiKeyId) {
     GuardDecisionEntity e = new GuardDecisionEntity();
     e.id = decisionId;
     e.tenantId = draft.tenantId();
@@ -293,6 +326,8 @@ public class GuardDecisionService {
     e.receiptAuditId = receipt == null ? null : receipt.auditId();
     e.receiptHash = receipt == null ? null : receipt.currentHash();
     e.responseJson = writeJson(response);
+    e.requestedBy = clip(performedBy, MAX_COLUMN_TEXT);
+    e.requestedApiKeyId = clip(apiKeyId, MAX_COLUMN_TEXT);
     return e;
   }
 

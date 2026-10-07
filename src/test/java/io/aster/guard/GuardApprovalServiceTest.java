@@ -38,6 +38,9 @@ class GuardApprovalServiceTest {
   private static final String DPO = "Data Protection Officer";
   private static final String DECISION_HASH = "a".repeat(64);
   private static final String APPROVAL_HASH = "e".repeat(64);
+  /** 提交决策请求的用户与 API key（决策行 requested_by / requested_api_key_id）。 */
+  private static final String REQUESTER = "requester-1";
+  private static final String REQUESTER_KEY = "ak-requester";
 
   private GuardDecisionStore store;
   private AuditChainAppender appender;
@@ -83,6 +86,8 @@ class GuardApprovalServiceTest {
     d.tenantId = TENANT;
     d.receiptHash = DECISION_HASH;
     d.responseJson = json.writeValueAsString(r);
+    d.requestedBy = REQUESTER;
+    d.requestedApiKeyId = REQUESTER_KEY;
     return d;
   }
 
@@ -108,16 +113,55 @@ class GuardApprovalServiceTest {
   void 发起主体自批_segregation_of_duties() throws Exception {
     GuardApprovalEntity a = pending(DPO);
 
-    assertCode(() -> service.decideApproval(TENANT, a.id, "agent-42", DPO, true, null), "segregation_of_duties");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "agent-42", null, DPO, true, null), "segregation_of_duties");
     verifyNothingWritten();
+  }
+
+  @Test
+  void 提交请求的用户自批_segregation_of_duties() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+
+    assertCode(() -> service.decideApproval(TENANT, a.id, REQUESTER, null, DPO, true, null), "segregation_of_duties");
+    verifyNothingWritten();
+  }
+
+  @Test
+  void 与提交请求共用同一API_key_segregation_of_duties() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", REQUESTER_KEY, DPO, true, null),
+        "segregation_of_duties");
+    verifyNothingWritten();
+  }
+
+  @Test
+  void 不同用户不同API_key可批() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", "ak-dpo", DPO, true, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
+  }
+
+  @Test
+  void 决策行无请求方身份时只按principal比对_空白不算相同() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    GuardDecisionEntity legacy = decisionOf(a);
+    legacy.requestedBy = null;
+    legacy.requestedApiKeyId = null;
+    when(store.findDecision(TENANT, a.decisionId)).thenReturn(Optional.of(legacy));
+
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, DPO, true, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
   }
 
   @Test
   void 角色不符或缺失_role_mismatch() throws Exception {
     GuardApprovalEntity a = pending(DPO);
 
-    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", "Engineer", true, null), "role_mismatch");
-    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, true, null), "role_mismatch");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, "Engineer", true, null), "role_mismatch");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, null, true, null), "role_mismatch");
     verifyNothingWritten();
   }
 
@@ -125,7 +169,7 @@ class GuardApprovalServiceTest {
   void required_role为空_ESCALATE_任意角色可批() throws Exception {
     GuardApprovalEntity a = pending(null);
 
-    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "reviewer-1", null, true, null);
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "reviewer-1", null, null, true, null);
 
     assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
   }
@@ -134,8 +178,8 @@ class GuardApprovalServiceTest {
   void 拒绝必须有comment_comment_required() throws Exception {
     GuardApprovalEntity a = pending(DPO);
 
-    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", DPO, false, null), "comment_required");
-    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", DPO, false, "   "), "comment_required");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, DPO, false, null), "comment_required");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, DPO, false, "   "), "comment_required");
     verifyNothingWritten();
   }
 
@@ -144,7 +188,7 @@ class GuardApprovalServiceTest {
     GuardApprovalEntity a = pending(DPO);
     a.status = GuardApprovalStatus.APPROVED;
 
-    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", DPO, true, null), "approval_not_pending");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, DPO, true, null), "approval_not_pending");
     verifyNothingWritten();
   }
 
@@ -152,7 +196,7 @@ class GuardApprovalServiceTest {
   void 已过期_approval_not_pending() throws Exception {
     GuardApprovalEntity a = pending(DPO, Instant.now().minusSeconds(1));
 
-    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", DPO, true, null), "approval_not_pending");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, DPO, true, null), "approval_not_pending");
     verifyNothingWritten();
   }
 
@@ -160,15 +204,15 @@ class GuardApprovalServiceTest {
   void 审批不存在_approval_not_found() {
     when(store.findApproval(eq(TENANT), any())).thenReturn(Optional.empty());
 
-    assertCode(() -> service.decideApproval(TENANT, UUID.randomUUID(), "dpo-1", DPO, true, null), "approval_not_found");
+    assertCode(() -> service.decideApproval(TENANT, UUID.randomUUID(), "dpo-1", null, DPO, true, null), "approval_not_found");
   }
 
   @Test
   void comment或审批人超过列宽_invalid_approval() throws Exception {
     GuardApprovalEntity a = pending(DPO);
 
-    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", DPO, false, "x".repeat(1001)), "invalid_approval");
-    assertCode(() -> service.decideApproval(TENANT, a.id, "d".repeat(256), DPO, true, null), "invalid_approval");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, DPO, false, "x".repeat(1001)), "invalid_approval");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "d".repeat(256), null, DPO, true, null), "invalid_approval");
     verifyNothingWritten();
   }
 
@@ -176,7 +220,7 @@ class GuardApprovalServiceTest {
   void 批准成功写APPROVAL事件且metadata指回决策收据哈希() throws Exception {
     GuardApprovalEntity a = pending(DPO);
 
-    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", DPO, true, "ok");
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, DPO, true, "ok");
 
     assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
     assertThat(r.approval().status()).isEqualTo("APPROVED");
@@ -209,7 +253,7 @@ class GuardApprovalServiceTest {
   void 拒绝成功DENY且comment进入事件() throws Exception {
     GuardApprovalEntity a = pending(DPO);
 
-    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", DPO, false, "no legal basis");
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, DPO, false, "no legal basis");
 
     assertThat(r.effectiveOutcome()).isEqualTo("DENY");
     assertThat(r.approval().status()).isEqualTo("REJECTED");
@@ -223,7 +267,7 @@ class GuardApprovalServiceTest {
     GuardApprovalEntity a = pending(DPO);
     when(appender.appendSync(any())).thenThrow(new AuditChainAppender.AuditAppendException("down", null));
 
-    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", DPO, true, null), "receipt_unavailable");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, DPO, true, null), "receipt_unavailable");
     verify(store, never()).completeApproval(any(), anyString());
   }
 
@@ -232,7 +276,7 @@ class GuardApprovalServiceTest {
     GuardApprovalEntity a = pending(DPO);
     when(store.completeApproval(any(), anyString())).thenReturn(false);
 
-    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", DPO, true, null), "approval_not_pending");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, DPO, true, null), "approval_not_pending");
   }
 
   @Test
@@ -248,7 +292,7 @@ class GuardApprovalServiceTest {
       return GuardDecisionJpaStore.transitionable(lockedRow, inv.getArgument(0), Instant.now());
     });
 
-    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", DPO, true, null), "approval_not_pending");
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, DPO, true, null), "approval_not_pending");
     ArgumentCaptor<GuardApprovalEntity> decided = ArgumentCaptor.forClass(GuardApprovalEntity.class);
     verify(store).completeApproval(decided.capture(), anyString());
     assertThat(decided.getValue().decidedAt).isBefore(expiresAt);
