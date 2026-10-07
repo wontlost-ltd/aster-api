@@ -13,6 +13,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
+import static io.aster.guard.GuardText.isBlank;
+
 /**
  * 把请求中的 Action 校验并扁平化为规则的唯一位置参数（ADR 0040 §2.2），并计算 context 摘要。
  *
@@ -138,9 +140,5 @@ public class GuardActionMapper {
     if (depth > MAX_CONTEXT_DEPTH) {
       throw new GuardInvalidActionException("context 嵌套深度超过 " + MAX_CONTEXT_DEPTH);
     }
-  }
-
-  private static boolean isBlank(String s) {
-    return s == null || s.isBlank();
   }
 }

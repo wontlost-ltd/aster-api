@@ -1,6 +1,5 @@
 package io.aster.guard;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
@@ -27,6 +26,9 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+
+import static io.aster.guard.GuardText.clip;
+import static io.aster.guard.GuardText.isBlank;
 
 /**
  * Action Guard 决策编排（ADR 0040 §2–§5）：扁平化 → 幂等查重（指纹比对）→ 解析活跃版本 → 评估 → 同步收据 →
@@ -60,7 +62,7 @@ public class GuardDecisionService {
   private GuardDecisionStore store;
   private GuardActionMapper mapper;
   private GuardReceiptBuilder receiptBuilder;
-  private ObjectMapper objectMapper;
+  private GuardJson json;
   private Duration approvalTtl;
   private VersionLookupTx versionLookupTx;
 
@@ -87,7 +89,7 @@ public class GuardDecisionService {
     this.store = store;
     this.mapper = mapper;
     this.receiptBuilder = receiptBuilder;
-    this.objectMapper = objectMapper;
+    this.json = new GuardJson(objectMapper);
     this.approvalTtl = approvalTtl;
     this.versionLookupTx = versionLookupTx;
   }
@@ -204,7 +206,7 @@ public class GuardDecisionService {
    * 读取时判定过期，不依赖调度器及时（ADR 0040 §4.3），不写库。
    */
   private GuardDecisionResponse currentResponse(GuardDecisionEntity e) {
-    GuardDecisionResponse stored = readResponse(e);
+    GuardDecisionResponse stored = json.readResponse(e);
     if (!GuardDecisionDraft.PENDING.equals(stored.effectiveOutcome())) {
       return stored;
     }
@@ -249,7 +251,10 @@ public class GuardDecisionService {
       result = evaluationService.evaluatePolicy(base.tenantId(), base.policyModule(), base.policyFunction(),
           new Object[]{Map.copyOf(base.action())}).await().atMost(EVALUATION_TIMEOUT);
     } catch (RuntimeException e) {
-      LOG.warnf(e, "Action Guard 评估失败，按 DENY 处理: %s.%s", base.policyModule(), base.policyFunction());
+      // 调用方可随意触发（如规则不接受的 context 类型）：WARN 只记一行，堆栈留给 DEBUG，避免日志被逐请求放大。
+      LOG.warnf("Action Guard 评估失败，按 DENY 处理: %s.%s: %s: %s", base.policyModule(), base.policyFunction(),
+          e.getClass().getSimpleName(), e.getMessage());
+      LOG.debugf(e, "Action Guard 评估失败堆栈: %s.%s", base.policyModule(), base.policyFunction());
       return base.deny(GuardReasonCode.EVALUATION_FAILED);
     }
     if (result == null) {
@@ -322,10 +327,10 @@ public class GuardDecisionService {
     e.requiredRole = draft.requiredRole();
     e.reasonCode = draft.reasonCodeValue();
     e.ruleId = clip(draft.ruleId(), MAX_COLUMN_TEXT);
-    e.controls = draft.controls().isEmpty() ? null : writeJson(draft.controls());
+    e.controls = draft.controls().isEmpty() ? null : json.writeJson(draft.controls());
     e.receiptAuditId = receipt == null ? null : receipt.auditId();
     e.receiptHash = receipt == null ? null : receipt.currentHash();
-    e.responseJson = writeJson(response);
+    e.responseJson = json.writeJson(response);
     e.requestedBy = clip(performedBy, MAX_COLUMN_TEXT);
     e.requestedApiKeyId = clip(apiKeyId, MAX_COLUMN_TEXT);
     return e;
@@ -344,27 +349,4 @@ public class GuardDecisionService {
     return a;
   }
 
-  private GuardDecisionResponse readResponse(GuardDecisionEntity e) {
-    try {
-      return objectMapper.readValue(e.responseJson, GuardDecisionResponse.class);
-    } catch (JsonProcessingException ex) {
-      throw new IllegalStateException("guard_decisions.response_json 无法解析: " + e.id, ex);
-    }
-  }
-
-  private String writeJson(Object value) {
-    try {
-      return objectMapper.writeValueAsString(value);
-    } catch (JsonProcessingException ex) {
-      throw new IllegalStateException("Action Guard 序列化失败", ex);
-    }
-  }
-
-  private static String clip(String s, int max) {
-    return s == null || s.length() <= max ? s : s.substring(0, max);
-  }
-
-  private static boolean isBlank(String s) {
-    return s == null || s.isBlank();
-  }
 }

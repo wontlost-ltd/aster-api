@@ -153,6 +153,8 @@ class GuardApprovalResourceTest {
     assertThat(listed.jsonPath().getString("items[0].principalId")).isEqualTo("agent-42");
     assertThat(listed.jsonPath().getInt("page")).isZero();
     assertThat(listed.jsonPath().getInt("size")).isEqualTo(20);
+    // 信封字段按字母序输出
+    assertThat(listed.asString()).startsWith("{\"items\":[{").endsWith("],\"page\":0,\"size\":20}");
 
     Response approved = decide(ids[1], "approve", "dpo-1", DPO, null);
 
@@ -166,7 +168,7 @@ class GuardApprovalResourceTest {
     assertThat(row.status).isEqualTo(GuardApprovalStatus.APPROVED);
     assertThat(row.decidedBy).isEqualTo("dpo-1");
     assertThat(row.receiptAuditId).isNotNull();
-    assertThat(list("PENDING").jsonPath().getList("items")).isEmpty();
+    assertThat(list("PENDING").asString()).isEqualTo("{\"items\":[],\"page\":0,\"size\":20}");
     assertThat(list("APPROVED").jsonPath().getList("items.id", String.class)).containsExactly(ids[1]);
 
     Response again = decide(ids[1], "approve", "dpo-2", DPO, null);

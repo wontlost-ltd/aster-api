@@ -29,8 +29,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -287,6 +292,50 @@ class GuardDecisionServiceTest {
     when(evaluationService.evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any()))
         .thenThrow(new IllegalStateException("boom"));
     assertThat(service.decide(TENANT, "user-1", "ak-1", request(), null).reasonCode()).isEqualTo("evaluation_failed");
+  }
+
+  /**
+   * 调用方可随意触发 evaluation_failed（如传入规则不接受的 context 类型），WARN 只记一行异常类与消息，
+   * 堆栈留给 DEBUG。挂一个内存 Handler 到该类的 JUL logger（JBoss LogManager 底层走 JUL）观察。
+   */
+  @Test
+  void 评估失败WARN不带堆栈_堆栈只在DEBUG() {
+    List<LogRecord> records = new CopyOnWriteArrayList<>();
+    Handler probe = new Handler() {
+      @Override public void publish(LogRecord r) { records.add(r); }
+      @Override public void flush() { }
+      @Override public void close() { }
+    };
+    Logger logger = Logger.getLogger(GuardDecisionService.class.getName());
+    Level original = logger.getLevel();
+    logger.addHandler(probe);
+    logger.setLevel(Level.ALL);
+    try {
+      when(evaluationService.evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any()))
+          .thenThrow(new IllegalStateException("boom-sentinel"));
+      assertThat(service.decide(TENANT, "user-1", "ak-1", request(), null).reasonCode()).isEqualTo("evaluation_failed");
+    } finally {
+      logger.removeHandler(probe);
+      logger.setLevel(original);
+    }
+
+    LogRecord warn = records.stream().filter(r -> r.getLevel().intValue() == Level.WARNING.intValue()).findFirst()
+        .orElseThrow();
+    assertThat(warn.getThrown()).isNull();
+    assertThat(textOf(warn)).contains("IllegalStateException").contains("boom-sentinel");
+    LogRecord debug = records.stream().filter(r -> r.getLevel().intValue() < Level.INFO.intValue()).findFirst()
+        .orElseThrow();
+    assertThat(debug.getThrown()).isInstanceOf(IllegalStateException.class);
+  }
+
+  private static String textOf(LogRecord r) {
+    StringBuilder text = new StringBuilder(String.valueOf(r.getMessage()));
+    if (r.getParameters() != null) {
+      for (Object p : r.getParameters()) {
+        text.append(' ').append(p);
+      }
+    }
+    return text.toString();
   }
 
   @Test

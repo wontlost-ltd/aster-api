@@ -162,7 +162,7 @@ class GuardReceiptBuilderTest {
     m.put("decisionId", "d");
     m.put("principalRoles", IntStream.range(0, 16).mapToObj(i -> i + "-" + "r".repeat(250)).toList());
 
-    Map<String, Object> fitted = builder.fitBudget(m);
+    Map<String, Object> fitted = builder.fitBudget(m, GuardReceiptBuilder.SHRINK_ORDER);
 
     @SuppressWarnings("unchecked")
     List<String> kept = (List<String>) fitted.get("principalRoles");
@@ -182,7 +182,7 @@ class GuardReceiptBuilderTest {
     m.put("principalId", "p".repeat(200));
     m.put("decisionId", "d");
 
-    Map<String, Object> fitted = builder.fitBudget(m);
+    Map<String, Object> fitted = builder.fitBudget(m, GuardReceiptBuilder.SHRINK_ORDER);
 
     assertThat(builder.measure(fitted)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
     assertThat((String) fitted.get("reason")).hasSizeLessThan(2000);
@@ -192,13 +192,38 @@ class GuardReceiptBuilderTest {
   }
 
   @Test
+  void 缩短顺序固定_principalId最后() {
+    assertThat(GuardReceiptBuilder.SHRINK_ORDER).containsExactly("reason", "principalRoles", "agentModel",
+        "principalType", "resourceType", "resourceId", "actionName", "principalId");
+  }
+
+  @Test
+  void reason清空后先删principalRoles_agentModel与principalId保持原文() {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("decisionId", "d");
+    m.put("reason", "r".repeat(100));
+    m.put("principalRoles", IntStream.range(0, 16).mapToObj(i -> i + "-" + "r".repeat(250)).toList());
+    m.put("agentModel", "m".repeat(200));
+    m.put("principalId", "p".repeat(200));
+
+    Map<String, Object> fitted = builder.fitBudget(m, GuardReceiptBuilder.SHRINK_ORDER);
+
+    assertThat(builder.measure(fitted)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat(fitted).containsEntry("reason", "")
+        .containsEntry("agentModel", "m".repeat(200))
+        .containsEntry("principalId", "p".repeat(200))
+        .containsEntry("decisionId", "d");
+    assertThat((List<?>) fitted.get("principalRoles")).isNotEmpty().hasSizeLessThan(16);
+  }
+
+  @Test
   void 自由文本清空仍超预算时最后删除controls() {
     Map<String, Object> m = new LinkedHashMap<>();
     m.put("decisionId", "d");
     m.put("reason", "r".repeat(100));
     m.put("controls", IntStream.range(0, 100).mapToObj(i -> "c".repeat(64)).toList());
 
-    Map<String, Object> fitted = builder.fitBudget(m);
+    Map<String, Object> fitted = builder.fitBudget(m, GuardReceiptBuilder.SHRINK_ORDER);
 
     assertThat(fitted).doesNotContainKey("controls").containsEntry("decisionId", "d").containsEntry("reason", "");
     assertThat(builder.measure(fitted)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
@@ -247,6 +272,55 @@ class GuardReceiptBuilderTest {
         .containsEntry("decisionReceiptHash", HASH)
         .containsKey("comment");
     assertThat(json.writeValueAsString(event.metadata()).length()).isLessThan(4096);
+  }
+
+  @Test
+  void 审批事件最坏转义仍在预算内且身份键完好() throws Exception {
+    GuardApprovalEntity a = new GuardApprovalEntity();
+    a.id = UUID.fromString("abcdef12-1234-5678-9012-345678901234");
+    a.tenantId = "t1";
+    a.decisionId = UUID.fromString("12345678-1234-5678-9012-abcdef123456");
+    a.outcome = "REQUIRE_APPROVAL";
+    a.requiredRole = nasty(255);
+    a.principalId = "agent-42";
+    a.status = GuardApprovalStatus.REJECTED;
+    a.decidedBy = nasty(255);
+    a.decidedAt = Instant.now();
+    a.comment = "\"".repeat(1000);
+    a.expiresAt = Instant.now().plusSeconds(3600);
+
+    AuditEvent event = builder.approvalEvent(a, HASH);
+
+    assertThat(json.writeValueAsString(event.metadata()).length()).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat(appenderLength(event)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat(event.metadata()).containsEntry("decisionId", a.decisionId.toString())
+        .containsEntry("approvalId", a.id.toString())
+        .containsEntry("outcome", "REJECTED")
+        .containsEntry("decidedBy", nasty(255))
+        .containsEntry("requiredRole", nasty(255))
+        .containsEntry("decisionReceiptHash", HASH)
+        .containsEntry("comment", "\"".repeat(1000));
+  }
+
+  @Test
+  void 审批事件超预算时只缩短comment() {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("decisionId", "d");
+    m.put("approvalId", "a");
+    m.put("outcome", "REJECTED");
+    m.put("decidedBy", "u".repeat(255));
+    m.put("requiredRole", "r".repeat(255));
+    m.put("comment", "\"".repeat(5000));
+    m.put("decisionReceiptHash", HASH);
+
+    Map<String, Object> fitted = builder.fitBudget(m, GuardReceiptBuilder.APPROVAL_SHRINK_ORDER);
+
+    assertThat(GuardReceiptBuilder.APPROVAL_SHRINK_ORDER).containsExactly("comment");
+    assertThat(builder.measure(fitted)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat((String) fitted.get("comment")).isNotEmpty().hasSizeLessThan(5000);
+    assertThat(fitted).containsEntry("decisionId", "d").containsEntry("approvalId", "a")
+        .containsEntry("outcome", "REJECTED").containsEntry("decidedBy", "u".repeat(255))
+        .containsEntry("requiredRole", "r".repeat(255)).containsEntry("decisionReceiptHash", HASH);
   }
 
   @Test

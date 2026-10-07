@@ -1,9 +1,6 @@
 package io.aster.guard.api;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import io.aster.guard.GuardApprovalConflictException;
-import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardApprovalService;
 import io.aster.guard.GuardApprovalStatus;
 import io.aster.policy.rest.RequestIdentityResolver;
@@ -22,7 +19,6 @@ import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -41,25 +37,6 @@ import java.util.UUID;
 @RequireRole(Role.MEMBER)
 public class GuardApprovalResource {
   static final int MAX_PAGE_SIZE = 200;
-
-  /**
-   * 列表项：审批行的对外视图。时间为 ISO-8601 字符串（与 {@link GuardDecisionResponse.ApprovalView} 一致），
-   * null 字段不写出。
-   */
-  @JsonPropertyOrder(alphabetic = true)
-  @JsonInclude(JsonInclude.Include.NON_NULL)
-  public record ApprovalItemView(String comment, String createdAt, String decidedAt, String decidedBy, String decisionId,
-                                 String expiresAt, String id, String outcome, String principalId, String requiredRole,
-                                 String status) {
-    static ApprovalItemView of(GuardApprovalEntity a) {
-      return new ApprovalItemView(a.comment, text(a.createdAt), text(a.decidedAt), a.decidedBy, a.decisionId.toString(),
-          text(a.expiresAt), a.id.toString(), a.outcome, a.principalId, a.requiredRole, a.status.name());
-    }
-
-    private static String text(Instant t) {
-      return t == null ? null : t.toString();
-    }
-  }
 
   @Inject
   RequestIdentityResolver identityResolver;
@@ -80,10 +57,10 @@ public class GuardApprovalResource {
     }
     int safePage = Math.max(0, page);
     int safeSize = Math.max(1, Math.min(MAX_PAGE_SIZE, size));
-    List<ApprovalItemView> items = service.list(identityResolver.tenantId(), parsed, safePage, safeSize).stream()
-        .map(ApprovalItemView::of)
+    List<GuardApprovalView> items = service.list(identityResolver.tenantId(), parsed, safePage, safeSize).stream()
+        .map(GuardApprovalView::of)
         .toList();
-    return Response.ok(Map.of("items", items, "page", safePage, "size", safeSize)).build();
+    return Response.ok(new GuardApprovalListResponse(items, safePage, safeSize)).build();
   }
 
   /** 批准：comment 可选；成功返回 effectiveOutcome 为 ALLOW 的决策响应。 */

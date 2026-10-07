@@ -166,6 +166,15 @@ class GuardApprovalServiceTest {
   }
 
   @Test
+  void 业务角色带首尾空白时去空白后比对() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, " " + DPO + " ", true, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
+  }
+
+  @Test
   void required_role为空_ESCALATE_任意角色可批() throws Exception {
     GuardApprovalEntity a = pending(null);
 

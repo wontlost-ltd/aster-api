@@ -16,6 +16,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static io.aster.guard.GuardText.clip;
+
 /**
  * 构造 Action Guard 的审计收据事件（ADR 0040 §5.2）。
  *
@@ -24,10 +26,10 @@ import java.util.UUID;
  * 这里的截断兜住规则侧（reason / ruleId / controls）与调用方身份等不受请求校验约束的值。
  * 明文 context 绝不进入收据，只写 contextHash。
  *
- * <p>截断之后仍可能超限：追加器先 PII 脱敏（如邮箱 {@code a@b.cc} 变为 {@code ***@***.***}，会变长）
- * 再做 JSON 序列化（{@code "} 与 {@code \} 转义后长度翻倍），最后按字符数比较。因此决策事件在构造后
- * 按与追加器相同的方式（脱敏 + 序列化）测量，超过 {@link #METADATA_BUDGET} 就按固定优先级缩短自由文本，
- * 见 {@link #fitBudget}。
+ * <p>截断之后仍可能超限：追加器先 PII 脱敏（如邮箱 {@code a@b.cc} 变为 {@code ***@***.***}，会变长；
+ * 身份键与 UUID 形态的值豁免）再做 JSON 序列化（{@code "} 与 {@code \} 转义后长度翻倍），最后按字符数比较。
+ * 因此决策事件与审批事件在构造后都按与追加器相同的方式（脱敏 + 序列化）测量，超过 {@link #METADATA_BUDGET}
+ * 就按固定优先级缩短自由文本，见 {@link #fitBudget}。
  */
 @ApplicationScoped
 public class GuardReceiptBuilder {
@@ -41,14 +43,20 @@ public class GuardReceiptBuilder {
   /** metadata 序列化长度预算：低于追加器的 4096 上限，留出余量。 */
   static final int METADATA_BUDGET = 3800;
   /**
-   * 超出预算时的缩短顺序：先缩对追溯价值最低、来源最不受控的自由文本。
-   * reason（规则说明）→ agentModel → resourceId → principalId → actionName → resourceType → principalType
-   * → principalRoles；文本每轮缩到不超过一半，列表每轮删掉最后一项，直到达标或该字段为空，再处理下一个。
+   * 决策事件超出预算时的缩短顺序：先缩对追溯价值最低、体积最大的字段，最后才动「谁对什么做了什么」。
+   * reason（规则说明）→ principalRoles → agentModel → principalType → resourceType → resourceId → actionName
+   * → principalId；文本每轮缩到不超过一半，列表每轮删掉最后一项，直到达标或该字段为空，再处理下一个。
    * 身份与完整性字段（decisionId、approvalId、contextHash、outcome、effectiveOutcome、reasonCode、
    * ruleId、policyVersionId、sourceHash、idempotencyKey）永不改动；自由文本全部清空仍超限时，最后才删除 controls。
    */
-  static final List<String> SHRINK_ORDER = List.of("reason", "agentModel", "resourceId", "principalId", "actionName",
-      "resourceType", "principalType", "principalRoles");
+  static final List<String> SHRINK_ORDER = List.of("reason", "principalRoles", "agentModel", "principalType",
+      "resourceType", "resourceId", "actionName", "principalId");
+  /**
+   * 审批事件唯一可缩短的键：comment 是审批人自由填写的理由；decidedBy、requiredRole 是审批的身份事实，
+   * 与 decisionId、approvalId、outcome、decisionReceiptHash 一样永不改动。按现有列宽（comment ≤ 1000、
+   * 其余 ≤ 255）最坏转义约 3.3 KB，本不会触发；走同一预算是为了列宽日后放宽时不会退回非法 JSON 截断。
+   */
+  static final List<String> APPROVAL_SHRINK_ORDER = List.of("comment");
   /** 只用于测量长度：对 String / List / Long 值，序列化结果与 Quarkus 托管的 ObjectMapper 相同。 */
   private static final ObjectMapper MEASURE = new ObjectMapper();
   private final PIIRedactor piiRedactor = new PIIRedactor();
@@ -79,7 +87,7 @@ public class GuardReceiptBuilder {
     return new AuditEvent(EventType.ACTION_GUARD_DECISION, Instant.now(), draft.tenantId(),
         draft.policyModule(), draft.policyFunction(), null, null, version,
         clip(performedBy, MAX_PERFORMED_BY), draft.allowed(), null, draft.reasonCodeValue(),
-        Collections.unmodifiableMap(fitBudget(m)), null, null, null, null);
+        Collections.unmodifiableMap(fitBudget(m, SHRINK_ORDER)), null, null, null, null);
   }
 
   /**
@@ -99,12 +107,12 @@ public class GuardReceiptBuilder {
     String actor = a.decidedBy == null ? SYSTEM_ACTOR : clip(a.decidedBy, MAX_PERFORMED_BY);
     return new AuditEvent(EventType.ACTION_GUARD_APPROVAL, Instant.now(), a.tenantId,
         null, null, null, null, null, actor, a.status == GuardApprovalStatus.APPROVED, null, null,
-        Collections.unmodifiableMap(m), null, null, null, null);
+        Collections.unmodifiableMap(fitBudget(m, APPROVAL_SHRINK_ORDER)), null, null, null, null);
   }
 
-  /** 按 {@link #SHRINK_ORDER} 缩短自由文本直到测量长度 ≤ {@link #METADATA_BUDGET}；仍超限则删除 controls。 */
-  Map<String, Object> fitBudget(Map<String, Object> m) {
-    for (String key : SHRINK_ORDER) {
+  /** 按给定顺序缩短自由文本直到测量长度 ≤ {@link #METADATA_BUDGET}；仍超限则删除 controls（审批事件没有该键）。 */
+  Map<String, Object> fitBudget(Map<String, Object> m, List<String> shrinkOrder) {
+    for (String key : shrinkOrder) {
       while (measure(m) > METADATA_BUDGET && shrinkable(m.get(key))) {
         m.put(key, shrink(m.get(key)));
       }
@@ -178,9 +186,5 @@ public class GuardReceiptBuilder {
       return null;
     }
     return controls.stream().limit(MAX_CONTROLS).map(c -> clip(c, MAX_CONTROL_LENGTH)).toList();
-  }
-
-  private static String clip(String s, int max) {
-    return s == null || s.length() <= max ? s : s.substring(0, max);
   }
 }

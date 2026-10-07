@@ -1,6 +1,5 @@
 package io.aster.guard;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
@@ -13,6 +12,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+
+import static io.aster.guard.GuardText.isBlank;
 
 /**
  * Action Guard 待审批的人工结论与过期（ADR 0040 §4）。
@@ -43,7 +44,7 @@ public class GuardApprovalService {
   private GuardDecisionStore store;
   private AuditChainAppender appender;
   private GuardReceiptBuilder receiptBuilder;
-  private ObjectMapper objectMapper;
+  private GuardJson json;
 
   /** CDI 客户端代理所需。 */
   protected GuardApprovalService() {
@@ -55,7 +56,7 @@ public class GuardApprovalService {
     this.store = store;
     this.appender = appender;
     this.receiptBuilder = receiptBuilder;
-    this.objectMapper = objectMapper;
+    this.json = new GuardJson(objectMapper);
   }
 
   /**
@@ -139,10 +140,13 @@ public class GuardApprovalService {
     }
   }
 
-  /** 角色 → 拒绝须带 comment → 列宽（审批人 1–255、comment ≤ 1000，超长拒绝而不是截断）。 */
+  /**
+   * 角色 → 拒绝须带 comment → 列宽（审批人 1–255、comment ≤ 1000，超长拒绝而不是截断）。
+   * 角色去掉首尾空白后与 required_role 精确比对：BFF 拼头时带出的空格不该变成 role_mismatch。
+   */
   private static void checkRoleAndInput(GuardApprovalEntity a, String decidedBy, String businessRole,
                                         boolean approve, String comment) {
-    if (a.requiredRole != null && !a.requiredRole.equals(businessRole)) {
+    if (a.requiredRole != null && !a.requiredRole.equals(businessRole == null ? null : businessRole.trim())) {
       throw conflict("role_mismatch", "该审批需要业务角色: " + a.requiredRole);
     }
     if (!approve && isBlank(comment)) {
@@ -169,8 +173,8 @@ public class GuardApprovalService {
    */
   private Optional<GuardDecisionResponse> complete(GuardApprovalEntity approval, GuardDecisionEntity decision) {
     approval.receiptAuditId = appendEvent(approval, decision.receiptHash).auditId();
-    GuardDecisionResponse response = readResponse(decision).withApprovalStatus(approval.status);
-    if (!store.completeApproval(approval, writeJson(response))) {
+    GuardDecisionResponse response = json.readResponse(decision).withApprovalStatus(approval.status);
+    if (!store.completeApproval(approval, json.writeJson(response))) {
       return Optional.empty();
     }
     return Optional.of(response);
@@ -185,31 +189,11 @@ public class GuardApprovalService {
     }
   }
 
-  private GuardDecisionResponse readResponse(GuardDecisionEntity e) {
-    try {
-      return objectMapper.readValue(e.responseJson, GuardDecisionResponse.class);
-    } catch (JsonProcessingException ex) {
-      throw new IllegalStateException("guard_decisions.response_json 无法解析: " + e.id, ex);
-    }
-  }
-
-  private String writeJson(Object value) {
-    try {
-      return objectMapper.writeValueAsString(value);
-    } catch (JsonProcessingException ex) {
-      throw new IllegalStateException("Action Guard 序列化失败", ex);
-    }
-  }
-
   private static GuardApprovalConflictException notPending(UUID approvalId) {
     return conflict("approval_not_pending", "审批已处理或已过期: " + approvalId);
   }
 
   private static GuardApprovalConflictException conflict(String code, String message) {
     return new GuardApprovalConflictException(code, message);
-  }
-
-  private static boolean isBlank(String s) {
-    return s == null || s.isBlank();
   }
 }
