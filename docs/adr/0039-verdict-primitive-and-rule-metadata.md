@@ -95,9 +95,18 @@ tier3 fixtures、`aster-cloud/src/data/policy-examples.ts` 的策略模板）。
 | `Verdict.require_approval(role, reason)` | `role: Text`，`reason: Text` | `Verdict` |
 | `Verdict.escalate(reason)` | `reason: Text` | `Verdict` |
 
-`Verdict` 是新的内置类型名（TypeName），**不可**与 Boolean 隐式互转，两侧类型检查按既有 `TYPE_MISMATCH` 报错。
+`Verdict` 是新的内置类型名（TypeName），**不可**与 Boolean 隐式互转，两道防线同时成立：
+
+- **类型检查**：`Verdict` 出现在布尔上下文——`If` 条件（语句级与表达式级）、`not` 的操作数、`equals to` / `!=` 的任一操作数——
+  两侧都报既有 `TYPE_MISMATCH`（expected `Bool`）。只针对 `Verdict`，其它类型的既有宽松行为不变（语料零影响）。
+- **运行时 fail-closed**：绕过检查器（如直接提交 Core IR）时，布尔上下文遇到 `__type == "Verdict"` 的值直接失败，
+  错误信息两侧同文 `Verdict cannot be used as Bool; compare its outcome field instead`（truffle `Builtins.toBool`、
+  TS 解释器 `isTruthy`，覆盖 If / 表达式级 if / not / and / or）。此前两侧都按「非空对象为真」处理，`DENY` 会被当成放行。
+
 reason 对 deny / require_approval / escalate 为**必填**：没有理由的拒绝在审计上等于没有决策（与 ADR 0037 复核路由
-「理由非空」的立场一致）。
+「理由非空」的立场一致）。空串与仅空白的 reason / role 两侧运行时都拒绝（Java `isBlank()`、TS `trim() === ''`，
+信息 `… must not be empty`），与 `@id` 拒空白同口径。参数类型按 `Text` 比较前先展开别名：`given reason as Text` 的形参
+在 Java 侧（`Text` 是 `String` 的内置别名）与 TS 侧都可直接作 reason / role。
 
 两侧类型检查器都没有通用的内置函数签名表，`Verdict.*` 在 Java `BaseTypeChecker` 与 TS `typecheck/expression.ts` 中特判，口径一致：
 
@@ -112,18 +121,24 @@ reason 对 deny / require_approval / escalate 为**必填**：没有理由的拒
 （TS 另加入 `typecheck/generics.ts` 的 `KNOWN_SCALARS`）。两侧解析器会把未知的大写类型名推断为类型参数，
 不加入则 `produce Verdict` 被当成泛型 `T`（TS 报 E006）。
 
-CNL 写法（不新增任何关键字）：
+CNL 写法（不新增任何关键字；本例在两侧类型检查器均零诊断，TS 解释器实测 `(true, true, false)` → DENY、其余 → ALLOW）：
 
 ```
 @id("PII-001")
 @reason("Personal information requires customer consent.")
 @control("GDPR:ART6")
-Rule check_pii_export given request, provider, customer, produce:
-  If request.contains_pii and provider.is_external and not customer.has_consent:
-    Return Verdict.deny("Personal information requires customer consent.").
-  Otherwise:
+Rule check_pii_export given contains_pii as Bool, is_external as Bool, has_consent as Bool, produce Verdict:
+  If has_consent:
     Return Verdict.allow().
+  If contains_pii:
+    If is_external:
+      Return Verdict.deny("Personal information requires customer consent.").
+  Return Verdict.allow().
 ```
+
+写法约束（均为实测）：形参必须带类型——TS 把无类型形参定为 `Text`，`request.contains_pii` 报 E011；
+必须写 `produce Verdict`——省略时 Java 按规则名推断返回类型（Bool / Text），报 E003。本例未用 `and` / `not`：
+Java 类型检查器对运算符名报未定义变量（见 §10），属既有问题，不在本子项目处理。
 
 ### 2.3 运行时值形状
 
@@ -145,8 +160,12 @@ IR 门禁比对前，`packages/js/src/ir-normalize.ts` 把注解参数的容器�
 
 ### 2.4 读取 Verdict
 
-CNL 侧读取用既有字段访问：`d.outcome`、`d.reason`、`d.role`。不为 Verdict 增加模式匹配——这是路径 B 的触点，
+CNL 侧读取用既有字段访问：`d.outcome`、`d.reason`、`d.role`。三个字段在两侧类型检查器中都定型为 `Text`
+（Java `BaseTypeChecker.verdictFieldType`、TS `expression.ts` 字段访问路径；其它字段名 TS 仍报 E011，Java 仍为 Unknown）。
+判断裁决应比较 `d.outcome equals to "DENY"`，而不是把 `d` 当布尔用（§2.2）。不为 Verdict 增加模式匹配——这是路径 B 的触点，
 且本子项目的消费方是运行时与 API，不是策略自身。
+
+parity 语料 `verdict-fields.aster`（3 例）覆盖 `Text` 形参作 reason 与 `d.outcome` / `d.role` 读取。
 
 ---
 
@@ -170,6 +189,9 @@ TS 解析器原本只接受具名参数 `@id(value: "X")`，现改为同样接�
 - 注解名为 null 的注解直接跳过，不得抛异常。
 - 「规则返回 Verdict」的判定：声明返回类型为 TypeName `Verdict`，**或**函数体内任一 `Return` 的表达式是 `Verdict.*` 的直接调用。
   扫描进入 `Block`、`Scope`、`If` 两支与 `Match` 各分支；**不**追踪变量（`Let d = Verdict.allow(). Return d.` 只靠声明返回类型识别）。
+  在 Java 侧，函数体扫描这一支实际总与 E003 同现：省略 `produce:` 时 Java 按规则名推断返回类型（Bool / Text），
+  返回 Verdict 即报 `RETURN_TYPE_MISMATCH`。因此「省略返回类型、靠函数体识别」在 Java 上只起到让 W700 不漏报的作用，
+  可编译的 Verdict 规则必须写 `produce Verdict`。
 - 规则名不能是冠词 `a` / `an` / `the`：canonicalizer 会去掉冠词，用作规则名会使声明消失。
 
 ### 3.1 为什么不加 `@version`
@@ -249,6 +271,8 @@ APPROVED、DENIED、REQUIRE_APPROVAL、ESCALATE、INDETERMINATE。字符串、`d
 （已实现，`DecisionInterpreterTest` 15 例）。规则按上表顺序判定：Verdict 值优先于 `approved` 字段。
 What-if 回放（ADR 0033 / 0034）的 base / target 比较随之获得新两态：`ReplayBatchService` 把 REQUIRE_APPROVAL / ESCALATE
 当作**真实的非批准决策**参与比较（target 记为未通过），而不是 INDETERMINATE 式的「无法判定」。
+已知粒度限制：What-if 只区分「批准 / 非批准」，baseline 为 REQUIRE_APPROVAL、target 为 DENY 时两者都是非批准，计为「无变化」；
+按 outcome 细分的比较随子项目 3 一并细化。
 
 ### 5.3 不在本子项目范围
 
@@ -293,29 +317,29 @@ ALLOW → approved；DENY → denied 并带 reason；REQUIRE_APPROVAL / ESCALATE
 | aster-lang-ts | 同上镜像；interpreter 产出的值形状逐键断言 |
 | aster-lang-truffle | Builtins 单测：四种 outcome 的 Map 形状与键序 |
 | aster-lang-test | parity 语料新增 Verdict 用例（四种 outcome × 有无 role），`--mode=ir --full` 与执行 parity 均须零分歧 |
-| aster-api | DecisionInterpreter 三条路径单测；`evaluate-source` 集成测试断言 `decision` / `ruleId` / `controls`；What-if 回放对 Verdict 策略的比较 |
+| aster-api | DecisionInterpreter 三条路径单测（`DecisionInterpreterTest`）；REST 端到端 `PolicyEvaluationVerdictRestTest`（`@QuarkusTest`，HMAC profile，真实 Postgres）：带 `@id` / `@control` 的 Verdict 策略响应含 `decision` / `ruleId` / `controls`，Bool 策略响应三者均不出现。What-if 回放对 Verdict 策略的比较**尚无测试**（见 §10） |
 | 错误码 | `validate_error_codes.ts` 通过；generator 产物两侧一致 |
 
 本地验证顺序：core `./gradlew --offline test` 与 `goldenTest` 分开运行 → ts `pnpm typecheck && pnpm lint && pnpm test:unit` → truffle `./gradlew --offline test`
 → core `publishToMavenLocal -x test` + ts `pnpm build` → aster-lang-test 三道门禁 → api `:replay:test` 与 `:test` → cloud `pnpm vitest run src/__tests__/services`。
 
-实测结果（2026-10-07，各仓 `feat/adr-0039-verdict`）：
+实测结果（2026-10-07 终审修复后，各仓 `feat/adr-0039-verdict`）：
 
 | 仓 | 命令 | 结果 |
 |---|---|---|
-| aster-lang-core | `./gradlew --offline test` | 1724 tests，0 失败，7 跳过（既有）；governance 22/22 |
+| aster-lang-core | `./gradlew --offline test --rerun-tasks` | 1732 tests，0 失败，7 跳过（既有）；governance 30/30（`VerdictTypeCheckTest` 15、`GovernanceCheckerTest` 15）。计时型 `CanonicalizerReDoSTest.gateItselfCanFail` 曾单次偶发失败，重跑通过，与本改动无关 |
 | aster-lang-core | `./gradlew --offline goldenTest --rerun-tasks` | 11 tests，0 失败，5 跳过（既有）。`test goldenTest` 组合运行因 goldenTest 未声明对 `:jar` 的依赖被 Gradle 9.6.1 拒绝，属既有构建问题 |
-| aster-lang-ts | `pnpm typecheck && pnpm lint && pnpm test:unit` | typecheck 通过；lint 0 error（1 条既有 warning）；unit 1905/1905 |
-| aster-lang-ts | 错误码 generator `--check`、`validate_error_codes`、parity 测试 | 一致；76 个码；8/8 |
-| aster-lang-truffle | `./gradlew --offline test` | 869 tests，0 失败，3 跳过（既有）；`VerdictBuiltinsTest` 8/8 |
-| aster-lang-test | `parity-tier1.mjs --mode=ir --full` | 224/224 identical |
-| aster-lang-test | `parity-tier1.mjs --mode=eval` | 718/718 identical（verdict-basic 5 例全部一致） |
-| aster-lang-test | `test-eval-guard.mjs`；`packages/js` `pnpm test` | 22 过 / 0 失败；13/13 |
-| aster-api | `./gradlew --offline :replay:test --rerun` | 96/96 |
-| aster-api | `:test --tests 'io.aster.policy.rest.*' --tests 'io.aster.policy.api.*'`（Podman `postgres:17-alpine` 临时库） | 30 个类 229/229 |
-| aster-api | `:test --tests 'io.aster.policy.replay.batch.*'` | 94/94（`DecisionInterpreterTest` 15） |
-| aster-api | `./gradlew --offline :test`（无 DB） | 1445 tests，12 失败均为 `@QuarkusTest` 连不上 Postgres（Flyway ConnectException），434 跳过；待有 DB 环境复跑 |
-| aster-cloud | `pnpm vitest run`（policy + cnl-result-parser） | 12 files / 172 passed；`tsc --noEmit` 通过 |
+| aster-lang-ts | `pnpm typecheck && pnpm lint && pnpm test:unit` | typecheck 通过；lint 0 error（1 条既有 warning）；unit 1917/1917 |
+| aster-lang-ts | 错误码 generator `--check`、`validate_error_codes`、parity 测试 | 一致；76 个码；8/8（终审修复前实测，本轮未改错误码） |
+| aster-lang-truffle | `./gradlew --offline test` | 869 tests，0 失败，3 跳过（既有）；`VerdictBuiltinsTest` 11/11 |
+| aster-lang-test | `parity-tier1.mjs --mode=ir --full` | 225/225 identical |
+| aster-lang-test | `parity-tier1.mjs --mode=eval` | 721/721 identical（verdict-basic 5 例 + verdict-fields 3 例全部一致） |
+| aster-lang-test | `test-eval-guard.mjs`；`tag-eval-exempt.mjs --check` | 22 过 / 0 失败；计数与豁免章一致 |
+| aster-api | `./gradlew --offline :replay:test` | 97/97 |
+| aster-api | `:test --tests 'io.aster.policy.rest.PolicyEvaluationVerdictRestTest'`（Podman `postgres:17-alpine` 临时库） | 2/2 |
+| aster-api | `:test --tests 'io.aster.policy.replay.batch.*' --tests 'io.aster.policy.api.PolicyQueryServiceTest'`（同上临时库） | 9 个类 109/109（`DecisionInterpreterTest` 15） |
+| aster-api | `:test --tests 'io.aster.policy.rest.*' --tests 'io.aster.policy.api.*'`（终审修复前实测，临时库） | 30 个类 229/229 |
+| aster-cloud | `pnpm vitest run`（policy + cnl-result-parser） | 12 files / 172 passed；`tsc --noEmit` 通过（终审修复前实测，本轮未改 cloud） |
 
 parity 脚本需 Node ≥ 23.6（加载 `.ts` 归一器；本机默认 22.13 报 `ERR_UNKNOWN_FILE_EXTENSION`），CI 用 Node 24。
 
@@ -348,8 +372,18 @@ parity 脚本需 Node ≥ 23.6（加载 `.ts` 归一器；本机默认 22.13 报
 | 2026-10-07 | `ruleId` / `controls` 反映被执行规则的注解，不限于 Verdict 结果（规则身份对任何决策记录都有用）；`decision` 仅对 Verdict 结果非空。代价：非 Verdict 策略的响应多两个可空字段（缺省不输出） | Claude（执行控制） |
 | 2026-10-07 | `/evaluate-json` 与 runner `StandaloneReplayExecutor` 一并透传新字段：同一路径的不同入口，不透传会出现同一结果不同形状 | Claude（执行控制） |
 | 2026-10-07 | `policy-examples.ts` 模板改写与信贷演示迁移推迟到子项目 4；本子项目只让 cloud 结果解析器识别 Verdict（此前判为 Unknown → denied） | Claude（实施计划） |
+| 2026-10-07 | Verdict 在布尔上下文（If 条件、`not`、相等比较操作数）两侧类型检查器报 `TYPE_MISMATCH`，两侧运行时直接失败（fail-closed）。终审发现 TS 检查器全部放行、两侧运行时都把任何 Verdict（含 DENY）当真值 | 终审裁定 |
+| 2026-10-07 | 空白 reason / role 两侧运行时拒绝（Java `isBlank()`、TS `trim() === ''`），与 `@id` 拒空白同口径 | 终审裁定 |
+| 2026-10-07 | Verdict 字段 `outcome` / `role` / `reason` 两侧定型为 `Text`；Java 比较 reason / role 参数前先展开 `Text`→`String` 别名，个数不符时仍逐个推断参数类型 | 终审裁定 |
 
 ## 10. 尚未回答的问题
+
+- **What-if 回放对 Verdict 策略的比较未测**：`ReplayBatchService` 对 REQUIRE_APPROVAL / ESCALATE 的处理只有 `DecisionInterpreter` 单测间接覆盖，
+  没有以 Verdict 策略为 base / target 跑一次 What-if 的测试；连同 §5.2 的「批准 / 非批准」粒度限制在子项目 3 补齐。
+- **Java 类型检查器对运算符名报未定义变量**：经治理测试同一条编译链（canonicalize → parse → lower → `TypeChecker`），
+  `x plus 2`、`x equals to 1`、`not x`、`x and y` 都报 `E101 Undefined variable: +/==/not/and`（`BaseTypeChecker.checkCall` 先对
+  `call.target` 求类型）。基线分支即如此，与 Verdict 无关；本子项目的 Verdict 布尔上下文用例因此在 Java 侧同时出现 E101 与 `TYPE_MISMATCH`，
+  断言只针对后者。修正属独立工作。
 
 - `REQUIRE_APPROVAL` 的 `role` 是自由文本还是受控词表？本子项目按 Text 处理；子项目 2 定义待审批实体时若需要受控词表，在 Verdict 之外用 `@control` 或 manifest 约束，不改本 ADR 的签名。
 - `Verdict` 是否应携带 `obligations`（如「执行前脱敏」）？YAGNI：没有消费方之前不加；子项目 2 的 guard 端点若需要，再以追加键的方式扩展，不破坏既有四键。
