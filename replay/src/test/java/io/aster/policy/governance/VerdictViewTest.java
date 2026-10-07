@@ -1,5 +1,6 @@
 package io.aster.policy.governance;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -21,5 +22,12 @@ class VerdictViewTest {
     assertEquals(Optional.empty(), VerdictView.from(true));
     assertEquals(Optional.empty(), VerdictView.from("APPROVED"));
     assertEquals(Optional.empty(), VerdictView.from(null));
+  }
+  // ADR 0039 §2.3：缺省键不写出；字段按字母序，与 EvaluationResponse 一致。
+  @Test void 序列化不写null键且字母序() throws Exception {
+    ObjectMapper mapper = new ObjectMapper();
+    assertEquals("{\"outcome\":\"ALLOW\"}", mapper.writeValueAsString(new VerdictView("ALLOW", null, null)));
+    assertEquals("{\"outcome\":\"REQUIRE_APPROVAL\",\"reason\":\"over cap\",\"role\":\"Senior Underwriter\"}",
+        mapper.writeValueAsString(new VerdictView("REQUIRE_APPROVAL", "Senior Underwriter", "over cap")));
   }
 }
