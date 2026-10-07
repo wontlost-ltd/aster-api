@@ -17,5 +17,9 @@ public enum EventType {
 
     // P0-C 稳定性门禁（ADR 0031 M3）
     STABILITY_EXCEPTION_USED,   // 经白名单放行 Experimental 特性（含 approvalRef）
-    STABILITY_EXCEPTION_DENIED  // 未授权 Experimental 被拒（留痕反复尝试）
+    STABILITY_EXCEPTION_DENIED, // 未授权 Experimental 被拒（留痕反复尝试）
+
+    // Action Guard（ADR 0040）：同步入链，决策须在收据落链后才返回
+    ACTION_GUARD_DECISION,      // 动作守卫决策（ALLOW / DENY / 待审批）
+    ACTION_GUARD_APPROVAL       // 人工审批结论（批准 / 驳回）
 }

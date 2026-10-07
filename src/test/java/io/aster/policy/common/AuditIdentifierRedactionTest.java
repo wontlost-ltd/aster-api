@@ -59,12 +59,13 @@ class AuditIdentifierRedactionTest {
     }
 
     @Test
-    @DisplayName("AuditEventListener 源码中 tenantId / performedBy 不得再调用 redact")
+    @DisplayName("审计链映射源码（AuditChainAppender）中 tenantId 不得脱敏、performedBy 必须脱敏")
     void listenerMustNotRedactIdentifiers() throws Exception {
         // ★直接断言**生产源码**，而不是在测试里复刻一份逻辑——
         //   复刻版永远会通过，无法在有人改回 redact(...) 时报警。
+        //   事件→实体映射由 AuditChainAppender.toAuditLog 承担（异步监听器与同步路径共用）。
         Path listener = Path.of(
-                "src/main/java/io/aster/policy/event/AuditEventListener.java");
+                "src/main/java/io/aster/audit/chain/AuditChainAppender.java");
         String src = Files.readString(listener);
 
         assertTrue(
