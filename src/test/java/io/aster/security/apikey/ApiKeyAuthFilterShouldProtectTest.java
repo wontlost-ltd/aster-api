@@ -150,6 +150,25 @@ class ApiKeyAuthFilterShouldProtectTest {
     }
 
     // ============================================================
+    // Action Guard（ADR 0040）：Agent 直连的决策/审批端点必须走 API key，
+    // 否则租户与执行人只剩可伪造的 X-Tenant-Id / X-User-Id。
+    // ============================================================
+
+    @Test
+    void actionGuardEndpointsRequireApiKey() throws Exception {
+        assertTrue(call("/api/v1/guard/decisions"));
+        assertTrue(call("/api/v1/guard/decisions/abc"));
+        assertTrue(call("/api/v1/guard/approvals"));
+        assertTrue(call("/api/v1/guard/approvals/x/approve"));
+    }
+
+    @Test
+    void actionGuardSiblingPathIsNotOverMatched() throws Exception {
+        // 前缀边界防误伤：/api/v1/guardian 不是 guard 端点。
+        assertFalse(call("/api/v1/guardian"));
+    }
+
+    // ============================================================
     // R23-Critical-1: matrix-parameter bypass regression guards
     // ============================================================
 

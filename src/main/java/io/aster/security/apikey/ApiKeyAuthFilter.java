@@ -173,6 +173,7 @@ public class ApiKeyAuthFilter {
      *   <li>{@code /cache} —— 缓存清理：R21-Critical-1 起 API key 必填</li>
      *   <li>{@code /schema}、{@code /validate} —— 元数据查询：保持匿名（无副作用）</li>
      *   <li>{@code /api/v1/workflows/*} —— workflow 审计只读：API key 必填（见下）</li>
+     *   <li>{@code /api/v1/guard/*} —— Action Guard（ADR 0040）Agent 直连端点：API key 必填</li>
      * </ul>
      */
     private static boolean shouldProtect(String path) {
@@ -205,6 +206,9 @@ public class ApiKeyAuthFilter {
         // 已验证结果无条件覆盖（见 applyResultSync），谓词才真正有可信输入。
         // 用 equals + "/" 前缀，避免误伤 /api/v1/workflowsXYZ 之类兄弟路径。
         if (p.equals("/api/v1/workflows") || p.startsWith("/api/v1/workflows/")) return true;
+
+        // Action Guard（ADR 0040）：Agent 直连端点，全部走 API key。
+        if (p.equals("/api/v1/guard") || p.startsWith("/api/v1/guard/")) return true;
 
         if (!p.startsWith("/api/v1/policies/")) return false;
         // 公开 evaluate 端点（按调用量计费）

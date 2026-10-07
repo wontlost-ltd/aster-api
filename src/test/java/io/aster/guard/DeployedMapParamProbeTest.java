@@ -27,11 +27,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 通过本测试，Action Guard 才能把扁平化的 Action 作为单一记录参数传入已部署规则。
  */
 @QuarkusTest
-class DeployedMapParamProbeTest {
+public class DeployedMapParamProbeTest {
   static final String TENANT = "tenant-guard-probe";
-  static final String MODULE = "guard.probe";
-  static final String FUNCTION = "decide";
-  static final String SOURCE = String.join("\n",
+  public static final String MODULE = "guard.probe";
+  public static final String FUNCTION = "decide";
+  public static final String SOURCE = String.join("\n",
       "Module guard.probe.", "",
       "Define GuardRequest has principal_id, principal_type, principal_roles, action, resource_type, resource_id, context, agent_model.", "",
       "@id(\"PROBE-001\")",
@@ -55,7 +55,8 @@ class DeployedMapParamProbeTest {
     versionResolutionCache.clear();
   }
 
-  static void deploy(String tenant, String module, String function, String source) {
+  /** 在独立事务中部署目录 + 活跃版本；同时供 {@code io.aster.guard.api} 的 REST 测试复用。 */
+  public static void deploy(String tenant, String module, String function, String source) {
     QuarkusTransaction.requiringNew().run(() -> {
       PolicyCatalog catalog = new PolicyCatalog();
       catalog.id = UUID.randomUUID(); catalog.tenantId = tenant; catalog.moduleName = module;
