@@ -1,6 +1,7 @@
 package io.aster.guard;
 
 import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -42,8 +43,16 @@ public class GuardApprovalEntity extends PanacheEntityBase {
     return find("id = ?1 and tenantId = ?2", id, tenantId).firstResultOptional();
   }
 
-  public static List<GuardApprovalEntity> listByTenantAndStatus(String tenantId, GuardApprovalStatus status, int page, int size) {
-    return find("tenantId = ?1 and status = ?2 order by createdAt desc", tenantId, status).page(page, Math.min(size, 200)).list();
+  /**
+   * 租户内按状态分页，按创建时间倒序。PENDING 只列出 {@code now} 时仍可审批的行（与 {@link #isExpired} 同一边界），
+   * 已到期但调度器尚未落库的不出现在待审批列表里。
+   */
+  public static List<GuardApprovalEntity> listByTenantAndStatus(String tenantId, GuardApprovalStatus status, Instant now,
+                                                                int page, int size) {
+    PanacheQuery<GuardApprovalEntity> query = status == GuardApprovalStatus.PENDING
+        ? find("tenantId = ?1 and status = ?2 and expiresAt >= ?3 order by createdAt desc", tenantId, status, now)
+        : find("tenantId = ?1 and status = ?2 order by createdAt desc", tenantId, status);
+    return query.page(page, Math.min(size, 200)).list();
   }
 
   /** 过期判定在读取时也执行，不依赖调度器及时（ADR 0040 §4.3）。 */

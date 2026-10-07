@@ -81,9 +81,9 @@ class GuardEntitiesPersistenceTest {
       assertThat(GuardApprovalEntity.findByIdAndTenant(a.id, otherTenant)).isEmpty();
 
       List<GuardApprovalEntity> pending =
-          GuardApprovalEntity.listByTenantAndStatus(tenant, GuardApprovalStatus.PENDING, 0, 10);
+          GuardApprovalEntity.listByTenantAndStatus(tenant, GuardApprovalStatus.PENDING, Instant.now(), 0, 10);
       assertThat(pending).extracting(x -> x.id).containsExactly(a.id);
-      assertThat(GuardApprovalEntity.listByTenantAndStatus(tenant, GuardApprovalStatus.APPROVED, 0, 10)).isEmpty();
+      assertThat(GuardApprovalEntity.listByTenantAndStatus(tenant, GuardApprovalStatus.APPROVED, Instant.now(), 0, 10)).isEmpty();
     });
   }
 

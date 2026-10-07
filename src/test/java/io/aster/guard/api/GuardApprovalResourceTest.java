@@ -6,6 +6,7 @@ import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardApprovalService;
 import io.aster.guard.GuardApprovalStatus;
 import io.aster.guard.GuardDecisionEntity;
+import io.aster.guard.GuardDecisionStore;
 import io.aster.policy.cache.CompiledPolicyCache;
 import io.aster.policy.cache.PolicyVersionResolutionCache;
 import io.aster.policy.entity.PolicyArtifact;
@@ -48,6 +49,7 @@ class GuardApprovalResourceTest {
   @Inject PolicyVersionResolutionCache versionResolutionCache;
   @Inject AuditChainAnchorService anchorService;
   @Inject GuardApprovalService approvalService;
+  @Inject GuardDecisionStore store;
 
   @BeforeEach
   void setUp() {
@@ -84,12 +86,19 @@ class GuardApprovalResourceTest {
   }
 
   private static Response postDecision(Integer waitSeconds) {
-    return given()
+    return postDecision(waitSeconds, null);
+  }
+
+  private static Response postDecision(Integer waitSeconds, String idempotencyKey) {
+    var spec = given()
         .header("X-Tenant-Id", TENANT)
         .header("X-User-Id", "user-guard-approval")
         .contentType(ContentType.JSON)
-        .body(pendingBody(waitSeconds))
-        .when().post("/api/v1/guard/decisions");
+        .body(pendingBody(waitSeconds));
+    if (idempotencyKey != null) {
+      spec = spec.header("Idempotency-Key", idempotencyKey);
+    }
+    return spec.when().post("/api/v1/guard/decisions");
   }
 
   /** 产生一条 PENDING 决策，返回 {decisionId, approvalId}。 */
@@ -225,6 +234,8 @@ class GuardApprovalResourceTest {
     Response read = getDecision(ids[0]);
     assertThat(read.jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
     assertThat(approvalRow(ids[1]).status).isEqualTo(GuardApprovalStatus.PENDING);
+    // 行仍是 PENDING，但已到期：不出现在待审批列表里
+    assertThat(list("PENDING").jsonPath().getList("items.id", String.class)).doesNotContain(ids[1]);
     Response late = decide(ids[1], "approve", "dpo-1", DPO, null);
     assertThat(late.statusCode()).isEqualTo(409);
     assertThat(late.jsonPath().getString("error")).isEqualTo("approval_not_pending");
@@ -237,6 +248,48 @@ class GuardApprovalResourceTest {
     Response after = getDecision(ids[0]);
     assertThat(after.jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
     assertThat(after.jsonPath().getString("approval.status")).isEqualTo("EXPIRED");
+  }
+
+  @Test
+  void 校验后加锁前到期_tx2拒绝迁移且决策保持DENY() throws Exception {
+    String[] ids = createPending();
+    UUID approvalId = UUID.fromString(ids[1]);
+    QuarkusTransaction.requiringNew().run(() -> GuardApprovalEntity.update(
+        "expiresAt = ?1 where id = ?2", Instant.now().plusMillis(300), approvalId));
+    // 模拟 tx1：在到期前完成校验并定下目标状态
+    GuardApprovalEntity decided = store.findApproval(TENANT, approvalId).orElseThrow();
+    decided.status = GuardApprovalStatus.APPROVED;
+    decided.decidedBy = "dpo-1";
+    decided.decidedAt = Instant.now();
+    assertThat(decided.isExpired(decided.decidedAt)).isFalse();
+    String responseJson = store.findDecision(TENANT, decided.decisionId).orElseThrow().responseJson;
+    Thread.sleep(400);
+
+    assertThat(store.completeApproval(decided, responseJson)).isFalse();
+
+    assertThat(approvalRow(ids[1]).status).isEqualTo(GuardApprovalStatus.PENDING);
+    assertThat(getDecision(ids[0]).jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
+    Response late = decide(ids[1], "approve", "dpo-1", DPO, null);
+    assertThat(late.statusCode()).isEqualTo(409);
+    assertThat(late.jsonPath().getString("error")).isEqualTo("approval_not_pending");
+  }
+
+  @Test
+  void 幂等重放返回同一决策且反映审批现状() {
+    String key = "idem-approval-" + UUID.randomUUID();
+    Response first = postDecision(null, key);
+    assertThat(first.jsonPath().getString("effectiveOutcome")).isEqualTo("PENDING");
+    String approvalId = first.jsonPath().getString("approval.id");
+    assertThat(decide(approvalId, "approve", "dpo-1", DPO, null).statusCode()).isEqualTo(200);
+
+    Response replay = postDecision(null, key);
+
+    assertThat(replay.statusCode()).isEqualTo(200);
+    assertThat(replay.jsonPath().getString("decisionId")).isEqualTo(first.jsonPath().getString("decisionId"));
+    assertThat(replay.jsonPath().getString("receipt.hash")).isEqualTo(first.jsonPath().getString("receipt.hash"));
+    assertThat(replay.jsonPath().getString("approval.id")).isEqualTo(approvalId);
+    assertThat(replay.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+    assertThat(replay.jsonPath().getString("approval.status")).isEqualTo("APPROVED");
   }
 
   @Test

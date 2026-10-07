@@ -52,8 +52,10 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
   }
 
   @Override
-  public List<GuardApprovalEntity> listApprovals(String tenantId, GuardApprovalStatus status, int page, int size) {
-    return QuarkusTransaction.requiringNew().call(() -> GuardApprovalEntity.listByTenantAndStatus(tenantId, status, page, size));
+  public List<GuardApprovalEntity> listApprovals(String tenantId, GuardApprovalStatus status, Instant now, int page,
+                                                int size) {
+    return QuarkusTransaction.requiringNew().call(
+        () -> GuardApprovalEntity.listByTenantAndStatus(tenantId, status, now, page, size));
   }
 
   @Override
@@ -73,7 +75,7 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
     Optional<GuardApprovalEntity> locked = GuardApprovalEntity
         .<GuardApprovalEntity>find("id = ?1 and tenantId = ?2", decided.id, decided.tenantId)
         .withLock(LockModeType.PESSIMISTIC_WRITE).firstResultOptional();
-    if (locked.isEmpty() || !transitionable(locked.get(), decided)) {
+    if (locked.isEmpty() || !transitionable(locked.get(), decided, Instant.now())) {
       return false;
     }
     GuardApprovalEntity row = locked.get();
@@ -88,12 +90,16 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
     return true;
   }
 
-  /** 只有 PENDING 可迁移；人工批准 / 拒绝还要求在决定时刻未过期，过期迁移则不受此限。 */
-  private static boolean transitionable(GuardApprovalEntity current, GuardApprovalEntity decided) {
+  /**
+   * 只有 PENDING 可迁移；人工批准 / 拒绝还要求在<b>加锁后的 now</b> 未过期，过期迁移则不受此限。
+   * 不能用校验时刻的 decidedAt 复核：校验通过后行可能已到期，期间读取方已按过期返回 DENY，
+   * 这时再提交 APPROVED 就会让同一决策从 DENY 翻成 ALLOW。decidedAt 仍按校验时刻记录。
+   */
+  static boolean transitionable(GuardApprovalEntity current, GuardApprovalEntity decided, Instant now) {
     if (current.status != GuardApprovalStatus.PENDING) {
       return false;
     }
-    return decided.status == GuardApprovalStatus.EXPIRED || !current.isExpired(decided.decidedAt);
+    return decided.status == GuardApprovalStatus.EXPIRED || !current.isExpired(now);
   }
 
   /** 先决策后审批（外键），flush 让约束错误在本事务内暴露。 */

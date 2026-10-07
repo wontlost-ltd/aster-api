@@ -79,9 +79,9 @@ public class GuardApprovalService {
     return complete(approval).orElseThrow(() -> notPending(approvalId));
   }
 
-  /** 租户内按状态分页列出审批（按创建时间倒序）。 */
+  /** 租户内按状态分页列出审批（按创建时间倒序）；PENDING 只含当前仍可审批的行。 */
   public List<GuardApprovalEntity> list(String tenantId, GuardApprovalStatus status, int page, int size) {
-    return store.listApprovals(tenantId, status, page, size);
+    return store.listApprovals(tenantId, status, Instant.now(), page, size);
   }
 
   /**

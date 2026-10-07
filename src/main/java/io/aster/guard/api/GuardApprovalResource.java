@@ -43,17 +43,16 @@ public class GuardApprovalResource {
 
   /**
    * 列表项：审批行的对外视图。时间为 ISO-8601 字符串（与 {@link GuardDecisionResponse.ApprovalView} 一致），
-   * status 已应用读取时的过期判定，null 字段不写出。
+   * null 字段不写出。
    */
   @JsonPropertyOrder(alphabetic = true)
   @JsonInclude(JsonInclude.Include.NON_NULL)
   public record ApprovalItemView(String comment, String createdAt, String decidedAt, String decidedBy, String decisionId,
                                  String expiresAt, String id, String outcome, String principalId, String requiredRole,
                                  String status) {
-    static ApprovalItemView of(GuardApprovalEntity a, Instant now) {
-      GuardApprovalStatus status = a.isExpired(now) ? GuardApprovalStatus.EXPIRED : a.status;
+    static ApprovalItemView of(GuardApprovalEntity a) {
       return new ApprovalItemView(a.comment, text(a.createdAt), text(a.decidedAt), a.decidedBy, a.decisionId.toString(),
-          text(a.expiresAt), a.id.toString(), a.outcome, a.principalId, a.requiredRole, status.name());
+          text(a.expiresAt), a.id.toString(), a.outcome, a.principalId, a.requiredRole, a.status.name());
     }
 
     private static String text(Instant t) {
@@ -67,7 +66,7 @@ public class GuardApprovalResource {
   @Inject
   GuardApprovalService service;
 
-  /** 租户内按状态分页列出审批，默认 PENDING；page 从 0 起，size 取 1–200。 */
+  /** 租户内按状态分页列出审批，默认 PENDING（不含已到期行）；page 从 0 起，size 取 1–200。 */
   @GET
   public Response list(@QueryParam("status") @DefaultValue("PENDING") String status,
                        @QueryParam("page") @DefaultValue("0") int page,
@@ -80,9 +79,8 @@ public class GuardApprovalResource {
     }
     int safePage = Math.max(0, page);
     int safeSize = Math.max(1, Math.min(MAX_PAGE_SIZE, size));
-    Instant now = Instant.now();
     List<ApprovalItemView> items = service.list(identityResolver.tenantId(), parsed, safePage, safeSize).stream()
-        .map(a -> ApprovalItemView.of(a, now))
+        .map(ApprovalItemView::of)
         .toList();
     return Response.ok(Map.of("items", items, "page", safePage, "size", safeSize)).build();
   }

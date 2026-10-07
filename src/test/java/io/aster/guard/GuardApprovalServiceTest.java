@@ -236,6 +236,25 @@ class GuardApprovalServiceTest {
   }
 
   @Test
+  void tx1与tx2之间到期_加锁复核失败_approval_not_pending() throws Exception {
+    Instant expiresAt = Instant.now().plusMillis(150);
+    GuardApprovalEntity a = pending(DPO, expiresAt);
+    GuardApprovalEntity lockedRow = new GuardApprovalEntity();
+    lockedRow.status = GuardApprovalStatus.PENDING;
+    lockedRow.expiresAt = expiresAt;
+    // 模拟 tx2：审计追加之后、加锁之前行已到期，按真实的可迁移判定（加锁时刻的 now）复核
+    when(store.completeApproval(any(), anyString())).thenAnswer(inv -> {
+      Thread.sleep(300);
+      return GuardDecisionJpaStore.transitionable(lockedRow, inv.getArgument(0), Instant.now());
+    });
+
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", DPO, true, null), "approval_not_pending");
+    ArgumentCaptor<GuardApprovalEntity> decided = ArgumentCaptor.forClass(GuardApprovalEntity.class);
+    verify(store).completeApproval(decided.capture(), anyString());
+    assertThat(decided.getValue().decidedAt).isBefore(expiresAt);
+  }
+
+  @Test
   void expireDue只处理过期PENDING并逐条写事件() throws Exception {
     Instant now = Instant.now();
     GuardApprovalEntity e1 = pending(DPO, now.minusSeconds(60));
