@@ -32,9 +32,9 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
   }
 
   @Override
-  public void saveDecision(GuardDecisionEntity decision) {
+  public void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull) {
     try {
-      QuarkusTransaction.requiringNew().run(decision::persistAndFlush);
+      QuarkusTransaction.requiringNew().run(() -> persist(decision, approvalOrNull));
     } catch (RuntimeException e) {
       if (isIdempotencyViolation(e)) {
         throw new GuardIdempotencyRaceException(e);
@@ -43,9 +43,12 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
     }
   }
 
-  @Override
-  public void saveApproval(GuardApprovalEntity approval) {
-    QuarkusTransaction.requiringNew().run(approval::persistAndFlush);
+  /** 先决策后审批（外键），flush 让约束错误在本事务内暴露。 */
+  private static void persist(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull) {
+    decision.persistAndFlush();
+    if (approvalOrNull != null) {
+      approvalOrNull.persistAndFlush();
+    }
   }
 
   /**

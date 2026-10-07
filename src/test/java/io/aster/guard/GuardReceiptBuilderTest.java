@@ -7,11 +7,14 @@ import io.aster.guard.api.GuardActionRequest.Agent;
 import io.aster.guard.api.GuardActionRequest.Principal;
 import io.aster.guard.api.GuardActionRequest.Resource;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
+import io.aster.policy.common.PIIRedactor;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -83,15 +86,75 @@ class GuardReceiptBuilderTest {
         .containsEntry("reasonCode", "not_a_verdict");
   }
 
+  /** 255 字符的「最坏」文本：转义后翻倍的 {@code "} 与 {@code \\}，外加一个会被脱敏放大的邮箱。 */
+  private static String nasty(int length) {
+    return ("a@b.cc " + "\"\\".repeat(length)).substring(0, length);
+  }
+
+  /** 按追加器的方式（String 值先脱敏再序列化）测量。 */
+  private int appenderLength(Map<String, Object> metadata) throws Exception {
+    PIIRedactor redactor = new PIIRedactor();
+    Map<String, Object> redacted = new HashMap<>();
+    metadata.forEach((k, v) -> redacted.put(k, v instanceof String str ? redactor.redact(str) : v));
+    return json.writeValueAsString(redacted).length();
+  }
+
   @Test
-  void 最坏情况metadata仍小于4096() throws Exception {
-    List<String> controls = IntStream.range(0, 10).mapToObj(i -> "CONTROL-" + i + "-" + "c".repeat(40)).toList();
-    GuardDecisionDraft d = draft("REQUIRE_APPROVAL", "r".repeat(255), controls, "p".repeat(255), "k".repeat(255));
+  void 最坏情况metadata不超过预算且身份字段完好() throws Exception {
+    String text = nasty(255);
+    Action a = new Action(new Principal(text, text, List.of(text)), new ActionName(text), new Resource(text, text),
+        Map.of("amount", 250000), new Agent(text, text));
+    List<String> controls = IntStream.range(0, 16).mapToObj(i -> "\"\\".repeat(32)).toList();
+    String contextHash = mapper.contextHash(Map.of("amount", 250000));
+    GuardDecisionDraft d = new GuardDecisionDraft("t1", "guard.customer", "decide", text, mapper.flatten(a), contextHash,
+        new PolicyVersionView(Long.MAX_VALUE, HASH, Long.MAX_VALUE), "REQUIRE_APPROVAL", text, text, text, controls,
+        null);
+    UUID decisionId = UUID.randomUUID();
+    UUID approvalId = UUID.randomUUID();
 
-    AuditEvent event = builder.decisionEvent(d, UUID.randomUUID(), UUID.randomUUID(), "u".repeat(255));
+    AuditEvent event = builder.decisionEvent(d, decisionId, approvalId, text);
 
-    assertThat(json.writeValueAsString(event.metadata()).length()).isLessThan(4096);
+    assertThat(json.writeValueAsString(event.metadata()).length()).isLessThanOrEqualTo(3800);
+    assertThat(appenderLength(event.metadata())).isLessThanOrEqualTo(3800);
+    assertThat(event.metadata()).containsEntry("decisionId", decisionId.toString())
+        .containsEntry("approvalId", approvalId.toString())
+        .containsEntry("contextHash", contextHash)
+        .containsEntry("ruleId", text)
+        .containsEntry("idempotencyKey", text)
+        .containsEntry("outcome", "REQUIRE_APPROVAL")
+        .containsEntry("effectiveOutcome", "PENDING")
+        .containsEntry("sourceHash", HASH);
     assertThat(event.performedBy()).hasSizeLessThanOrEqualTo(100);
+  }
+
+  @Test
+  void 缩短按固定优先级先reason后其他() {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("reason", "\"".repeat(2000));
+    m.put("agentModel", "m".repeat(200));
+    m.put("principalId", "p".repeat(200));
+    m.put("decisionId", "d");
+
+    Map<String, Object> fitted = builder.fitBudget(m);
+
+    assertThat(builder.measure(fitted)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat((String) fitted.get("reason")).hasSizeLessThan(2000);
+    assertThat(fitted.get("agentModel")).isEqualTo("m".repeat(200));
+    assertThat(fitted.get("principalId")).isEqualTo("p".repeat(200));
+    assertThat(fitted).containsEntry("decisionId", "d");
+  }
+
+  @Test
+  void 自由文本清空仍超预算时最后删除controls() {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("decisionId", "d");
+    m.put("reason", "r".repeat(100));
+    m.put("controls", IntStream.range(0, 100).mapToObj(i -> "c".repeat(64)).toList());
+
+    Map<String, Object> fitted = builder.fitBudget(m);
+
+    assertThat(fitted).doesNotContainKey("controls").containsEntry("decisionId", "d").containsEntry("reason", "");
+    assertThat(builder.measure(fitted)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
   }
 
   @Test
@@ -104,8 +167,8 @@ class GuardReceiptBuilderTest {
 
     AuditEvent event = builder.decisionEvent(d, UUID.randomUUID(), null, "user-1");
 
-    assertThat(json.writeValueAsString(event.metadata()).length()).isLessThan(4096);
-    assertThat((String) event.metadata().get("reason")).hasSize(255);
+    assertThat(appenderLength(event.metadata())).isLessThanOrEqualTo(3800);
+    assertThat((String) event.metadata().get("reason")).hasSizeLessThanOrEqualTo(255);
   }
 
   @Test

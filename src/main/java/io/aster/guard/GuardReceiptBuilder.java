@@ -1,11 +1,15 @@
 package io.aster.guard;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.aster.policy.common.PIIRedactor;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import jakarta.enterprise.context.ApplicationScoped;
 
 import java.time.Instant;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,6 +22,11 @@ import java.util.UUID;
  * controls 限条数与单条长度——请求侧文本已由 {@link GuardActionMapper} 限为 255 字符，
  * 这里的截断兜住规则侧（reason / ruleId / controls）与调用方身份等不受请求校验约束的值。
  * 明文 context 绝不进入收据，只写 contextHash。
+ *
+ * <p>截断之后仍可能超限：追加器先 PII 脱敏（如邮箱 {@code a@b.cc} 变为 {@code ***@***.***}，会变长）
+ * 再做 JSON 序列化（{@code "} 与 {@code \} 转义后长度翻倍），最后按字符数比较。因此决策事件在构造后
+ * 按与追加器相同的方式（脱敏 + 序列化）测量，超过 {@link #METADATA_BUDGET} 就按固定优先级缩短自由文本，
+ * 见 {@link #fitBudget}。
  */
 @ApplicationScoped
 public class GuardReceiptBuilder {
@@ -28,6 +37,20 @@ public class GuardReceiptBuilder {
   /** 与 audit_logs.performed_by 列宽一致，超长会让整条收据写入失败。 */
   static final int MAX_PERFORMED_BY = 100;
   static final String SYSTEM_ACTOR = "SYSTEM";
+  /** metadata 序列化长度预算：低于追加器的 4096 上限，留出余量。 */
+  static final int METADATA_BUDGET = 3800;
+  /**
+   * 超出预算时的缩短顺序：先缩对追溯价值最低、来源最不受控的自由文本。
+   * reason（规则说明）→ agentModel → resourceId → principalId → actionName → resourceType → principalType；
+   * 每轮把当前字段缩到不超过一半，直到达标或该字段为空，再处理下一个。
+   * 身份与完整性字段（decisionId、approvalId、contextHash、outcome、effectiveOutcome、reasonCode、
+   * ruleId、policyVersionId、sourceHash、idempotencyKey）永不改动；自由文本全部清空仍超限时，最后才删除 controls。
+   */
+  static final List<String> SHRINK_ORDER =
+      List.of("reason", "agentModel", "resourceId", "principalId", "actionName", "resourceType", "principalType");
+  /** 只用于测量长度：对 String / List / Long 值，序列化结果与 Quarkus 托管的 ObjectMapper 相同。 */
+  private static final ObjectMapper MEASURE = new ObjectMapper();
+  private final PIIRedactor piiRedactor = new PIIRedactor();
 
   /** 决策事件：success 仅在 outcome 为 ALLOW 时为 true；reason 经追加器脱敏后写入 audit_logs.reason。 */
   public AuditEvent decisionEvent(GuardDecisionDraft draft, UUID decisionId, UUID approvalId, String performedBy) {
@@ -54,7 +77,7 @@ public class GuardReceiptBuilder {
     return new AuditEvent(EventType.ACTION_GUARD_DECISION, Instant.now(), draft.tenantId(),
         draft.policyModule(), draft.policyFunction(), null, null, version,
         clip(performedBy, MAX_PERFORMED_BY), draft.allowed(), null, draft.reasonCodeValue(),
-        Collections.unmodifiableMap(m), null, null, null, null);
+        Collections.unmodifiableMap(fitBudget(m)), null, null, null, null);
   }
 
   /**
@@ -75,6 +98,43 @@ public class GuardReceiptBuilder {
     return new AuditEvent(EventType.ACTION_GUARD_APPROVAL, Instant.now(), a.tenantId,
         null, null, null, null, null, actor, a.status == GuardApprovalStatus.APPROVED, null, null,
         Collections.unmodifiableMap(m), null, null, null, null);
+  }
+
+  /** 按 {@link #SHRINK_ORDER} 缩短自由文本直到测量长度 ≤ {@link #METADATA_BUDGET}；仍超限则删除 controls。 */
+  Map<String, Object> fitBudget(Map<String, Object> m) {
+    for (String key : SHRINK_ORDER) {
+      while (measure(m) > METADATA_BUDGET && m.get(key) instanceof String s && !s.isEmpty()) {
+        m.put(key, half(s));
+      }
+    }
+    if (measure(m) > METADATA_BUDGET) {
+      m.remove("controls");
+    }
+    return m;
+  }
+
+  /** 与追加器一致的测量：取「原样序列化」与「脱敏后序列化」两者较长者。 */
+  int measure(Map<String, Object> m) {
+    Map<String, Object> redacted = new HashMap<>();
+    m.forEach((k, v) -> redacted.put(k, v instanceof String s ? piiRedactor.redact(s) : v));
+    return Math.max(serializedLength(m), serializedLength(redacted));
+  }
+
+  private static int serializedLength(Map<String, Object> m) {
+    try {
+      return MEASURE.writeValueAsString(m).length();
+    } catch (JsonProcessingException e) {
+      throw new IllegalStateException("收据 metadata 无法序列化", e);
+    }
+  }
+
+  /** 缩到一半，不切开代理对。 */
+  private static String half(String s) {
+    int cut = s.length() / 2;
+    if (cut > 0 && Character.isHighSurrogate(s.charAt(cut - 1))) {
+      cut--;
+    }
+    return s.substring(0, cut);
   }
 
   /** null 不写入：追加器本也丢弃顶层 null，这里提前省掉，测试与线上看到同一份键集。 */

@@ -95,7 +95,14 @@ class GuardDecisionServiceTest {
 
   private GuardDecisionEntity savedDecision() {
     ArgumentCaptor<GuardDecisionEntity> captor = ArgumentCaptor.forClass(GuardDecisionEntity.class);
-    verify(store).saveDecision(captor.capture());
+    verify(store).saveDecision(captor.capture(), any());
+    return captor.getValue();
+  }
+
+  /** 与决策同一次调用写入的待审批行（null 表示未创建）。 */
+  private GuardApprovalEntity savedApproval() {
+    ArgumentCaptor<GuardApprovalEntity> captor = ArgumentCaptor.forClass(GuardApprovalEntity.class);
+    verify(store).saveDecision(any(), captor.capture());
     return captor.getValue();
   }
 
@@ -142,7 +149,7 @@ class GuardDecisionServiceTest {
     assertThat(e.receiptHash).isEqualTo(HASH);
     assertThat(json.readValue(e.controls, String[].class)).containsExactly("GDPR:ART17");
     assertThat(json.readValue(e.responseJson, GuardDecisionResponse.class)).isEqualTo(r);
-    verify(store, never()).saveApproval(any());
+    assertThat(savedApproval()).isNull();
   }
 
   @Test
@@ -175,12 +182,10 @@ class GuardDecisionServiceTest {
     Instant expiresAt = Instant.parse(r.approval().expiresAt());
     assertThat(expiresAt).isBetween(before.plus(Duration.ofHours(24)), Instant.now().plus(Duration.ofHours(24)));
 
-    ArgumentCaptor<GuardApprovalEntity> captor = ArgumentCaptor.forClass(GuardApprovalEntity.class);
     InOrder order = inOrder(appender, store);
     order.verify(appender).appendSync(any());
-    order.verify(store).saveDecision(any());
-    order.verify(store).saveApproval(captor.capture());
-    GuardApprovalEntity a = captor.getValue();
+    order.verify(store).saveDecision(any(), any());
+    GuardApprovalEntity a = savedApproval();
     assertThat(a.id.toString()).isEqualTo(r.approval().id());
     assertThat(a.decisionId.toString()).isEqualTo(r.decisionId());
     assertThat(a.tenantId).isEqualTo(TENANT);
@@ -201,10 +206,8 @@ class GuardDecisionServiceTest {
 
     assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
     assertThat(r.approval().requiredRole()).isNull();
-    ArgumentCaptor<GuardApprovalEntity> captor = ArgumentCaptor.forClass(GuardApprovalEntity.class);
-    verify(store).saveApproval(captor.capture());
-    assertThat(captor.getValue().outcome).isEqualTo("ESCALATE");
-    assertThat(captor.getValue().requiredRole).isNull();
+    assertThat(savedApproval().outcome).isEqualTo("ESCALATE");
+    assertThat(savedApproval().requiredRole).isNull();
   }
 
   @Test
@@ -217,7 +220,7 @@ class GuardDecisionServiceTest {
     assertThat(r.effectiveOutcome()).isEqualTo("DENY");
     assertThat(r.reasonCode()).isNull();
     assertThat(r.reason()).isEqualTo("blocked");
-    verify(store, never()).saveApproval(any());
+    assertThat(savedApproval()).isNull();
   }
 
   @Test
@@ -237,7 +240,7 @@ class GuardDecisionServiceTest {
     assertThat(r.receipt()).isNotNull();
     assertThat(appendedEvent().success()).isFalse();
     assertThat(savedDecision().reasonCode).isEqualTo("not_a_verdict");
-    verify(store, never()).saveApproval(any());
+    assertThat(savedApproval()).isNull();
   }
 
   @Test
@@ -260,7 +263,7 @@ class GuardDecisionServiceTest {
     assertThat(r.reasonCode()).isEqualTo("evaluation_failed");
     assertThat(r.reason()).isNull();
     assertThat(savedDecision().reasonCode).isEqualTo("evaluation_failed");
-    verify(store, never()).saveApproval(any());
+    assertThat(savedApproval()).isNull();
   }
 
   @Test
@@ -283,7 +286,7 @@ class GuardDecisionServiceTest {
     assertThat(r.receipt()).isNull();
     assertThat(r.approval()).isNull();
     assertThat(r.role()).isNull();
-    verify(store, never()).saveApproval(any());
+    assertThat(savedApproval()).isNull();
     GuardDecisionEntity e = savedDecision();
     assertThat(e.outcome).isEqualTo("DENY");
     assertThat(e.reasonCode).isEqualTo("receipt_unavailable");
@@ -304,7 +307,7 @@ class GuardDecisionServiceTest {
 
     assertThat(r).isEqualTo(stored);
     verifyNoInteractions(evaluationService, appender, repository);
-    verify(store, never()).saveDecision(any());
+    verify(store, never()).saveDecision(any(), any());
   }
 
   @Test
@@ -316,12 +319,94 @@ class GuardDecisionServiceTest {
     GuardDecisionEntity e = new GuardDecisionEntity();
     e.responseJson = json.writeValueAsString(winner);
     when(store.findByIdempotencyKey(TENANT, "idem-1")).thenReturn(Optional.empty(), Optional.of(e));
-    doThrow(new GuardIdempotencyRaceException(new RuntimeException("23505"))).when(store).saveDecision(any());
+    doThrow(new GuardIdempotencyRaceException(new RuntimeException("23505"))).when(store).saveDecision(any(), any());
 
     GuardDecisionResponse r = service.decide(TENANT, "user-1", request(), "idem-1");
 
     assertThat(r).isEqualTo(winner);
-    verify(store, never()).saveApproval(any());
+    // 本请求的待审批行与决策行在同一事务里，冲突时一起回滚，不会留下孤儿审批。
+    assertThat(savedApproval()).isNotNull();
+  }
+
+  @Test
+  void 合并写入失败时异常外抛且审批id不泄露() {
+    verdict("REQUIRE_APPROVAL", "Data Protection Officer", "customer record deletion");
+    IllegalStateException down = new IllegalStateException("db down");
+    doThrow(down).doNothing().when(store).saveDecision(any(), any());
+
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", request(), "idem-1")).isSameAs(down);
+    GuardDecisionResponse retry = service.decide(TENANT, "user-1", request(), "idem-1");
+
+    ArgumentCaptor<GuardApprovalEntity> approvals = ArgumentCaptor.forClass(GuardApprovalEntity.class);
+    verify(store, org.mockito.Mockito.times(2)).saveDecision(any(), approvals.capture());
+    UUID failedApprovalId = approvals.getAllValues().get(0).id;
+    assertThat(failedApprovalId).isNotNull();
+    assertThat(retry.approval().id()).isNotEqualTo(failedApprovalId.toString());
+    assertThat(retry.approval().id()).isEqualTo(approvals.getAllValues().get(1).id.toString());
+  }
+
+  @Test
+  void Verdict的role超长按not_a_verdict拒绝() {
+    verdict("REQUIRE_APPROVAL", "r".repeat(256), "customer record deletion");
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", request(), null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("DENY");
+    assertThat(r.reasonCode()).isEqualTo("not_a_verdict");
+    assertThat(r.approval()).isNull();
+    assertThat(r.role()).isNull();
+    assertThat(savedApproval()).isNull();
+  }
+
+  @Test
+  void Verdict的reason超长按not_a_verdict拒绝() {
+    verdict("ALLOW", null, "x".repeat(256));
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", request(), null);
+
+    assertThat(r.outcome()).isEqualTo("DENY");
+    assertThat(r.reasonCode()).isEqualTo("not_a_verdict");
+    assertThat(r.reason()).isNull();
+    assertThat(savedDecision().reason).isNull();
+  }
+
+  @Test
+  void Verdict的role与reason恰为255可接受() {
+    verdict("REQUIRE_APPROVAL", "r".repeat(255), "x".repeat(255));
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", request(), null);
+    assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
+    assertThat(savedApproval().requiredRole).hasSize(255);
+  }
+
+  @Test
+  void 空白幂等键视为未提供() {
+    verdict("ALLOW", null, null);
+
+    service.decide(TENANT, "user-1", request(), "   ");
+
+    verify(store, never()).findByIdempotencyKey(anyString(), anyString());
+    assertThat(savedDecision().idempotencyKey).isNull();
+    assertThat(appendedEvent().metadata()).doesNotContainKey("idempotencyKey");
+  }
+
+  @Test
+  void 幂等键超长或含控制字符报invalid_action且不评估() {
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", request(), "k".repeat(256)))
+        .isInstanceOf(GuardInvalidActionException.class);
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", request(), "idem\n1"))
+        .isInstanceOf(GuardInvalidActionException.class);
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", request(), "idem\u00071"))
+        .isInstanceOf(GuardInvalidActionException.class);
+    verifyNoInteractions(evaluationService, appender, repository);
+    verify(store, never()).findByIdempotencyKey(anyString(), anyString());
+    verify(store, never()).saveDecision(any(), any());
+  }
+
+  @Test
+  void 幂等键恰为255可用() {
+    verdict("ALLOW", null, null);
+    service.decide(TENANT, "user-1", request(), "k".repeat(255));
+    assertThat(savedDecision().idempotencyKey).hasSize(255);
   }
 
   @Test
@@ -332,7 +417,7 @@ class GuardDecisionServiceTest {
         .isInstanceOf(GuardPolicyNotFoundException.class)
         .extracting(ex -> ((GuardPolicyNotFoundException) ex).reasonCode()).isEqualTo(GuardReasonCode.POLICY_NOT_FOUND);
     verifyNoInteractions(evaluationService, appender);
-    verify(store, never()).saveDecision(any());
+    verify(store, never()).saveDecision(any(), any());
   }
 
   @Test

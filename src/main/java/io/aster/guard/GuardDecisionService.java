@@ -28,7 +28,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * Action Guard 决策编排（ADR 0040 §2–§5）：幂等查重 → 扁平化 → 解析活跃版本 → 评估 → 同步收据 → 落库 → 待审批。
+ * Action Guard 决策编排（ADR 0040 §2–§5）：幂等查重 → 扁平化 → 解析活跃版本 → 评估 → 同步收据 → 决策行与待审批行同一事务落库。
  *
  * <p>fail-closed：非 Verdict、评估异常 / 超时、收据写入失败一律判 DENY 并给出 reasonCode；
  * 收据写入失败时不创建待审批，保证「没有入链的决策不会被人批准放行」。
@@ -41,7 +41,6 @@ import java.util.function.Supplier;
 public class GuardDecisionService {
   private static final Logger LOG = Logger.getLogger(GuardDecisionService.class);
   static final Duration EVALUATION_TIMEOUT = Duration.ofSeconds(10);
-  static final int MAX_REASON_LENGTH = 1000;
   static final int MAX_COLUMN_TEXT = 255;
 
   /** 活跃版本查询的事务边界：生产为 requiringNew，单测直接执行（不启动 Quarkus）。 */
@@ -95,7 +94,8 @@ public class GuardDecisionService {
    * @throws GuardInvalidActionException  请求体校验失败
    * @throws GuardPolicyNotFoundException 策略不存在或无活跃版本
    */
-  public GuardDecisionResponse decide(String tenantId, String performedBy, GuardActionRequest req, String idempotencyKey) {
+  public GuardDecisionResponse decide(String tenantId, String performedBy, GuardActionRequest req, String rawIdempotencyKey) {
+    String idempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
     Optional<GuardDecisionResponse> replay = findByIdempotencyKey(tenantId, idempotencyKey);
     if (replay.isPresent()) {
       return replay.get();
@@ -116,13 +116,11 @@ public class GuardDecisionService {
     }
     Instant expiresAt = Instant.now().plus(approvalTtl);
     GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt);
+    GuardApprovalEntity approval = approvalId == null ? null : toApproval(approvalId, decisionId, draft, expiresAt);
     try {
-      store.saveDecision(toEntity(decisionId, draft, receipt, response));
+      store.saveDecision(toEntity(decisionId, draft, receipt, response), approval);
     } catch (GuardIdempotencyRaceException race) {
       return findByIdempotencyKey(tenantId, idempotencyKey).orElseThrow(() -> race);
-    }
-    if (approvalId != null) {
-      store.saveApproval(toApproval(approvalId, decisionId, draft, expiresAt));
     }
     return response;
   }
@@ -137,6 +135,17 @@ public class GuardDecisionService {
       return Optional.empty();
     }
     return store.findByIdempotencyKey(tenantId, idempotencyKey).map(this::readResponse);
+  }
+
+  /** 空白视为未提供；超长（列宽 255）或含控制字符在评估与写收据之前就拒绝。 */
+  private static String normalizeIdempotencyKey(String key) {
+    if (key == null || key.isBlank()) {
+      return null;
+    }
+    if (key.length() > MAX_COLUMN_TEXT || key.chars().anyMatch(Character::isISOControl)) {
+      throw new GuardInvalidActionException("Idempotency-Key 超过 " + MAX_COLUMN_TEXT + " 字符或含控制字符");
+    }
+    return key;
   }
 
   private static void validateAddress(GuardActionRequest req) {
@@ -166,10 +175,25 @@ public class GuardDecisionService {
       return base.deny(GuardReasonCode.EVALUATION_FAILED);
     }
     VerdictView verdict = result.getDecision();
-    if (verdict == null || !GuardDecisionDraft.VERDICT_OUTCOMES.contains(verdict.outcome())) {
+    if (!acceptable(verdict)) {
       return base.withRule(result.getRuleId(), result.getControls()).deny(GuardReasonCode.NOT_A_VERDICT);
     }
     return base.withRule(result.getRuleId(), result.getControls()).withVerdict(verdict);
+  }
+
+  /**
+   * guard 只接受已知 outcome、且 role / reason 不超过列宽的 Verdict；超长不静默截断
+   * （截断后的 role 会让审批角色比对失真），而是按 not_a_verdict 拒绝。
+   */
+  private static boolean acceptable(VerdictView verdict) {
+    return verdict != null
+        && GuardDecisionDraft.VERDICT_OUTCOMES.contains(verdict.outcome())
+        && fits(verdict.role())
+        && fits(verdict.reason());
+  }
+
+  private static boolean fits(String s) {
+    return s == null || s.length() <= MAX_COLUMN_TEXT;
   }
 
   /** 同步写决策收据；失败返回 null，由调用方改判 DENY receipt_unavailable。 */
@@ -209,8 +233,8 @@ public class GuardDecisionService {
     e.resourceId = draft.resourceId();
     e.contextHash = draft.contextHash();
     e.outcome = draft.outcome();
-    e.reason = clip(draft.reason(), MAX_REASON_LENGTH);
-    e.requiredRole = clip(draft.requiredRole(), MAX_COLUMN_TEXT);
+    e.reason = draft.reason();
+    e.requiredRole = draft.requiredRole();
     e.reasonCode = draft.reasonCodeValue();
     e.ruleId = clip(draft.ruleId(), MAX_COLUMN_TEXT);
     e.controls = draft.controls().isEmpty() ? null : writeJson(draft.controls());

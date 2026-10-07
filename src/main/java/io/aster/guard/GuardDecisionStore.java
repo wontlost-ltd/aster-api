@@ -16,9 +16,12 @@ public interface GuardDecisionStore {
 
   Optional<GuardApprovalEntity> findApprovalByDecision(UUID decisionId);
 
-  /** 写入决策行；{@code (tenant_id, idempotency_key)} 唯一索引冲突时抛 {@link GuardIdempotencyRaceException}。 */
-  void saveDecision(GuardDecisionEntity decision);
-
-  /** 写入待审批行；必须在对应决策行写入之后调用（外键）。 */
-  void saveApproval(GuardApprovalEntity approval);
+  /**
+   * 在<b>同一个事务</b>中写入决策行与（可选的）待审批行：要么都落库，要么都不落库，
+   * 不会出现「决策显示 PENDING 却没有审批行」的孤儿状态。
+   * {@code (tenant_id, idempotency_key)} 唯一索引冲突时抛 {@link GuardIdempotencyRaceException}。
+   *
+   * @param approvalOrNull REQUIRE_APPROVAL / ESCALATE 时的待审批行，其余为 null
+   */
+  void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull);
 }
