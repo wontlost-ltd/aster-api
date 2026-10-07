@@ -1,5 +1,7 @@
 package io.aster.replay.core;
 
+import java.util.List;
+
 /**
  * replay 执行结果的 core 拥有值类型。
  *
@@ -10,5 +12,12 @@ public record ReplayExecutorResult(
         Object result,
         String moduleName,
         String functionName,
-        long executionTimeMs) {
+        long executionTimeMs,
+        String ruleId,
+        List<String> controls) {
+
+    /** ruleId / controls（ADR 0039 §3）为空的便捷构造：无规则元数据的执行器（如测试桩）使用。 */
+    public ReplayExecutorResult(Object result, String moduleName, String functionName, long executionTimeMs) {
+        this(result, moduleName, functionName, executionTimeMs, null, List.of());
+    }
 }

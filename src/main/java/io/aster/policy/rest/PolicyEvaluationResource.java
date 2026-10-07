@@ -9,6 +9,7 @@ import io.aster.policy.metrics.PolicyMetrics;
 import io.aster.policy.api.convert.NamedContextMapper;
 import io.aster.policy.api.schema.ParameterSchemaExtractor;
 import io.aster.policy.compiler.CompilationResult;
+import io.aster.policy.governance.VerdictView;
 import io.aster.policy.parser.DynamicCnlExecutor;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.policy.replay.ReplayExecutorAdapter;
@@ -255,7 +256,8 @@ public class PolicyEvaluationResource {
 
             LOG.infof("Policy evaluation completed in %dms: %s.%s", executionTime, request.policyModule(), request.policyFunction());
             recordApiCall("/api/v1/policies/evaluate", "success", executionTime, tenantId, performedBy, apiKeyId);
-            return EvaluationResponse.success(result.getResult(), executionTime);
+            return EvaluationResponse.success(result.getResult(), executionTime, null, null,
+                result.getDecision(), result.getRuleId(), result.getControls());
         })
         .onFailure().recoverWithItem(throwable -> {
             long executionTime = System.currentTimeMillis() - startTime;
@@ -357,7 +359,8 @@ public class PolicyEvaluationResource {
 
                 LOG.infof("JSON policy evaluation completed in %dms: %s.%s", executionTime, policyModule, policyFunction);
                 recordApiCall("/api/v1/policies/evaluate-json", "success", executionTime, tenantId, performedBy, apiKeyId);
-                return EvaluationResponse.success(result.result(), executionTime);
+                return EvaluationResponse.success(result.result(), executionTime, null, null,
+                    VerdictView.from(result.result()).orElse(null), result.ruleId(), result.controls());
             })
             .onFailure().recoverWithItem(throwable -> {
                 long executionTime = System.currentTimeMillis() - startTime;
@@ -627,11 +630,16 @@ public class PolicyEvaluationResource {
 
                 // trace 字段只在客户端显式请求 trace=true 时回传（保持既有契约）；
                 // replayCapture 单独走 replayMetadata，不污染 decisionTrace 字段。
+                // 治理字段（ADR 0039）：decision 仅在结果为 Verdict 值时非 null；ruleId / controls 来自被执行函数的
+                // @id / @control 注解，无注解时为 null / 空。三者缺省时均不进入响应，非治理策略的响应字节不变。
                 EvaluationResponse response = EvaluationResponse.success(
                     phase.execResult().result(),
                     phase.execResult().executionTimeMs(),
                     trace ? decisionTrace : null,
-                    phase.execResult().functionName());
+                    phase.execResult().functionName(),
+                    VerdictView.from(phase.execResult().result()).orElse(null),
+                    phase.execResult().ruleId(),
+                    phase.execResult().controls());
 
                 if (effectiveReplayCapture) {
                     // 阶段三：★权威 hash 在 Java 评估侧计算（Codex #4）：input=请求级 context，
@@ -1075,7 +1083,12 @@ public class PolicyEvaluationResource {
 
                     responses.add(EvaluationResponse.success(
                         attempt.getResult().getResult(),
-                        execTime
+                        execTime,
+                        null,
+                        null,
+                        attempt.getResult().getDecision(),
+                        attempt.getResult().getRuleId(),
+                        attempt.getResult().getControls()
                     ));
                     recordApiCall("/api/v1/policies/evaluate/batch", "success", execTime, tenantId, performedBy, apiKeyId);
                 }

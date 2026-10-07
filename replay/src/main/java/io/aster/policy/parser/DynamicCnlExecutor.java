@@ -8,6 +8,7 @@ import aster.core.module.LinkException;
 import aster.core.module.ModuleGraphLinker;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.api.convert.NamedContextMapper;
+import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.module.ModuleResolutionException;
 import io.aster.replay.core.module.ModuleGraphResolver;
 import io.aster.replay.core.parser.ReplayMappers;
@@ -100,12 +101,16 @@ public class DynamicCnlExecutor {
 
     /**
      * 动态执行结果
+     *
+     * <p>ruleId / controls 来自被执行函数的 Core IR 注解（ADR 0039 §3）；无注解时为 null / 空列表。
      */
     public record ExecutionResult(
         Object result,
         String moduleName,
         String functionName,
-        long executionTimeMs
+        long executionTimeMs,
+        String ruleId,
+        List<String> controls
     ) {}
 
     private record CoreIrCacheKey(String key) {}
@@ -326,7 +331,9 @@ public class DynamicCnlExecutor {
             long executionTime = System.currentTimeMillis() - startTime;
             String moduleName = coreModule.name == null ? "" : coreModule.name;
             LOG.infof("Core IR 直接执行完成: %s.%s, 耗时 %dms", moduleName, targetFunction, executionTime);
-            return new ExecutionResult(result, moduleName, targetFunction, executionTime);
+            RuleMetadata meta = RuleMetadata.of(coreModule, targetFunction);
+            return new ExecutionResult(result, moduleName, targetFunction, executionTime,
+                meta.ruleId(), meta.controls());
         } catch (DynamicExecutionException e) {
             throw e;
         } catch (Exception e) {
@@ -495,11 +502,14 @@ public class DynamicCnlExecutor {
             long executionTime = System.currentTimeMillis() - startTime;
             LOG.infof("动态执行完成: %s.%s, 耗时 %dms", compiled.moduleName(), targetFunction, executionTime);
 
+            RuleMetadata meta = RuleMetadata.of(compiled.coreModule(), targetFunction);
             return new ExecutionResult(
                 result,
                 compiled.moduleName(),
                 targetFunction,
-                executionTime
+                executionTime,
+                meta.ruleId(),
+                meta.controls()
             );
 
         } catch (InProcessCnlParser.CnlParseException e) {

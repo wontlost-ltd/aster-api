@@ -17,6 +17,8 @@ import io.aster.policy.compiler.CompilationMetadata;
 import io.aster.policy.compiler.CompilationResult;
 import io.aster.policy.compiler.PolicyCompiler;
 import io.aster.policy.entity.PolicyArtifact;
+import io.aster.policy.governance.RuleMetadata;
+import io.aster.policy.governance.VerdictView;
 import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.repository.PolicySourceRepository;
@@ -41,6 +43,8 @@ import java.util.Objects;
 import java.util.Set;
 
 import io.aster.policy.cache.PolicyVersionResolutionCache;
+import io.aster.common.JacksonMappers;
+import aster.core.ir.CoreModel;
 import org.jboss.logging.Logger;
 
 /**
@@ -218,7 +222,28 @@ public class PolicyEvaluationService {
         }
         long endMarker = System.nanoTime();
         long durationNanos = deterministicTiming ? 0L : Math.max(0, endMarker - startMarker);
-        return new PolicyEvaluationResult(executionResult.result(), durationNanos / 1_000_000.0, false);
+        // 治理字段（ADR 0039）：ruleId / controls 读被执行函数的 Core IR 注解；
+        // 解析失败只降级为无元数据，不影响评估结果。
+        CoreModel.Module module = parseCoreModule(coreJson);
+        RuleMetadata meta = RuleMetadata.of(module, cacheKey.getPolicyFunction());
+        return new PolicyEvaluationResult(executionResult.result(), durationNanos / 1_000_000.0, false,
+            VerdictView.from(executionResult.result()).orElse(null), meta.ruleId(), meta.controls());
+    }
+
+    /**
+     * 把 Core IR JSON 读成 {@link CoreModel.Module}，仅用于提取规则元数据。
+     * 失败时记 warn 并返回 null（→ {@link RuleMetadata#NONE}），绝不让评估因元数据失败。
+     */
+    private static CoreModel.Module parseCoreModule(String coreJson) {
+        if (coreJson == null) {
+            return null;
+        }
+        try {
+            return JacksonMappers.LENIENT.readValue(coreJson, CoreModel.Module.class);
+        } catch (Exception e) {
+            LOG.warnf(e, "解析 Core IR 以提取规则元数据失败，按无元数据处理");
+            return null;
+        }
     }
 
     /**
@@ -469,7 +494,10 @@ public class PolicyEvaluationService {
         return new PolicyEvaluationResult(
             original.getResult(),
             original.getExecutionTimeMs(),
-            fromCache
+            fromCache,
+            original.getDecision(),
+            original.getRuleId(),
+            original.getControls()
         );
     }
 

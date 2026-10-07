@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import io.aster.policy.api.model.DecisionTrace;
+import io.aster.policy.governance.VerdictView;
 
 import java.util.List;
 
@@ -69,7 +70,23 @@ public record EvaluationResponse(
     // 详见 TraceSkeleton 类注释。
     @JsonProperty("traceSkeleton")
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    io.aster.policy.replay.TraceSkeleton traceSkeleton
+    io.aster.policy.replay.TraceSkeleton traceSkeleton,
+
+    // 治理结论（ADR 0039 §5.1）：仅当结果是内置 Verdict 值时非 null；否则不输出该字段，
+    // 保持非 Verdict 策略的既有响应字节不变。
+    @JsonProperty("decision")
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    VerdictView decision,
+
+    // 被执行规则的 @id（ADR 0039 §3）；无注解时不输出。
+    @JsonProperty("ruleId")
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    String ruleId,
+
+    // 被执行规则的 @control 列表（ADR 0039 §3），保持声明顺序；空列表时不输出。
+    @JsonProperty("controls")
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    List<String> controls
 ) {
     public record EntryDiagnostic(
         String code,
@@ -78,24 +95,32 @@ public record EvaluationResponse(
     ) {}
 
     public static EvaluationResponse success(Object result, long executionTimeMs) {
-        return new EvaluationResponse(result, executionTimeMs, null, null, null, null, null, null);
+        return new EvaluationResponse(result, executionTimeMs, null, null, null, null, null, null, null, null, List.of());
     }
 
     public static EvaluationResponse success(Object result, long executionTimeMs, String executedFunction) {
-        return new EvaluationResponse(result, executionTimeMs, null, null, executedFunction, null, null, null);
+        return new EvaluationResponse(result, executionTimeMs, null, null, executedFunction, null, null, null, null, null, List.of());
     }
 
     public static EvaluationResponse success(Object result, long executionTimeMs, DecisionTrace trace) {
-        return new EvaluationResponse(result, executionTimeMs, null, trace, null, null, null, null);
+        return new EvaluationResponse(result, executionTimeMs, null, trace, null, null, null, null, null, null, List.of());
     }
 
     public static EvaluationResponse success(
             Object result, long executionTimeMs, DecisionTrace trace, String executedFunction) {
-        return new EvaluationResponse(result, executionTimeMs, null, trace, executedFunction, null, null, null);
+        return new EvaluationResponse(result, executionTimeMs, null, trace, executedFunction, null, null, null, null, null, List.of());
+    }
+
+    /** 携带治理字段（decision / ruleId / controls，ADR 0039）的成功响应。 */
+    public static EvaluationResponse success(
+            Object result, long executionTimeMs, DecisionTrace trace, String executedFunction,
+            VerdictView decision, String ruleId, List<String> controls) {
+        return new EvaluationResponse(result, executionTimeMs, null, trace, executedFunction, null, null, null,
+            decision, ruleId, controls == null ? List.of() : List.copyOf(controls));
     }
 
     public static EvaluationResponse error(String error) {
-        return new EvaluationResponse(null, 0, error, null, null, null, null, null);
+        return new EvaluationResponse(null, 0, error, null, null, null, null, null, null, null, List.of());
     }
 
     public static EvaluationResponse ambiguous(List<String> candidates) {
@@ -105,24 +130,24 @@ public record EvaluationResponse(
             "未指定入口函数，候选函数不唯一",
             safeCandidates
         );
-        return new EvaluationResponse(null, 0, "入口函数不唯一", null, null, List.of(diagnostic), null, null);
+        return new EvaluationResponse(null, 0, "入口函数不唯一", null, null, List.of(diagnostic), null, null, null, null, List.of());
     }
 
     public static EvaluationResponse diagnostic(String code, String message, List<String> candidates) {
         List<String> safeCandidates = candidates == null ? List.of() : List.copyOf(candidates);
         EntryDiagnostic diagnostic = new EntryDiagnostic(code, message, safeCandidates);
-        return new EvaluationResponse(null, 0, message, null, null, List.of(diagnostic), null, null);
+        return new EvaluationResponse(null, 0, message, null, null, List.of(diagnostic), null, null, null, null, List.of());
     }
 
     /** 附加回放元数据（replay-capture 模式；不改其它字段）。 */
     public EvaluationResponse withReplayMetadata(io.aster.policy.replay.ReplayMetadata rm) {
         return new EvaluationResponse(result, executionTimeMs, error, decisionTrace, executedFunction,
-            diagnostics, rm, traceSkeleton);
+            diagnostics, rm, traceSkeleton, decision, ruleId, controls);
     }
 
     /** 附加决策骨架（脱敏，供漏斗分析；不改其它字段）。 */
     public EvaluationResponse withTraceSkeleton(io.aster.policy.replay.TraceSkeleton skeleton) {
         return new EvaluationResponse(result, executionTimeMs, error, decisionTrace, executedFunction,
-            diagnostics, replayMetadata, skeleton);
+            diagnostics, replayMetadata, skeleton, decision, ruleId, controls);
     }
 }
