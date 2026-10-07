@@ -1,19 +1,19 @@
 package io.aster.guard;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.aster.audit.chain.AuditChainAppender;
 import io.aster.guard.api.GuardActionRequest.Action;
 import io.aster.guard.api.GuardActionRequest.ActionName;
 import io.aster.guard.api.GuardActionRequest.Agent;
 import io.aster.guard.api.GuardActionRequest.Principal;
 import io.aster.guard.api.GuardActionRequest.Resource;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
-import io.aster.policy.common.PIIRedactor;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -92,12 +92,18 @@ class GuardReceiptBuilderTest {
     return ("a@b.cc " + "\"\\".repeat(length)).substring(0, length);
   }
 
-  /** 按追加器的方式（String 值先脱敏再序列化）测量。 */
-  private int appenderLength(Map<String, Object> metadata) throws Exception {
-    PIIRedactor redactor = new PIIRedactor();
-    Map<String, Object> redacted = new HashMap<>();
-    metadata.forEach((k, v) -> redacted.put(k, v instanceof String str ? redactor.redact(str) : v));
-    return json.writeValueAsString(redacted).length();
+  /** 真实追加器的纯映射（{@code toAuditLog} 不触库）：只需补上它注入的 ObjectMapper。 */
+  private static AuditChainAppender appender() throws ReflectiveOperationException {
+    AuditChainAppender appender = new AuditChainAppender();
+    Field objectMapper = AuditChainAppender.class.getDeclaredField("objectMapper");
+    objectMapper.setAccessible(true);
+    objectMapper.set(appender, new ObjectMapper());
+    return appender;
+  }
+
+  /** 事件 metadata 经真实追加器脱敏、序列化后写入 audit_logs.metadata 的长度。 */
+  private static int appenderLength(AuditEvent event) throws ReflectiveOperationException {
+    return appender().toAuditLog(event).metadata.length();
   }
 
   @Test
@@ -117,7 +123,7 @@ class GuardReceiptBuilderTest {
     AuditEvent event = builder.decisionEvent(d, decisionId, approvalId, text);
 
     assertThat(json.writeValueAsString(event.metadata()).length()).isLessThanOrEqualTo(3800);
-    assertThat(appenderLength(event.metadata())).isLessThanOrEqualTo(3800);
+    assertThat(appenderLength(event)).isLessThanOrEqualTo(3800);
     assertThat(event.metadata()).containsEntry("decisionId", decisionId.toString())
         .containsEntry("approvalId", approvalId.toString())
         .containsEntry("contextHash", contextHash)
@@ -131,6 +137,23 @@ class GuardReceiptBuilderTest {
     @SuppressWarnings("unchecked")
     List<String> keptRoles = (List<String>) event.metadata().get("principalRoles");
     assertThat(roles.subList(0, keptRoles.size())).isEqualTo(keptRoles);
+  }
+
+  @Test
+  void 身份键为数字形UUID时measure与追加器实际序列化长度一致() throws Exception {
+    UUID decisionId = UUID.fromString("12345678-1234-5678-9012-abcdef123456");
+    UUID approvalId = UUID.fromString("abcdef12-1234-5678-9012-345678901234");
+    String idempotencyKey = "87654321-4321-8765-2109-fedcba654321";
+    GuardDecisionDraft d = draft("REQUIRE_APPROVAL", "customer record deletion", List.of("GDPR:ART17"), "agent-42",
+        idempotencyKey);
+
+    AuditEvent event = builder.decisionEvent(d, decisionId, approvalId, "user-1");
+    String persisted = appender().toAuditLog(event).metadata;
+
+    assertThat(builder.measure(event.metadata())).isEqualTo(persisted.length());
+    assertThat(persisted).contains("\"decisionId\":\"" + decisionId + "\"")
+        .contains("\"approvalId\":\"" + approvalId + "\"")
+        .contains("\"idempotencyKey\":\"" + idempotencyKey + "\"");
   }
 
   @Test
@@ -191,7 +214,7 @@ class GuardReceiptBuilderTest {
 
     AuditEvent event = builder.decisionEvent(d, UUID.randomUUID(), null, "user-1");
 
-    assertThat(appenderLength(event.metadata())).isLessThanOrEqualTo(3800);
+    assertThat(appenderLength(event)).isLessThanOrEqualTo(3800);
     assertThat((String) event.metadata().get("reason")).hasSizeLessThanOrEqualTo(255);
   }
 

@@ -15,6 +15,8 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * 审计链追加器：同步与异步两条路径共用同一套脱敏、序列化、加锁与哈希逻辑（ADR 0040 §5.1）。
@@ -40,6 +42,15 @@ public class AuditChainAppender {
     }
 
     private static final int MAX_METADATA_SIZE = 4096;
+    /**
+     * metadata 中值为标识符或摘要的键（Action Guard 收据，ADR 0040 §5.2）：它们把链上事件与
+     * guard_decisions / guard_approvals 的行、以及前一条收据关联起来，必须逐字入链。
+     */
+    private static final Set<String> IDENTITY_METADATA_KEYS = Set.of(
+        "decisionId", "approvalId", "idempotencyKey", "decisionReceiptHash", "contextHash", "sourceHash");
+    /** 规范 UUID 形态（8-4-4-4-12 十六进制），整串匹配。 */
+    private static final Pattern CANONICAL_UUID = Pattern.compile(
+        "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
     private final PIIRedactor piiRedactor = new PIIRedactor();
 
     @Inject
@@ -138,6 +149,18 @@ public class AuditChainAppender {
         return id;
     }
 
+    /**
+     * metadata 顶层 String 值是否跳过 PII 脱敏：键在身份键白名单内，或值整串是规范 UUID。
+     *
+     * <p>与 tenantId 不脱敏同理：标识符不是用户 PII，改写后链上事件就再也对不上它指向的行。
+     * PIIRedactor.CREDIT_CARD_PATTERN 会把含「4 组 4 位数字」片段的 UUID 改写成
+     * {@code ****-****-****-****-…}，随机 v4 UUID 约 1/800 命中，且损坏取决于具体取值、难以察觉。
+     * Action Guard 的收据构造器按同一判定测量 metadata 预算，二者必须共用本方法。
+     */
+    public static boolean isRedactionExempt(String key, String value) {
+        return IDENTITY_METADATA_KEYS.contains(key) || CANONICAL_UUID.matcher(value).matches();
+    }
+
     private String redact(String value) {
         if (value == null || value.isBlank()) {
             return value;
@@ -163,7 +186,7 @@ public class AuditChainAppender {
                 return;
             }
             if (value instanceof String stringValue) {
-                redactedMetadata.put(key, redact(stringValue));
+                redactedMetadata.put(key, isRedactionExempt(key, stringValue) ? stringValue : redact(stringValue));
             } else {
                 redactedMetadata.put(key, value);
             }

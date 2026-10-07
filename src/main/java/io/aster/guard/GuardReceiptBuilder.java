@@ -2,6 +2,7 @@ package io.aster.guard;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.aster.audit.chain.AuditChainAppender;
 import io.aster.policy.common.PIIRedactor;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
@@ -114,11 +115,18 @@ public class GuardReceiptBuilder {
     return m;
   }
 
-  /** 与追加器一致的测量：取「原样序列化」与「脱敏后序列化」两者较长者。 */
+  /**
+   * 与追加器一致的测量：取「原样序列化」与「脱敏后序列化」两者较长者。脱敏与追加器共用
+   * {@link AuditChainAppender#isRedactionExempt}：身份键与 UUID 形态的值不脱敏，测量也不计它们的脱敏膨胀。
+   */
   int measure(Map<String, Object> m) {
     Map<String, Object> redacted = new HashMap<>();
-    m.forEach((k, v) -> redacted.put(k, v instanceof String s ? piiRedactor.redact(s) : v));
+    m.forEach((k, v) -> redacted.put(k, v instanceof String s ? redactLikeAppender(k, s) : v));
     return Math.max(serializedLength(m), serializedLength(redacted));
+  }
+
+  private String redactLikeAppender(String key, String value) {
+    return AuditChainAppender.isRedactionExempt(key, value) ? value : piiRedactor.redact(value);
   }
 
   private static int serializedLength(Map<String, Object> m) {
