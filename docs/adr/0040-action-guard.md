@@ -29,7 +29,7 @@ Agent 提议动作 ──► POST /api/v1/guard/decisions ──► 已部署的
 |---|---|---|
 | 评估绑定 | guard 请求显式指定 `policyModule` / `policyFunction`，整个 Action 作为**一个记录参数**传给已部署规则 | 不做租户级「工具名 → 策略」绑定表；不做内联源码评估 |
 | 失败语义 | 全部 fail-closed：规则非 Verdict、评估异常、超时、**收据写入失败**都返回 DENY 并带 `reasonCode` | 不做「尽力写收据、决策照常返回」 |
-| 人工审批 | 新表 `guard_approvals` + 三个端点，aster-api 强制四眼与角色匹配，过期即 DENY | 不复用策略版本审批状态机；不复用工作流引擎 |
+| 人工审批 | 新表 `guard_approvals` + 三个端点。aster-api 按已解析身份强制四眼（发起主体、提交请求的用户与 API key），按 BFF 传入的业务角色标签匹配 `required_role`（aster-api 不校验该标签），过期即 DENY | 不复用策略版本审批状态机；不复用工作流引擎 |
 | Agent 接入 | 新仓 `aster-guard`：`GuardClient` SDK + `aster-guard-mcp` 包裹式 MCP 代理 | 不放进 aster-lang-ts；不做 webhook 通知；不做 cloud 收件箱 UI |
 
 ---
@@ -91,7 +91,7 @@ guard 服务把它扁平成**一个 Map** 作为规则的唯一位置参数，�
 
 - `policyModule`、`policyFunction`、`principal.id`、`action.name` 不得为空白。
 - 文本字段 `principal.id`、`principal.type`、`action.name`、`resource.type`、`resource.id`、`agent.model` ≤ 255 字符且不含控制字符（`Character.isISOControl`）。上限与 `guard_decisions` 列宽一致，也给收据 metadata 一个确定上界（§5.2）。
-- `principal.roles` 只要求元素非 null；元素的长度与控制字符**未校验**（roles 不入列、不入收据，只传给规则；补齐见 §10）。
+- `principal.roles` 至多 16 项，元素非 null，每项同样 ≤ 255 字符且不含控制字符。roles 不入列，但会写进收据 metadata（§5.2）。
 - `context`：键必须是字符串，值不得为 null，嵌套深度 ≤ 8（context 自身为第 1 层），键排序序列化后 ≤ 65536 字节。
 
 传给规则的 Map 及其中的 `context` / `principal_roles` 是**深度不可变**的副本（`Map.copyOf` / `List.copyOf`），原因见 §2.3。
@@ -148,15 +148,16 @@ HostAccess.newBuilder(HostAccess.EXPLICIT)
 - 配额（与 `/evaluate` 同一口径，先于请求体校验执行）：
   1. `ApiQuotaGuard.check(tenantId, userId)`：FORBIDDEN → 403 `api_access_denied`；RATE_LIMITED → 429 `api_quota_hard_exceeded`。
   2. 有已验证的 `apiKeyId` 时再做每 key 每秒限流 `checkRate`：超限 → 429 `rate_limit_exceeded`，带 `Retry-After: 1`。
-  3. 返回决策（200）后调用 `recordAsync(userId, tenantId, apiKeyId, "/api/v1/guard/decisions", "success", latencyMs)` 计量一次。400、404 和配额拒绝都不计量。
+  3. 返回决策（200）后调用 `recordAsync(userId, tenantId, apiKeyId, "/api/v1/guard/decisions", "success", latencyMs)` 计量一次。400、404、422 和配额拒绝都不计量。
 
   三种拒绝的响应体与 `PolicyEvaluationResource.enforceApiQuota` 逐字一致。没有抽出共享组件，而是在 `GuardDecisionResource.quotaRejection` 里镜像实现（约 30 行重复）。`X-Quota-*` / `X-RateLimit-*` 响应头**不输出**（§10）。每次 guard 调用都含一次同步审计追加，不限速、不计量，这个端点就会成为免费且可放大的写入面。
 - 请求：`{ policyModule, policyFunction, action, waitSeconds? }`。`waitSeconds`：null 或负数按 0，超过 30 按 30，默认 0。结果为 PENDING 时，服务端每 500 ms 回读一次，直到不再 PENDING 或到时，然后返回最新响应，给同步型 Agent 一次机会拿到最终结果。等待期间占用一个 worker 线程（§10）。
 - 幂等：`Idempotency-Key` 头，由服务层校验。
   - 空白视为未提供（不去重）；超过 255 字符或含控制字符 → 400 `invalid_action`，在查重、评估与写收据之前拒绝。
   - 表 `guard_decisions` 以 `(tenant_id, idempotency_key)` 部分唯一（索引 `guard_decisions_idem_uq`）。
-  - **重放语义**：命中已有决策时不再校验请求体、不再评估。返回的是**同一决策**：同一 `decisionId`、同一 `receipt`、同一 `approval.id`。但 `approval.status` 与 `effectiveOutcome` 反映**当前**状态：批准后为 ALLOW，拒绝或过期后为 DENY。它**不是**首次响应体的逐字节原样。原因有二：审批迁移本就会改写 `response_json`（§3.3）；Agent 重试时应直接拿到当前结论，而不是依据过时的 PENDING 行事。重放不返回 409。
-  - **并发同键**：先写入者胜（唯一索引）。后到者在落库时捕获该索引的唯一冲突，回读并返回先到者的决策。后到者已写入的收据留在链上，没有对应的决策行（§5.2）。
+  - **幂等指纹**：请求体先按 §2.2 校验并扁平化，再查键。键已存在时，比对存储行与本次请求的 `policy_module`、`policy_function`、`principal_id`、`action_name`、`resource_type`、`resource_id`、`context_hash`。任何一项不同 → 422 `idempotency_mismatch`：一个键只能重放同一个提议动作，不能把一个动作的结论借给另一个动作。`principal.type`、`principal.roles`、`agent.model` 不参与比对，它们不改变「对什么做什么」。
+  - **重放语义**：指纹一致时不再评估、不再写收据。返回的是**同一决策**：同一 `decisionId`、同一 `receipt`、同一 `approval.id`。但 `approval.status` 与 `effectiveOutcome` 反映**当前**状态：批准后为 ALLOW，拒绝或过期后为 DENY。它**不是**首次响应体的逐字节原样。原因有二：审批迁移本就会改写 `response_json`（§3.3）；Agent 重试时应直接拿到当前结论，而不是依据过时的 PENDING 行事。重放不返回 409。
+  - **并发同键**：先写入者胜（唯一索引）。后到者在落库时捕获该索引的唯一冲突，回读先到者的决策，同样比对指纹：一致则返回该决策，不一致则返回 422。后到者已写入的收据留在链上，没有对应的决策行（§5.2）。
   - **瞬时 DENY 同样入库**：`evaluation_failed` 与 `receipt_unavailable` 的 DENY 也以该键存储，同键重放返回同一个 DENY。想在故障恢复后重试，必须换一个新键。
 - 响应（决策始终 200；字段字母序，null / 空不写）：
 
@@ -187,7 +188,8 @@ HostAccess.newBuilder(HostAccess.EXPLICIT)
 | 评估异常、超时（10 秒）、策略执行失败 | 200 | DENY | `evaluation_failed`（reason 为 null，异常只记日志） |
 | 收据写入失败 | 200 | DENY | `receipt_unavailable`（此时**不**创建待审批记录） |
 | 策略不存在 / 无活跃版本 | 404 | — | `policy_not_found` |
-| 请求体校验失败（缺 principal.id 等、文本超长或含控制字符、context 超限）或 `Idempotency-Key` 非法 | 400 | — | `invalid_action` |
+| 请求体校验失败（缺 principal.id 等、文本超长或含控制字符、roles 超限、context 超限）或 `Idempotency-Key` 非法 | 400 | — | `invalid_action` |
+| `Idempotency-Key` 已绑定另一个提议动作（指纹不符，§3.1） | 422 | — | `idempotency_mismatch` |
 | 配额 / 速率 | 403 / 429 | — | `api_access_denied` / `api_quota_hard_exceeded` / `rate_limit_exceeded`（与 `/evaluate` 同体，§3.1） |
 
 非 Verdict 结果判 DENY 而不是沿用 `DecisionInterpreter` 的 Boolean 映射：guard 是治理面，必须由带 `@id` 的 Verdict 规则守门，Boolean 规则没有理由与身份。
@@ -204,9 +206,12 @@ HostAccess.newBuilder(HostAccess.EXPLICIT)
 | `outcome`, `reason`, `required_role`, `reason_code`, `rule_id`, `controls` JSONB | 规则结论 |
 | `receipt_audit_id`, `receipt_hash` | 决策事件在审计链中的行 id 与哈希 |
 | `response_json` JSONB | **当前**响应体：落库时写入决策响应；审批迁移（APPROVED / REJECTED / EXPIRED）时，与审批行在同一事务内改写为重算后的响应（§4.2）。幂等重放与 `GET` 都从它读取 |
+| `requested_by`, `requested_api_key_id` | 提交决策请求的已解析身份：`RequestIdentityResolver.performedBy()` 与已验证的 `apiKeyId()`，按列宽截到 255。用于审批四眼（§4.2）。Flyway `V6.27.1` 新增；之前写入的行为 NULL |
 | `created_at` | |
 
 文本列宽：`principal_id` / `action_name` / `resource_type` / `resource_id` / `idempotency_key` / `required_role` / `rule_id` 为 255（与 §2.2 上限一致），`reason` 为 1000。决策行与待审批行在**同一个** `requiringNew` 事务中写入：先写决策行，再写审批行（外键）。不会出现「决策显示 PENDING 却没有审批行」的半写状态。
+
+`V6.27.0` 迁移 SQL 里写着 `response_json` 存「首次响应体（幂等重放）」，这句注释已过时，以本节为准。已发布的迁移受 checksum 锁定，不再修改。
 
 ### 3.4 `GET /api/v1/guard/decisions/{id}`
 
@@ -237,18 +242,28 @@ HostAccess.newBuilder(HostAccess.EXPLICIT)
 | 端点 | 角色 | 规则 |
 |---|---|---|
 | `GET /api/v1/guard/approvals?status=PENDING&page&size` | MEMBER | 租户内列表，默认 PENDING，按 `created_at` 倒序；`status` 非四值之一 → 400 `invalid_status`；`page` 从 0 起，`size` 夹到 1–200。`status=PENDING` 只返回 `expires_at >= now` 的行（§4.3） |
-| `POST /api/v1/guard/approvals/{id}/approve` | MEMBER | 四眼：审批人 ≠ `principal_id`；`required_role` 非空时 `X-User-Business-Role` 必须相等；状态必须 PENDING 且未过期；`comment` 可选；成功后 `effectiveOutcome = ALLOW` |
+| `POST /api/v1/guard/approvals/{id}/approve` | MEMBER | 四眼：审批人不是发起主体，也不是提交该决策的用户或 API key（见下）；`required_role` 非空时 `X-User-Business-Role` 必须相等；状态必须 PENDING 且未过期；`comment` 可选；成功后 `effectiveOutcome = ALLOW` |
 | `POST /api/v1/guard/approvals/{id}/reject` | MEMBER | 同上校验；`comment` 必填；`effectiveOutcome = DENY` |
 
-审批人身份取 `RequestIdentityResolver.performedBy()`：API key 鉴权时是已验证的用户，否则是 `X-User-Id`。`X-User-Business-Role` 此前 aster-api **从未读取**。本子项目只在审批端点以 `@HeaderParam` 读取它，把它当作**可信 BFF 传入的标签**：值由调用方声明，服务端不做校验，与 `required_role` 做字符串精确比对。受控词表留给子项目 3（§10）。
+审批人身份取 `RequestIdentityResolver.performedBy()`：API key 鉴权时是已验证的用户，否则是 `X-User-Id`。审批请求所用的 API key 取 `RequestIdentityResolver.apiKeyId()`，只信任过滤器验证过的值。
 
-校验顺序：存在 → PENDING 且未过期 → 四眼 → 角色 → 拒绝须带 comment → 列宽。错误码：
+四眼按已解析身份做三项比对，任一相等即 403 `segregation_of_duties`：
+
+1. 审批人 = 审批行的 `principal_id`（发起主体）；
+2. 审批人 = 决策行的 `requested_by`（提交该决策请求的用户）；
+3. 审批请求的 API key = 决策行的 `requested_api_key_id`（提交该决策请求所用的 key）。
+
+只比对双方都非空白的值。所以 `V6.27.1` 之前写入、没有请求方身份的决策行，只按第 1 项比对。第 2、3 项堵住的是「同一个调用方换一个 `principal.id` 就能批准自己提交的动作」。
+
+`X-User-Business-Role` 此前 aster-api **从未读取**。本子项目只在审批端点以 `@HeaderParam` 读取它，把它当作**可信 BFF 传入的标签**：值由调用方声明，aster-api 不校验其真实性，只与 `required_role` 做字符串精确比对。所以角色匹配的强度取决于 BFF。经过验证的角色来源与受控词表留给子项目 3（§10）。
+
+校验顺序：存在（取审批行与决策行）→ PENDING 且未过期 → 四眼 → 角色 → 拒绝须带 comment → 列宽。错误码：
 
 | 错误码 | HTTP | 情况 |
 |---|---|---|
 | `approval_not_found` | 404 | 非法 UUID 或跨租户（不泄露审批是否存在） |
 | `approval_not_pending` | 409 | 非 PENDING、已过期，或 tx2 复核失败 |
-| `segregation_of_duties` | 403 | 审批人等于发起主体 |
+| `segregation_of_duties` | 403 | 审批人等于发起主体或提交请求的用户，或与提交请求共用同一 API key |
 | `role_mismatch` | 403 | `X-User-Business-Role` 与 `required_role` 不等 |
 | `comment_required` | 400 | 拒绝未带 comment |
 | `invalid_approval` | 400 | 审批人标识为空白或超过 255 字符，或 comment 超过 1000 字符（按列宽拒绝，不静默截断） |
@@ -257,7 +272,7 @@ HostAccess.newBuilder(HostAccess.EXPLICIT)
 
 approve / reject 的事务顺序（`GuardApprovalService` + `GuardDecisionJpaStore.completeApproval`）。审计追加不在任何持有审批行锁的事务里进行：
 
-1. **读取与校验（tx1）**：在短事务里读出审批行，事务外按上述顺序校验，把脱管实体设为目标状态（status / decidedBy / decidedAt / comment）。`decidedAt` 记录这一刻。再在另一个短读事务里取决策行。
+1. **读取与校验（tx1）**：在短事务里分别读出审批行与决策行（四眼要用决策行的请求方身份），事务外按上述顺序校验，把脱管实体设为目标状态（status / decidedBy / decidedAt / comment）。`decidedAt` 记录这一刻。
 2. **追加审批事件（自身事务）**：`appendSync` 写一条 `ACTION_GUARD_APPROVAL`，metadata 的 `decisionReceiptHash` 指回决策收据。失败返回 503 `receipt_unavailable`，审批状态不变。
 3. **迁移（tx2，`requiringNew`）**：以 `PESSIMISTIC_WRITE` 重读审批行。复核两点：行仍为 PENDING；批准 / 拒绝时，用**加锁之后取的 `Instant.now()`** 判定尚未过期。通过后在同一事务内写审批终态与 `receipt_audit_id`，并把 `guard_decisions.response_json` 改写为重算后的响应。
 
@@ -310,11 +325,11 @@ approve / reject 的事务顺序（`GuardApprovalService` + `GuardDecisionJpaSto
 | `reason` | Verdict 的 reason：追加器从 `metadata.reason` 提取，经既有 PII 脱敏后写入 |
 | `error_message` | reasonCode |
 | `performed_by` | API key 解析出的 userId（截到列宽 100） |
-| `metadata` | `decisionId, outcome, effectiveOutcome, reasonCode, reason, ruleId, controls, principalId, principalType, actionName, resourceType, resourceId, contextHash, agentModel, policyVersionId, sourceHash, approvalId, idempotencyKey`；null 值不写；controls 至多 16 条、每条至多 64 字符 |
+| `metadata` | `decisionId, outcome, effectiveOutcome, reasonCode, reason, ruleId, controls, principalId, principalType, principalRoles, actionName, resourceType, resourceId, contextHash, agentModel, policyVersionId, sourceHash, approvalId, idempotencyKey`；null 与空列表不写；controls 至多 16 条、每条至多 64 字符；`principalRoles` 是 List of Text，至多 16 项、每项至多 255 字符 |
 
 `contextHash` 的算法记为 `sha256-sorted-json/v1`：`context` 用 Jackson 序列化，开启 `ORDER_MAP_ENTRIES_BY_KEYS`（键排序），再取 SHA-256 hex；null 视同 `{}`。摘要与键的写入顺序无关。**不用** `CanonicalJson`：它对非整数数字要求类型上下文，而 Action context 是自由 Map。**不存明文 context**。
 
-metadata 预算：追加器在 metadata 超过 4 KB 时会截断成非法 JSON，所以决策事件在构造后强制 ≤ 3800 字符，为脱敏膨胀留出余量。测量口径与追加器一致：取「原样序列化」与「String 值经 PII 脱敏后再序列化」两者中较长的一个（脱敏可能变长，如 `a@b.cc` → `***@***.***`；`"` 与 `\` 转义后长度翻倍）。超出时按固定顺序缩短自由文本：`reason → agentModel → resourceId → principalId → actionName → resourceType → principalType`。每轮把当前字段缩到一半（不切开代理对），直到达标或该字段为空，再处理下一个。自由文本全部清空仍超限时，最后删除 `controls`。身份与结构键（`decisionId`、`approvalId`、`contextHash`、`outcome`、`effectiveOutcome`、`reasonCode`、`ruleId`、`policyVersionId`、`sourceHash`、`idempotencyKey`）永不改动。`reason` 被缩短时，`audit_logs.reason` 随之变短；决策行的 `reason` 列不受影响。
+metadata 预算：追加器在 metadata 超过 4 KB 时会截断成非法 JSON，所以决策事件在构造后强制 ≤ 3800 字符，为脱敏膨胀留出余量。测量口径与追加器一致：取「原样序列化」与「String 值经 PII 脱敏后再序列化」两者中较长的一个（脱敏可能变长，如 `a@b.cc` → `***@***.***`；`"` 与 `\` 转义后长度翻倍）。超出时按固定顺序缩短：`reason → agentModel → resourceId → principalId → actionName → resourceType → principalType → principalRoles`。文本字段每轮缩到一半（不切开代理对）；`principalRoles` 每轮删掉最后一项，保留下来的项不截断。直到达标或该字段为空，再处理下一个。自由文本全部清空仍超限时，最后删除 `controls`。身份与结构键（`decisionId`、`approvalId`、`contextHash`、`outcome`、`effectiveOutcome`、`reasonCode`、`ruleId`、`policyVersionId`、`sourceHash`、`idempotencyKey`）永不改动。`reason` 被缩短时，`audit_logs.reason` 随之变短；决策行的 `reason` 列不受影响。追加器只对顶层 String 值做 PII 脱敏，`principalRoles` 与 `controls` 的列表元素原样入链，与 `controls` 一致。
 
 写入顺序：决策收据在决策行落库**之前**追加，所以没有收据就不会有放行。代价是：如果落库失败，或在幂等并发中落败（§3.1），链上会留下一条收据事件，其 `decisionId` / `approvalId` 没有对应的行。链本身仍然有效；这类孤儿事件与进程在追加后、落库前崩溃产生的事件同类，审计时以表中存在的行为准。
 
@@ -333,6 +348,11 @@ metadata 预算：追加器在 metadata 超过 4 KB 时会截断成非法 JSON�
 - 组织 `aster-cloud`，npm 包 `@aster-cloud/aster-guard`，Node ≥ 24，ESM，vitest，发布流程照 `aster-lang-ts/.github/workflows/release.yml`（tag-push、trusted publisher、provenance）。独立版本号，不进 ADR 0023 的 lockstep。
 - **`GuardClient`**：`check(action, opts) → Decision`、`get(decisionId)`、`waitFor(decisionId, {timeoutMs, intervalMs})`、`listApprovals()`、`approve(id, comment?)`、`reject(id, comment)`。配置：`baseUrl`、`apiKey`、`policyModule`、`policyFunction`、`principal`。任何非 200 响应或网络错误解析为 `effectiveOutcome = DENY`（fail-closed 在客户端也成立）。
 - **`aster-guard-mcp`**（bin）：stdio MCP 服务器，用 `@modelcontextprotocol/sdk` 启动，连接一个上游 MCP 服务器（`--upstream "<cmd> [args]"`），转发 `tools/list`，拦截每次 `tools/call`：构造 Action（`action.name` = 工具名，`context` = 工具参数，`resource` 由可选的 `--resource-from <jsonpath>` 规则抽取，`principal` 来自配置），调用 `GuardClient.check`；ALLOW 转发；DENY 返回 MCP 工具错误（含 reason 与 decisionId）；PENDING 则 `waitFor` 到 `--approval-timeout`（默认 300 秒）后按最终结果转发或拒绝。无上游时只暴露 `guard_check` / `guard_status` / `guard_list_approvals` / `guard_approve` / `guard_reject` 五个工具，供人机协作场景。
+- **幂等键策略**（SDK 与代理一致，对应 §3.1）：
+  - 每一次动作尝试生成一个唯一的 `Idempotency-Key`（如 UUID），只在同一次尝试的网络重试之间复用；
+  - **绝不**由 MCP JSON-RPC 的请求 id 派生：该 id 只在单个连接内唯一，重连或换会话后会重复，会让不同动作撞键，触发 422 或错误重放；
+  - 收到瞬时 DENY（`evaluation_failed`、`receipt_unavailable`）后，若要重试，必须换新键，因为原键已绑定那次 DENY；
+  - 收到 422 `idempotency_mismatch` 说明键生成有缺陷（同一个键被用在了别的动作上），按 DENY 处理。
 - 测试：单元（mock fetch）、代理集成（内存 MCP 上游 + mock guard HTTP），对本地 aster-api 的端到端留作可选脚本。
 
 ---
@@ -341,9 +361,9 @@ metadata 预算：追加器在 metadata 超过 4 KB 时会截断成非法 JSON�
 
 主体是加法：
 
-- Flyway `V6.27.0__create_guard_tables.sql` 新建两张表，`migration-checksums.golden` 追加一行。
+- Flyway `V6.27.0__create_guard_tables.sql` 新建两张表，`V6.27.1__guard_decisions_requester.sql` 给 `guard_decisions` 加两个可空列（`requested_by`、`requested_api_key_id`）；`migration-checksums.golden` 各追加一行。
 - 新增事件类型 `ACTION_GUARD_DECISION` / `ACTION_GUARD_APPROVAL`。
-- 新增五个端点。三个审批端点已写入 `public-api-contract.golden`。两个决策端点没有收录：`GuardDecisionResource` 的类级注解是常量 `@Path(GuardDecisionResource.PATH)`，而契约扫描器只识别字符串字面量（§10）。
+- 新增五个端点，全部写入 `public-api-contract.golden`，受公开 API 契约守卫锁定。契约扫描器只识别字符串字面量的 `@Path`，所以 `GuardDecisionResource` 的类级注解写成字面量，常量 `PATH` 只留给计量。
 - `ApiKeyAuthFilter.shouldProtect` 新增 `/api/v1/guard` 前缀。
 - `X-User-Business-Role` 只在审批端点读取。
 
@@ -398,10 +418,12 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
   - `PrismaDatabaseE2ETest.test0_cleanupStaleData`：硬编码 `localhost:5432`，连接被拒，Quarkus 启动失败，同类其余 7 个用例跳过。
 - guard 相关：`io.aster.guard.*` 共 103 个用例、`ApiKeyAuthFilterShouldProtectTest` 31、`io.aster.audit.chain.*` 49，全部通过。
 
-首轮全量回归还暴露了两处由本分支引起、各任务定向验证未覆盖的守门失败，已在 commit 1c87f28 修正：
+首轮全量回归还暴露了两处由本分支引起、各任务定向验证未覆盖的守门失败，已在随后的测试修正提交中处理（「契约 golden 与非确定性来源白名单纳入 Action Guard」）：
 
 - `PublicApiContractTest`：三个审批端点需要写入契约 golden。
 - `NonDeterminismSourceTest`：`GuardDecisionService` 的 `UUID.randomUUID`（决策 / 审批主键）与 `System.nanoTime`（waitSeconds 截止时钟）需要登记进白名单并写明理由。
+
+全量回归之后的评审修正轮（四眼按已解析身份比对、幂等指纹、roles 校验与入收据、决策端点纳入契约），覆盖测试一次运行（guard-pg :55432）：`io.aster.guard.*`、`io.aster.audit.chain.*`、`ApiKeyAuthFilterShouldProtectTest`、`PublicApiContractTest`、`NonDeterminismSourceTest`、`MigrationGovernanceTest`，共 206 个用例，0 失败、0 跳过。其中 guard 共 115 个：`GuardActionMapperTest` 13、`GuardApprovalServiceTest` 19、`GuardDecisionServiceTest` 34、`GuardReceiptBuilderTest` 10、`GuardApprovalResourceTest` 12、`GuardDecisionResourceTest` 10，其余不变。
 
 ---
 
@@ -427,10 +449,13 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
 | 2026-10-08 | guard 端点必须与 `/evaluate` 同等限速（`checkRate` → 429 `rate_limit_exceeded` + `Retry-After`），并以同一底层（`recordAsync`）计量：每次 guard 调用都含一次同步审计追加，不限速、不计量就是免费且可放大的写入面。实现采用镜像，未抽共享组件。代价：与 `PolicyEvaluationResource` 轻微重复 | Claude 实施期裁定 |
 | 2026-10-08 | 幂等重放返回同一决策（同 `decisionId`、同收据），但 `approval.status` / `effectiveOutcome` 反映当前状态，而不是首次响应体原样。理由：两阶段写入本就改写 `response_json`，且 Agent 重试时直接看到当前结论更安全。代价：要求「逐字节相同重放」的客户端会看到状态字段变化 | Claude 实施期裁定 |
 | 2026-10-08 | 审批事件先于行锁写入可以接受，它与崩溃、竞争产生的孤儿事件同类；以 `guard_approvals.receipt_audit_id` 指向的事件为权威。代价：链上可能存在未生效的 APPROVED / REJECTED / EXPIRED 事件 | Claude 实施期裁定 |
+| 2026-10-08 | 四眼按已解析身份比对：审批人不得等于 `principal_id`、决策行的 `requested_by`，审批所用 API key 不得等于 `requested_api_key_id`（新迁移 `V6.27.1` 记录请求方身份）。原因：`principal.id` 由请求体自报，只比对它时，同一调用方换一个 principal 就能批准自己提交的动作。`X-User-Business-Role` 仍是可信 BFF 标签，经过验证的角色来源留后续 | Claude 评审裁定 |
+| 2026-10-08 | 幂等键加指纹：键命中时比对策略地址、主体、动作、资源与 context 摘要，不符 → 422 `idempotency_mismatch`。原因：重放语义下，复用键会把一个动作的结论（甚至已批准的 ALLOW）借给另一个动作。SDK 与代理每次动作尝试用唯一键，不从 MCP JSON-RPC id 派生（§6） | Claude 评审裁定 |
+| 2026-10-08 | `principal.roles` 纳入校验（≤ 16 项，每项 ≤ 255 字符、无控制字符）并写入收据 metadata 的 `principalRoles`，超预算时排在 `principalType` 之后、从末尾逐项删除。原因：roles 是规则输入，应与其他请求字段同样受约束且可追溯 | Claude 评审裁定 |
 
 ## 10. 尚未回答的问题
 
-- `required_role` 与 `X-User-Business-Role` 的匹配目前是字符串相等，且该头由调用方声明、服务端不校验（可信 BFF 标签）。受控词表（与 cloud 的团队角色对齐）留到子项目 3。
+- **经过验证的角色来源**：`required_role` 与 `X-User-Business-Role` 的匹配目前是字符串相等，且该头由调用方声明、aster-api 不校验（可信 BFF 标签）。需要由 aster-api 可验证的角色来源（如 API key 或用户绑定的业务角色）与受控词表（与 cloud 的团队角色对齐），留到子项目 3。
 - 租户级「工具名 → 策略」绑定（路径 B）：有多策略路由需求时再做。
 - webhook / 推送通知审批人：本期只轮询。
 - Verdict `obligations`（如「执行前脱敏」）：guard 端点有真实消费方后再以追加键方式扩展。
@@ -447,5 +472,3 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
 - **统一版本来源**：guard 直查仓库，评估服务走 `PolicyVersionResolutionCache`，激活切换后约 5 秒内两者可能不一致（§5.3）。
 - **过期队列头部的毒行**：每轮按 `expires_at` 升序只取前 500 条。持续失败的行（如关联决策缺失、追加一直失败）每轮都会重试并占住批次头部；达到 500 条时会阻塞后面的行落库为 EXPIRED。读取路径仍按过期返回 DENY，fail-closed 不受影响。需要失败退避或隔离。
 - **metadata 缩短无记录**：`fitBudget` 缩短字段或删除 `controls` 时既不记日志也不计指标，应补上，便于发现被截短的收据。
-- **`principal.roles` 元素未校验**：只检查非 null，不限长度、不禁控制字符（§2.2）。
-- **契约 golden 未收录决策端点**：`POST /api/v1/guard/decisions` 与 `GET /api/v1/guard/decisions/{id}` 因类级 `@Path` 使用常量而不被契约扫描器识别（§7）。可改为字符串字面量并保留常量供计量，或让扫描器解析常量。
