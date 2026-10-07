@@ -219,7 +219,13 @@ public class TrufflePolicyRuntime {
         // 注意：engine 选项已在 sharedEngine 上设置，Context 不能重复设置
         return Context.newBuilder("aster")
             .engine(sharedEngine)
-            .allowHostAccess(HostAccess.EXPLICIT)
+            // Action Guard（ADR 0040）把扁平化的 Action 作为 Map 参数传入规则；
+            // 与 replay 模块 DynamicCnlExecutor 的宿主访问口径一致，仅放开成员读取，不放开类查找。
+            .allowHostAccess(HostAccess.newBuilder(HostAccess.EXPLICIT)
+                .allowArrayAccess(true)
+                .allowListAccess(true)
+                .allowMapAccess(true)
+                .build())
             .allowIO(IOAccess.NONE)
             .allowNativeAccess(false)
             .allowHostClassLookup(name -> false)
