@@ -30,11 +30,14 @@ import java.util.UUID;
  * 决策服务内部同步等待规则评估与审计链写入。不加 {@code @Transactional}：服务内部各写入步骤
  * 自行开启独立事务。路径由 {@code ApiKeyAuthFilter} 统一纳入 API key 鉴权。
  */
-@Path("/api/v1/guard/decisions")
+@Path(GuardDecisionResource.PATH)
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 @RequireRole(Role.MEMBER)
 public class GuardDecisionResource {
+
+  /** 计量与日志使用的端点路径。 */
+  static final String PATH = "/api/v1/guard/decisions";
 
   @Inject
   RequestIdentityResolver identityResolver;
@@ -45,17 +48,26 @@ public class GuardDecisionResource {
   @Inject
   ApiQuotaGuard apiQuotaGuard;
 
-  /** 对提议动作作出决策；{@code Idempotency-Key} 可选，同租户同键重放返回首次响应。 */
+  /**
+   * 对提议动作作出决策；{@code Idempotency-Key} 可选，同租户同键重放返回首次响应。
+   * 返回决策（200）时按 {@link #PATH} 计量一次调用，与 {@code /evaluate} 同一计费口径；400 / 404 不计量。
+   */
   @POST
   public Response decide(@Valid GuardActionRequest req, @HeaderParam("Idempotency-Key") String idempotencyKey) {
+    long startTime = System.currentTimeMillis();
+    // 身份在请求线程上一次取齐：限流桶键与计费归属都依赖已验证的 apiKeyId。
     String tenantId = identityResolver.tenantId();
     String performedBy = identityResolver.performedBy();
-    Optional<Response> quotaRejection = quotaRejection(tenantId, performedBy);
+    String apiKeyId = identityResolver.apiKeyId();
+    Optional<Response> quotaRejection = quotaRejection(tenantId, performedBy, apiKeyId);
     if (quotaRejection.isPresent()) {
       return quotaRejection.get();
     }
     try {
-      return Response.ok(service.decide(tenantId, performedBy, req, idempotencyKey)).build();
+      GuardDecisionResponse decision = service.decide(tenantId, performedBy, req, idempotencyKey);
+      apiQuotaGuard.recordAsync(performedBy, tenantId, apiKeyId, PATH, "success",
+          System.currentTimeMillis() - startTime);
+      return Response.ok(decision).build();
     } catch (GuardInvalidActionException bad) {
       return error(Response.Status.BAD_REQUEST, "invalid_action", bad.getMessage());
     } catch (GuardPolicyNotFoundException nf) {
@@ -79,26 +91,49 @@ public class GuardDecisionResource {
   }
 
   /**
-   * 与 {@code PolicyEvaluationResource.enforceApiQuota} 相同的套餐配额判定与拒绝体（403 / 429）。
-   * 那边是私有方法且耦合 trial 旁路与响应头写入，这里只复用 {@link ApiQuotaGuard#check} 的裁决映射。
+   * 与 {@code PolicyEvaluationResource.enforceApiQuota} 相同的配额判定与拒绝体：套餐裁决（403 / 429），
+   * 再按已验证 API key 做每秒限流（429 + {@code Retry-After: 1}）。那边是私有方法且耦合 trial 旁路与
+   * 响应头写入，这里只复用 {@link ApiQuotaGuard} 的两次裁决映射。
    */
-  private Optional<Response> quotaRejection(String tenantId, String userId) {
+  private Optional<Response> quotaRejection(String tenantId, String userId, String apiKeyId) {
     ApiQuotaGuard.GuardResult result = apiQuotaGuard.check(tenantId, userId);
-    return switch (result.verdict()) {
-      case FORBIDDEN -> Optional.of(Response.status(Response.Status.FORBIDDEN)
-          .entity(Map.of(
-              "error", "api_access_denied",
-              "message", "Free 计划不包含 Policy Execution API。请升级到 Pro/Team 或试用 Trial。"))
-          .build());
-      case RATE_LIMITED -> Optional.of(Response.status(Response.Status.TOO_MANY_REQUESTS)
-          .entity(Map.of(
-              "error", "api_quota_hard_exceeded",
-              "message", "本月 API 调用已超 200% 上限，已拒绝。请升级套餐或联系客服。",
-              "limit", result.limit(),
-              "used", result.used()))
-          .build());
-      default -> Optional.empty();
-    };
+    switch (result.verdict()) {
+      case FORBIDDEN -> {
+        return Optional.of(Response.status(Response.Status.FORBIDDEN)
+            .entity(Map.of(
+                "error", "api_access_denied",
+                "message", "Free 计划不包含 Policy Execution API。请升级到 Pro/Team 或试用 Trial。"))
+            .type(MediaType.APPLICATION_JSON)
+            .build());
+      }
+      case RATE_LIMITED -> {
+        return Optional.of(Response.status(Response.Status.TOO_MANY_REQUESTS)
+            .entity(Map.of(
+                "error", "api_quota_hard_exceeded",
+                "message", "本月 API 调用已超 200% 上限，已拒绝。请升级套餐或联系客服。",
+                "limit", result.limit(),
+                "used", result.used()))
+            .type(MediaType.APPLICATION_JSON)
+            .build());
+      }
+      default -> { /* ALLOW：即使 soft warn 也继续 */ }
+    }
+    if (apiKeyId == null || apiKeyId.isBlank()) {
+      return Optional.empty();
+    }
+    ApiQuotaGuard.RateCheck rate = apiQuotaGuard.checkRate(tenantId, apiKeyId);
+    if (rate.allowed()) {
+      return Optional.empty();
+    }
+    return Optional.of(Response.status(Response.Status.TOO_MANY_REQUESTS)
+        .header("Retry-After", "1")
+        .entity(Map.of(
+            "error", "rate_limit_exceeded",
+            "message", "Per-API-key per-second 限流：超过 " + rate.limit() + " RPS",
+            "rps_limit", rate.limit(),
+            "rps_used", rate.used()))
+        .type(MediaType.APPLICATION_JSON)
+        .build());
   }
 
   private static Response error(Response.Status status, String code, String message) {
