@@ -40,8 +40,15 @@ public record ApiKeySnapshot(
     public ApiKeySnapshot {
         String owner = quotaOwnerId == null ? null : quotaOwnerId.trim();
         quotaOwnerId = owner == null || owner.isEmpty() || owner.equals(userId) ? null : owner;
-        // businessRoles 归一：null → 空列表；去 null/空白、去首尾空白、保序，结果不可变。
-        businessRoles = businessRoles == null ? List.of() : businessRoles.stream()
+        businessRoles = normalizeRoles(businessRoles);
+    }
+
+    /**
+     * 业务角色归一的唯一实现（快照与 {@code ApiKeyVerifyResult} 共用）：null → 空列表；
+     * 去 null/空白、去首尾空白、保序（不去重、不排序），结果不可变。
+     */
+    public static List<String> normalizeRoles(List<String> roles) {
+        return roles == null ? List.of() : roles.stream()
             .filter(Objects::nonNull).map(String::trim).filter(r -> !r.isEmpty()).toList();
     }
 

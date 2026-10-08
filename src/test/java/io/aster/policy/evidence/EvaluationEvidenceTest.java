@@ -34,13 +34,15 @@ class EvaluationEvidenceTest {
   @Test void 裁剪保证最坏情况序列化长度小于3800() throws Exception {
     List<String> controls = IntStream.range(0, 40).mapToObj(i -> "C".repeat(100) + i).toList();
     EvaluationEvidence e = new EvaluationEvidence("c".repeat(500), "O".repeat(500), "R".repeat(500), controls,
-        Long.MAX_VALUE, new AgentIdentity("p".repeat(500), "m".repeat(500), "v".repeat(500), "s".repeat(500)), null, null);
+        Long.MAX_VALUE, new AgentIdentity("p".repeat(500), "m".repeat(500), "v".repeat(500), "s".repeat(500)),
+        "r".repeat(500), "x".repeat(500));
     Map<String, Object> m = e.toMetadata();
     List<?> clipped = (List<?>) m.get("controls");
     assertThat(clipped).hasSize(EvaluationEvidence.MAX_CONTROLS);
     assertThat(clipped).allSatisfy(c -> assertThat(c.toString()).hasSize(EvaluationEvidence.MAX_CONTROL_LENGTH));
     for (String key : List.of("correlationId", "outcome", "ruleId", EvaluationEvidence.KEY_AGENT_PROVIDER,
-        EvaluationEvidence.KEY_AGENT_MODEL, EvaluationEvidence.KEY_AGENT_VERSION, EvaluationEvidence.KEY_AGENT_SESSION)) {
+        EvaluationEvidence.KEY_AGENT_MODEL, EvaluationEvidence.KEY_AGENT_VERSION, EvaluationEvidence.KEY_AGENT_SESSION,
+        EvaluationEvidence.KEY_ROLE, EvaluationEvidence.KEY_REASON)) {
       assertThat(m.get(key).toString()).as(key).hasSize(AgentIdentity.MAX_TEXT);
     }
     String json = new ObjectMapper().writeValueAsString(m);

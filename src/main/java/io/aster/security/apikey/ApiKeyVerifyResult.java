@@ -1,17 +1,17 @@
 package io.aster.security.apikey;
 
+import io.aster.billing.snapshot.ApiKeySnapshot;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
 import java.util.List;
-import java.util.Objects;
 
 /**
- * API key 验证结果（5 分钟 Caffeine 缓存的 value）
+ * API key 验证结果（60 秒 Caffeine 缓存的 value，见 ApiKeyVerifierService.CACHE_TTL）
  *
  * - valid=true 时其余字段必填（apiKeyId, userId, tenantId, plan）
  * - valid=false 时 reason 给出原因（not_found / revoked / expired / orphan_key）
  *
- * 注意：缓存命中后 plan 字段可能略过期（最多 5 min）；
+ * 注意：缓存命中后 plan、role、businessRoles 可能略过期（最多 60 秒）；
  * plan 维度的实时性由 PlanGateService 保证，此处仅作展示/审计用。
  */
 @RegisterForReflection
@@ -37,10 +37,9 @@ public record ApiKeyVerifyResult(
     /** RBAC 角色缺失时的安全下限。 */
     public static final String DEFAULT_ROLE = "MEMBER";
 
-    /** businessRoles 归一：null → 空列表；去 null/空白、去首尾空白、保序，结果不可变。 */
+    /** businessRoles 归一与快照同源（{@link ApiKeySnapshot#normalizeRoles}），两条路径的结果一致。 */
     public ApiKeyVerifyResult {
-        businessRoles = businessRoles == null ? List.of() : businessRoles.stream()
-            .filter(Objects::nonNull).map(String::trim).filter(r -> !r.isEmpty()).toList();
+        businessRoles = ApiKeySnapshot.normalizeRoles(businessRoles);
     }
 
     public static ApiKeyVerifyResult invalid(String reason) {

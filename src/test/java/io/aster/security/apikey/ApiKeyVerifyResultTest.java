@@ -1,8 +1,10 @@
 package io.aster.security.apikey;
 
+import io.aster.billing.snapshot.ApiKeySnapshot;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -54,5 +56,14 @@ class ApiKeyVerifyResultTest {
     void invalid与八参null的businessRoles均为空列表() {
         assertThat(ApiKeyVerifyResult.invalid("revoked").businessRoles()).isEmpty();
         assertThat(ApiKeyVerifyResult.valid("k", "u", "t", "pro", "active", "MEMBER", "u", null).businessRoles()).isEmpty();
+    }
+
+    @Test
+    void verify结果与快照的业务角色归一同源() {
+        List<String> raw = Arrays.asList(" DPO ", null, " ", "CISO", "DPO");
+        ApiKeyVerifyResult r = ApiKeyVerifyResult.valid("k", "u", "t", "pro", "active", "MEMBER", "u", raw);
+        ApiKeySnapshot s = new ApiKeySnapshot(true, null, "k", "u", "t", "pro", "MEMBER", null, null, raw);
+        assertThat(ApiKeySnapshot.normalizeRoles(raw)).containsExactly("DPO", "CISO", "DPO");
+        assertThat(r.businessRoles()).isEqualTo(s.businessRoles()).isEqualTo(ApiKeySnapshot.normalizeRoles(raw));
     }
 }
