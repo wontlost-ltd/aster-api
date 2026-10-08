@@ -1,5 +1,8 @@
 package io.aster.policy.api.model;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.aster.policy.governance.VerdictView;
 
 import java.util.List;
@@ -10,7 +13,13 @@ import java.util.Objects;
  *
  * <p>decision / ruleId / controls 为治理字段（ADR 0039）：decision 仅在结果为内置 Verdict 值时非 null；
  * ruleId / controls 来自被执行函数的 {@code @id} / {@code @control} 注解，无注解时为 null / 空列表。
+ *
+ * <p>本类会作为 {@code policy-results} 缓存值写入 Redis（生产默认缓存后端）并在命中时按 JSON 还原。
+ * 类有两个多参构造器，Jackson 无法自行推断用哪个创建实例，命中时会报 “no Creators” 解码失败，
+ * 导致相同请求第二次评估失败（Action Guard 降级为 DENY evaluation_failed）。因此在全参构造器上显式声明
+ * {@link JsonCreator}；同时忽略未知字段，保证滚动发布期间旧实例读到新版本写入的字段时不失败。
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class PolicyEvaluationResult {
 
     private final Object result;
@@ -25,8 +34,13 @@ public class PolicyEvaluationResult {
         this(result, executionTimeMs, fromCache, null, null, List.of());
     }
 
-    public PolicyEvaluationResult(Object result, double executionTimeMs, boolean fromCache,
-                                  VerdictView decision, String ruleId, List<String> controls) {
+    @JsonCreator
+    public PolicyEvaluationResult(@JsonProperty("result") Object result,
+                                  @JsonProperty("executionTimeMs") double executionTimeMs,
+                                  @JsonProperty("fromCache") boolean fromCache,
+                                  @JsonProperty("decision") VerdictView decision,
+                                  @JsonProperty("ruleId") String ruleId,
+                                  @JsonProperty("controls") List<String> controls) {
         this.result = result;
         this.executionTimeMs = executionTimeMs;
         this.fromCache = fromCache;
