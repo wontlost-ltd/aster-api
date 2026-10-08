@@ -1,17 +1,27 @@
 package io.aster.policy.evidence;
 
-import java.util.*;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 
 /** 一次评估的证据键（ADR 0041 §2.2）：进入 POLICY_EVALUATION 事件 metadata，并把 correlationId 回给调用方。 */
 public record EvaluationEvidence(String correlationId, String outcome, String ruleId, List<String> controls,
                                  Long policyVersionId, AgentIdentity agent) {
-  public static final int MAX_TEXT = 255;
   public static final int MAX_CONTROLS = 16;
   public static final int MAX_CONTROL_LENGTH = 64;
   public static final String SOURCE_DECLARED = "declared";
+  /** 模型身份的五个扁平 metadata 键：评估事件与 guard 收据共用同一组键名，两边不得各写字面量。 */
+  public static final String KEY_AGENT_PROVIDER = "agentProvider";
+  public static final String KEY_AGENT_MODEL = "agentModel";
+  public static final String KEY_AGENT_VERSION = "agentVersion";
+  public static final String KEY_AGENT_SESSION = "agentSession";
+  public static final String KEY_AGENT_SOURCE = "agentSource";
 
   /** 生成新的 correlationId（随机 UUID）。 */
-  public static EvaluationEvidence of(String outcome, String ruleId, List<String> controls, Long policyVersionId, AgentIdentity agent) {
+  public static EvaluationEvidence of(String outcome, String ruleId, List<String> controls, Long policyVersionId,
+                                      AgentIdentity agent) {
     return new EvaluationEvidence(UUID.randomUUID().toString(), outcome, ruleId, controls, policyVersionId, agent);
   }
 
@@ -25,11 +35,11 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
     if (!c.isEmpty()) m.put("controls", c);
     if (policyVersionId != null) m.put("policyVersionId", policyVersionId);
     if (agent != null) {
-      put(m, "agentProvider", clip(agent.provider()));
-      put(m, "agentModel", clip(agent.model()));
-      put(m, "agentVersion", clip(agent.version()));
-      put(m, "agentSession", clip(agent.session()));
-      m.put("agentSource", SOURCE_DECLARED);
+      put(m, KEY_AGENT_PROVIDER, clip(agent.provider()));
+      put(m, KEY_AGENT_MODEL, clip(agent.model()));
+      put(m, KEY_AGENT_VERSION, clip(agent.version()));
+      put(m, KEY_AGENT_SESSION, clip(agent.session()));
+      m.put(KEY_AGENT_SOURCE, SOURCE_DECLARED);
     }
     return m;
   }
@@ -38,8 +48,9 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
     if (v != null && !v.isEmpty()) m.put(k, v);
   }
 
+  /** 文本上界与 agent 请求校验同源（{@link AgentIdentity#MAX_TEXT}）。 */
   private static String clip(String s) {
-    return clip(s, MAX_TEXT);
+    return clip(s, AgentIdentity.MAX_TEXT);
   }
 
   /** 按 UTF-16 单元裁剪；若截断点落在代理对中间（保留段末位是高位代理），多退一位，避免孤立代理字符。 */

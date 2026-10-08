@@ -195,6 +195,42 @@ class GuardDecisionResourceTest {
         .contains("\"agentSession\":\"s-1\"").contains("\"agentSource\":\"declared\"");
   }
 
+  /** 把请求体里的 agent 换成给定对象，其余字段不变。 */
+  private static Map<String, Object> withAgent(Map<String, Object> agent) {
+    Map<String, Object> req = new HashMap<>(allowBody());
+    @SuppressWarnings("unchecked")
+    Map<String, Object> action = new HashMap<>((Map<String, Object>) req.get("action"));
+    action.put("agent", agent);
+    req.put("action", action);
+    return req;
+  }
+
+  @Test
+  void 显式provider返回200且收据写入该provider() {
+    Response resp = post(TENANT, withAgent(Map.of("provider", "openai", "model", "gpt-5", "version", "2026-09",
+        "session", "s-9")), null);
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    UUID id = UUID.fromString(resp.jsonPath().getString("decisionId"));
+    String metadata = QuarkusTransaction.requiringNew().call(() -> {
+      GuardDecisionEntity e = GuardDecisionEntity.findById(id);
+      AuditLog row = AuditLog.findById(e.receiptAuditId);
+      return row.metadata;
+    });
+    assertThat(metadata).contains("\"agentProvider\":\"openai\"").contains("\"agentModel\":\"gpt-5\"")
+        .contains("\"agentVersion\":\"2026-09\"").contains("\"agentSession\":\"s-9\"")
+        .contains("\"agentSource\":\"declared\"");
+  }
+
+  @Test
+  void 有provider但model空白返回400_invalid_action() {
+    Response resp = post(TENANT, withAgent(Map.of("provider", "openai", "model", " ")), null);
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(400);
+    assertThat(resp.jsonPath().getString("error")).isEqualTo("invalid_action");
+    assertThat(resp.jsonPath().getString("message")).contains("agent.model");
+  }
+
   @Test
   void agent_model含控制字符返回400_invalid_action() {
     Map<String, Object> req = new HashMap<>(allowBody());

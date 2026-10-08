@@ -222,7 +222,6 @@ public class GuardDecisionService {
         .orElse(GuardApprovalStatus.EXPIRED);
   }
 
-  /** 空白视为未提供；超长（列宽 255）或含控制字符在评估与写收据之前就拒绝。 */
   /** 旧请求体只带 model/session（provider 缺失）时补 unknown；其余走 AgentIdentity 统一校验，非法转 invalid_action。 */
   private static AgentIdentity declaredAgent(AgentIdentity raw) {
     if (raw == null) {
@@ -235,6 +234,7 @@ public class GuardDecisionService {
     }
   }
 
+  /** 空白视为未提供；超长（列宽 255）或含控制字符在评估与写收据之前就拒绝。 */
   private static String normalizeIdempotencyKey(String key) {
     if (key == null || key.isBlank()) {
       return null;

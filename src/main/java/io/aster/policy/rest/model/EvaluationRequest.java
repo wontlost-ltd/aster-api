@@ -1,7 +1,7 @@
 package io.aster.policy.rest.model;
 
-import io.aster.policy.evidence.AgentIdentity;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.aster.policy.evidence.AgentIdentity;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;

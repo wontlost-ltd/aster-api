@@ -1,10 +1,10 @@
 package io.aster.policy.rest.model;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.evidence.AgentIdentity;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class EvaluationResponseEvidenceTest {
   private final ObjectMapper mapper = new ObjectMapper();
@@ -32,5 +32,23 @@ class EvaluationResponseEvidenceTest {
         EvaluationRequest.class);
     assertThat(req.agent()).isEqualTo(new AgentIdentity("anthropic", "claude", null, null));
     assertThat(mapper.readValue("{\"policy\":\"{}\",\"context\":{}}", JsonPolicyRequest.class).agent()).isNull();
+  }
+
+  @Test void withEvidence传null时不输出evidence() throws Exception {
+    EvaluationResponse r = EvaluationResponse.error("boom").withEvidence(null);
+    assertThat(r.evidence()).isNull();
+    assertThat(mapper.writeValueAsString(r)).doesNotContain("evidence");
+  }
+
+  @Test void SourcePolicyRequest的agent可往返序列化() throws Exception {
+    SourcePolicyRequest req = mapper.readValue(
+        "{\"source\":\"Module m.\",\"context\":{},\"agent\":{\"provider\":\"openai\",\"model\":\"gpt\","
+            + "\"version\":\"2026\",\"session\":\"s-2\"}}",
+        SourcePolicyRequest.class);
+    AgentIdentity expected = new AgentIdentity("openai", "gpt", "2026", "s-2");
+    assertThat(req.agent()).isEqualTo(expected);
+    AgentIdentity back = mapper.treeToValue(mapper.valueToTree(req).get("agent"), AgentIdentity.class);
+    assertThat(back).isEqualTo(expected);
+    assertThat(mapper.readValue("{\"source\":\"Module m.\",\"context\":{}}", SourcePolicyRequest.class).agent()).isNull();
   }
 }

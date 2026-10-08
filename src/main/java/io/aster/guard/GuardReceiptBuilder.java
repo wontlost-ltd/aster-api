@@ -6,6 +6,7 @@ import io.aster.audit.chain.AuditChainAppender;
 import io.aster.policy.common.PIIRedactor;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
+import io.aster.policy.evidence.AgentIdentity;
 import io.aster.policy.evidence.EvaluationEvidence;
 import jakarta.enterprise.context.ApplicationScoped;
 
@@ -45,13 +46,15 @@ public class GuardReceiptBuilder {
   static final int METADATA_BUDGET = 3800;
   /**
    * 决策事件超出预算时的缩短顺序：先缩对追溯价值最低、体积最大的字段，最后才动「谁对什么做了什么」。
-   * reason（规则说明）→ agentSession → agentVersion → principalRoles → agentModel → agentProvider → principalType → resourceType → resourceId → actionName
-   * → principalId；文本每轮缩到不超过一半，列表每轮删掉最后一项，直到达标或该字段为空，再处理下一个。
+   * reason（规则说明）→ agentSession → agentVersion → principalRoles → agentModel → agentProvider
+   * → principalType → resourceType → resourceId → actionName → principalId；文本每轮缩到不超过一半，列表每轮删掉最后一项，直到达标或该字段为空，再处理下一个。
    * 身份与完整性字段（decisionId、approvalId、contextHash、outcome、effectiveOutcome、reasonCode、
    * ruleId、policyVersionId、sourceHash、idempotencyKey）永不改动；自由文本全部清空仍超限时，最后才删除 controls。
    */
-  static final List<String> SHRINK_ORDER = List.of("reason", "agentSession", "agentVersion", "principalRoles",
-      "agentModel", "agentProvider", "principalType", "resourceType", "resourceId", "actionName", "principalId");
+  static final List<String> SHRINK_ORDER = List.of("reason", EvaluationEvidence.KEY_AGENT_SESSION,
+      EvaluationEvidence.KEY_AGENT_VERSION, "principalRoles", EvaluationEvidence.KEY_AGENT_MODEL,
+      EvaluationEvidence.KEY_AGENT_PROVIDER, "principalType", "resourceType", "resourceId", "actionName",
+      "principalId");
   /**
    * 审批事件唯一可缩短的键：comment 是审批人自由填写的理由；decidedBy、requiredRole 是审批的身份事实，
    * 与 decisionId、approvalId、outcome、decisionReceiptHash 一样永不改动。按现有列宽（comment ≤ 1000、
@@ -79,13 +82,7 @@ public class GuardReceiptBuilder {
     put(m, "resourceType", clip(draft.resourceType(), MAX_TEXT));
     put(m, "resourceId", clip(draft.resourceId(), MAX_TEXT));
     put(m, "contextHash", draft.contextHash());
-    if (draft.agent() != null) {
-      put(m, "agentProvider", clip(draft.agent().provider(), MAX_TEXT));
-      put(m, "agentModel", clip(draft.agent().model(), MAX_TEXT));
-      put(m, "agentVersion", clip(draft.agent().version(), MAX_TEXT));
-      put(m, "agentSession", clip(draft.agent().session(), MAX_TEXT));
-      m.put("agentSource", EvaluationEvidence.SOURCE_DECLARED);
-    }
+    putAgent(m, draft.agent());
     put(m, "policyVersionId", draft.policyVersion() == null ? null : draft.policyVersion().id());
     put(m, "sourceHash", draft.policyVersion() == null ? null : clip(draft.policyVersion().sourceHash(), MAX_TEXT));
     put(m, "approvalId", approvalId);
@@ -171,6 +168,22 @@ public class GuardReceiptBuilder {
       cut--;
     }
     return s.substring(0, cut);
+  }
+
+  /**
+   * 模型身份键（ADR 0041 §3 / §8.1）：顶层 agentModel 始终保留——无 agent 时写空串，与引入结构化身份前
+   * 的收据形态一致；其余四键只在有 agent 时写入。
+   */
+  private static void putAgent(Map<String, Object> m, AgentIdentity agent) {
+    if (agent == null) {
+      m.put(EvaluationEvidence.KEY_AGENT_MODEL, "");
+      return;
+    }
+    put(m, EvaluationEvidence.KEY_AGENT_PROVIDER, clip(agent.provider(), MAX_TEXT));
+    put(m, EvaluationEvidence.KEY_AGENT_MODEL, clip(agent.model(), MAX_TEXT));
+    put(m, EvaluationEvidence.KEY_AGENT_VERSION, clip(agent.version(), MAX_TEXT));
+    put(m, EvaluationEvidence.KEY_AGENT_SESSION, clip(agent.session(), MAX_TEXT));
+    m.put(EvaluationEvidence.KEY_AGENT_SOURCE, EvaluationEvidence.SOURCE_DECLARED);
   }
 
   /** null 不写入：追加器本也丢弃顶层 null，这里提前省掉，测试与线上看到同一份键集。 */

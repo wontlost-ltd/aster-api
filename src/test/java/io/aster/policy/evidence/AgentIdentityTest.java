@@ -1,9 +1,9 @@
 package io.aster.policy.evidence;
 
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import org.junit.jupiter.api.Test;
 
 class AgentIdentityTest {
   @Test void 合法四字段原样保留() {
@@ -25,6 +25,12 @@ class AgentIdentityTest {
         .hasMessageContaining("agent.model");
     assertThatThrownBy(() -> AgentIdentity.validated(new AgentIdentity("p", "m", "v\u0007", null)))
         .hasMessageContaining("agent.version");
+  }
+
+  @Test void 恰好255字符合法() {
+    String max = "x".repeat(AgentIdentity.MAX_TEXT);
+    assertThat(AgentIdentity.validated(new AgentIdentity(max, max, max, max)))
+        .isEqualTo(new AgentIdentity(max, max, max, max));
   }
 
   @Test void ofModel缺省provider为unknown且空model为null() {

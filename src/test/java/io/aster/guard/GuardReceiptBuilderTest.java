@@ -211,8 +211,9 @@ class GuardReceiptBuilderTest {
         .containsEntry("agentSource", "declared");
   }
 
+  /** ADR 0041 §3 / §8.1「顶层 agentModel 保留」：无 agent 时仍写空串，与旧收据形态一致；其余四键不写。 */
   @Test
-  void 无agent时收据不含agent键() {
+  void 无agent时收据保留空agentModel且不含其余agent键() {
     GuardDecisionDraft d = draft("ALLOW", "ok", List.of(), "agent-42", null);
     GuardDecisionDraft noAgent = new GuardDecisionDraft(d.tenantId(), d.policyModule(), d.policyFunction(),
         d.idempotencyKey(), d.action(), d.contextHash(), d.policyVersion(), d.outcome(), d.role(), d.reason(),
@@ -220,7 +221,8 @@ class GuardReceiptBuilderTest {
 
     Map<String, Object> m = builder.decisionEvent(noAgent, UUID.randomUUID(), null, "user-1").metadata();
 
-    assertThat(m).doesNotContainKeys("agentProvider", "agentModel", "agentVersion", "agentSession", "agentSource");
+    assertThat(m).containsEntry("agentModel", "")
+        .doesNotContainKeys("agentProvider", "agentVersion", "agentSession", "agentSource");
   }
 
   @Test

@@ -93,6 +93,7 @@ public record EvaluationResponse(
     @JsonInclude(JsonInclude.Include.NON_NULL)
     Evidence evidence
 ) {
+    /** 证据引用：correlationId 与本次评估在审计链上的 POLICY_EVALUATION 事件一一对应，只做关联，不含业务数据。 */
     public record Evidence(@JsonProperty("correlationId") String correlationId) {}
 
     public record EntryDiagnostic(
