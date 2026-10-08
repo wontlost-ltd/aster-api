@@ -66,9 +66,8 @@ public class GuardDecisionResource {
     String tenantId = identityResolver.tenantId();
     String performedBy = identityResolver.performedBy();
     String apiKeyId = identityResolver.apiKeyId();
-    // 月度配额按归属取键（ADR 0015 §3）：团队 key 计入 team owner 的池。解析器本身已回退 performedBy，
-    // 这里再兜一次 null，保证配额键与计费归属不会因上游缺值而落空。
-    String quotaOwnerId = Optional.ofNullable(identityResolver.quotaOwnerId()).orElse(performedBy);
+    // 月度配额按归属取键（ADR 0015 §3）：团队 key 计入 team owner 的池。
+    String quotaOwnerId = identityResolver.quotaOwnerId();
     Optional<Response> quotaRejection = quotaRejection(tenantId, quotaOwnerId, apiKeyId);
     if (quotaRejection.isPresent()) {
       return quotaRejection.get();

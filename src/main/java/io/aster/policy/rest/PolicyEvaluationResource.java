@@ -1394,24 +1394,8 @@ public class PolicyEvaluationResource {
     }
 
     /**
-     * 异步记录一次 API 调用（fire-and-forget）。
-     *
-     * 仅可在 RequestScoped 仍然有效时调用（同步路径 / 主 event-loop 线程）。
-     * 若调用点已切换到 worker pool / Uni lambda，RequestScoped 已失效，
-     * 必须改用下面的 {@link #recordApiCall(String, String, long, String, String, String, String)}
-     * 重载并把 tenant/user/apiKey/quotaOwner 预先捕获后传入。
-     */
-    private void recordApiCall(String endpointPath, String status, long latencyMs) {
-        String tenantId = tenantId();
-        String userId = performedBy();
-        String apiKeyId = apiKeyIdFromContext();
-        String quotaOwnerId = quotaOwnerId();
-        apiQuotaGuard.recordAsync(quotaOwnerId, userId, tenantId, apiKeyId, endpointPath, status, latencyMs);
-    }
-
-    /**
-     * 异步路径专用：tenant/user/apiKey/quotaOwner 必须在跨线程跳板前预捕获，
-     * 否则 routingContext 会在 worker thread 上触发
+     * 异步记录一次 API 调用（fire-and-forget）。tenant/user/apiKey/quotaOwner 必须在跨线程跳板前
+     * 预捕获（见 {@link #captureIdentity()}），否则 routingContext 会在 worker thread 上触发
      * ContextNotActiveException，被 Mutiny drop 后 quota 计数静默丢失。
      */
     private void recordApiCall(String endpointPath, String status, long latencyMs,

@@ -408,23 +408,6 @@ class PolicyEvaluationResourceTrialIdentityTest {
             "/api/v1/policies/evaluate", "success", 7L);
     }
 
-    @Test
-    @DisplayName("ADR 0015: 同步路径 recordApiCall 3 参从当前请求取 quotaOwnerId")
-    void recordApiCallOnRequestThreadReadsQuotaOwner() throws Exception {
-        TenantContext tc = new TenantContext();
-        tc.setCurrentTenant("team-1");
-        RoutingContext rctx = mock(RoutingContext.class);
-        when(rctx.request()).thenReturn(mock(HttpServerRequest.class));
-        ApiQuotaGuard quota = mock(ApiQuotaGuard.class);
-        PolicyEvaluationResource r = newResource(quota, tc, rctx, teamKeyCtx());
-
-        invoke(r, "recordApiCall", new Class<?>[]{String.class, String.class, long.class},
-            "/api/v1/policies/evaluate", "success", 9L);
-
-        verify(quota).recordAsync("owner-1", "member-1", "team-1", "key-1",
-            "/api/v1/policies/evaluate", "success", 9L);
-    }
-
     // Mockito eq helper for String — keeps imports tight in this test
     private static String eqMatch(String value) {
         return org.mockito.ArgumentMatchers.eq(value);

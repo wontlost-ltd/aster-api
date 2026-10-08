@@ -155,18 +155,6 @@ class GuardDecisionResourceQuotaTest {
   }
 
   @Test
-  void quotaOwnerId缺失时按performedBy计配额() {
-    when(identityResolver.quotaOwnerId()).thenReturn(null);
-
-    Response resp = post(MODULE);
-
-    assertThat(resp.statusCode()).isEqualTo(200);
-    verify(apiQuotaGuard, times(1)).check(TENANT, USER);
-    verify(apiQuotaGuard, times(1)).recordAsync(eq(USER), eq(USER), eq(TENANT), eq(API_KEY_ID),
-        eq("/api/v1/guard/decisions"), eq("success"), anyLong());
-  }
-
-  @Test
   void 策略不存在不计量() {
     Response resp = post("guard.quota.missing");
 

@@ -359,6 +359,14 @@ public class ApiQuotaGuard {
         }
 
         // SNAP-5 双写步骤 2：异步推 cloud（fire-and-forget，dashboard 显示用 + 跨 pod 对账）
+        postUsage(usageBody(quotaOwnerId, userId, tenantId, apiKeyId, endpointPath, status, latencyMs));
+    }
+
+    /**
+     * 签名并异步发送 usage 上报体（fire-and-forget），任何异常只记日志、不影响业务路径。
+     * 包可见：单测在此打桩并捕获 {@link #recordAsync} 组装的上报体，锁定 owner / 成员字段不被互换。
+     */
+    void postUsage(JsonObject body) {
         try {
             URI baseUri = URI.create(config.cloudInternalUrl());
             int port = baseUri.getPort() == -1
@@ -366,8 +374,6 @@ public class ApiQuotaGuard {
                 : baseUri.getPort();
             boolean ssl = "https".equals(baseUri.getScheme());
             String path = "/api/internal/api/usage";
-
-            JsonObject body = usageBody(quotaOwnerId, userId, tenantId, apiKeyId, endpointPath, status, latencyMs);
 
             // v2 签名：绑定 nonce + bodyHash（见 InternalCallSigner）
             var signed = config.hmacKey()
@@ -387,9 +393,9 @@ public class ApiQuotaGuard {
                 .putHeader("Content-Type", "application/json")
                 .sendBuffer(body.toBuffer())
                 .onFailure(err -> LOG.warnf("api usage record failed: user=%s, err=%s",
-                    userId, err.getMessage()));
+                    body.getString("userId"), err.getMessage()));
         } catch (Exception e) {
-            LOG.warnf("api usage record exception: user=%s, err=%s", userId, e.getMessage());
+            LOG.warnf("api usage record exception: user=%s, err=%s", body.getString("userId"), e.getMessage());
         }
     }
 
