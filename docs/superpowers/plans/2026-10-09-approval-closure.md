@@ -474,8 +474,31 @@ const ROLE_RE = /^[\x20-\x7E]{1,64}$/;
 export const MAX_BUSINESS_ROLES = 16;
 export class BusinessRoleError extends Error { constructor() { super('invalid_business_role'); } }
 /** 词表归一（ADR 0042 §2.1）：trim、可打印 ASCII 1–64、去重保序、≤16；任何一项不合法整体拒绝。 */
-export function normalizeBusinessRoles(input: unknown): string[] { ... }
-export async function loadBusinessRoles(userId: string, tenantId: string): Promise<string[]> { ... }
+export function normalizeBusinessRoles(input: unknown): string[] {
+  if (!Array.isArray(input)) throw new BusinessRoleError();
+  const out: string[] = [];
+  for (const item of input) {
+    if (typeof item !== 'string') throw new BusinessRoleError();
+    const role = item.trim();
+    if (!ROLE_RE.test(role)) throw new BusinessRoleError();
+    if (!out.includes(role)) out.push(role);
+  }
+  if (out.length > MAX_BUSINESS_ROLES) throw new BusinessRoleError();
+  return out;
+}
+
+/** 当前用户在某租户的已验证角色：个人租户（tenantId === userId）读 User，团队读 TeamMember；无行 → []。 */
+export async function loadBusinessRoles(userId: string, tenantId: string): Promise<string[]> {
+  if (tenantId === userId) {
+    const u = await db.query.users.findFirst({ where: eq(users.id, userId), columns: { businessRoles: true } });
+    return u?.businessRoles ?? [];
+  }
+  const m = await db.query.teamMembers.findFirst({
+    where: and(eq(teamMembers.teamId, tenantId), eq(teamMembers.userId, userId)),
+    columns: { businessRoles: true },
+  });
+  return m?.businessRoles ?? [];
+}
 ```
 成员 PUT：body 解析 `{ role?, businessRoles? }`；两者至少其一；`businessRoles` 存在时 `normalizeBusinessRoles` 后 `set({ businessRoles })`；权限沿用 `MEMBER_UPDATE_ROLE`；更新后沿用既有「重推该成员 key 快照」逻辑（角色随快照下发）。个人路由 `PUT /api/user/business-roles`：session 用户，body `{ businessRoles }`，更新 users，并重推该用户个人 key 快照（沿用同一 helper）。`identityOf`：个人 `businessRoles: holder.businessRoles`，团队 `businessRoles: membership.businessRoles`（`roleByMembership` 改为存整行）。UI：成员行加「业务角色」chip 编辑（逗号输入框 + 保存，owner/admin 可见）；设置页 panel 同款。i18n 四语。
 
