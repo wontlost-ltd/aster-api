@@ -88,6 +88,9 @@ class NonDeterminismSourceTest {
         // - GuardDecisionService: 生成 Action Guard 的 decisionId / approvalId（ADR 0040）——
         //   是 guard_decisions / guard_approvals 治理账本的业务主键，并写进审计收据供追溯；
         //   重试去重靠 Idempotency-Key 而不是 id，且不入 workflow 重放状态。
+        // - EvaluationEvidence: 生成 /evaluate* 的 correlationId（ADR 0041 §2.2）——
+        //   每次评估请求一个随机相关键，同时写进审计哈希链事件与响应 evidence，
+        //   供证据包按键回查链收据；它是账本关联键而非重放状态，随机性只用于区分两次请求。
         Assertions.assertThat(uuidMatches.keySet())
                 .containsExactlyInAnyOrder(
                         "src/main/java/io/aster/policy/service/PolicyStorageService.java",
@@ -100,7 +103,8 @@ class NonDeterminismSourceTest {
                         "src/main/java/io/aster/policy/rest/ReplayBatchResource.java",
                         "src/main/java/io/aster/policy/replay/batch/ReplayBatchService.java",
                         "src/main/java/io/aster/policy/security/RateLimiter.java",
-                        "src/main/java/io/aster/guard/GuardDecisionService.java"
+                        "src/main/java/io/aster/guard/GuardDecisionService.java",
+                        "src/main/java/io/aster/policy/evidence/EvaluationEvidence.java"
                 );
 
         Map<String, List<Integer>> nanoMatches = scanPattern(
