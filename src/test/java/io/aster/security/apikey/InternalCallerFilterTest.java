@@ -521,4 +521,16 @@ class InternalCallerFilterTest {
             // PostConstruct 不在 classpath 上，更不可能用到它 —— 通过
         }
     }
+
+    // ADR 0041 §2.4：审计收据查询同时接受 Bearer API key 与 HMAC 内部调用者。
+    @Test
+    void auditReceiptsRequireHmacOnlyWithInternalCallerHeaders() {
+        assertEquals(Classification.REQUIRE_HMAC,
+            InternalCallerFilter.classify("/api/v1/audit/receipts", false, false, false, false, true));
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/audit/receipts", false, false, false, false, false));
+        // 兄弟路径不受影响
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/audit/receiptsX", false, false, false, false, true));
+    }
 }
