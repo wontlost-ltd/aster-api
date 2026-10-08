@@ -66,6 +66,13 @@ class GuardDecisionJpaStoreTest {
   }
 
   @Test
+  void 证据相关键索引冲突被识别() {
+    SQLException sql = new SQLException("duplicate key", "23505");
+    var cve = new ConstraintViolationException("dup", sql, "guard_decisions_evidence_uq");
+    assertThat(GuardDecisionJpaStore.isIdempotencyViolation(new RuntimeException(cve))).isTrue();
+  }
+
+  @Test
   void 约束名缺失时按SQLState识别() {
     SQLException sql = new SQLException("duplicate key", "23505");
     var cve = new ConstraintViolationException("dup", sql, null);

@@ -16,12 +16,19 @@ import java.util.UUID;
 public class GuardDecisionJpaStore implements GuardDecisionStore {
   /** V6.27.0 迁移中的幂等部分唯一索引名。 */
   static final String IDEMPOTENCY_INDEX = "guard_decisions_idem_uq";
+  /** V6.29.0 迁移中的证据相关键部分唯一索引名。 */
+  static final String EVIDENCE_INDEX = "guard_decisions_evidence_uq";
   /** PostgreSQL unique_violation。 */
   private static final String UNIQUE_VIOLATION = "23505";
 
   @Override
   public Optional<GuardDecisionEntity> findByIdempotencyKey(String tenantId, String idempotencyKey) {
     return QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.findByIdempotencyKey(tenantId, idempotencyKey));
+  }
+
+  @Override
+  public Optional<GuardDecisionEntity> findByEvidenceCorrelationId(String tenantId, String correlationId) {
+    return QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.findByEvidenceCorrelationId(tenantId, correlationId));
   }
 
   @Override
@@ -111,13 +118,14 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
   }
 
   /**
-   * 沿异常链识别幂等索引冲突（模式同 {@code ReplayBatchResource.isUniqueViolation}）：
+   * 沿异常链识别幂等键或证据相关键唯一索引冲突（模式同 {@code ReplayBatchResource.isUniqueViolation}）：
    * Hibernate 给出约束名时按名字判断（主键等其他唯一约束不算）；拿不到约束名时退回 SQLState 23505。
    */
   static boolean isIdempotencyViolation(Throwable t) {
     for (Throwable c = t; c != null; c = c.getCause()) {
       if (c instanceof ConstraintViolationException cve && cve.getConstraintName() != null) {
-        return cve.getConstraintName().contains(IDEMPOTENCY_INDEX);
+        String name = cve.getConstraintName();
+        return name.contains(IDEMPOTENCY_INDEX) || name.contains(EVIDENCE_INDEX);
       }
       if (c instanceof SQLException sql && UNIQUE_VIOLATION.equals(sql.getSQLState())) {
         return true;

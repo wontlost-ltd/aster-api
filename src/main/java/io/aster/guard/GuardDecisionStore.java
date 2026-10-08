@@ -13,6 +13,9 @@ public interface GuardDecisionStore {
 
   Optional<GuardDecisionEntity> findByIdempotencyKey(String tenantId, String idempotencyKey);
 
+  /** 按租户 + 证据相关键取决策（from-evidence 幂等重放）；跨租户返回 empty。 */
+  Optional<GuardDecisionEntity> findByEvidenceCorrelationId(String tenantId, String correlationId);
+
   /** 按租户限定查找决策；跨租户返回 empty。 */
   Optional<GuardDecisionEntity> findDecision(String tenantId, UUID decisionId);
 
@@ -21,7 +24,7 @@ public interface GuardDecisionStore {
   /**
    * 在<b>同一个事务</b>中写入决策行与（可选的）待审批行：要么都落库，要么都不落库，
    * 不会出现「决策显示 PENDING 却没有审批行」的孤儿状态。
-   * {@code (tenant_id, idempotency_key)} 唯一索引冲突时抛 {@link GuardIdempotencyRaceException}。
+   * {@code (tenant_id, idempotency_key)} 或 {@code (tenant_id, evidence_correlation_id)} 唯一索引冲突时抛 {@link GuardIdempotencyRaceException}。
    *
    * @param approvalOrNull REQUIRE_APPROVAL / ESCALATE 时的待审批行，其余为 null
    */

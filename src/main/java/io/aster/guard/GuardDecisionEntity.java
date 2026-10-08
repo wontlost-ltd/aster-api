@@ -44,10 +44,15 @@ public class GuardDecisionEntity extends PanacheEntityBase {
   @JdbcTypeCode(SqlTypes.JSON) @Column(name = "response_json", columnDefinition = "jsonb", nullable = false) public String responseJson;
   @Column(name = "requested_by") public String requestedBy;
   @Column(name = "requested_api_key_id") public String requestedApiKeyId;
+  @Column(name = "evidence_correlation_id") public String evidenceCorrelationId;
   @Column(name = "created_at", nullable = false) public Instant createdAt = Instant.now();
 
   public static Optional<GuardDecisionEntity> findByIdempotencyKey(String tenantId, String key) {
     return find("tenantId = ?1 and idempotencyKey = ?2", tenantId, key).firstResultOptional();
+  }
+
+  public static Optional<GuardDecisionEntity> findByEvidenceCorrelationId(String tenantId, String correlationId) {
+    return find("tenantId = ?1 and evidenceCorrelationId = ?2", tenantId, correlationId).firstResultOptional();
   }
 
   public static Optional<GuardDecisionEntity> findByIdAndTenant(UUID id, String tenantId) {
