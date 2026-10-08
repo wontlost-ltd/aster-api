@@ -8,10 +8,12 @@ import io.aster.common.JacksonMappers;
 import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.policy.entity.AuditLog;
 import io.aster.policy.parser.InProcessCnlParser;
+import io.aster.policy.stability.ToolchainIdentityProvider;
 import io.aster.replay.core.parser.ReplayMappers;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
+import io.quarkus.test.junit.mockito.InjectSpy;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,6 +31,7 @@ import java.util.UUID;
 
 import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doThrow;
 
 /**
  * ADR 0041 §2.2–§2.3 端到端：三条 /evaluate* 端点生成 correlationId、在响应 evidence 中回传，
@@ -36,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>沿用 {@link PolicyEvaluationReplayOrderingTest.HmacProfile}：该 profile 下 /evaluate-source 只接受
  * HMAC 已验证的内部调用方，而 simulate 模式本身也只对 HMAC 已验证调用方生效，两者都需要签名请求。
- * AuditLog 的 correlationId 列由 Task 4 提供；本类先按 metadata 文本匹配定位事件行。
+ * 事件行按 audit_logs.correlation_id 列定位（{@link AuditLog#findByCorrelationIds}）。
  */
 @QuarkusTest
 @TestProfile(PolicyEvaluationReplayOrderingTest.HmacProfile.class)
@@ -58,6 +61,10 @@ class EvaluateEvidenceEventTest {
       "  Return Verdict.allow().");
 
   private static boolean deployed;
+
+  /** 只在「成功事件后抛错」用例里打桩，其余用例走真实实现。 */
+  @InjectSpy
+  ToolchainIdentityProvider toolchainIdentityProvider;
 
   @BeforeEach
   void deployOnce() {
@@ -131,6 +138,7 @@ class EvaluateEvidenceEventTest {
     Response r2 = given().header("X-Tenant-Id", tenant).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
         .body(jsonBody).post("/api/v1/policies/evaluate-json");
     assertThat(r2.statusCode()).as(r2.asString()).isEqualTo(400);
+    assertThat(r2.jsonPath().getString("diagnostics[0].code")).isEqualTo("invalid_agent");
 
     Response r3 = evaluateSource(tenant, badAgent, false);
     assertThat(r3.statusCode()).as(r3.asString()).isEqualTo(400);
@@ -163,6 +171,22 @@ class EvaluateEvidenceEventTest {
     assertThat(md).containsEntry("outcome", "ALLOW").containsEntry("ruleId", "EV-SRC-001")
         .containsEntry("controls", List.of("EU_AI_ACT:ART14")).containsEntry("agentModel", "claude-fable-5-1")
         .containsEntry("agentSource", "declared").containsEntry("sourceFormat", "cnl");
+  }
+
+  /** 成功事件已发布后回放元数据阶段抛错：错误响应仍须带同一个 correlationId（ADR 0041 §2.2）。 */
+  @Test
+  void evaluateSource成功事件后抛错仍回evidence() throws Exception {
+    doThrow(new IllegalStateException("toolchain boom")).when(toolchainIdentityProvider).currentToolchainId();
+
+    Response resp = evaluateSource(TENANT, AGENT, false, true);
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("error")).contains("toolchain boom");
+    String cid = resp.jsonPath().getString("evidence.correlationId");
+    assertThat(cid).isNotBlank();
+
+    AuditLog row = awaitEvent(TENANT, cid);
+    assertThat(row.success).isTrue();
+    assertThat(metadataOf(row)).containsEntry("correlationId", cid).containsEntry("agentModel", "claude-fable-5-1");
   }
 
   @Test
@@ -205,6 +229,12 @@ class EvaluateEvidenceEventTest {
 
   /** HMAC 已验证的 /evaluate-source 请求；simulate 只对已验证调用方生效。 */
   private static Response evaluateSource(String tenant, Map<String, Object> agent, boolean simulate) throws Exception {
+    return evaluateSource(tenant, agent, simulate, false);
+  }
+
+  /** replayCapture 只对 HMAC 已验证调用方生效，会走到成功事件之后的回放元数据阶段。 */
+  private static Response evaluateSource(String tenant, Map<String, Object> agent, boolean simulate,
+                                         boolean replayCapture) throws Exception {
     Map<String, Object> req = new HashMap<>();
     req.put("source", VERDICT_SOURCE);
     req.put("context", Map.of("amount", 1));
@@ -224,15 +254,14 @@ class EvaluateEvidenceEventTest {
         .header("X-User-Id", "u-ev")
         .header("X-User-Role", ROLE)
         .body(body)
-        .post(SOURCE_PATH + "?simulate=" + simulate);
+        .post(SOURCE_PATH + "?simulate=" + simulate + "&replayCapture=" + replayCapture);
   }
 
-  /** 轮询 ≤ 5 s 等异步追加器落链；Task 4 前按 metadata 文本匹配 correlationId。 */
+  /** 轮询 ≤ 5 s 等异步追加器落链；按 correlation_id 列定位事件行。 */
   private static AuditLog awaitEvent(String tenant, String cid) throws InterruptedException {
     for (int i = 0; i < 50; i++) {
-      List<AuditLog> rows = QuarkusTransaction.requiringNew().call(() -> AuditLog.<AuditLog>find(
-          "tenantId = ?1 and eventType = 'POLICY_EVALUATION' order by id desc", tenant).list());
-      AuditLog hit = rows.stream().filter(r -> r.metadata != null && r.metadata.contains(cid)).findFirst().orElse(null);
+      List<AuditLog> rows = QuarkusTransaction.requiringNew().call(() -> AuditLog.findByCorrelationIds(tenant, List.of(cid)));
+      AuditLog hit = rows.stream().filter(r -> "POLICY_EVALUATION".equals(r.eventType)).findFirst().orElse(null);
       if (hit != null) return hit;
       Thread.sleep(100);
     }

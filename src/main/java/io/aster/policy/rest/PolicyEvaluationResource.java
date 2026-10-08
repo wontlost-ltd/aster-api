@@ -565,6 +565,9 @@ public class PolicyEvaluationResource {
         //   两条归还路径都在 PermitLease 里，取消不提前归还的语义也在那里。
         //   不在这里手写 Uni 链——手写副本正是上一版的问题。
         return lease.guardAsync(() -> {
+            // 证据声明在 try 之外：成功事件发布后若回放元数据 / 骨架阶段抛错，
+            // catch 分支仍要回同一个 correlationId，否则链上事件无法被调用方关联（ADR 0041 §2.2）。
+            EvaluationEvidence evidence = null;
             try {
                 // 结构词别名授权口径按调用来源可信度区分（安全边界）：
                 //   - 内部调用方（cloud BFF S2S，带 X-Internal-Caller + HMAC）转发的是**已发布
@@ -611,7 +614,6 @@ public class PolicyEvaluationResource {
                 // correlationId（ADR 0041 §2.2）只为真实执行生成：模拟没有链上事件可关联，
                 //   因此 simulate 时 evidence 保持 null，响应也不带 evidence。
                 VerdictView decision = VerdictView.from(phase.execResult().result()).orElse(null);
-                EvaluationEvidence evidence = null;
                 if (!effectiveSimulate) {
                     // 记录指标
                     policyMetrics.recordEvaluation(
@@ -770,7 +772,8 @@ public class PolicyEvaluationResource {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
                     System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap, quotaOwnerSnap);
                 }
-                return EvaluationResponse.error("CNL 动态执行失败: " + e.getMessage());
+                return EvaluationResponse.error("CNL 动态执行失败: " + e.getMessage())
+                    .withEvidence(evidence == null ? null : evidence.correlationId());
 
             } catch (InProcessCnlParser.CnlParseException e) {
                 // ★模拟执行的耗时不进业务指标（第十轮）：否则「simulate 不污染指标」不成立
@@ -783,7 +786,8 @@ public class PolicyEvaluationResource {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
                     System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap, quotaOwnerSnap);
                 }
-                return EvaluationResponse.error("CNL 解析失败: " + e.getMessage());
+                return EvaluationResponse.error("CNL 解析失败: " + e.getMessage())
+                    .withEvidence(evidence == null ? null : evidence.correlationId());
 
             } catch (Exception e) {
                 // ★模拟执行的耗时不进业务指标（第十轮）：否则「simulate 不污染指标」不成立
@@ -796,7 +800,8 @@ public class PolicyEvaluationResource {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
                     System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap, quotaOwnerSnap);
                 }
-                return EvaluationResponse.error("CNL 策略执行失败: " + e.getMessage());
+                return EvaluationResponse.error("CNL 策略执行失败: " + e.getMessage())
+                    .withEvidence(evidence == null ? null : evidence.correlationId());
             }
         }, io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool());
     }
