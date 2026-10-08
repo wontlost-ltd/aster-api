@@ -2,6 +2,7 @@ package io.aster.policy.rest;
 
 import io.aster.policy.rest.model.EvaluationRequest;
 import io.aster.policy.event.AuditEvent;
+import io.aster.policy.evidence.EvaluationEvidence;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
@@ -42,6 +43,21 @@ public class PolicyAuditPublisher {
                         long executionTimeMs,
                         String errorMessage,
                         Map<String, Object> metadata) {
+        publish(tenantId, request, performedBy, success, executionTimeMs, errorMessage, metadata, null);
+    }
+
+    /**
+     * 同上，并把证据键（ADR 0041 §2.2）并入 metadata：同名键以证据为准，证据是本次评估的权威结论。
+     * {@code evidence} 为 null 时与 7 参版本行为完全一致（metadata 原样透传）。
+     */
+    public void publish(String tenantId,
+                        EvaluationRequest request,
+                        String performedBy,
+                        boolean success,
+                        long executionTimeMs,
+                        String errorMessage,
+                        Map<String, Object> metadata,
+                        EvaluationEvidence evidence) {
         if (auditEventPublisher == null) {
             return;
         }
@@ -54,9 +70,18 @@ public class PolicyAuditPublisher {
                 success,
                 executionTimeMs,
                 errorMessage,
-                metadata == null ? Collections.emptyMap() : metadata
+                mergeEvidence(metadata, evidence)
             )
         );
+    }
+
+    private static Map<String, Object> mergeEvidence(Map<String, Object> metadata, EvaluationEvidence evidence) {
+        if (evidence == null) {
+            return metadata == null ? Collections.emptyMap() : metadata;
+        }
+        Map<String, Object> merged = metadata == null ? new HashMap<>() : new HashMap<>(metadata);
+        merged.putAll(evidence.toMetadata());
+        return merged;
     }
 
     /**

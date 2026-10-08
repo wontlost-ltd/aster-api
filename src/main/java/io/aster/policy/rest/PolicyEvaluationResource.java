@@ -5,6 +5,8 @@ import io.aster.monitoring.BusinessMetrics;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.api.model.BatchRequest;
 import io.aster.policy.event.AuditEvent;
+import io.aster.policy.evidence.AgentIdentity;
+import io.aster.policy.evidence.EvaluationEvidence;
 import io.aster.policy.metrics.PolicyMetrics;
 import io.aster.policy.api.convert.NamedContextMapper;
 import io.aster.policy.api.schema.ParameterSchemaExtractor;
@@ -213,6 +215,8 @@ public class PolicyEvaluationResource {
     @POST
     @Path("/evaluate")
     public Uni<EvaluationResponse> evaluate(@Valid EvaluationRequest request) {
+        // ADR 0041 §3：agent 在执行前校验，非法即 400——不执行、不计费、不落链
+        final AgentIdentity agent = validatedAgent(request.agent());
         enforceApiQuota("/api/v1/policies/evaluate");
         // 跨线程预捕获，必须在进入 Uni 之前——理由见 RequestIdentity。
         RequestIdentity identity = captureIdentity();
@@ -245,6 +249,10 @@ public class PolicyEvaluationResource {
                 recordLoanDecision(result.getResult());
             }
 
+            // correlationId（ADR 0041 §2.2）：同一个键既进审计链事件、又回给调用方，
+            // 让调用方日志与链上事件可一对一关联；/evaluate 本期不写 policyVersionId。
+            EvaluationEvidence evidence = EvaluationEvidence.of(
+                outcomeOf(result.getDecision()), result.getRuleId(), result.getControls(), null, agent);
             publishPolicyEvaluationEvent(
                 tenantId,
                 request,
@@ -252,13 +260,15 @@ public class PolicyEvaluationResource {
                 true,
                 executionTime,
                 null,
-                metadata
+                metadata,
+                evidence
             );
 
             LOG.infof("Policy evaluation completed in %dms: %s.%s", executionTime, request.policyModule(), request.policyFunction());
             recordApiCall("/api/v1/policies/evaluate", "success", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
             return EvaluationResponse.success(result.getResult(), executionTime, null, null,
-                result.getDecision(), result.getRuleId(), result.getControls());
+                result.getDecision(), result.getRuleId(), result.getControls())
+                .withEvidence(evidence.correlationId());
         })
         .onFailure().recoverWithItem(throwable -> {
             long executionTime = System.currentTimeMillis() - startTime;
@@ -267,6 +277,8 @@ public class PolicyEvaluationResource {
             policyMetrics.recordEvaluation(request.policyModule(), request.policyFunction(), executionTime, false);
             businessMetrics.endPolicyEvaluation(sample);
 
+            // 失败同样落链并回传 correlationId：没有结论，但「谁在何时试图做什么」仍可追溯
+            EvaluationEvidence evidence = EvaluationEvidence.of(null, null, null, null, agent);
             publishPolicyEvaluationEvent(
                 tenantId,
                 request,
@@ -274,12 +286,13 @@ public class PolicyEvaluationResource {
                 false,
                 executionTime,
                 throwable.getMessage(),
-                metadata
+                metadata,
+                evidence
             );
 
             LOG.errorf(throwable, "Policy evaluation failed after %dms: %s.%s", executionTime, request.policyModule(), request.policyFunction());
             recordApiCall("/api/v1/policies/evaluate", "api_error", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
-            return EvaluationResponse.error(throwable.getMessage());
+            return EvaluationResponse.error(throwable.getMessage()).withEvidence(evidence.correlationId());
         });
     }
 
@@ -293,6 +306,8 @@ public class PolicyEvaluationResource {
     @POST
     @Path("/evaluate-json")
     public Uni<EvaluationResponse> evaluateJson(@Valid JsonPolicyRequest request) {
+        // ADR 0041 §3：agent 在执行前校验，非法即 400——不执行、不计费、不落链
+        final AgentIdentity agent = validatedAgent(request.agent());
         enforceApiQuota("/api/v1/policies/evaluate-json");
         // 跨线程预捕获，必须在进入 Uni 之前——理由见 RequestIdentity。
         RequestIdentity identity = captureIdentity();
@@ -349,20 +364,26 @@ public class PolicyEvaluationResource {
                 Map<String, Object> metadata = new HashMap<>();
                 metadata.put("sourceFormat", "json");
 
+                // correlationId（ADR 0041 §2.2）：链上事件与响应共用同一个键
+                VerdictView decision = VerdictView.from(result.result()).orElse(null);
+                EvaluationEvidence evidence = EvaluationEvidence.of(
+                    outcomeOf(decision), result.ruleId(), result.controls(), null, agent);
                 publishPolicyEvaluationEvent(
                     tenantId,
-                    new EvaluationRequest(policyModule, policyFunction, contextArray, null),
+                    new EvaluationRequest(policyModule, policyFunction, contextArray, agent),
                     performedBy,
                     true,
                     executionTime,
                     null,
-                    metadata
+                    metadata,
+                    evidence
                 );
 
                 LOG.infof("JSON policy evaluation completed in %dms: %s.%s", executionTime, policyModule, policyFunction);
                 recordApiCall("/api/v1/policies/evaluate-json", "success", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
                 return EvaluationResponse.success(result.result(), executionTime, null, null,
-                    VerdictView.from(result.result()).orElse(null), result.ruleId(), result.controls());
+                    decision, result.ruleId(), result.controls())
+                    .withEvidence(evidence.correlationId());
             })
             .onFailure().recoverWithItem(throwable -> {
                 long executionTime = System.currentTimeMillis() - startTime;
@@ -374,19 +395,22 @@ public class PolicyEvaluationResource {
                 Map<String, Object> metadata = new HashMap<>();
                 metadata.put("sourceFormat", "json");
 
+                // 失败同样落链并回传 correlationId
+                EvaluationEvidence evidence = EvaluationEvidence.of(null, null, null, null, agent);
                 publishPolicyEvaluationEvent(
                     tenantId,
-                    new EvaluationRequest(policyModule, policyFunction, contextArray, null),
+                    new EvaluationRequest(policyModule, policyFunction, contextArray, agent),
                     performedBy,
                     false,
                     executionTime,
                     throwable.getMessage(),
-                    metadata
+                    metadata,
+                    evidence
                 );
 
                 LOG.errorf(throwable, "JSON policy evaluation failed after %dms: %s.%s", executionTime, policyModule, policyFunction);
                 recordApiCall("/api/v1/policies/evaluate-json", "api_error", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
-                return EvaluationResponse.error(throwable.getMessage());
+                return EvaluationResponse.error(throwable.getMessage()).withEvidence(evidence.correlationId());
             });
         } catch (Exception e) {
             long executionTime = System.currentTimeMillis() - startTime;
@@ -453,6 +477,8 @@ public class PolicyEvaluationResource {
         //     仍未落地，应连同本参数与其契约测试一并删除，避免长期空转。
         @QueryParam("simulate") @DefaultValue("false") boolean simulate
     ) {
+        // ADR 0041 §3：agent 在执行前校验（先于配额与并发闸门），非法即 400——不执行、不计费、不落链
+        final AgentIdentity agent = validatedAgent(request.agent());
         // ★simulate 必须绑定 HMAC 内部调用者（与 replayCapture 同门控，第九轮 P0-1b）：
         //   它是一个**免计费**开关，若信任裸 query boolean，任何外部调用方
         //   加个 ?simulate=true 就能白嫖配额、且不留 API 调用记录。
@@ -582,6 +608,10 @@ public class PolicyEvaluationResource {
 
                 // ★模拟执行跳过全部「真实执行」副作用（见 simulate 参数注释）：
                 //   指标会污染真实经营 KPI，审计事件会记录一次并不存在的决策。
+                // correlationId（ADR 0041 §2.2）只为真实执行生成：模拟没有链上事件可关联，
+                //   因此 simulate 时 evidence 保持 null，响应也不带 evidence。
+                VerdictView decision = VerdictView.from(phase.execResult().result()).orElse(null);
+                EvaluationEvidence evidence = null;
                 if (!effectiveSimulate) {
                     // 记录指标
                     policyMetrics.recordEvaluation(
@@ -605,14 +635,18 @@ public class PolicyEvaluationResource {
                     metadata.put("dynamicExecution", true);
                     metadata.put("namedContext", request.context() instanceof Map);
 
+                    evidence = EvaluationEvidence.of(
+                        outcomeOf(decision),
+                        phase.execResult().ruleId(), phase.execResult().controls(), null, agent);
                     publishPolicyEvaluationEvent(
                         tenantId,
-                        new EvaluationRequest(phase.execResult().moduleName(), phase.execResult().functionName(), new Object[]{request.context()}, null),
+                        new EvaluationRequest(phase.execResult().moduleName(), phase.execResult().functionName(), new Object[]{request.context()}, agent),
                         performedBy,
                         true,
                         phase.execResult().executionTimeMs(),
                         null,
-                        metadata
+                        metadata,
+                        evidence
                     );
                 }
 
@@ -640,9 +674,10 @@ public class PolicyEvaluationResource {
                     phase.execResult().executionTimeMs(),
                     trace ? decisionTrace : null,
                     phase.execResult().functionName(),
-                    VerdictView.from(phase.execResult().result()).orElse(null),
+                    decision,
                     phase.execResult().ruleId(),
-                    phase.execResult().controls());
+                    phase.execResult().controls())
+                    .withEvidence(evidence == null ? null : evidence.correlationId());
 
                 if (effectiveReplayCapture) {
                     // 阶段三：★权威 hash 在 Java 评估侧计算（Codex #4）：input=请求级 context，
@@ -1232,10 +1267,32 @@ public class PolicyEvaluationResource {
         boolean success,
         long executionTimeMs,
         String errorMessage,
-        Map<String, Object> metadata
+        Map<String, Object> metadata,
+        EvaluationEvidence evidence
     ) {
         auditPublisher.publish(tenantId, request, performedBy,
-            success, executionTimeMs, errorMessage, metadata);
+            success, executionTimeMs, errorMessage, metadata, evidence);
+    }
+
+    /**
+     * 执行前校验调用方自报的 agent（ADR 0041 §3）。非法时抛 400，响应体沿用本资源既有的
+     * {@link EvaluationResponse#diagnostic} 形态（与入口歧义/模块解析失败的 400 一致）。
+     */
+    private static AgentIdentity validatedAgent(AgentIdentity raw) {
+        try {
+            return AgentIdentity.validated(raw);
+        } catch (IllegalArgumentException e) {
+            throw new WebApplicationException(
+                jakarta.ws.rs.core.Response.status(400)
+                    .entity(EvaluationResponse.diagnostic("invalid_agent", e.getMessage(), List.of()))
+                    .type(MediaType.APPLICATION_JSON)
+                    .build()
+            );
+        }
+    }
+
+    private static String outcomeOf(VerdictView decision) {
+        return decision == null ? null : decision.outcome();
     }
 
     private Map<String, Object> buildEvaluationMetadata(EvaluationRequest request) {

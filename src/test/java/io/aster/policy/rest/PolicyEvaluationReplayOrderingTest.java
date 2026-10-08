@@ -195,6 +195,12 @@ class PolicyEvaluationReplayOrderingTest {
             assertTrue(rm != null && rm.isObject(), "replayCapture=true 时现状必须附 replayMetadata");
             ((ObjectNode) rm).put("runtimeToolchainId", "TOOLCHAIN_ID_PLACEHOLDER");
 
+            // evidence.correlationId（ADR 0041 §2.2）每次执行随机生成，同样归一为占位符；
+            // 只钉「真实执行必带 evidence.correlationId」这一结构。
+            JsonNode ev = node.get("evidence");
+            assertTrue(ev != null && ev.hasNonNull("correlationId"), "真实执行响应必须含 evidence.correlationId");
+            ((ObjectNode) ev).put("correlationId", "<correlationId>");
+
             String normalized = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(node);
 
             // ★实测（非猜测）golden：字段顺序、canonicalInput/Output/Trace 是否非 null 均以
@@ -235,6 +241,7 @@ class PolicyEvaluationReplayOrderingTest {
 
             ObjectNode expected = mapper.createObjectNode();
             expected.putNull("error");
+            expected.set("evidence", mapper.createObjectNode().put("correlationId", "<correlationId>"));
             expected.put("executedFunction", "main");
             expected.put("executionTimeMs", 0);
             expected.set("replayMetadata", expectedRm);
