@@ -38,7 +38,7 @@ ADR 0041 §5.2 的 `guard-approval` 复核者随之从 `roleVerified=false` 改�
 
 - aster-cloud 迁移 0051：`TeamMember.businessRoles text[] NOT NULL DEFAULT '{}'`，`User.businessRoles text[] NOT NULL DEFAULT '{}'`（个人租户）。
 - 词表：自由文本。入库校验 `normalizeBusinessRoles(input: string[]): string[]`：每项 trim；1–64 字符；仅可打印 ASCII（0x20–0x7E）；去重保持首次出现顺序；最多 16 项。与 Verdict 的 `role` 字符串按原样精确匹配（大小写敏感，不做模糊匹配），这是 ADR 0040 已有语义，本 ADR 不改。
-- 授予：团队设置页成员列表新增「业务角色」编辑，`PATCH /api/teams/[id]/members/[userId]`（新增 body 字段 `businessRoles`），权限 `checkTeamPermission(..., 'manage_members')`（沿用现有常量名）。个人：`PATCH /api/settings/profile` 增加 `businessRoles`。
+- 授予：团队设置页成员列表新增「业务角色」编辑，`PATCH /api/teams/[id]/members/[userId]`（新增 body 字段 `businessRoles`），权限沿用现有成员管理权限（`checkTeamPermission` 中管理成员的那一项，不新增权限常量）。个人：`PATCH /api/settings/profile` 增加 `businessRoles`。
 
 ### 2.2 下发
 
@@ -171,7 +171,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 ## 8. 兼容性与发布
 
 - 破坏性：HMAC v2 → v3 一次切换；SDK 的 `businessRole` 选项继续发送头但不再被信任（README 更新）；`GuardApprovalItem` 只增字段。
-- 发布顺序：先 aster-api（同时接受 v2/v3？——**否**，为避免双版本，api 与 cloud 必须同一维护窗口发布；期间 cloud→api 内部调用失败即 fail-closed，执行记 `guardError`，评估本身走 Bearer 不受影响——注意 `/evaluate-source` 也走 HMAC，窗口期间 dashboard 执行会失败，窗口需短）。
+- 发布顺序：api 与 cloud 在同一维护窗口发布，先 api 后 cloud。api 只校验 v3；窗口期间旧 cloud 的 v2 签名会被 403，`/evaluate-source` 与 guard 调用都 fail-closed（dashboard 执行失败、不写脏数据），Bearer 路径不受影响。窗口按分钟计，可接受；不做 v2/v3 并存（用户已拍板）。
 - 迁移：api V6.29.0（`guard_decisions.evidence_correlation_id` + 唯一索引）；cloud 0051（两列 + 无需枚举）。
 - 旧 `guard_approvals` 行无 `evidence_correlation_id`，不受影响。
 
