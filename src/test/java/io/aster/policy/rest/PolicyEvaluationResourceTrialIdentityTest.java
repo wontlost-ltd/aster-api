@@ -132,6 +132,33 @@ class PolicyEvaluationResourceTrialIdentityTest {
             recordComponent(identity, "performedBy"), "performedBy 必须一致");
         assertEquals(invoke(r, "apiKeyIdFromContext", new Class<?>[]{}),
             recordComponent(identity, "apiKeyId"), "apiKeyId 必须一致");
+        assertEquals(invoke(r, "quotaOwnerId", new Class<?>[]{}),
+            recordComponent(identity, "quotaOwnerId"), "quotaOwnerId 必须一致");
+    }
+
+    @Test
+    @DisplayName("ADR 0015: 团队 key 的 captureIdentity() 捕获 team owner 作为 quotaOwnerId，performedBy 仍是成员")
+    void captureIdentityCapturesQuotaOwnerForTeamKey() throws Exception {
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("team-1");
+        RoutingContext rctx = mock(RoutingContext.class);
+        when(rctx.request()).thenReturn(mock(HttpServerRequest.class));
+
+        PolicyEvaluationResource r = newResource(mock(ApiQuotaGuard.class), tc, rctx, teamKeyCtx());
+
+        Object identity = invoke(r, "captureIdentity", new Class<?>[]{});
+        assertEquals("member-1", recordComponent(identity, "performedBy"));
+        assertEquals("owner-1", recordComponent(identity, "quotaOwnerId"),
+            "quotaOwnerId 必须在请求线程上被抓取——异步回调里的计量按它归池");
+    }
+
+    /** 团队 key 经 ApiKeyAuthFilter 验证后写入的 ctx 属性：成员 member-1，配额归 owner-1。 */
+    private static ContainerRequestContext teamKeyCtx() {
+        ContainerRequestContext c = mock(ContainerRequestContext.class);
+        when(c.getProperty("aster.apikey.userId")).thenReturn("member-1");
+        when(c.getProperty("aster.apikey.apiKeyId")).thenReturn("key-1");
+        when(c.getProperty("aster.apikey.quotaOwnerId")).thenReturn("owner-1");
+        return c;
     }
 
     @Test
@@ -342,6 +369,60 @@ class PolicyEvaluationResourceTrialIdentityTest {
         verify(resp).putHeader(eqMatch("X-Quota-Reset"), anyString());
 
         assertEquals(ApiQuotaGuard.Verdict.ALLOW, result.verdict());
+    }
+
+    @Test
+    @DisplayName("ADR 0015: 团队 key 的 enforceApiQuota() 按 team owner 查配额，而非调用成员")
+    void enforceApiQuotaChargesTeamOwnerForTeamKey() throws Exception {
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("team-1");
+        RoutingContext rctx = mock(RoutingContext.class);
+        when(rctx.request()).thenReturn(mock(HttpServerRequest.class));
+        when(rctx.response()).thenReturn(mock(HttpServerResponse.class));
+
+        ApiQuotaGuard quota = mock(ApiQuotaGuard.class);
+        when(quota.check(anyString(), anyString())).thenReturn(
+            new ApiQuotaGuard.GuardResult(ApiQuotaGuard.Verdict.ALLOW, 1000L, 10L, 1, null));
+        when(quota.checkRate(anyString(), anyString())).thenReturn(new ApiQuotaGuard.RateCheck(true, 1, 10));
+
+        PolicyEvaluationResource r = newResource(quota, tc, rctx, teamKeyCtx());
+        invoke(r, "enforceApiQuota", new Class<?>[]{String.class}, "/api/v1/policies/evaluate");
+
+        verify(quota, times(1)).check("team-1", "owner-1");
+        verify(quota, never()).check(anyString(), eqMatch("member-1"));
+        // 每 key 限流桶不变：仍按 (tenantId, apiKeyId)
+        verify(quota, times(1)).checkRate("team-1", "key-1");
+    }
+
+    @Test
+    @DisplayName("ADR 0015: 异步路径 recordApiCall 7 参按 (quotaOwnerId, userId, tenantId, apiKeyId, …) 顺序上报")
+    void recordApiCallWithCapturedIdentityPassesQuotaOwnerFirst() throws Exception {
+        ApiQuotaGuard quota = mock(ApiQuotaGuard.class);
+        PolicyEvaluationResource r = newResource(quota, new TenantContext(), mock(RoutingContext.class));
+
+        invoke(r, "recordApiCall",
+            new Class<?>[]{String.class, String.class, long.class, String.class, String.class, String.class, String.class},
+            "/api/v1/policies/evaluate", "success", 7L, "team-1", "member-1", "key-1", "owner-1");
+
+        verify(quota).recordAsync("owner-1", "member-1", "team-1", "key-1",
+            "/api/v1/policies/evaluate", "success", 7L);
+    }
+
+    @Test
+    @DisplayName("ADR 0015: 同步路径 recordApiCall 3 参从当前请求取 quotaOwnerId")
+    void recordApiCallOnRequestThreadReadsQuotaOwner() throws Exception {
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("team-1");
+        RoutingContext rctx = mock(RoutingContext.class);
+        when(rctx.request()).thenReturn(mock(HttpServerRequest.class));
+        ApiQuotaGuard quota = mock(ApiQuotaGuard.class);
+        PolicyEvaluationResource r = newResource(quota, tc, rctx, teamKeyCtx());
+
+        invoke(r, "recordApiCall", new Class<?>[]{String.class, String.class, long.class},
+            "/api/v1/policies/evaluate", "success", 9L);
+
+        verify(quota).recordAsync("owner-1", "member-1", "team-1", "key-1",
+            "/api/v1/policies/evaluate", "success", 9L);
     }
 
     // Mockito eq helper for String — keeps imports tight in this test

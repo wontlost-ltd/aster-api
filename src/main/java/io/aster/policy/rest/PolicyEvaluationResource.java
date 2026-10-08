@@ -219,6 +219,7 @@ public class PolicyEvaluationResource {
         String tenantId = identity.tenantId();
         String performedBy = identity.performedBy();
         String apiKeyId = identity.apiKeyId();
+        String quotaOwnerId = identity.quotaOwnerId();
         long startTime = System.currentTimeMillis();
         Timer.Sample sample = businessMetrics.startPolicyEvaluation();
         Map<String, Object> metadata = buildEvaluationMetadata(request);
@@ -255,7 +256,7 @@ public class PolicyEvaluationResource {
             );
 
             LOG.infof("Policy evaluation completed in %dms: %s.%s", executionTime, request.policyModule(), request.policyFunction());
-            recordApiCall("/api/v1/policies/evaluate", "success", executionTime, tenantId, performedBy, apiKeyId);
+            recordApiCall("/api/v1/policies/evaluate", "success", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
             return EvaluationResponse.success(result.getResult(), executionTime, null, null,
                 result.getDecision(), result.getRuleId(), result.getControls());
         })
@@ -277,7 +278,7 @@ public class PolicyEvaluationResource {
             );
 
             LOG.errorf(throwable, "Policy evaluation failed after %dms: %s.%s", executionTime, request.policyModule(), request.policyFunction());
-            recordApiCall("/api/v1/policies/evaluate", "api_error", executionTime, tenantId, performedBy, apiKeyId);
+            recordApiCall("/api/v1/policies/evaluate", "api_error", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
             return EvaluationResponse.error(throwable.getMessage());
         });
     }
@@ -298,6 +299,7 @@ public class PolicyEvaluationResource {
         String tenantId = identity.tenantId();
         String performedBy = identity.performedBy();
         String apiKeyId = identity.apiKeyId();
+        String quotaOwnerId = identity.quotaOwnerId();
         long startTime = System.currentTimeMillis();
         Timer.Sample sample = businessMetrics.startPolicyEvaluation();
 
@@ -358,7 +360,7 @@ public class PolicyEvaluationResource {
                 );
 
                 LOG.infof("JSON policy evaluation completed in %dms: %s.%s", executionTime, policyModule, policyFunction);
-                recordApiCall("/api/v1/policies/evaluate-json", "success", executionTime, tenantId, performedBy, apiKeyId);
+                recordApiCall("/api/v1/policies/evaluate-json", "success", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
                 return EvaluationResponse.success(result.result(), executionTime, null, null,
                     VerdictView.from(result.result()).orElse(null), result.ruleId(), result.controls());
             })
@@ -383,7 +385,7 @@ public class PolicyEvaluationResource {
                 );
 
                 LOG.errorf(throwable, "JSON policy evaluation failed after %dms: %s.%s", executionTime, policyModule, policyFunction);
-                recordApiCall("/api/v1/policies/evaluate-json", "api_error", executionTime, tenantId, performedBy, apiKeyId);
+                recordApiCall("/api/v1/policies/evaluate-json", "api_error", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
                 return EvaluationResponse.error(throwable.getMessage());
             });
         } catch (Exception e) {
@@ -391,7 +393,7 @@ public class PolicyEvaluationResource {
             businessMetrics.endPolicyEvaluation(sample);
 
             LOG.errorf(e, "Failed to process JSON policy: %s", e.getMessage());
-            recordApiCall("/api/v1/policies/evaluate-json", "api_error", executionTime, tenantId, performedBy, apiKeyId);
+            recordApiCall("/api/v1/policies/evaluate-json", "api_error", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
             return Uni.createFrom().item(EvaluationResponse.error("JSON 策略解析失败: " + e.getMessage()));
         }
     }
@@ -528,6 +530,7 @@ public class PolicyEvaluationResource {
         final String tenantId = identity.tenantId();
         final String performedBy = identity.performedBy();
         final String apiKeyIdSnap = identity.apiKeyId();
+        final String quotaOwnerSnap = identity.quotaOwnerId();
         final long apiCallStart = setup.apiCallStart();
         final Timer.Sample sample = setup.sample();
 
@@ -625,7 +628,7 @@ public class PolicyEvaluationResource {
 
                 if (!effectiveSimulate) {
                     recordApiCall("/api/v1/policies/evaluate-source", "success",
-                        System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                        System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap, quotaOwnerSnap);
                 }
 
                 // trace 字段只在客户端显式请求 trace=true 时回传（保持既有契约）；
@@ -689,7 +692,7 @@ public class PolicyEvaluationResource {
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
-                    System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                    System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap, quotaOwnerSnap);
                 }
                 throw new WebApplicationException(
                     jakarta.ws.rs.core.Response.status(400)
@@ -709,7 +712,7 @@ public class PolicyEvaluationResource {
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
-                    System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                    System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap, quotaOwnerSnap);
                 }
                 throw new WebApplicationException(
                     jakarta.ws.rs.core.Response.status(400)
@@ -730,7 +733,7 @@ public class PolicyEvaluationResource {
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
-                    System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                    System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap, quotaOwnerSnap);
                 }
                 return EvaluationResponse.error("CNL 动态执行失败: " + e.getMessage());
 
@@ -743,7 +746,7 @@ public class PolicyEvaluationResource {
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
-                    System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                    System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap, quotaOwnerSnap);
                 }
                 return EvaluationResponse.error("CNL 解析失败: " + e.getMessage());
 
@@ -756,7 +759,7 @@ public class PolicyEvaluationResource {
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
-                    System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap);
+                    System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap, quotaOwnerSnap);
                 }
                 return EvaluationResponse.error("CNL 策略执行失败: " + e.getMessage());
             }
@@ -1042,6 +1045,7 @@ public class PolicyEvaluationResource {
         String tenantId = identity.tenantId();
         String performedBy = identity.performedBy();
         String apiKeyId = identity.apiKeyId();
+        String quotaOwnerId = identity.quotaOwnerId();
         long startTime = System.currentTimeMillis();
 
         LOG.infof("Batch evaluating %d policies for tenant %s", request.requests().size(), tenantId);
@@ -1090,7 +1094,7 @@ public class PolicyEvaluationResource {
                         attempt.getResult().getRuleId(),
                         attempt.getResult().getControls()
                     ));
-                    recordApiCall("/api/v1/policies/evaluate/batch", "success", execTime, tenantId, performedBy, apiKeyId);
+                    recordApiCall("/api/v1/policies/evaluate/batch", "success", execTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
                 }
 
                 // 添加失败的结果
@@ -1106,7 +1110,7 @@ public class PolicyEvaluationResource {
                     );
 
                     responses.add(EvaluationResponse.error(attempt.getError()));
-                    recordApiCall("/api/v1/policies/evaluate/batch", "api_error", execTime, tenantId, performedBy, apiKeyId);
+                    recordApiCall("/api/v1/policies/evaluate/batch", "api_error", execTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
                 }
 
                 LOG.infof("Batch evaluation completed in %dms: %d success, %d failures",
@@ -1242,8 +1246,9 @@ public class PolicyEvaluationResource {
      * 一次请求的调用方身份快照（issue #174）。
      *
      * <p><b>存在的理由是线程边界，不是"减少重复"。</b>评估在 worker pool 上完成，
-     * 回调里 {@code routingContext} / {@code RequestScoped} 已失效——三者必须在进入
-     * {@code Uni} 之前抓好。漏抓 {@code apiKeyId} 时 {@code recordApiCall} 会读到 null
+     * 回调里 {@code routingContext} / {@code RequestScoped} 已失效——各身份字段必须在进入
+     * {@code Uni} 之前抓好。{@code quotaOwnerId} 是计量归属（团队 key 为 team owner，ADR 0015 §3），
+     * 与 {@code apiKeyId} 同样漏抓即计数错池。漏抓 {@code apiKeyId} 时 {@code recordApiCall} 会读到 null
      * 或抛 {@code ContextNotActiveException} 并被 Mutiny 静默 drop，表现为**配额与计费
      * 计数无声丢失**（这个坑已经踩过一次，见各端点原注释）。
      *
@@ -1255,7 +1260,7 @@ public class PolicyEvaluationResource {
      * （如 evaluate-source 还有 permit 闸门与 onTermination 释放），强行统一会抹掉
      * 端点特有的语义。这里只收敛真正逐字相同的那部分。
      */
-    private record RequestIdentity(String tenantId, String performedBy, String apiKeyId) {}
+    private record RequestIdentity(String tenantId, String performedBy, String apiKeyId, String quotaOwnerId) {}
 
     /**
      * 在**请求线程**上捕获调用方身份，供跨线程回调使用。
@@ -1263,7 +1268,7 @@ public class PolicyEvaluationResource {
      * <p>必须在返回 {@code Uni} 之前调用。
      */
     private RequestIdentity captureIdentity() {
-        return new RequestIdentity(tenantId(), performedBy(), apiKeyIdFromContext());
+        return new RequestIdentity(tenantId(), performedBy(), apiKeyIdFromContext(), quotaOwnerId());
     }
 
     /**
@@ -1287,6 +1292,11 @@ public class PolicyEvaluationResource {
         return identityResolver.performedBy();
     }
 
+    /** 月度配额归属：团队 key 为 team owner，个人 key 等于 performedBy（ADR 0015 §3）。 */
+    private String quotaOwnerId() {
+        return identityResolver.quotaOwnerId();
+    }
+
     /**
      * 同步检查 API 配额；命中即抛 WebApplicationException
      * 写入 X-Quota-Limit / Remaining / Reset / Warning 响应头（API-5）
@@ -1295,7 +1305,7 @@ public class PolicyEvaluationResource {
      */
     private ApiQuotaGuard.GuardResult enforceApiQuota(String endpointPath) {
         String tenantId = tenantId();
-        String userId = performedBy();
+        String quotaOwnerId = quotaOwnerId();
 
         // R29++→R30 quota bypass 三重校验：
         //   path == TRIAL_PATH && guard 凭证 == true && tenantId == "trial"
@@ -1316,7 +1326,7 @@ public class PolicyEvaluationResource {
                 ApiQuotaGuard.Verdict.ALLOW, -1L, 0L, 0, null);
         }
 
-        ApiQuotaGuard.GuardResult result = apiQuotaGuard.check(tenantId, userId);
+        ApiQuotaGuard.GuardResult result = apiQuotaGuard.check(tenantId, quotaOwnerId);
 
         // 写响应头（API-5）
         if (routingContext != null && routingContext.response() != null) {
@@ -1388,24 +1398,25 @@ public class PolicyEvaluationResource {
      *
      * 仅可在 RequestScoped 仍然有效时调用（同步路径 / 主 event-loop 线程）。
      * 若调用点已切换到 worker pool / Uni lambda，RequestScoped 已失效，
-     * 必须改用下面的 {@link #recordApiCall(String, String, long, String, String, String)}
-     * 重载并把 tenant/user/apiKey 预先捕获后传入。
+     * 必须改用下面的 {@link #recordApiCall(String, String, long, String, String, String, String)}
+     * 重载并把 tenant/user/apiKey/quotaOwner 预先捕获后传入。
      */
     private void recordApiCall(String endpointPath, String status, long latencyMs) {
         String tenantId = tenantId();
         String userId = performedBy();
         String apiKeyId = apiKeyIdFromContext();
-        apiQuotaGuard.recordAsync(userId, tenantId, apiKeyId, endpointPath, status, latencyMs);
+        String quotaOwnerId = quotaOwnerId();
+        apiQuotaGuard.recordAsync(quotaOwnerId, userId, tenantId, apiKeyId, endpointPath, status, latencyMs);
     }
 
     /**
-     * 异步路径专用：tenant/user/apiKey 必须在跨线程跳板前预捕获，
+     * 异步路径专用：tenant/user/apiKey/quotaOwner 必须在跨线程跳板前预捕获，
      * 否则 routingContext 会在 worker thread 上触发
      * ContextNotActiveException，被 Mutiny drop 后 quota 计数静默丢失。
      */
     private void recordApiCall(String endpointPath, String status, long latencyMs,
-                               String tenantId, String userId, String apiKeyId) {
-        apiQuotaGuard.recordAsync(userId, tenantId, apiKeyId, endpointPath, status, latencyMs);
+                               String tenantId, String userId, String apiKeyId, String quotaOwnerId) {
+        apiQuotaGuard.recordAsync(quotaOwnerId, userId, tenantId, apiKeyId, endpointPath, status, latencyMs);
     }
 
     private static long monthStartUnix() {

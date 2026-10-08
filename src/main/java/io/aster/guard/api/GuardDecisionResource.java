@@ -66,13 +66,16 @@ public class GuardDecisionResource {
     String tenantId = identityResolver.tenantId();
     String performedBy = identityResolver.performedBy();
     String apiKeyId = identityResolver.apiKeyId();
-    Optional<Response> quotaRejection = quotaRejection(tenantId, performedBy, apiKeyId);
+    // 月度配额按归属取键（ADR 0015 §3）：团队 key 计入 team owner 的池。解析器本身已回退 performedBy，
+    // 这里再兜一次 null，保证配额键与计费归属不会因上游缺值而落空。
+    String quotaOwnerId = Optional.ofNullable(identityResolver.quotaOwnerId()).orElse(performedBy);
+    Optional<Response> quotaRejection = quotaRejection(tenantId, quotaOwnerId, apiKeyId);
     if (quotaRejection.isPresent()) {
       return quotaRejection.get();
     }
     try {
       GuardDecisionResponse decision = service.decide(tenantId, performedBy, apiKeyId, req, idempotencyKey);
-      apiQuotaGuard.recordAsync(performedBy, tenantId, apiKeyId, PATH, "success",
+      apiQuotaGuard.recordAsync(quotaOwnerId, performedBy, tenantId, apiKeyId, PATH, "success",
           System.currentTimeMillis() - startTime);
       return Response.ok(decision).build();
     } catch (GuardInvalidActionException bad) {
@@ -104,8 +107,8 @@ public class GuardDecisionResource {
    * 再按已验证 API key 做每秒限流（429 + {@code Retry-After: 1}）。那边是私有方法且耦合 trial 旁路与
    * 响应头写入，这里只复用 {@link ApiQuotaGuard} 的两次裁决映射。
    */
-  private Optional<Response> quotaRejection(String tenantId, String userId, String apiKeyId) {
-    ApiQuotaGuard.GuardResult result = apiQuotaGuard.check(tenantId, userId);
+  private Optional<Response> quotaRejection(String tenantId, String quotaOwnerId, String apiKeyId) {
+    ApiQuotaGuard.GuardResult result = apiQuotaGuard.check(tenantId, quotaOwnerId);
     switch (result.verdict()) {
       case FORBIDDEN -> {
         return Optional.of(Response.status(Response.Status.FORBIDDEN)

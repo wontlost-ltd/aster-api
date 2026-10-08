@@ -39,11 +39,13 @@ import static org.mockito.Mockito.when;
  *
  * <p>测试配置下 plan gate 与 API key 过滤器关闭：{@link ApiQuotaGuard} 被 mock 以驱动各裁决分支，
  * {@link RequestIdentityResolver} 被 mock 以提供「已验证」的 apiKeyId（真实实现只信任过滤器写入的属性）。
+ * 配额与计量按 quotaOwnerId 归属（ADR 0015 §3）：桩里让它与 performedBy 不同，模拟团队 key 的成员调用。
  */
 @QuarkusTest
 class GuardDecisionResourceQuotaTest {
   private static final String TENANT = "tenant-guard-quota-" + UUID.randomUUID().toString().substring(0, 8);
   private static final String USER = "user-guard-quota";
+  private static final String OWNER = "owner-guard-quota";
   private static final String API_KEY_ID = "key-guard-quota";
   private static final String MODULE = "guard.quota.allow";
   private static final String FUNCTION = "decide";
@@ -75,6 +77,7 @@ class GuardDecisionResourceQuotaTest {
     when(identityResolver.tenantId()).thenReturn(TENANT);
     when(identityResolver.performedBy()).thenReturn(USER);
     when(identityResolver.apiKeyId()).thenReturn(API_KEY_ID);
+    when(identityResolver.quotaOwnerId()).thenReturn(OWNER);
     when(apiQuotaGuard.check(anyString(), anyString()))
         .thenReturn(new ApiQuotaGuard.GuardResult(ApiQuotaGuard.Verdict.ALLOW, -1L, 0L, 0, null));
     when(apiQuotaGuard.checkRate(anyString(), anyString())).thenReturn(new ApiQuotaGuard.RateCheck(true, 1, 10));
@@ -96,7 +99,7 @@ class GuardDecisionResourceQuotaTest {
 
   @Test
   void 套餐不开放API返回403且不计量() {
-    when(apiQuotaGuard.check(TENANT, USER))
+    when(apiQuotaGuard.check(TENANT, OWNER))
         .thenReturn(new ApiQuotaGuard.GuardResult(ApiQuotaGuard.Verdict.FORBIDDEN, 0L, 0L, 0, null));
 
     Response resp = post(MODULE);
@@ -105,12 +108,12 @@ class GuardDecisionResourceQuotaTest {
     assertThat(resp.jsonPath().getMap("$")).isEqualTo(Map.of(
         "error", "api_access_denied",
         "message", "Free 计划不包含 Policy Execution API。请升级到 Pro/Team 或试用 Trial。"));
-    verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), anyLong());
+    verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), any(), anyLong());
   }
 
   @Test
   void 月度硬上限返回429含limit与used() {
-    when(apiQuotaGuard.check(TENANT, USER))
+    when(apiQuotaGuard.check(TENANT, OWNER))
         .thenReturn(new ApiQuotaGuard.GuardResult(ApiQuotaGuard.Verdict.RATE_LIMITED, 1000L, 2001L, 200, null));
 
     Response resp = post(MODULE);
@@ -120,7 +123,7 @@ class GuardDecisionResourceQuotaTest {
     assertThat(resp.jsonPath().getString("message")).isEqualTo("本月 API 调用已超 200% 上限，已拒绝。请升级套餐或联系客服。");
     assertThat(resp.jsonPath().getLong("limit")).isEqualTo(1000L);
     assertThat(resp.jsonPath().getLong("used")).isEqualTo(2001L);
-    verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), anyLong());
+    verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), any(), anyLong());
   }
 
   @Test
@@ -136,7 +139,7 @@ class GuardDecisionResourceQuotaTest {
         "message", "Per-API-key per-second 限流：超过 10 RPS",
         "rps_limit", 10,
         "rps_used", 11));
-    verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), anyLong());
+    verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), any(), anyLong());
   }
 
   @Test
@@ -145,8 +148,21 @@ class GuardDecisionResourceQuotaTest {
 
     assertThat(resp.statusCode()).isEqualTo(200);
     assertThat(resp.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+    verify(apiQuotaGuard, times(1)).check(TENANT, OWNER);
     verify(apiQuotaGuard, times(1)).checkRate(TENANT, API_KEY_ID);
-    verify(apiQuotaGuard, times(1)).recordAsync(eq(USER), eq(TENANT), eq(API_KEY_ID),
+    verify(apiQuotaGuard, times(1)).recordAsync(eq(OWNER), eq(USER), eq(TENANT), eq(API_KEY_ID),
+        eq("/api/v1/guard/decisions"), eq("success"), anyLong());
+  }
+
+  @Test
+  void quotaOwnerId缺失时按performedBy计配额() {
+    when(identityResolver.quotaOwnerId()).thenReturn(null);
+
+    Response resp = post(MODULE);
+
+    assertThat(resp.statusCode()).isEqualTo(200);
+    verify(apiQuotaGuard, times(1)).check(TENANT, USER);
+    verify(apiQuotaGuard, times(1)).recordAsync(eq(USER), eq(USER), eq(TENANT), eq(API_KEY_ID),
         eq("/api/v1/guard/decisions"), eq("success"), anyLong());
   }
 
@@ -155,6 +171,6 @@ class GuardDecisionResourceQuotaTest {
     Response resp = post("guard.quota.missing");
 
     assertThat(resp.statusCode()).isEqualTo(404);
-    verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), anyLong());
+    verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), any(), anyLong());
   }
 }

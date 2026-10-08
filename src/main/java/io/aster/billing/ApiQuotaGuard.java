@@ -134,12 +134,17 @@ public class ApiQuotaGuard {
      *   1. 先查 redis user snapshot（命中 → 0 cloud RTT）
      *   2. miss → lazy fetch cloud /precheck + 写 redis（首次 + 降级路径）
      *   3. 月度计数从 redis counter:user:{id}:m:{period} 读（双写真源）
+     *
+     * <p>ADR 0015 §3：快照、计数器、precheck 与 Caffeine 全部按 {@code quotaOwnerId} 取键——
+     * 个人 key 即调用者 userId，团队 key 为 team owner，成员调用共用 owner 的月度池。
      */
-    public GuardResult check(String tenantId, String userId) {
-        // SNAP-9: 在当前 span 上打 tag，让 trace 在 Tempo 里能按用户筛选
+    public GuardResult check(String tenantId, String quotaOwnerId) {
+        // SNAP-9: 在当前 span 上打 tag，让 trace 在 Tempo 里能按配额归属筛选。
+        // aster.user_id 保留写同一值，避免既有看板按该属性筛选时断档。
         Span currentSpan = Span.current();
-        if (currentSpan != null && userId != null) {
-            currentSpan.setAttribute("aster.user_id", userId);
+        if (currentSpan != null && quotaOwnerId != null) {
+            currentSpan.setAttribute("aster.quota_owner_id", quotaOwnerId);
+            currentSpan.setAttribute("aster.user_id", quotaOwnerId);
             currentSpan.setAttribute("aster.tenant_id", tenantId == null ? "" : tenantId);
         }
         // PlanGate 关闭时（aster.plan-gate.enabled=false，e.g. on-prem
@@ -154,7 +159,7 @@ public class ApiQuotaGuard {
         long used;
         boolean apiAccessAllowed;
         boolean unlimited;
-        java.util.Optional<io.aster.billing.snapshot.UserSnapshot> local = snapshot.getUser(userId);
+        java.util.Optional<io.aster.billing.snapshot.UserSnapshot> local = snapshot.getUser(quotaOwnerId);
 
         if (local.isPresent()) {
             if (currentSpan != null) {
@@ -174,11 +179,11 @@ public class ApiQuotaGuard {
             // monthlyUsed 给本地 counter 播种的修法会引入 double-count 风险，
             // 需更大改动，不在本次范围。如需收紧：UserSnapshot 携带 baseline
             // monthlyUsed，此处取 max(localCounter, baseline)。
-            used = snapshot.getCounter(userId);
+            used = snapshot.getCounter(quotaOwnerId);
         } else {
             // R32 hotfix v3: 先查进程内 Caffeine（5min TTL），命中即 0 RTT。
             PrecheckResult cached = precheckCache == null ? null
-                : precheckCache.getIfPresent(userId == null ? "" : userId);
+                : precheckCache.getIfPresent(quotaOwnerId == null ? "" : quotaOwnerId);
             if (cached != null) {
                 if (currentSpan != null) {
                     currentSpan.setAttribute("aster.quota.source", "local_caffeine");
@@ -198,11 +203,11 @@ public class ApiQuotaGuard {
                 //
                 // 策略：立刻 fail-open 返回 ALLOW，同时把真正的 fetchPrecheck 丢
                 // 到 worker pool 上跑、结果写进 Caffeine + redis snapshot，下次
-                // 同 userId 命中 (< 5min TTL) 即走快路径，配额执行恢复全保真。
+                // 同 quotaOwnerId 命中 (< 5min TTL) 即走快路径，配额执行恢复全保真。
                 if (currentSpan != null) {
                     currentSpan.setAttribute("aster.quota.source", "fail_open_warming");
                 }
-                triggerAsyncPrefetch(userId);
+                triggerAsyncPrefetch(quotaOwnerId);
                 PlanInfo fallback = PlanInfo.failOpen();
                 return new GuardResult(Verdict.ALLOW, fallback.apiCallsLimit(), 0, 0, null);
             }
@@ -329,8 +334,12 @@ public class ApiQuotaGuard {
 
     /**
      * 异步记录一次调用 — fire-and-forget，不阻塞业务路径
+     *
+     * <p>{@code quotaOwnerId} 决定计入哪个月度池（本地计数器与 cloud 落库的归属），
+     * {@code userId} 仍是实际调用成员（审计与用量明细）。个人 key 两者相同；
+     * {@code quotaOwnerId} 为 null 时按 userId 计数，cloud 侧同样缺省回退 userId（ADR 0015 §4）。
      */
-    public void recordAsync(String userId, String tenantId, String apiKeyId,
+    public void recordAsync(String quotaOwnerId, String userId, String tenantId, String apiKeyId,
                              String endpointPath, String status, long latencyMs) {
         // PlanGate 关闭：跳过本地计数 + cloud 异步上报。无 cloud 接收方时
         // 这两步纯粹是 DNS lookup + connection refused 的开销。
@@ -338,12 +347,14 @@ public class ApiQuotaGuard {
             return;
         }
         // SNAP-5 双写步骤 1：本地 redis INCR（同步，hot path 真源，0 RTT）
-        // 仅 success 计数（与 cloud apiCallRecords 表 status='success' 过滤一致）
-        if ("success".equals(status) && userId != null) {
+        // 仅 success 计数（与 cloud apiCallRecords 表 status='success' 过滤一致）。
+        // 计数器按配额归属累加，必须与 check() 读取的键一致，否则团队 key 的用量永远读不到。
+        String counterKey = quotaOwnerId != null ? quotaOwnerId : userId;
+        if ("success".equals(status) && counterKey != null) {
             try {
-                snapshot.incrementCounter(userId);
+                snapshot.incrementCounter(counterKey);
             } catch (Exception e) {
-                LOG.warnf("local counter incr failed userId=%s: %s", userId, e.getMessage());
+                LOG.warnf("local counter incr failed quotaOwnerId=%s: %s", counterKey, e.getMessage());
             }
         }
 
@@ -356,13 +367,7 @@ public class ApiQuotaGuard {
             boolean ssl = "https".equals(baseUri.getScheme());
             String path = "/api/internal/api/usage";
 
-            JsonObject body = new JsonObject()
-                .put("userId", userId)
-                .put("tenantId", tenantId)
-                .put("apiKeyId", apiKeyId)
-                .put("endpointPath", endpointPath)
-                .put("status", status)
-                .put("latencyMs", latencyMs);
+            JsonObject body = usageBody(quotaOwnerId, userId, tenantId, apiKeyId, endpointPath, status, latencyMs);
 
             // v2 签名：绑定 nonce + bodyHash（见 InternalCallSigner）
             var signed = config.hmacKey()
@@ -389,45 +394,61 @@ public class ApiQuotaGuard {
     }
 
     /**
+     * cloud {@code POST /api/internal/api/usage} 的请求体。{@code quotaOwnerId} 为空时 cloud 回退 userId；
+     * 旧 cloud 忽略该字段。包可见，供单测锁定字段集合。
+     */
+    static JsonObject usageBody(String quotaOwnerId, String userId, String tenantId, String apiKeyId,
+                                String endpointPath, String status, long latencyMs) {
+        return new JsonObject()
+            .put("quotaOwnerId", quotaOwnerId)
+            .put("userId", userId)
+            .put("tenantId", tenantId)
+            .put("apiKeyId", apiKeyId)
+            .put("endpointPath", endpointPath)
+            .put("status", status)
+            .put("latencyMs", latencyMs);
+    }
+
+    /**
      * AKA-8: 合并查询 — 一次 GET 拿 plan + apiCallsLimit + monthlyUsed
      */
     private record PrecheckResult(long apiCallsLimit, long monthlyUsed, String plan) {}
 
-    /** 限制并发预热：同一 userId 已有 in-flight 任务时不重复提交。 */
+    /** 限制并发预热：同一 quotaOwnerId 已有 in-flight 任务时不重复提交。 */
     private final java.util.concurrent.ConcurrentHashMap<String, Boolean> prefetchInFlight
         = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * R32 hotfix v3: hot path 不能阻塞 event-loop。fail-open 立刻返回后，
      * 把真正的 precheck 丢到 worker pool 上跑，结果写进 Caffeine + redis snapshot。
-     * 下一次该 userId 命中即走快路径。
+     * 下一次该 quotaOwnerId 命中即走快路径。
      */
-    private void triggerAsyncPrefetch(String userId) {
-        if (userId == null || precheckPool == null) return;
-        // 防止"同一用户连续 N 个请求 → N 个 fetch in-flight"打爆 cf 端。
-        if (prefetchInFlight.putIfAbsent(userId, Boolean.TRUE) != null) return;
+    private void triggerAsyncPrefetch(String quotaOwnerId) {
+        if (quotaOwnerId == null || precheckPool == null) return;
+        // 防止"同一配额 owner 连续 N 个请求 → N 个 fetch in-flight"打爆 cf 端。
+        if (prefetchInFlight.putIfAbsent(quotaOwnerId, Boolean.TRUE) != null) return;
         try {
             precheckPool.submit(() -> {
                 try {
-                    PrecheckResult pre = fetchPrecheckSync(userId);
+                    PrecheckResult pre = fetchPrecheckSync(quotaOwnerId);
                     if (precheckCache != null) {
-                        precheckCache.put(userId, pre);
+                        precheckCache.put(quotaOwnerId, pre);
                     }
                     try {
                         snapshot.setUser(new io.aster.billing.snapshot.UserSnapshot(
-                            userId, pre.plan, pre.apiCallsLimit, null, null, null));
+                            quotaOwnerId, pre.plan, pre.apiCallsLimit, null, null, null));
                     } catch (Exception ignore) {
                         // snapshot 内部已 catch；这里再兜一层
                     }
                 } catch (Exception e) {
-                    LOG.debugf("async precheck warmup failed userId=%s: %s",
-                        userId, e.getMessage());
+                    LOG.debugf("async precheck warmup failed quotaOwnerId=%s: %s",
+                        quotaOwnerId, e.getMessage());
                 } finally {
-                    prefetchInFlight.remove(userId);
+                    prefetchInFlight.remove(quotaOwnerId);
                 }
             });
         } catch (RuntimeException submitFail) {
-            prefetchInFlight.remove(userId);
+            prefetchInFlight.remove(quotaOwnerId);
         }
     }
 
@@ -438,10 +459,12 @@ public class ApiQuotaGuard {
      * timeout 收紧到 {@value #PRECHECK_TIMEOUT_MS}ms — 超过即 fail-open，cf 边缘
      * 正常 ~200ms，1.5s 已经留足缓冲。
      */
-    private PrecheckResult fetchPrecheckSync(String userId) throws Exception {
+    private PrecheckResult fetchPrecheckSync(String quotaOwnerId) throws Exception {
         URI baseUri = URI.create(config.cloudInternalUrl());
         String path = "/api/internal/api/precheck";
-        String query = "userId=" + urlEncode(userId == null ? "" : userId);
+        // 查询参数名沿用 userId（cloud 契约不变），其语义是配额 owner：
+        // cloud 按该用户取套餐，并统计其 owner 共享池的当月用量（ADR 0015 §4）。
+        String query = "userId=" + urlEncode(quotaOwnerId == null ? "" : quotaOwnerId);
         URI fullUri = baseUri.resolve(path + "?" + query);
 
         // v2 签名：GET 无 body，bodyHash 取空串的 SHA-256——「没有 body」本身也被签名
