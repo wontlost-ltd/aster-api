@@ -2,6 +2,7 @@ package io.aster.audit.chain;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.common.PIIRedactor;
+import io.aster.policy.entity.AuditLog;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import org.junit.jupiter.api.BeforeEach;
@@ -78,5 +79,40 @@ class AuditChainAppenderRedactionTest {
     String json = persistedMetadata(Map.of("reason", "ref " + DECISION_ID));
 
     assertThat(json).doesNotContain(DECISION_ID);
+  }
+
+  @Test
+  void correlationId非UUID值也逐字入链() {
+    String json = persistedMetadata(Map.of("correlationId", "4111-1111-1111-1111-x", "comment", CARD));
+    assertThat(json).contains("\"correlationId\":\"4111-1111-1111-1111-x\"")
+        .contains("\"comment\":\"****-****-****-****\"");
+  }
+
+  private AuditEvent eventWith(Map<String, Object> metadata) {
+    return new AuditEvent(EventType.POLICY_EVALUATION, Instant.now(), "t", "m", "f", null, null, null, "u", true, null, null,
+        metadata, null, null, null, null);
+  }
+
+  @Test
+  void toAuditLog把correlationId与decisionId投影到列() {
+    AuditLog log = appender.toAuditLog(eventWith(Map.of("correlationId", "c-1", "decisionId", "d-1", "x", 1)));
+    assertThat(log.correlationId).isEqualTo("c-1");
+    assertThat(log.decisionId).isEqualTo("d-1");
+  }
+
+  @Test
+  void 列投影缺失或非字符串时为null() {
+    AuditLog missing = appender.toAuditLog(eventWith(Map.of("x", 1)));
+    assertThat(missing.correlationId).isNull();
+    assertThat(missing.decisionId).isNull();
+    AuditLog nonString = appender.toAuditLog(eventWith(Map.of("decisionId", 7, "correlationId", " ")));
+    assertThat(nonString.decisionId).isNull();
+    assertThat(nonString.correlationId).isNull();
+  }
+
+  @Test
+  void 列投影超长时截断到64() {
+    AuditLog log = appender.toAuditLog(eventWith(Map.of("correlationId", "c".repeat(100))));
+    assertThat(log.correlationId).hasSize(64);
   }
 }

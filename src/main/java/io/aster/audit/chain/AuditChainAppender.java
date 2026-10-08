@@ -42,12 +42,14 @@ public class AuditChainAppender {
     }
 
     private static final int MAX_METADATA_SIZE = 4096;
+    /** correlation_id / decision_id 列宽。 */
+    private static final int COLUMN_ID_MAX_LENGTH = 64;
     /**
      * metadata 中值为标识符或摘要的键（Action Guard 收据，ADR 0040 §5.2）：它们把链上事件与
      * guard_decisions / guard_approvals 的行、以及前一条收据关联起来，必须逐字入链。
      */
     private static final Set<String> IDENTITY_METADATA_KEYS = Set.of(
-        "decisionId", "approvalId", "idempotencyKey", "decisionReceiptHash", "contextHash", "sourceHash");
+        "decisionId", "correlationId", "approvalId", "idempotencyKey", "decisionReceiptHash", "contextHash", "sourceHash");
     /** 规范 UUID 形态（8-4-4-4-12 十六进制），整串匹配。 */
     private static final Pattern CANONICAL_UUID = Pattern.compile(
         "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
@@ -132,7 +134,17 @@ public class AuditChainAppender {
         log.errorMessage = event.errorMessage();
         log.reason = extractReason(event.metadata());
         log.metadata = serializeMetadata(event.metadata());
+        log.correlationId = stringValue(event.metadata(), "correlationId");
+        log.decisionId = stringValue(event.metadata(), "decisionId");
         return log;
+    }
+
+    /** 冗余列投影：仅取非空白字符串值并截断到列宽 64，其余（缺失/非字符串）为 null。 */
+    private static String stringValue(Map<String, Object> metadata, String key) {
+        if (metadata == null || !(metadata.get(key) instanceof String s) || s.isBlank()) {
+            return null;
+        }
+        return s.length() > COLUMN_ID_MAX_LENGTH ? s.substring(0, COLUMN_ID_MAX_LENGTH) : s;
     }
 
     /**

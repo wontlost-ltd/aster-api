@@ -161,6 +161,18 @@ public class AuditLog extends PanacheEntityBase {
     @Column(name = "hash_version", nullable = false)
     public Short hashVersion = io.aster.audit.chain.AuditHashPayload.CURRENT_VERSION;
 
+    /**
+     * 相关键（metadata.correlationId 的冗余投影，不进哈希载荷），供收据接口按索引查询。
+     */
+    @Column(name = "correlation_id", length = 64)
+    public String correlationId;
+
+    /**
+     * 决策 ID（metadata.decisionId 的冗余投影，不进哈希载荷）。
+     */
+    @Column(name = "decision_id", length = 64)
+    public String decisionId;
+
     // Constructors
     public AuditLog() {
     }
@@ -256,5 +268,28 @@ public class AuditLog extends PanacheEntityBase {
         return find("tenantId = ?1 and currentHash = ?2 and id < ?3 order by id desc",
                 tenantId, currentHash, beforeId)
             .firstResult();
+    }
+
+    /** 按 id 批量查询的上限 */
+    private static final int MAX_LOOKUP_IDS = 200;
+
+    /** 按相关键批量查询租户内的审计行（≤200 个 id，按 id 升序） */
+    public static java.util.List<AuditLog> findByCorrelationIds(String tenantId, java.util.List<String> ids) {
+        return lookup("correlationId", tenantId, ids);
+    }
+
+    /** 按决策 ID 批量查询租户内的审计行（≤200 个 id，按 id 升序） */
+    public static java.util.List<AuditLog> findByDecisionIds(String tenantId, java.util.List<String> ids) {
+        return lookup("decisionId", tenantId, ids);
+    }
+
+    private static java.util.List<AuditLog> lookup(String column, String tenantId, java.util.List<String> ids) {
+        if (ids.size() > MAX_LOOKUP_IDS) {
+            throw new IllegalArgumentException("最多 " + MAX_LOOKUP_IDS + " 个 id");
+        }
+        if (ids.isEmpty()) {
+            return java.util.List.of();
+        }
+        return find("tenantId = ?1 and " + column + " in ?2 order by id asc", tenantId, ids).list();
     }
 }
