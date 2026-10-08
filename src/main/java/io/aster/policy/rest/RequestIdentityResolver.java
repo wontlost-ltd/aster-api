@@ -69,7 +69,10 @@ public class RequestIdentityResolver {
     static final String PROP_QUOTA_OWNER_ID = "aster.apikey.quotaOwnerId";
     /** 已验证业务角色集合（ADR 0042 §2.2）：ApiKeyAuthFilter / InternalCallerFilter 写入的 {@code List<String>}。 */
     public static final String PROP_BUSINESS_ROLES = "aster.identity.businessRoles";
-    /** HMAC 内部调用者签过的用户 ID（ADR 0042 §4.1）：InternalCallerFilter 验签通过后写入，可为空串。 */
+    /**
+     * HMAC 内部调用者签过的用户 ID（ADR 0042 §4.1）：InternalCallerFilter 验签与 nonce 校验都通过后写入，可为空串。
+     * 属性存在（含空串）时 {@link #performedBy()} 不再读未签名的 {@code X-User-Id} 头。
+     */
     public static final String PROP_IDENTITY_USER_ID = "aster.identity.userId";
 
     private static final String DEFAULT_TENANT = "default";
@@ -123,10 +126,10 @@ public class RequestIdentityResolver {
         if (prop != null) {
             return prop;
         }
-        // HMAC 通道签过的用户 ID（ADR 0042 §4.1）；jaxrsProperty 把空串视为缺失，继续回退。
-        String signed = jaxrsProperty(PROP_IDENTITY_USER_ID);
-        if (signed != null) {
-            return signed;
+        // HMAC 通道签过的用户 ID（ADR 0042 §4.1）：属性存在即身份终态。签的是空串时返回 anonymous，
+        // 绝不回退读未签名的 X-User-Id 头——否则安全性要依赖 JAX-RS 与 Vert.x 对多值头的看法一致。
+        if (jaxrsCtx != null && jaxrsCtx.getProperty(PROP_IDENTITY_USER_ID) instanceof String signed) {
+            return signed.isBlank() ? ANONYMOUS_USER : signed.trim();
         }
         // ★这里**有意**回退读 header，与 apiKeyId() 的严格化是两种不同的语义，不要
         // 「顺手统一」：

@@ -157,13 +157,25 @@ class RequestIdentityResolverTest {
     }
 
     @Test
-    @DisplayName("ADR 0042 §4.1：签过的 userId 为空串 → 继续回退头")
-    void performedByBlankSignedIdentityFallsBackToHeader() throws Exception {
+    @DisplayName("ADR 0042 §4.1：签过的 userId 为空白 → anonymous，绝不回退读未签头")
+    void performedByBlankSignedIdentityIsAnonymousNotHeader() throws Exception {
+        for (String blank : new String[] {"", "   "}) {
+            var r = resolver(new TenantContext(),
+                ctxWith(RequestIdentityResolver.PROP_IDENTITY_USER_ID, blank),
+                rctxWith("X-User-Id", "header-user"));
+
+            assertEquals("anonymous", r.performedBy());
+        }
+    }
+
+    @Test
+    @DisplayName("ADR 0042 §4.1：签过的 userId 去首尾空白")
+    void performedBySignedIdentityTrimmed() throws Exception {
         var r = resolver(new TenantContext(),
-            ctxWith(RequestIdentityResolver.PROP_IDENTITY_USER_ID, ""),
+            ctxWith(RequestIdentityResolver.PROP_IDENTITY_USER_ID, "  signed-user "),
             rctxWith("X-User-Id", "header-user"));
 
-        assertEquals("header-user", r.performedBy());
+        assertEquals("signed-user", r.performedBy());
     }
 
     @Test

@@ -17,13 +17,19 @@ import java.util.Objects;
  * {@code signInternalCallerHeaders} 以此为准逐字节对齐。刻意不复用
  * {@link InternalCallerFilter} 的私有实现，使本类成为独立的对照。
  *
- * <p>canonical v3（以 {@code \n} 连接）：
+ * <p>canonical v3：恒为 10 个字段、以 9 个 {@code \n} 连接，<b>末尾没有换行</b>：
  * {@code method, path, query, ts, nonce, sha256(body), tenant, role, userId, businessRoles}
  * <ul>
- *   <li>query：原始查询串，不含 {@code ?}，无则空串；</li>
- *   <li>businessRoles：trim、去空、去重、排序后以 {@code ,} 拼接；头里按调用方给的顺序发送，
+ *   <li>query：线上实际发送的<b>原始编码串</b>（如 {@code correlationIds=a%2Cb}，不解码、不重排），
+ *       不含 {@code ?}，无则空串；</li>
+ *   <li>sha256(body)：对实际发送 body 的 UTF-8 字节取小写 hex，空 body 为空字节的哈希；</li>
+ *   <li>tenant / role / userId：头的原值，缺失按空串签名（字段仍占位，总数不变）；</li>
+ *   <li>businessRoles：trim、去空、去重后按 <b>UTF-16 码元序</b>排序（Java {@code String.compareTo}，
+ *       即 JS 默认 {@code Array.prototype.sort()}，不能用 {@code localeCompare}），以 {@code ,} 拼接；
+ *       无角色时为空串（最后一个字段为空，但分隔符照样存在）。头里按调用方给的顺序发送，
  *       以证明服务端对头顺序不敏感。</li>
  * </ul>
+ * HMAC-SHA256，密钥与 canonical 都按 UTF-8 编码，结果为小写 hex。
  */
 public final class InternalCallerSigning {
 
@@ -41,8 +47,7 @@ public final class InternalCallerSigning {
                                               List<String> roles) {
         long ts = System.currentTimeMillis() / 1000;
         String nonce = "sig-v3-" + System.nanoTime();
-        String canonical = String.join("\n", method, path, nz(query), Long.toString(ts), nonce,
-            sha256Hex(nz(body)), nz(tenant), nz(role), nz(userId), String.join(",", normalize(roles)));
+        String canonical = canonical(method, path, query, ts, nonce, body, tenant, role, userId, roles);
 
         Map<String, String> h = new LinkedHashMap<>();
         h.put("X-Internal-Caller", "cloud-bff");
@@ -54,6 +59,13 @@ public final class InternalCallerSigning {
         putIfPresent(h, "X-User-Id", userId);
         putIfPresent(h, "X-User-Business-Roles", roles == null ? null : String.join(",", roles));
         return h;
+    }
+
+    /** 按 v3 规则构造 canonical（时间戳与 nonce 显式给出，供固定向量用例复现）。 */
+    static String canonical(String method, String path, String query, long ts, String nonce, String body,
+                            String tenant, String role, String userId, List<String> roles) {
+        return String.join("\n", method, path, nz(query), Long.toString(ts), nonce,
+            sha256Hex(nz(body)), nz(tenant), nz(role), nz(userId), String.join(",", normalize(roles)));
     }
 
     private static List<String> normalize(List<String> roles) {

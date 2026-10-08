@@ -27,6 +27,10 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -466,6 +470,60 @@ class InternalCallerFilterTest {
         assertEquals("invalid_signature", run(c));
         verify(c, never()).setProperty(org.mockito.ArgumentMatchers.eq(RequestIdentityResolver.PROP_IDENTITY_USER_ID),
             org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void nonce重放不写身份属性() {
+        ContainerRequestContext c = request("GET", RECEIPTS, "correlationIds=c1", "", receiptHeaders());
+        InternalCallerFilter f = filter();
+        doThrow(new WebApplicationException("Nonce replay detected", 409))
+            .when(f.nonceService).ensureFresh(anyString(), anyString(), anyString());
+        try {
+            f.filter(c).await().indefinitely();
+            fail("重放的 nonce 应被拒绝");
+        } catch (WebApplicationException e) {
+            assertEquals(409, e.getResponse().getStatus());
+        }
+        verify(c, never()).setProperty(eq(RequestIdentityResolver.PROP_IDENTITY_USER_ID), any());
+        verify(c, never()).setProperty(eq(RequestIdentityResolver.PROP_BUSINESS_ROLES), any());
+    }
+
+    @Test
+    void v3签的是原始编码query_解码形式403() {
+        // 线上发送 correlationIds=a%2Cb：按原样签名通过；按解码后的 a,b 签名则 invalid_signature，
+        // 防止服务端将来退回 getQuery()（已解码）而与 cloud 签的编码串错位。
+        String raw = "correlationIds=a%2Cb";
+        Map<String, String> asSent = InternalCallerSigning.headers(KEY, "GET", RECEIPTS, raw, "",
+            "t-1", "member", "u-1", List.of("DPO"));
+        assertEquals("ok", run(request("GET", RECEIPTS, raw, "", asSent)));
+        Map<String, String> decoded = InternalCallerSigning.headers(KEY, "GET", RECEIPTS, "correlationIds=a,b", "",
+            "t-1", "member", "u-1", List.of("DPO"));
+        assertEquals("invalid_signature", run(request("GET", RECEIPTS, raw, "", decoded)));
+    }
+
+    /**
+     * 跨仓库固定向量（aster-cloud signInternalCallerHeaders 须钉同一组输入与结果）：
+     * key {@code s2-1a-0-characterization-key-32b!}、GET {@code /api/v1/guard/approvals}、
+     * query {@code status=PENDING&page=0&size=50}、ts 1760000000、nonce {@code n-fixed-1}、空 body、
+     * tenant {@code team1}、role {@code member}、userId {@code u-1}、角色头 {@code DPO,CISO}（规范化为 {@code CISO,DPO}）。
+     * 期望签名：{@code 1cc07890ca7a3034865add962bb84dd1a993a33f1cd6593669e0f7b4928937ba}
+     */
+    private static final String FIXED_VECTOR_HEX = "1cc07890ca7a3034865add962bb84dd1a993a33f1cd6593669e0f7b4928937ba";
+
+    @Test
+    void 跨仓库固定向量_v3签名() {
+        String key = "s2-1a-0-characterization-key-32b!";
+        List<String> rolesHeader = InternalCallerFilter.parseRoles("DPO,CISO");
+        assertEquals(List.of("CISO", "DPO"), rolesHeader);
+        String expectedCanonical = "GET\n/api/v1/guard/approvals\nstatus=PENDING&page=0&size=50\n1760000000\nn-fixed-1\n"
+            + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nteam1\nmember\nu-1\nCISO,DPO";
+        String canonical = InternalCallerSigning.canonical("GET", "/api/v1/guard/approvals",
+            "status=PENDING&page=0&size=50", 1760000000L, "n-fixed-1", "", "team1", "member", "u-1",
+            List.of("DPO", "CISO"));
+        assertEquals(expectedCanonical, canonical);
+        String hex = InternalCallerSigning.hmac(key, canonical);
+        assertEquals(InternalCallerFilter.sign(key, canonical), hex);
+        assertEquals(FIXED_VECTOR_HEX, hex);
     }
 
     @Test

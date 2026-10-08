@@ -382,9 +382,6 @@ public class InternalCallerFilter {
                 // Phase 2 BYOK：把已验签 body 字节挂到请求属性，供 resource 从可信 body 解析
                 // _byok envelope（只有走到这里=签名已过的请求才有；旁路路径拿不到）。
                 ctx.setProperty(VERIFIED_BODY_PROP, body);
-                // 身份只取签过的值（ADR 0042 §4.1）：HMAC 调用者的用户与业务角色不再从未签头回退。
-                ctx.setProperty(RequestIdentityResolver.PROP_IDENTITY_USER_ID, userId);
-                ctx.setProperty(RequestIdentityResolver.PROP_BUSINESS_ROLES, roles);
 
                 // 签名通过后再消费 nonce（防重放）。requestHash 绑定 method/path/query/body，
                 // tenant 维度键（内部调用无浏览器 tenant 时用 "cloud-bff" 占位，跨 pod 唯一）。
@@ -393,6 +390,11 @@ public class InternalCallerFilter {
                     method, ctx.getUriInfo().getPath(), query, body);
                 String nonceTenant = tenant.isEmpty() ? "cloud-bff" : tenant;
                 nonceService.ensureFresh(nonceTenant, nonce, requestHash);
+
+                // 身份只取签过的值（ADR 0042 §4.1）：HMAC 调用者的用户与业务角色不再从未签头回退。
+                // 放在 nonce 校验之后，使「身份属性存在 ⇔ 验签与防重放都已通过」：重放请求拿不到它们。
+                ctx.setProperty(RequestIdentityResolver.PROP_IDENTITY_USER_ID, userId);
+                ctx.setProperty(RequestIdentityResolver.PROP_BUSINESS_ROLES, roles);
                 return null;
             } catch (WebApplicationException e) {
                 throw e; // 透传 403/409，保留状态码
@@ -449,9 +451,11 @@ public class InternalCallerFilter {
         //      operator 可临时开 aster.security.ai.sse.public=true 灰度回退
         //   2. AI complete —— cloud proxy 已就绪 (/api/llm/complete)，必须经它转发；
         //      ai.sse.public 对 /complete 无效
-        //   3. 其余内部端点（evaluate-source / whatif-batches / 带内部调用头的 audit/receipts）——
-        //      仅 cloud-bff 经 HMAC 签名调用。error / reason 码沿用 evaluate_source_*（客户端已按它分支），
-        //      message 按实际路径给出
+        //   3. 其余内部端点（evaluate-source / whatif-batches / 带内部调用头的 audit/receipts 与 guard 路径）——
+        //      仅 cloud-bff 经 HMAC 签名调用。error 码沿用 evaluate_source_forbidden（客户端已按它分支），
+        //      message 按实际路径给出。reason 由调用方传入：缺凭证时按 missingCredentialReason 取值
+        //      （guard 路径为 internal_only，其余为 evaluate_source_internal_only），验签各步失败为对应码
+        //      （invalid_signature / stale_timestamp 等）
         boolean isAi = path.startsWith("/api/v1/ai/");
         boolean isAiSse = isAi && AI_SSE_PATHS.contains(path);
         String error;
