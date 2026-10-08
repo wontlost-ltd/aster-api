@@ -31,26 +31,35 @@ public class AuditReceiptService {
     public ReceiptLookupResponse byCorrelationIds(String tenantId, List<String> ids) {
         List<AuditLog> rows = AuditLog.findByCorrelationIds(tenantId, ids);
         List<Receipt> receipts = rows.stream().map(this::toReceipt).toList();
-        return new ReceiptLookupResponse(List.of(), missing(ids, receipts, Receipt::correlationId), receipts);
+        return new ReceiptLookupResponse(List.of(), missing(ids, found(receipts, Receipt::correlationId)), receipts);
     }
 
-    /** 按决策 ID 查询：receipts 为决策行，approvals 为同决策的审批事件行。 */
+    /**
+     * 按决策 ID 查询：receipts 为决策行，approvals 为同决策的审批事件行。
+     * 审批只随命中的决策收据返回：一个 id 不会同时出现在 approvals 与 missing 中。
+     */
     @Transactional(Transactional.TxType.SUPPORTS)
     public ReceiptLookupResponse byDecisionIds(String tenantId, List<String> ids) {
         List<AuditLog> rows = AuditLog.findByDecisionIds(tenantId, ids);
         List<Receipt> receipts = rows.stream()
             .filter(r -> EventType.ACTION_GUARD_DECISION.name().equals(r.eventType))
             .map(this::toReceipt).toList();
+        Set<String> found = found(receipts, Receipt::decisionId);
         List<Approval> approvals = rows.stream()
             .filter(r -> EventType.ACTION_GUARD_APPROVAL.name().equals(r.eventType))
+            .filter(r -> found.contains(r.decisionId))
             .map(this::toApproval).toList();
-        return new ReceiptLookupResponse(approvals, missing(ids, receipts, Receipt::decisionId), receipts);
+        return new ReceiptLookupResponse(approvals, missing(ids, found), receipts);
+    }
+
+    private static Set<String> found(List<Receipt> receipts, Function<Receipt, String> key) {
+        Set<String> found = new HashSet<>();
+        receipts.forEach(r -> found.add(key.apply(r)));
+        return found;
     }
 
     /** 请求中未命中的 id，保持请求顺序。 */
-    private static List<String> missing(List<String> ids, List<Receipt> receipts, Function<Receipt, String> key) {
-        Set<String> found = new HashSet<>();
-        receipts.forEach(r -> found.add(key.apply(r)));
+    private static List<String> missing(List<String> ids, Set<String> found) {
         return ids.stream().filter(id -> !found.contains(id)).toList();
     }
 
@@ -62,8 +71,7 @@ public class AuditReceiptService {
     private Approval toApproval(AuditLog r) {
         Map<String, Object> m = parseMetadata(r.metadata);
         Map<String, Object> meta = m == null ? Map.of() : m;
-        return new Approval(r.id, text(meta, "comment"), r.currentHash,
-            r.timestamp == null ? null : r.timestamp.toString(), text(meta, "decidedBy"),
+        return new Approval(r.id, text(meta, "comment"), r.currentHash, r.timestamp, text(meta, "decidedBy"),
             r.decisionId, text(meta, "decisionReceiptHash"), text(meta, "outcome"),
             text(meta, "requiredRole"));
     }

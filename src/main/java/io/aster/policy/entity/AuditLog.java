@@ -270,8 +270,8 @@ public class AuditLog extends PanacheEntityBase {
             .firstResult();
     }
 
-    /** 按 id 批量查询的上限 */
-    private static final int MAX_LOOKUP_IDS = 200;
+    /** 按 id 批量查询的上限；收据接口在 HTTP 层引用同一常量提前拒绝 */
+    public static final int MAX_LOOKUP_IDS = 200;
 
     /** 按相关键批量查询租户内的审计行（≤200 个 id，按 id 升序） */
     public static java.util.List<AuditLog> findByCorrelationIds(String tenantId, java.util.List<String> ids) {
@@ -283,12 +283,13 @@ public class AuditLog extends PanacheEntityBase {
         return lookup("decisionId", tenantId, ids);
     }
 
+    /** ids 为 null 与空列表同义：直接返回空结果，不查库。 */
     private static java.util.List<AuditLog> lookup(String column, String tenantId, java.util.List<String> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return java.util.List.of();
+        }
         if (ids.size() > MAX_LOOKUP_IDS) {
             throw new IllegalArgumentException("最多 " + MAX_LOOKUP_IDS + " 个 id");
-        }
-        if (ids.isEmpty()) {
-            return java.util.List.of();
         }
         return find("tenantId = ?1 and " + column + " in ?2 order by id asc", tenantId, ids).list();
     }

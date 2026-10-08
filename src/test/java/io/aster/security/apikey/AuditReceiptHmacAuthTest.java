@@ -104,7 +104,11 @@ class AuditReceiptHmacAuthTest {
 
     @Test void 内部调用头存在但签名错误不放行() throws Exception {
         Response r = signedGet(TENANT, "wrong-key-wrong-key-wrong-key-32bytes");
-        assertThat(r.statusCode()).isIn(401, 403);
+        assertThat(r.statusCode()).as(r.asString()).isEqualTo(403);
+        // 错误码沿用，文案按收据路径给出，不得误导成 evaluate-source
+        assertThat(r.jsonPath().getString("error")).isEqualTo("evaluate_source_forbidden");
+        assertThat(r.jsonPath().getString("reason")).isEqualTo("invalid_signature");
+        assertThat(r.jsonPath().getString("message")).contains(PATH).doesNotContain("evaluate-source");
     }
 
     @Test void 无Bearer无HMAC头返回401() {

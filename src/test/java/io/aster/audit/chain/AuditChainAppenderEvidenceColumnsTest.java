@@ -50,6 +50,17 @@ class AuditChainAppenderEvidenceColumnsTest {
     assertThat(AuditHashPayload.digest(row, row.hashVersion)).isEqualTo(row.currentHash);
   }
 
+  @Test void 恰好200个id不抛异常() {
+    List<String> ids = IntStream.range(0, AuditLog.MAX_LOOKUP_IDS).mapToObj(i -> "id-" + i).toList();
+    assertThat(AuditLog.findByCorrelationIds(TENANT, ids)).isEmpty();
+    assertThat(AuditLog.findByDecisionIds(TENANT, ids)).isEmpty();
+  }
+
+  @Test void id列表为null按空处理() {
+    assertThat(AuditLog.findByCorrelationIds(TENANT, null)).isEmpty();
+    assertThat(AuditLog.findByDecisionIds(TENANT, null)).isEmpty();
+  }
+
   @Test void 超过200个id抛异常() {
     List<String> ids = IntStream.range(0, 201).mapToObj(i -> "id-" + i).toList();
     assertThatThrownBy(() -> AuditLog.findByCorrelationIds(TENANT, ids)).isInstanceOf(IllegalArgumentException.class);

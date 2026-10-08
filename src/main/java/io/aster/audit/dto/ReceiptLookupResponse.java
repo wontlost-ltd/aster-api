@@ -27,7 +27,7 @@ public record ReceiptLookupResponse(List<Approval> approvals, List<String> missi
     /** Action Guard 人工审批结论，字段取自 ACTION_GUARD_APPROVAL 行的 metadata，decidedAt 取行时间戳。 */
     @JsonPropertyOrder(alphabetic = true)
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record Approval(Long auditId, String comment, String currentHash, String decidedAt,
+    public record Approval(Long auditId, String comment, String currentHash, Instant decidedAt,
                            String decidedBy, String decisionId, String decisionReceiptHash,
                            String outcome, String requiredRole) {}
 }

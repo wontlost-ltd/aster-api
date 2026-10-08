@@ -139,7 +139,11 @@ public class AuditChainAppender {
         return log;
     }
 
-    /** 冗余列投影：仅取非空白字符串值并截断到列宽 64，其余（缺失/非字符串）为 null。 */
+    /**
+     * 冗余列投影：仅取非空白字符串值并截断到列宽 64，其余（缺失/非字符串）为 null。
+     * 真实取值是 UUID（36 字符），截断只兜住手工构造的超长值，不担心前缀碰撞；
+     * 但截断后的列值与 metadata 原文不再相等，按完整 id 查列会查不到该行。
+     */
     private static String stringValue(Map<String, Object> metadata, String key) {
         if (metadata == null || !(metadata.get(key) instanceof String s) || s.isBlank()) {
             return null;

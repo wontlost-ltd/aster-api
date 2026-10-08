@@ -1,6 +1,7 @@
 package io.aster.audit.rest;
 
 import io.aster.audit.service.AuditReceiptService;
+import io.aster.policy.entity.AuditLog;
 import io.aster.policy.rest.RequestIdentityResolver;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
@@ -27,8 +28,8 @@ import java.util.Map;
 @Produces(MediaType.APPLICATION_JSON)
 public class AuditReceiptResource {
 
-    /** 单次查询 id 上限，与 AuditLog 查询上限一致。 */
-    static final int MAX_IDS = 200;
+    /** 单次查询 id 上限：直接取 AuditLog 的查询上限，两处不会漂移。 */
+    static final int MAX_IDS = AuditLog.MAX_LOOKUP_IDS;
 
     @Inject
     RequestIdentityResolver identityResolver;

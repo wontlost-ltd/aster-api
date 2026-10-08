@@ -4,5 +4,5 @@
 ALTER TABLE audit_logs
     ADD COLUMN correlation_id VARCHAR(64),
     ADD COLUMN decision_id VARCHAR(64);
-CREATE INDEX audit_logs_tenant_correlation_ix ON audit_logs (tenant_id, correlation_id) WHERE correlation_id IS NOT NULL;
-CREATE INDEX audit_logs_tenant_decision_ix ON audit_logs (tenant_id, decision_id) WHERE decision_id IS NOT NULL;
+CREATE INDEX idx_audit_logs_tenant_correlation ON audit_logs (tenant_id, correlation_id) WHERE correlation_id IS NOT NULL;
+CREATE INDEX idx_audit_logs_tenant_decision ON audit_logs (tenant_id, decision_id) WHERE decision_id IS NOT NULL;

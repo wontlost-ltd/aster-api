@@ -397,7 +397,9 @@ public class InternalCallerFilter {
         //      operator 可临时开 aster.security.ai.sse.public=true 灰度回退
         //   2. AI complete —— cloud proxy 已就绪 (/api/llm/complete)，必须经它转发；
         //      ai.sse.public 对 /complete 无效
-        //   3. evaluate-source —— 仅 cloud-bff 内部使用
+        //   3. 其余内部端点（evaluate-source / whatif-batches / 带内部调用头的 audit/receipts）——
+        //      仅 cloud-bff 经 HMAC 签名调用。error / reason 码沿用 evaluate_source_*（客户端已按它分支），
+        //      message 按实际路径给出
         boolean isAi = path.startsWith("/api/v1/ai/");
         boolean isAiSse = isAi && AI_SSE_PATHS.contains(path);
         String error;
@@ -417,8 +419,10 @@ public class InternalCallerFilter {
                 + "apply to /complete.";
         } else {
             error = "evaluate_source_forbidden";
-            message = "POST /evaluate-source is internal-only. "
-                + "Use /evaluate (DB-backed) for production policies.";
+            message = path + " is internal-only: it requires an HMAC-signed call from aster-cloud.";
+            if (path.equals("/api/v1/policies/evaluate-source")) {
+                message += " Use /evaluate (DB-backed) for production policies.";
+            }
         }
         return new WebApplicationException(
             Response.status(403)

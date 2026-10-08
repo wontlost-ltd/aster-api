@@ -74,9 +74,20 @@ class AuditReceiptResourceTest {
     assertThat(r.getString("approvals[0].decidedBy")).isEqualTo("u3");
     assertThat(r.getString("approvals[0].outcome")).isEqualTo("APPROVED");
     assertThat(r.getString("approvals[0].requiredRole")).isEqualTo("R");
-    assertThat(r.getString("approvals[0].decidedAt")).isNotBlank();
+    assertThat(Instant.parse(r.getString("approvals[0].decidedAt"))).isBeforeOrEqualTo(Instant.now());
     assertThat(r.getString("approvals[0].decisionReceiptHash")).isEqualTo(r.getString("receipts[0].currentHash"));
     assertThat(r.getList("missing")).containsExactly("d-none");
+  }
+
+  @Test void 无决策收据的审批行不返回_id只出现在missing() {
+    Map<String, Object> orphan = new LinkedHashMap<>();
+    orphan.put("decisionId", "d-orphan");
+    orphan.put("outcome", "APPROVED");
+    appender.appendSync(event(TENANT, EventType.ACTION_GUARD_APPROVAL, orphan));
+    JsonPath r = as(TENANT).queryParam("decisionIds", "d1,d-orphan")
+        .get("/api/v1/audit/receipts").then().statusCode(200).extract().jsonPath();
+    assertThat(r.getList("approvals.decisionId")).containsExactly("d1");
+    assertThat(r.getList("missing")).containsExactly("d-orphan");
   }
 
   @Test void 其他租户的相关键报missing不泄露() {
