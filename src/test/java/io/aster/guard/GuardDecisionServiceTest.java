@@ -15,6 +15,7 @@ import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
+import io.aster.policy.evidence.AgentIdentity;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.repository.PolicySourceRepository;
 import io.smallrye.mutiny.Uni;
@@ -407,7 +408,7 @@ class GuardDecisionServiceTest {
     Action a = request().action();
     GuardActionRequest sameAction = new GuardActionRequest(MODULE, FUNCTION, new Action(
         new Principal("agent-42", "service", List.of("other-role")), a.action(), a.resource(), a.context(),
-        new GuardActionRequest.Agent("other-model", "s-2")), null);
+        new AgentIdentity("unknown", "other-model", null, "s-2")), null);
 
     assertThat(service.decide(TENANT, "user-1", "ak-1", sameAction, "idem-1")).isEqualTo(stored);
   }

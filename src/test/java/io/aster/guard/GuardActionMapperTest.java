@@ -3,9 +3,9 @@ package io.aster.guard;
 import io.aster.guard.api.GuardActionRequest;
 import io.aster.guard.api.GuardActionRequest.Action;
 import io.aster.guard.api.GuardActionRequest.ActionName;
-import io.aster.guard.api.GuardActionRequest.Agent;
 import io.aster.guard.api.GuardActionRequest.Principal;
 import io.aster.guard.api.GuardActionRequest.Resource;
+import io.aster.policy.evidence.AgentIdentity;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.junit.jupiter.api.Test;
 
@@ -59,7 +59,7 @@ class GuardActionMapperTest {
     ctx.put("amount", 250000);
     ctx.put("tags", new ArrayList<>(List.of("a", "b")));
     Action a = new Action(new Principal("agent-42", "service", new ArrayList<>(List.of("ops-bot"))),
-        new ActionName("refund"), new Resource("customer", "C-1001"), ctx, new Agent("claude-fable-5-1", "s-1"));
+        new ActionName("refund"), new Resource("customer", "C-1001"), ctx, new AgentIdentity("unknown", "claude-fable-5-1", null, "s-1"));
 
     Map<String, Object> m = mapper.flatten(a);
 

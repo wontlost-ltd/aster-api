@@ -4,12 +4,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.guard.api.GuardActionRequest.Action;
 import io.aster.guard.api.GuardActionRequest.ActionName;
-import io.aster.guard.api.GuardActionRequest.Agent;
 import io.aster.guard.api.GuardActionRequest.Principal;
 import io.aster.guard.api.GuardActionRequest.Resource;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
+import io.aster.policy.evidence.AgentIdentity;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -25,17 +25,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** ADR 0040 §5.2：决策 / 审批收据事件的字段映射与 metadata 4 KB 上限。 */
 class GuardReceiptBuilderTest {
   private static final String HASH = "a".repeat(64);
+  private static final AgentIdentity AGENT = new AgentIdentity("anthropic", "claude-fable-5-1", "2026", "s-1");
   private final GuardActionMapper mapper = new GuardActionMapper();
   private final GuardReceiptBuilder builder = new GuardReceiptBuilder();
   private final ObjectMapper json = new ObjectMapper();
 
   private GuardDecisionDraft draft(String outcome, String reason, List<String> controls, String id, String idemKey) {
     Action a = new Action(new Principal(id, "agent", List.of("ops-bot")), new ActionName("delete_customer_record"),
-        new Resource("customer", id), Map.of("amount", 250000), new Agent("claude-fable-5-1", "s-1"));
+        new Resource("customer", id), Map.of("amount", 250000), AGENT);
     Map<String, Object> flat = mapper.flatten(a);
     return new GuardDecisionDraft("t1", "guard.customer", "decide", idemKey, flat, mapper.contextHash(Map.of("amount", 250000)),
         new PolicyVersionView(1730890123456L, HASH, 3L), outcome, "Data Protection Officer", reason,
-        "CUST-DEL-001", controls, null);
+        "CUST-DEL-001", controls, null, AGENT);
   }
 
   @Test
@@ -54,8 +55,9 @@ class GuardReceiptBuilderTest {
     assertThat(event.toVersion()).isEqualTo(3L);
     assertThat(event.performedBy()).isEqualTo("user-1");
     assertThat(event.metadata()).containsKeys("decisionId", "outcome", "effectiveOutcome", "ruleId", "controls",
-        "principalId", "principalType", "actionName", "resourceType", "resourceId", "contextHash", "agentModel",
-        "policyVersionId", "sourceHash", "approvalId", "idempotencyKey", "reason", "principalRoles");
+        "principalId", "principalType", "actionName", "resourceType", "resourceId", "contextHash", "agentProvider",
+        "agentModel", "agentVersion", "agentSession", "agentSource", "policyVersionId", "sourceHash", "approvalId",
+        "idempotencyKey", "reason", "principalRoles");
     assertThat(event.metadata()).containsEntry("decisionId", decisionId.toString())
         .containsEntry("approvalId", approvalId.toString())
         .containsEntry("outcome", "REQUIRE_APPROVAL")
@@ -111,12 +113,12 @@ class GuardReceiptBuilderTest {
     String text = nasty(255);
     List<String> roles = IntStream.range(0, 16).mapToObj(i -> text).toList();
     Action a = new Action(new Principal(text, text, roles), new ActionName(text), new Resource(text, text),
-        Map.of("amount", 250000), new Agent(text, text));
+        Map.of("amount", 250000), new AgentIdentity(text, text, text, text));
     List<String> controls = IntStream.range(0, 16).mapToObj(i -> "\"\\".repeat(32)).toList();
     String contextHash = mapper.contextHash(Map.of("amount", 250000));
     GuardDecisionDraft d = new GuardDecisionDraft("t1", "guard.customer", "decide", text, mapper.flatten(a), contextHash,
         new PolicyVersionView(Long.MAX_VALUE, HASH, Long.MAX_VALUE), "REQUIRE_APPROVAL", text, text, text, controls,
-        null);
+        null, new AgentIdentity(text, text, text, text));
     UUID decisionId = UUID.randomUUID();
     UUID approvalId = UUID.randomUUID();
 
@@ -193,8 +195,70 @@ class GuardReceiptBuilderTest {
 
   @Test
   void 缩短顺序固定_principalId最后() {
-    assertThat(GuardReceiptBuilder.SHRINK_ORDER).containsExactly("reason", "principalRoles", "agentModel",
-        "principalType", "resourceType", "resourceId", "actionName", "principalId");
+    assertThat(GuardReceiptBuilder.SHRINK_ORDER).containsExactly("reason", "agentSession", "agentVersion",
+        "principalRoles", "agentModel", "agentProvider", "principalType", "resourceType", "resourceId", "actionName",
+        "principalId");
+  }
+
+  @Test
+  void agent四字段进收据且agentSource为declared() {
+    GuardDecisionDraft d = draft("ALLOW", "ok", List.of(), "agent-42", null);
+
+    Map<String, Object> m = builder.decisionEvent(d, UUID.randomUUID(), null, "user-1").metadata();
+
+    assertThat(m).containsEntry("agentProvider", "anthropic").containsEntry("agentModel", "claude-fable-5-1")
+        .containsEntry("agentVersion", "2026").containsEntry("agentSession", "s-1")
+        .containsEntry("agentSource", "declared");
+  }
+
+  @Test
+  void 无agent时收据不含agent键() {
+    GuardDecisionDraft d = draft("ALLOW", "ok", List.of(), "agent-42", null);
+    GuardDecisionDraft noAgent = new GuardDecisionDraft(d.tenantId(), d.policyModule(), d.policyFunction(),
+        d.idempotencyKey(), d.action(), d.contextHash(), d.policyVersion(), d.outcome(), d.role(), d.reason(),
+        d.ruleId(), d.controls(), null, null);
+
+    Map<String, Object> m = builder.decisionEvent(noAgent, UUID.randomUUID(), null, "user-1").metadata();
+
+    assertThat(m).doesNotContainKeys("agentProvider", "agentModel", "agentVersion", "agentSession", "agentSource");
+  }
+
+  @Test
+  void agentSession先于agentModel被缩短且principalId最后() {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("decisionId", "d");
+    m.put("reason", "r".repeat(100));
+    m.put("agentSession", "\"".repeat(1900));
+    m.put("agentModel", "m".repeat(200));
+    m.put("principalId", "p".repeat(200));
+
+    Map<String, Object> fitted = builder.fitBudget(m, GuardReceiptBuilder.SHRINK_ORDER);
+
+    assertThat(builder.measure(fitted)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat((String) fitted.get("agentSession")).hasSizeLessThan(1900);
+    assertThat(fitted).containsEntry("agentModel", "m".repeat(200)).containsEntry("principalId", "p".repeat(200));
+  }
+
+  @Test
+  void 全部自由文本都撑满时principalId最后被缩短() {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("decisionId", "d");
+    for (String key : GuardReceiptBuilder.SHRINK_ORDER) {
+      m.put(key, "\"".repeat(600));
+    }
+
+    Map<String, Object> fitted = builder.fitBudget(m, GuardReceiptBuilder.SHRINK_ORDER);
+
+    assertThat(builder.measure(fitted)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat((String) fitted.get("reason")).isEmpty();
+    assertThat((String) fitted.get("principalId")).hasSize(600);
+    // 任一键被缩短，则它在 SHRINK_ORDER 中排在前面的键必须已清空。
+    List<String> order = GuardReceiptBuilder.SHRINK_ORDER;
+    for (int i = 1; i < order.size(); i++) {
+      if (((String) fitted.get(order.get(i))).length() < 600) {
+        assertThat((String) fitted.get(order.get(i - 1))).isEmpty();
+      }
+    }
   }
 
   @Test
@@ -235,7 +299,7 @@ class GuardReceiptBuilderTest {
     GuardDecisionDraft d = new GuardDecisionDraft("t1", "guard.customer", "decide", "k".repeat(255),
         draft("DENY", null, List.of(), "p".repeat(255), null).action(), HASH,
         new PolicyVersionView(Long.MAX_VALUE, HASH, Long.MAX_VALUE), "DENY", "o".repeat(5000), "r".repeat(5000),
-        "i".repeat(5000), controls, null);
+        "i".repeat(5000), controls, null, AGENT);
 
     AuditEvent event = builder.decisionEvent(d, UUID.randomUUID(), null, "user-1");
 

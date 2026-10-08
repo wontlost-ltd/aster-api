@@ -6,6 +6,7 @@ import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardDecisionEntity;
 import io.aster.policy.cache.CompiledPolicyCache;
 import io.aster.policy.cache.PolicyVersionResolutionCache;
+import io.aster.policy.entity.AuditLog;
 import io.aster.policy.entity.PolicyArtifact;
 import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
@@ -20,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -176,6 +178,35 @@ class GuardDecisionResourceTest {
     assertThat(resp.statusCode()).isEqualTo(400);
     assertThat(resp.jsonPath().getString("error")).isEqualTo("invalid_action");
     assertThat(resp.jsonPath().getString("message")).isNotBlank();
+  }
+
+  @Test
+  void 旧agent体无provider仍200且收据agentProvider为unknown() {
+    Response resp = post(TENANT, allowBody(), null);
+
+    assertThat(resp.statusCode()).isEqualTo(200);
+    UUID id = UUID.fromString(resp.jsonPath().getString("decisionId"));
+    String metadata = QuarkusTransaction.requiringNew().call(() -> {
+      GuardDecisionEntity e = GuardDecisionEntity.findById(id);
+      AuditLog row = AuditLog.findById(e.receiptAuditId);
+      return row.metadata;
+    });
+    assertThat(metadata).contains("\"agentProvider\":\"unknown\"").contains("\"agentModel\":\"claude-fable-5-1\"")
+        .contains("\"agentSession\":\"s-1\"").contains("\"agentSource\":\"declared\"");
+  }
+
+  @Test
+  void agent_model含控制字符返回400_invalid_action() {
+    Map<String, Object> req = new HashMap<>(allowBody());
+    @SuppressWarnings("unchecked")
+    Map<String, Object> action = new HashMap<>((Map<String, Object>) req.get("action"));
+    action.put("agent", Map.of("model", "bad\u0001model", "session", "s"));
+    req.put("action", action);
+
+    Response resp = post(TENANT, req, null);
+
+    assertThat(resp.statusCode()).isEqualTo(400);
+    assertThat(resp.jsonPath().getString("error")).isEqualTo("invalid_action");
   }
 
   @Test

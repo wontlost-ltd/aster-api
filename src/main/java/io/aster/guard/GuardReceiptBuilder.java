@@ -6,6 +6,7 @@ import io.aster.audit.chain.AuditChainAppender;
 import io.aster.policy.common.PIIRedactor;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
+import io.aster.policy.evidence.EvaluationEvidence;
 import jakarta.enterprise.context.ApplicationScoped;
 
 import java.time.Instant;
@@ -44,13 +45,13 @@ public class GuardReceiptBuilder {
   static final int METADATA_BUDGET = 3800;
   /**
    * 决策事件超出预算时的缩短顺序：先缩对追溯价值最低、体积最大的字段，最后才动「谁对什么做了什么」。
-   * reason（规则说明）→ principalRoles → agentModel → principalType → resourceType → resourceId → actionName
+   * reason（规则说明）→ agentSession → agentVersion → principalRoles → agentModel → agentProvider → principalType → resourceType → resourceId → actionName
    * → principalId；文本每轮缩到不超过一半，列表每轮删掉最后一项，直到达标或该字段为空，再处理下一个。
    * 身份与完整性字段（decisionId、approvalId、contextHash、outcome、effectiveOutcome、reasonCode、
    * ruleId、policyVersionId、sourceHash、idempotencyKey）永不改动；自由文本全部清空仍超限时，最后才删除 controls。
    */
-  static final List<String> SHRINK_ORDER = List.of("reason", "principalRoles", "agentModel", "principalType",
-      "resourceType", "resourceId", "actionName", "principalId");
+  static final List<String> SHRINK_ORDER = List.of("reason", "agentSession", "agentVersion", "principalRoles",
+      "agentModel", "agentProvider", "principalType", "resourceType", "resourceId", "actionName", "principalId");
   /**
    * 审批事件唯一可缩短的键：comment 是审批人自由填写的理由；decidedBy、requiredRole 是审批的身份事实，
    * 与 decisionId、approvalId、outcome、decisionReceiptHash 一样永不改动。按现有列宽（comment ≤ 1000、
@@ -78,7 +79,13 @@ public class GuardReceiptBuilder {
     put(m, "resourceType", clip(draft.resourceType(), MAX_TEXT));
     put(m, "resourceId", clip(draft.resourceId(), MAX_TEXT));
     put(m, "contextHash", draft.contextHash());
-    put(m, "agentModel", clip(draft.agentModel(), MAX_TEXT));
+    if (draft.agent() != null) {
+      put(m, "agentProvider", clip(draft.agent().provider(), MAX_TEXT));
+      put(m, "agentModel", clip(draft.agent().model(), MAX_TEXT));
+      put(m, "agentVersion", clip(draft.agent().version(), MAX_TEXT));
+      put(m, "agentSession", clip(draft.agent().session(), MAX_TEXT));
+      m.put("agentSource", EvaluationEvidence.SOURCE_DECLARED);
+    }
     put(m, "policyVersionId", draft.policyVersion() == null ? null : draft.policyVersion().id());
     put(m, "sourceHash", draft.policyVersion() == null ? null : clip(draft.policyVersion().sourceHash(), MAX_TEXT));
     put(m, "approvalId", approvalId);

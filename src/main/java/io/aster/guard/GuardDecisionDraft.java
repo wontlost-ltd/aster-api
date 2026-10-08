@@ -1,6 +1,7 @@
 package io.aster.guard;
 
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
+import io.aster.policy.evidence.AgentIdentity;
 import io.aster.policy.governance.VerdictView;
 
 import java.util.Collections;
@@ -18,6 +19,7 @@ import java.util.Set;
  * @param outcome    {@code ALLOW | DENY | REQUIRE_APPROVAL | ESCALATE}
  * @param role       Verdict 的 role（REQUIRE_APPROVAL 时即所需审批角色）
  * @param reasonCode fail-closed 原因；Verdict 正常返回时为 null
+ * @param agent      调用方自报的模型身份（已校验归一）；请求未带 agent 时为 null
  */
 public record GuardDecisionDraft(
     String tenantId,
@@ -32,7 +34,8 @@ public record GuardDecisionDraft(
     String reason,
     String ruleId,
     List<String> controls,
-    GuardReasonCode reasonCode) {
+    GuardReasonCode reasonCode,
+    AgentIdentity agent) {
 
   static final String ALLOW = "ALLOW";
   static final String DENY = "DENY";
@@ -50,25 +53,25 @@ public record GuardDecisionDraft(
   /** 补上评估前解析到的活跃策略版本（幂等查重在版本解析之前完成）。 */
   public GuardDecisionDraft withPolicyVersion(PolicyVersionView version) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash,
-        version, outcome, role, reason, ruleId, controls, reasonCode);
+        version, outcome, role, reason, ruleId, controls, reasonCode, agent);
   }
 
   /** 记录被执行规则的身份（{@code @id} / {@code @control}），与结论无关。 */
   public GuardDecisionDraft withRule(String newRuleId, List<String> newControls) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash,
-        policyVersion, outcome, role, reason, newRuleId, newControls, reasonCode);
+        policyVersion, outcome, role, reason, newRuleId, newControls, reasonCode, agent);
   }
 
   /** 采纳规则返回的 Verdict 结论。 */
   public GuardDecisionDraft withVerdict(VerdictView verdict) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash,
-        policyVersion, verdict.outcome(), verdict.role(), verdict.reason(), ruleId, controls, null);
+        policyVersion, verdict.outcome(), verdict.role(), verdict.reason(), ruleId, controls, null, agent);
   }
 
   /** fail-closed：改判 DENY 并记录原因；保留 ruleId / controls 以便追溯被评估的规则，清掉不再成立的 role / reason。 */
   public GuardDecisionDraft deny(GuardReasonCode code) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash,
-        policyVersion, DENY, null, null, ruleId, controls, code);
+        policyVersion, DENY, null, null, ruleId, controls, code, agent);
   }
 
   /** REQUIRE_APPROVAL / ESCALATE 需要人工复核。 */
@@ -115,10 +118,6 @@ public record GuardDecisionDraft(
 
   public String resourceId() {
     return text("resource_id");
-  }
-
-  public String agentModel() {
-    return text("agent_model");
   }
 
   public String reasonCodeValue() {

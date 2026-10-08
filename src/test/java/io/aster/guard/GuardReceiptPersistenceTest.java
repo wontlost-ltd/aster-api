@@ -4,11 +4,11 @@ import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.api.GuardActionRequest.Action;
 import io.aster.guard.api.GuardActionRequest.ActionName;
-import io.aster.guard.api.GuardActionRequest.Agent;
 import io.aster.guard.api.GuardActionRequest.Principal;
 import io.aster.guard.api.GuardActionRequest.Resource;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
 import io.aster.policy.entity.AuditLog;
+import io.aster.policy.evidence.AgentIdentity;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
@@ -32,6 +32,8 @@ class GuardReceiptPersistenceTest {
   private static final String APPROVAL_ID = "abcdef12-1234-5678-9012-345678901234";
   private static final String IDEMPOTENCY_KEY = "87654321-4321-8765-2109-fedcba654321";
 
+  private static final AgentIdentity AGENT = new AgentIdentity("anthropic", "claude-fable-5-1", "2026", "s-1");
+
   @Inject GuardReceiptBuilder receiptBuilder;
   @Inject GuardActionMapper mapper;
   @Inject AuditChainAppender appender;
@@ -39,10 +41,10 @@ class GuardReceiptPersistenceTest {
   @Test
   void 数字形UUID身份键逐字写入audit_logs_metadata() {
     Action a = new Action(new Principal("agent-42", "agent", List.of("ops-bot")), new ActionName("delete_customer_record"),
-        new Resource("customer", "C-1001"), Map.of("amount", 250000), new Agent("claude-fable-5-1", "s-1"));
+        new Resource("customer", "C-1001"), Map.of("amount", 250000), AGENT);
     GuardDecisionDraft draft = new GuardDecisionDraft(TENANT, "guard.probe", "decide", IDEMPOTENCY_KEY, mapper.flatten(a),
         mapper.contextHash(a.context()), new PolicyVersionView(1L, "b".repeat(64), 1L), "REQUIRE_APPROVAL",
-        "Data Protection Officer", "customer record deletion", "PROBE-001", List.of(), null);
+        "Data Protection Officer", "customer record deletion", "PROBE-001", List.of(), null, AGENT);
 
     AppendedRecord appended = appender.appendSync(receiptBuilder.decisionEvent(draft, UUID.fromString(DECISION_ID),
         UUID.fromString(APPROVAL_ID), "user-1"));

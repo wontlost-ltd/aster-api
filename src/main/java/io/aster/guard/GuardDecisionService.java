@@ -11,6 +11,7 @@ import io.aster.guard.api.GuardDecisionResponse.ReceiptView;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.api.model.PolicyEvaluationResult;
 import io.aster.policy.entity.PolicyVersion;
+import io.aster.policy.evidence.AgentIdentity;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.repository.PolicySourceRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -117,7 +118,8 @@ public class GuardDecisionService {
     validateAddress(req);
     Map<String, Object> flat = mapper.flatten(req.action());
     GuardDecisionDraft base = new GuardDecisionDraft(tenantId, req.policyModule(), req.policyFunction(),
-        idempotencyKey, flat, mapper.contextHash(req.action().context()), null, null, null, null, null, null, null);
+        idempotencyKey, flat, mapper.contextHash(req.action().context()), null, null, null, null, null, null, null,
+        declaredAgent(req.action().agent()));
     IdempotencyFingerprint fingerprint = IdempotencyFingerprint.of(base);
     Optional<GuardDecisionResponse> replay = findByIdempotencyKey(tenantId, idempotencyKey, fingerprint);
     if (replay.isPresent()) {
@@ -221,6 +223,18 @@ public class GuardDecisionService {
   }
 
   /** 空白视为未提供；超长（列宽 255）或含控制字符在评估与写收据之前就拒绝。 */
+  /** 旧请求体只带 model/session（provider 缺失）时补 unknown；其余走 AgentIdentity 统一校验，非法转 invalid_action。 */
+  private static AgentIdentity declaredAgent(AgentIdentity raw) {
+    if (raw == null) {
+      return null;
+    }
+    try {
+      return raw.provider() == null ? AgentIdentity.ofModel(raw.model(), raw.session()) : AgentIdentity.validated(raw);
+    } catch (IllegalArgumentException e) {
+      throw new GuardInvalidActionException(e.getMessage());
+    }
+  }
+
   private static String normalizeIdempotencyKey(String key) {
     if (key == null || key.isBlank()) {
       return null;

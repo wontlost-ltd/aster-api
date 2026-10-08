@@ -1,5 +1,7 @@
 package io.aster.guard.api;
 
+import io.aster.policy.evidence.AgentIdentity;
+
 import java.util.List;
 import java.util.Map;
 
@@ -17,7 +19,7 @@ import java.util.Map;
 public record GuardActionRequest(String policyModule, String policyFunction, Action action, Integer waitSeconds) {
 
   /** 提议动作：谁（principal）对什么（resource）做什么（action），附带业务上下文与 Agent 信息。 */
-  public record Action(Principal principal, ActionName action, Resource resource, Map<String, Object> context, Agent agent) {}
+  public record Action(Principal principal, ActionName action, Resource resource, Map<String, Object> context, AgentIdentity agent) {}
 
   /** 发起主体；{@code id} 必填，{@code type} 缺省 {@code "agent"}。 */
   public record Principal(String id, String type, List<String> roles) {}
@@ -27,7 +29,4 @@ public record GuardActionRequest(String policyModule, String policyFunction, Act
 
   /** 动作作用的资源；缺省为空串。 */
   public record Resource(String type, String id) {}
-
-  /** 发起动作的 Agent；{@code session} 仅供客户端关联，不进入规则参数。 */
-  public record Agent(String model, String session) {}
 }
