@@ -1,13 +1,24 @@
 package io.aster.security.apikey;
 
+import io.aster.policy.rest.RequestIdentityResolver;
+import io.aster.policy.security.NonceService;
 import io.aster.policy.security.TrialBypassPredicate;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.event.Observes;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.container.ContainerRequestContext;
+import jakarta.ws.rs.core.UriInfo;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 import static io.aster.security.apikey.InternalCallerFilter.Classification;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -17,13 +28,15 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
  * R27-Minor-3：InternalCallerFilter 单元测试。
  *
  * <p>测试 path 分类 + 旁路决策的纯函数 {@link InternalCallerFilter#classify}，
- * 以及 HMAC canonical 形式（method + path + ts）。不依赖 Quarkus 上下文。
+ * 以及 HMAC canonical v3 经真实 {@code filter()} 的验签行为（mock 请求上下文）。不依赖 Quarkus 上下文。
  *
  * <p>覆盖的关键回归点：
  * <ul>
@@ -278,7 +291,7 @@ class InternalCallerFilterTest {
     }
 
     // ============================================================
-    // HMAC sign(): canonical 形式 method + "\n" + path + "\n" + ts
+    // HMAC sign() 原语：确定性 + 输入敏感（与 canonical 版本无关）
     // ============================================================
 
     @Test
@@ -322,49 +335,144 @@ class InternalCallerFilterTest {
     }
 
     // ============================================================
-    // 红队 P0-C：7 行 canonical（method\npath\nts\nnonce\nbodySha256\ntenant\nrole）
-    // 证明 body / tenant / role / nonce 全部进签名 —— 任一改动都会使签名失配，
-    // 堵住"5min 窗口内改 body 烧 LLM 预算 / 改 tenant 假冒 / 改 role 提权 / 原样重放"。
-    // 与 aster-cloud signInternalCallerHeaders 逐字节对齐。
+    // canonical v3（ADR 0042 §4.1）：method\npath\nquery\nts\nnonce\nbodySha256\ntenant\nrole\nuserId\nbusinessRoles
+    // 经真实 filter() 验证：body / tenant / role / nonce / query / userId / 业务角色任一被改都 403
+    // invalid_signature；角色头的书写顺序不影响签名。签名统一由 InternalCallerSigning 生成，
+    // 它也是 cloud signInternalCallerHeaders 的对照实现。
     // ============================================================
 
-    private static String canonical(String method, String path, long ts, String nonce,
-                                    String bodySha, String tenant, String role) {
-        return method + "\n" + path + "\n" + ts + "\n" + nonce + "\n"
-            + bodySha + "\n" + tenant + "\n" + role;
+    private static final String KEY = "unit-internal-caller-key-32bytes!";
+    private static final String RECEIPTS = "/api/v1/audit/receipts";
+    private static final String SOURCE = "/api/v1/policies/evaluate-source";
+
+    private static InternalCallerFilter filter() {
+        InternalCallerFilter f = new InternalCallerFilter();
+        f.hmacKey = Optional.of(KEY);
+        f.nonceService = mock(NonceService.class);
+        return f;
+    }
+
+    /** 构造带指定头、查询串与 body 的请求上下文（query 不含 '?'，空串表示无查询）。 */
+    private static ContainerRequestContext request(String method, String path, String query, String body,
+                                                   Map<String, String> headers) {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        UriInfo uri = mock(UriInfo.class);
+        when(uri.getPath()).thenReturn(path);
+        when(uri.getRequestUri()).thenReturn(
+            URI.create("http://localhost" + path + (query.isEmpty() ? "" : "?" + query)));
+        ContainerRequestContext c = mock(ContainerRequestContext.class);
+        when(c.getUriInfo()).thenReturn(uri);
+        when(c.getMethod()).thenReturn(method);
+        when(c.getLength()).thenReturn(bytes.length);
+        when(c.getEntityStream()).thenReturn(new ByteArrayInputStream(bytes));
+        headers.forEach((k, v) -> when(c.getHeaderString(k)).thenReturn(v));
+        return c;
+    }
+
+    /** 跑一次 filter：放行返回 "ok"，被拒返回 403 响应里的 reason。 */
+    private static String run(ContainerRequestContext c) {
+        try {
+            filter().filter(c).await().indefinitely();
+            return "ok";
+        } catch (WebApplicationException e) {
+            assertEquals(403, e.getResponse().getStatus());
+            return String.valueOf(((Map<?, ?>) e.getResponse().getEntity()).get("reason"));
+        }
+    }
+
+    private static Map<String, String> receiptHeaders() {
+        return new HashMap<>(InternalCallerSigning.headers(KEY, "GET", RECEIPTS, "correlationIds=c1", "",
+            "t-1", "member", "u-1", List.of("DPO", "CISO")));
+    }
+
+    private static Map<String, String> with(Map<String, String> h, String name, String value) {
+        Map<String, String> copy = new HashMap<>(h);
+        copy.put(name, value);
+        return copy;
     }
 
     @Test
-    void bodyIsBoundIntoSignature() {
-        String shaCheap = InternalCallerFilter.sha256Hex("{\"model\":\"cheap\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        String shaPricey = InternalCallerFilter.sha256Hex("{\"model\":\"pricey\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        String a = InternalCallerFilter.sign("k", canonical("POST", "/api/v1/ai/complete", 1700000000L, "n1", shaCheap, "t", ""));
-        String b = InternalCallerFilter.sign("k", canonical("POST", "/api/v1/ai/complete", 1700000000L, "n1", shaPricey, "t", ""));
-        assertNotEquals(a, b, "body 不同（换 LLM model）必须产生不同签名");
+    void v3签名原样通过() {
+        assertEquals("ok", run(request("GET", RECEIPTS, "correlationIds=c1", "", receiptHeaders())));
     }
 
     @Test
-    void tenantIsBoundIntoSignature() {
-        String sha = InternalCallerFilter.sha256Hex("body".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        String a = InternalCallerFilter.sign("k", canonical("POST", "/api/v1/policies/evaluate-source", 1700000000L, "n1", sha, "tenant-a", ""));
-        String b = InternalCallerFilter.sign("k", canonical("POST", "/api/v1/policies/evaluate-source", 1700000000L, "n1", sha, "tenant-b", ""));
-        assertNotEquals(a, b, "tenant 不同（跨租户假冒）必须产生不同签名");
+    void v3签名绑定query() {
+        assertEquals("invalid_signature",
+            run(request("GET", RECEIPTS, "correlationIds=c2", "", receiptHeaders())));
     }
 
     @Test
-    void roleIsBoundIntoSignature() {
-        String sha = InternalCallerFilter.sha256Hex("body".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        String a = InternalCallerFilter.sign("k", canonical("POST", "/api/v1/policies/evaluate-source", 1700000000L, "n1", sha, "t", "MEMBER"));
-        String b = InternalCallerFilter.sign("k", canonical("POST", "/api/v1/policies/evaluate-source", 1700000000L, "n1", sha, "t", "ADMIN"));
-        assertNotEquals(a, b, "role 不同（提权）必须产生不同签名");
+    void v3签名绑定userId() {
+        assertEquals("invalid_signature",
+            run(request("GET", RECEIPTS, "correlationIds=c1", "", with(receiptHeaders(), "X-User-Id", "u-2"))));
     }
 
     @Test
-    void nonceIsBoundIntoSignature() {
-        String sha = InternalCallerFilter.sha256Hex("body".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        String a = InternalCallerFilter.sign("k", canonical("POST", "/api/v1/ai/complete", 1700000000L, "nonce-A", sha, "t", ""));
-        String b = InternalCallerFilter.sign("k", canonical("POST", "/api/v1/ai/complete", 1700000000L, "nonce-B", sha, "t", ""));
-        assertNotEquals(a, b, "nonce 不同必须产生不同签名（重放防护基础）");
+    void v3签名绑定业务角色() {
+        assertEquals("invalid_signature", run(request("GET", RECEIPTS, "correlationIds=c1", "",
+            with(receiptHeaders(), "X-User-Business-Roles", "CISO"))));
+    }
+
+    @Test
+    void v3签名与角色头顺序无关() {
+        // 按 [DPO,CISO] 签名，头改写成 "CISO, DPO,CISO"：规范化（trim/去重/排序）后同为 "CISO,DPO"。
+        assertEquals("ok", run(request("GET", RECEIPTS, "correlationIds=c1", "",
+            with(receiptHeaders(), "X-User-Business-Roles", "CISO, DPO,CISO"))));
+    }
+
+    @Test
+    void v3签名绑定body_tenant_role_nonce() {
+        String body = "{\"model\":\"cheap\"}";
+        Map<String, String> h = InternalCallerSigning.headers(KEY, "POST", SOURCE, "", body,
+            "tenant-a", "MEMBER", "", List.of());
+        assertEquals("ok", run(request("POST", SOURCE, "", body, h)));
+        assertEquals("invalid_signature", run(request("POST", SOURCE, "", "{\"model\":\"pricey\"}", h)));
+        assertEquals("invalid_signature", run(request("POST", SOURCE, "", body, with(h, "X-Tenant-Id", "tenant-b"))));
+        assertEquals("invalid_signature", run(request("POST", SOURCE, "", body, with(h, "X-User-Role", "ADMIN"))));
+        assertEquals("invalid_signature", run(request("POST", SOURCE, "", body, with(h, "X-Aster-Nonce", "other"))));
+    }
+
+    @Test
+    void v2签名不再被接受() {
+        // 旧 7 行 canonical（无 query/userId/businessRoles）一律 invalid_signature，无回退。
+        long ts = System.currentTimeMillis() / 1000;
+        String v2 = "GET\n" + RECEIPTS + "\n" + ts + "\nn-v2\n" + InternalCallerFilter.sha256Hex(new byte[0])
+            + "\nt-1\nmember";
+        Map<String, String> h = Map.of(
+            "X-Internal-Caller", "cloud-bff",
+            "X-Aster-Timestamp", Long.toString(ts),
+            "X-Aster-Nonce", "n-v2",
+            "X-Internal-Signature", InternalCallerFilter.sign(KEY, v2),
+            "X-Tenant-Id", "t-1",
+            "X-User-Role", "member");
+        assertEquals("invalid_signature", run(request("GET", RECEIPTS, "", "", h)));
+    }
+
+    @Test
+    void 验签通过后写入签过的身份属性() {
+        ContainerRequestContext c = request("GET", RECEIPTS, "correlationIds=c1", "",
+            with(receiptHeaders(), "X-User-Business-Roles", " DPO ,CISO,,"));
+        assertEquals("ok", run(c));
+        verify(c).setProperty(InternalCallerFilter.HMAC_VERIFIED_PROP, Boolean.TRUE);
+        verify(c).setProperty(RequestIdentityResolver.PROP_IDENTITY_USER_ID, "u-1");
+        verify(c).setProperty(RequestIdentityResolver.PROP_BUSINESS_ROLES, List.of("CISO", "DPO"));
+    }
+
+    @Test
+    void 验签失败不写身份属性() {
+        ContainerRequestContext c = request("GET", RECEIPTS, "correlationIds=c1", "",
+            with(receiptHeaders(), "X-User-Id", "u-2"));
+        assertEquals("invalid_signature", run(c));
+        verify(c, never()).setProperty(org.mockito.ArgumentMatchers.eq(RequestIdentityResolver.PROP_IDENTITY_USER_ID),
+            org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void parseRoles规范化() {
+        assertEquals(List.of(), InternalCallerFilter.parseRoles(null));
+        assertEquals(List.of(), InternalCallerFilter.parseRoles(" , "));
+        assertEquals(List.of("CISO", "DPO"), InternalCallerFilter.parseRoles("DPO, CISO,DPO,"));
     }
 
     @Test

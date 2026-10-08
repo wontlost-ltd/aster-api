@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.aster.security.apikey.InternalCallerSigning;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
@@ -11,11 +12,7 @@ import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 import org.junit.jupiter.api.Test;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 
 import static io.restassured.RestAssured.given;
@@ -91,59 +88,15 @@ class PolicyEvaluationReplayOrderingTest {
         }
     }
 
-    // ---------------------------------------------------------------
-    // HMAC 签名工具（与 InternalCallerFilterHmacIT 一致的 canonical 构造）
-    // ---------------------------------------------------------------
-
-    private static String sha256Hex(String body) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(md.digest(body.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private static String sign(String canonical) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(HMAC_KEY.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            return HexFormat.of().formatHex(mac.doFinal(canonical.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    /** canonical：method\npath\nts\nnonce\nbodySha256\ntenant\nrole。 */
-    private static String canonical(long ts, String nonce, String body, String tenant, String role) {
-        return "POST\n" + PATH + "\n" + ts + "\n" + nonce + "\n" + sha256Hex(body) + "\n" + tenant + "\n" + role;
-    }
-
-    private static long nowSec() {
-        return System.currentTimeMillis() / 1000;
-    }
-
-    private static String uniqueNonce(String tag) {
-        return "replay-order-" + tag + "-" + System.nanoTime();
-    }
-
-    /** 发起一次 HMAC 已验证的内部调用方请求（cloud BFF 视角）。 */
+    /** 发起一次 HMAC 已验证的内部调用方请求（cloud BFF 视角，canonical v3 由共享助手签名，query 一并签入）。 */
     private static Response hmacVerifiedRequest(String body, String tag, boolean trace, boolean replayCapture) {
-        long ts = nowSec();
-        String nonce = uniqueNonce(tag);
-        String sig = sign(canonical(ts, nonce, body, TENANT, ROLE));
-
+        String query = "trace=" + trace + "&replayCapture=" + replayCapture;
         return given()
             .header("Content-Type", "application/json")
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            .header("X-Aster-Nonce", nonce)
-            .header("X-Internal-Signature", sig)
-            .header("X-Tenant-Id", TENANT)
-            .header("X-User-Role", ROLE)
+            .headers(InternalCallerSigning.headers(HMAC_KEY, "POST", PATH, query, body, TENANT, ROLE, "", List.of()))
             .body(body)
             .when()
-            .post(PATH + "?trace=" + trace + "&replayCapture=" + replayCapture);
+            .post(PATH + "?" + query);
     }
 
     // 最小可编译 CNL：确定性返回一个整数，避免非确定性输出污染 canonicalOutputHash 断言。

@@ -2,16 +2,13 @@ package io.aster.policy.rest;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.aster.security.apikey.InternalCallerSigning;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.response.Response;
 import org.junit.jupiter.api.Test;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.HexFormat;
+import java.util.List;
 
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -88,33 +85,14 @@ class PolicyEvaluationVerdictRestTest {
         request.put("locale", "en-US");
         String body = MAPPER.writeValueAsString(request);
 
-        long ts = System.currentTimeMillis() / 1000;
-        String nonce = "verdict-rest-" + tag + "-" + System.nanoTime();
+        String query = "trace=false&replayCapture=false";
         Response resp = given()
             .header("Content-Type", "application/json")
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            .header("X-Aster-Nonce", nonce)
-            .header("X-Internal-Signature", sign(canonical(ts, nonce, body)))
-            .header("X-Tenant-Id", TENANT)
-            .header("X-User-Role", ROLE)
+            .headers(InternalCallerSigning.headers(HMAC_KEY, "POST", PATH, query, body, TENANT, ROLE, "", List.of()))
             .body(body)
             .when()
-            .post(PATH + "?trace=false&replayCapture=false");
+            .post(PATH + "?" + query);
         assertEquals(200, resp.statusCode(), resp.asString());
         return MAPPER.readTree(resp.asString());
-    }
-
-    /** canonical：method\npath\nts\nnonce\nbodySha256\ntenant\nrole（与 InternalCallerFilter 一致）。 */
-    private static String canonical(long ts, String nonce, String body) throws Exception {
-        String bodyHash = HexFormat.of().formatHex(
-            MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8)));
-        return "POST\n" + PATH + "\n" + ts + "\n" + nonce + "\n" + bodyHash + "\n" + TENANT + "\n" + ROLE;
-    }
-
-    private static String sign(String canonical) throws Exception {
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(HMAC_KEY.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-        return HexFormat.of().formatHex(mac.doFinal(canonical.getBytes(StandardCharsets.UTF_8)));
     }
 }

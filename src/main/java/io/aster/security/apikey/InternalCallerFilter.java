@@ -1,5 +1,6 @@
 package io.aster.security.apikey;
 
+import io.aster.policy.rest.RequestIdentityResolver;
 import io.quarkus.runtime.StartupEvent;
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -19,7 +20,9 @@ import javax.crypto.spec.SecretKeySpec;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -292,8 +295,7 @@ public class InternalCallerFilter {
         String caller = ctx.getHeaderString("X-Internal-Caller");
         String timestamp = ctx.getHeaderString("X-Aster-Timestamp");
         String signature = ctx.getHeaderString("X-Internal-Signature");
-        // 红队 P0-C：nonce 必填（绑定进 canonical + 重放去重）。旧 v1（无 nonce 的 3 行签名）
-        // 无真实用户，无需兼容窗口——直接只认 v2，缺 nonce = 缺凭证拒绝。
+        // 红队 P0-C：nonce 必填（绑定进 canonical + 重放去重）。缺 nonce = 缺凭证拒绝。
         String nonce = ctx.getHeaderString("X-Aster-Nonce");
 
         if (!"cloud-bff".equals(caller) || timestamp == null || signature == null || nonce == null) {
@@ -320,13 +322,25 @@ public class InternalCallerFilter {
             throw forbidden("hmac_not_configured", p);
         }
 
-        // 红队 P0-C：canonical = method\npath\nts\nnonce\nbodySha256\ntenant\nrole，
-        // 绑定 body/tenant/role/nonce，修掉「改 body 烧预算 / 改 tenant/role 假冒提权 / 重放」。
+        // canonical v3（ADR 0042 §4.1）：
+        //   method\npath\nquery\nts\nnonce\nbodySha256\ntenant\nrole\nuserId\nbusinessRoles
+        // v2 只绑 body/tenant/role/nonce，query 与用户身份不在签名内：GET 收据查询的
+        // correlationIds 可被改写，X-User-Id / X-User-Business-Roles 可被中间人替换后冒充审批人。
+        // v3 把它们一并签入，验签通过后下游只取签过的身份。
+        //   query：原始查询串（不含 '?'），无则空串；
+        //   userId：X-User-Id 原值，无则空串；
+        //   businessRoles：X-User-Business-Roles 逗号切分、trim、去空、去重、排序后以 ',' 拼接，
+        //     头里的顺序不影响签名（角色名由 cloud 侧保证不含逗号）。
+        // 不保留 v2 回退：两端同步升级，旧签名一律 invalid_signature。
         // body 需在 @ServerRequestFilter 里缓存后重置流（镜像 RequestSignatureFilter），
         // 故改为 Uni + worker 线程执行（避免 event-loop 阻塞读流 + DB nonce 写入）。
         final String method = ctx.getMethod();
+        final String rawQuery = ctx.getUriInfo().getRequestUri().getRawQuery();
+        final String signedQuery = rawQuery == null ? "" : rawQuery;
         final String tenant = headerOrEmpty(ctx, "X-Tenant-Id");
         final String role = headerOrEmpty(ctx, "X-User-Role");
+        final String userId = headerOrEmpty(ctx, "X-User-Id");
+        final List<String> roles = parseRoles(ctx.getHeaderString("X-User-Business-Roles"));
         return Uni.createFrom().item(() -> {
             try {
                 // 红队 P0-C（Codex P1）：显式 body 上限。Quarkus 全局 quarkus.http.limits.
@@ -343,8 +357,8 @@ public class InternalCallerFilter {
                 ctx.setEntityStream(new ByteArrayInputStream(body));
 
                 String bodySha = sha256Hex(body);
-                String canonical = method + "\n" + p + "\n" + ts + "\n" + nonce + "\n"
-                    + bodySha + "\n" + tenant + "\n" + role;
+                String canonical = String.join("\n", method, p, signedQuery, Long.toString(ts), nonce,
+                    bodySha, tenant, role, userId, String.join(",", roles));
                 String expected = sign(hmacKey.get(), canonical);
                 if (!constantTimeEquals(expected, signature)) {
                     throw forbidden("invalid_signature", p);
@@ -358,6 +372,9 @@ public class InternalCallerFilter {
                 // Phase 2 BYOK：把已验签 body 字节挂到请求属性，供 resource 从可信 body 解析
                 // _byok envelope（只有走到这里=签名已过的请求才有；旁路路径拿不到）。
                 ctx.setProperty(VERIFIED_BODY_PROP, body);
+                // 身份只取签过的值（ADR 0042 §4.1）：HMAC 调用者的用户与业务角色不再从未签头回退。
+                ctx.setProperty(RequestIdentityResolver.PROP_IDENTITY_USER_ID, userId);
+                ctx.setProperty(RequestIdentityResolver.PROP_BUSINESS_ROLES, roles);
 
                 // 签名通过后再消费 nonce（防重放）。requestHash 绑定 method/path/query/body，
                 // tenant 维度键（内部调用无浏览器 tenant 时用 "cloud-bff" 占位，跨 pod 唯一）。
@@ -379,6 +396,22 @@ public class InternalCallerFilter {
     private static String headerOrEmpty(ContainerRequestContext ctx, String name) {
         String v = ctx.getHeaderString(name);
         return v == null ? "" : v;
+    }
+
+    /**
+     * 解析 {@code X-User-Business-Roles}：逗号切分、trim、去空、去重、排序，返回不可变列表。
+     * 排序使 canonical 与头里的书写顺序无关；缺头或全空返回空列表。
+     */
+    static List<String> parseRoles(String header) {
+        if (header == null || header.isBlank()) {
+            return List.of();
+        }
+        return Arrays.stream(header.split(","))
+            .map(String::trim)
+            .filter(r -> !r.isEmpty())
+            .distinct()
+            .sorted()
+            .toList();
     }
 
     /** body sha256（hex）。空 body → 空字节的 sha256（与 cloud 端 sha256Hex 一致）。 */

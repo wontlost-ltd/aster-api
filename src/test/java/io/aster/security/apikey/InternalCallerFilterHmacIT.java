@@ -5,18 +5,15 @@ import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import org.junit.jupiter.api.Test;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.HexFormat;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static io.restassured.RestAssured.given;
 
 /**
  * 红队 P0-C 端到端验证：InternalCallerFilter 的加固 HMAC 走真实 filter 链
- * （@ServerRequestFilter body 缓存 + 7 行 canonical + nonce 去重）。
+ * （@ServerRequestFilter body 缓存 + canonical v3 + nonce 去重）。
  *
  * <p>纯函数 canonical 由 {@link InternalCallerFilterTest} 覆盖；这里验证**活的 filter**：
  * <ul>
@@ -50,36 +47,10 @@ class InternalCallerFilterHmacIT {
         }
     }
 
-    private static String sha256Hex(String body) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(md.digest(body.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private static String sign(String canonical) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(HMAC_KEY.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            return HexFormat.of().formatHex(mac.doFinal(canonical.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    /** canonical：method\npath\nts\nnonce\nbodySha256\ntenant\nrole。 */
-    private static String canonical(long ts, String nonce, String body, String tenant, String role) {
-        return "POST\n" + PATH + "\n" + ts + "\n" + nonce + "\n" + sha256Hex(body) + "\n" + tenant + "\n" + role;
-    }
-
-    private static long nowSec() {
-        return System.currentTimeMillis() / 1000;
-    }
-
-    private static String uniqueNonce(String tag) {
-        return "it-c-" + tag + "-" + System.nanoTime();
+    /** canonical v3 签名头（由共享助手生成，与 cloud 侧逐字节对齐）。 */
+    private static Map<String, String> signed(String body) {
+        return new HashMap<>(InternalCallerSigning.headers(HMAC_KEY, "POST", PATH, "", body,
+            TENANT, ROLE, "", List.of()));
     }
 
     // SourcePolicyRequest：source + context 必填。用最小可编译 CNL，context 为空对象。
@@ -89,19 +60,10 @@ class InternalCallerFilterHmacIT {
 
     @Test
     void correctlySignedRequest_passesFilter() {
-        long ts = nowSec();
-        String nonce = uniqueNonce("ok");
-        String sig = sign(canonical(ts, nonce, VALID_BODY, TENANT, ROLE));
-
         // 越过 filter 的判据：不是 403（可能 200/400 视下游校验，但绝不能被 filter 403 掉）。
         int status = given()
             .header("Content-Type", "application/json")
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            .header("X-Aster-Nonce", nonce)
-            .header("X-Internal-Signature", sig)
-            .header("X-Tenant-Id", TENANT)
-            .header("X-User-Role", ROLE)
+            .headers(signed(VALID_BODY))
             .body(VALID_BODY)
             .when().post(PATH)
             .then().extract().statusCode();
@@ -112,20 +74,13 @@ class InternalCallerFilterHmacIT {
 
     @Test
     void tamperedBody_rejected403() {
-        long ts = nowSec();
-        String nonce = uniqueNonce("body");
         // 用原 body 签名，却发送不同 body（模拟 5min 内改请求体烧预算）。
-        String sig = sign(canonical(ts, nonce, VALID_BODY, TENANT, ROLE));
+        Map<String, String> h = signed(VALID_BODY);
         String tamperedBody = VALID_BODY.replace("Return 1", "Return 999");
 
         given()
             .header("Content-Type", "application/json")
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            .header("X-Aster-Nonce", nonce)
-            .header("X-Internal-Signature", sig)
-            .header("X-Tenant-Id", TENANT)
-            .header("X-User-Role", ROLE)
+            .headers(h)
             .body(tamperedBody)
             .when().post(PATH)
             .then().statusCode(403);
@@ -133,18 +88,12 @@ class InternalCallerFilterHmacIT {
 
     @Test
     void tamperedTenant_rejected403() {
-        long ts = nowSec();
-        String nonce = uniqueNonce("tenant");
-        String sig = sign(canonical(ts, nonce, VALID_BODY, TENANT, ROLE));
+        Map<String, String> h = signed(VALID_BODY);
+        h.put("X-Tenant-Id", "other-tenant"); // 与签名的 TENANT 不符
 
         given()
             .header("Content-Type", "application/json")
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            .header("X-Aster-Nonce", nonce)
-            .header("X-Internal-Signature", sig)
-            .header("X-Tenant-Id", "other-tenant") // 与签名的 TENANT 不符
-            .header("X-User-Role", ROLE)
+            .headers(h)
             .body(VALID_BODY)
             .when().post(PATH)
             .then().statusCode(403);
@@ -152,18 +101,12 @@ class InternalCallerFilterHmacIT {
 
     @Test
     void missingNonce_rejected403() {
-        long ts = nowSec();
-        String nonce = uniqueNonce("nononce");
-        String sig = sign(canonical(ts, nonce, VALID_BODY, TENANT, ROLE));
+        Map<String, String> h = signed(VALID_BODY);
+        h.remove("X-Aster-Nonce"); // 故意不发 X-Aster-Nonce
 
         given()
             .header("Content-Type", "application/json")
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            // 故意不发 X-Aster-Nonce
-            .header("X-Internal-Signature", sig)
-            .header("X-Tenant-Id", TENANT)
-            .header("X-User-Role", ROLE)
+            .headers(h)
             .body(VALID_BODY)
             .when().post(PATH)
             .then().statusCode(403);
@@ -171,19 +114,12 @@ class InternalCallerFilterHmacIT {
 
     @Test
     void replayedNonce_rejected409() {
-        long ts = nowSec();
-        String nonce = uniqueNonce("replay");
-        String sig = sign(canonical(ts, nonce, VALID_BODY, TENANT, ROLE));
+        Map<String, String> h = signed(VALID_BODY);
 
         // 第一次：越过 filter（非 403/409）
         int first = given()
             .header("Content-Type", "application/json")
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            .header("X-Aster-Nonce", nonce)
-            .header("X-Internal-Signature", sig)
-            .header("X-Tenant-Id", TENANT)
-            .header("X-User-Role", ROLE)
+            .headers(h)
             .body(VALID_BODY)
             .when().post(PATH)
             .then().extract().statusCode();
@@ -193,42 +129,28 @@ class InternalCallerFilterHmacIT {
         // 第二次：完全相同的签名 + nonce → UsedNonce 已占用 → 409。
         given()
             .header("Content-Type", "application/json")
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            .header("X-Aster-Nonce", nonce)
-            .header("X-Internal-Signature", sig)
-            .header("X-Tenant-Id", TENANT)
-            .header("X-User-Role", ROLE)
+            .headers(h)
             .body(VALID_BODY)
             .when().post(PATH)
             .then().statusCode(409);
     }
 
-    // 红队 P0-C：只认 v2（nonce 必填）。旧 v1（3 行无 nonce）无真实用户，已删除兼容路径。
-    // v1 形态（缺 X-Aster-Nonce）现在等同缺凭证 → 403，由 missingNonce_rejected403 覆盖。
+    // 只认 v3（nonce 必填）。缺 X-Aster-Nonce 等同缺凭证 → 403，由 missingNonce_rejected403 覆盖。
 
     @Test
     void oversizedBody_rejected403() {
         // 红队 P0-C（Codex 复核建议）：body > 1MB 上限 → filter 快速失败 403 body_too_large。
         // 构造 >1MB 的 JSON body（source 字段塞大量字符）。签名对该大 body 正确签，
         // 证明拦截发生在 body-size 守卫（非签名失败）。
-        long ts = nowSec();
-        String nonce = uniqueNonce("big");
         StringBuilder big = new StringBuilder(1_200_000);
         big.append("{\"source\":\"");
         for (int i = 0; i < 1_200_000; i++) big.append('x');
         big.append("\",\"context\":{}}");
         String body = big.toString();
-        String sig = sign(canonical(ts, nonce, body, TENANT, ROLE));
 
         given()
             .header("Content-Type", "application/json")
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            .header("X-Aster-Nonce", nonce)
-            .header("X-Internal-Signature", sig)
-            .header("X-Tenant-Id", TENANT)
-            .header("X-User-Role", ROLE)
+            .headers(signed(body))
             .body(body)
             .when().post(PATH)
             .then()

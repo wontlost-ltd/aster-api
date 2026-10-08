@@ -136,6 +136,37 @@ class RequestIdentityResolverTest {
     }
 
     @Test
+    @DisplayName("ADR 0042 §4.1：apikey userId 优先于 HMAC 签过的 userId")
+    void performedByApiKeyUserWinsOverSignedIdentity() throws Exception {
+        ContainerRequestContext ctx = mock(ContainerRequestContext.class);
+        when(ctx.getProperty(RequestIdentityResolver.PROP_USER_ID)).thenReturn("key-user");
+        when(ctx.getProperty(RequestIdentityResolver.PROP_IDENTITY_USER_ID)).thenReturn("signed-user");
+        var r = resolver(new TenantContext(), ctx, rctxWith("X-User-Id", "header-user"));
+
+        assertEquals("key-user", r.performedBy());
+    }
+
+    @Test
+    @DisplayName("ADR 0042 §4.1：无 apikey 时取 HMAC 签过的 userId，而非未签头")
+    void performedBySignedIdentityWinsOverHeader() throws Exception {
+        var r = resolver(new TenantContext(),
+            ctxWith(RequestIdentityResolver.PROP_IDENTITY_USER_ID, "signed-user"),
+            rctxWith("X-User-Id", "header-user"));
+
+        assertEquals("signed-user", r.performedBy());
+    }
+
+    @Test
+    @DisplayName("ADR 0042 §4.1：签过的 userId 为空串 → 继续回退头")
+    void performedByBlankSignedIdentityFallsBackToHeader() throws Exception {
+        var r = resolver(new TenantContext(),
+            ctxWith(RequestIdentityResolver.PROP_IDENTITY_USER_ID, ""),
+            rctxWith("X-User-Id", "header-user"));
+
+        assertEquals("header-user", r.performedBy());
+    }
+
+    @Test
     @DisplayName("无任何来源 → anonymous")
     void performedByDefaultsAnonymous() throws Exception {
         var r = resolver(new TenantContext(), mock(ContainerRequestContext.class), null);

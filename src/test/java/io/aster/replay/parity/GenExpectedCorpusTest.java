@@ -3,21 +3,18 @@ package io.aster.replay.parity;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.aster.security.apikey.InternalCallerSigning;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.response.Response;
 import org.junit.jupiter.api.Test;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
@@ -81,47 +78,15 @@ class GenExpectedCorpusTest {
         }
     }
 
-    // ─── HMAC 签名工具（与 PolicyEvaluationReplayOrderingTest 一致的 canonical 构造）───
-
-    private static String sha256Hex(String body) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(md.digest(body.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private static String sign(String canonical) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(HMAC_KEY.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            return HexFormat.of().formatHex(mac.doFinal(canonical.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    /** canonical：method\npath\nts\nnonce\nbodySha256\ntenant\nrole。 */
-    private static String canonical(long ts, String nonce, String body, String tenant, String role) {
-        return "POST\n" + PATH + "\n" + ts + "\n" + nonce + "\n" + sha256Hex(body) + "\n" + tenant + "\n" + role;
-    }
-
-    /** 发一次 HMAC 已验证内部调用方请求（cloud BFF 视角），replayCapture=true。 */
-    private static Response evaluateWithReplayCapture(String body, String tenant, String nonce) {
-        long ts = System.currentTimeMillis() / 1000;
-        String sig = sign(canonical(ts, nonce, body, tenant, ROLE));
+    /** 发一次 HMAC 已验证内部调用方请求（cloud BFF 视角，canonical v3 由共享助手签名），replayCapture=true。 */
+    private static Response evaluateWithReplayCapture(String body, String tenant) {
+        String query = "trace=false&replayCapture=true";
         return given()
             .header("Content-Type", "application/json")
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            .header("X-Aster-Nonce", nonce)
-            .header("X-Internal-Signature", sig)
-            .header("X-Tenant-Id", tenant)
-            .header("X-User-Role", ROLE)
+            .headers(InternalCallerSigning.headers(HMAC_KEY, "POST", PATH, query, body, tenant, ROLE, "", List.of()))
             .body(body)
             .when()
-            .post(PATH + "?trace=false&replayCapture=true");
+            .post(PATH + "?" + query);
     }
 
     /**
@@ -131,8 +96,8 @@ class GenExpectedCorpusTest {
      * 复用同一权威驱动，避免复制 HMAC canonical 构造（DRY）。
      *
      * <p>断言生产路径必须 200、无 error、含 replayMetadata（否则 corpus fixture 在生产路径下不可编译执行，直接失败）。
-     * ★与 gen 路径同一映射：{@code context = req.input}（RunnerRequest.input ↔ REST context），tenant/nonce
-     * 由 fixture 名 + nanoTime 生成保 HMAC 不 replay 拦截。
+     * ★与 gen 路径同一映射：{@code context = req.input}（RunnerRequest.input ↔ REST context），tenant 由 fixture 名 + nanoTime 生成，
+     * nonce 由签名助手每次唯一生成，保 HMAC 不 replay 拦截。
      *
      * @param reqJson corpus {@code .req.json} 原文
      * @return 生产 evaluateSource 的 {@code replayMetadata} JsonNode（权威基线）
@@ -152,8 +117,7 @@ class GenExpectedCorpusTest {
 
         String label = req.hasNonNull("tenantId") ? req.get("tenantId").asText() : "corpus";
         String tenant = "tenant-parity-" + label + "-" + System.nanoTime();
-        String nonce = "drive-authority-" + label + "-" + System.nanoTime();
-        Response resp = evaluateWithReplayCapture(bodyJson, tenant, nonce);
+        Response resp = evaluateWithReplayCapture(bodyJson, tenant);
 
         assertEquals(200, resp.getStatusCode(),
             "driveAuthority evaluateSource 非 200（corpus fixture 在 aster-api 生产路径下不可编译执行）：body="

@@ -1,17 +1,13 @@
 package io.aster.policy.rest;
 
+import io.aster.security.apikey.InternalCallerSigning;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.response.Response;
 import org.junit.jupiter.api.Test;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.lang.reflect.Field;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
@@ -79,36 +75,16 @@ class EvaluateSourceGateBruteForceIT {
     }
 
     // ---------------------------------------------------------------
-    // HMAC 签名（与 PolicyEvaluationReplayOrderingTest 同构造）
+    // HMAC 签名（canonical v3，共享助手；query 不含 '?'，一并签入）
     // ---------------------------------------------------------------
 
-    private static String sha256Hex(String body) throws Exception {
-        MessageDigest md = MessageDigest.getInstance("SHA-256");
-        return HexFormat.of().formatHex(md.digest(body.getBytes(StandardCharsets.UTF_8)));
-    }
-
-    private static String sign(String canonical) throws Exception {
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(HMAC_KEY.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-        return HexFormat.of().formatHex(mac.doFinal(canonical.getBytes(StandardCharsets.UTF_8)));
-    }
-
-    private static Response post(String body, String tag, String query) throws Exception {
-        long ts = System.currentTimeMillis() / 1000;
-        String nonce = "gate-brute-" + tag + "-" + System.nanoTime();
-        String canonical = "POST\n" + PATH + "\n" + ts + "\n" + nonce + "\n"
-            + sha256Hex(body) + "\n" + TENANT + "\n" + ROLE;
+    private static Response post(String body, String query) {
         return given()
             .header("Content-Type", "application/json")
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            .header("X-Aster-Nonce", nonce)
-            .header("X-Internal-Signature", sign(canonical))
-            .header("X-Tenant-Id", TENANT)
-            .header("X-User-Role", ROLE)
+            .headers(InternalCallerSigning.headers(HMAC_KEY, "POST", PATH, query, body, TENANT, ROLE, "", List.of()))
             .body(body)
             .when()
-            .post(PATH + query);
+            .post(PATH + "?" + query);
     }
 
     private static final String VALID =
@@ -154,7 +130,7 @@ class EvaluateSourceGateBruteForceIT {
                     try {
                         // 混合成功与异常路径：异常路径同样必须归还
                         String body = (n % 4 == 3) ? MALFORMED : VALID;
-                        int sc = post(body, "load" + n, "?trace=false").statusCode();
+                        int sc = post(body, "trace=false").statusCode();
                         if (sc == 200) {
                             ok.incrementAndGet();
                         } else if (sc == 503) {

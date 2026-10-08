@@ -14,12 +14,8 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Instant;
-import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 
 import static io.restassured.RestAssured.given;
@@ -70,19 +66,11 @@ class AuditReceiptHmacAuthTest {
             null, null, "u", true, 5L, null, Map.of("correlationId", cid), null, null, null, null);
     }
 
-    /** 与 cloud signInternalCallerHeaders 一致：GET 无 body，canonical 绑定 tenant 与 role。 */
-    static Response signedGet(String tenant, String signKey) throws Exception {
-        long ts = System.currentTimeMillis() / 1000;
-        String nonce = "receipt-" + System.nanoTime();
-        String canonical = "GET\n" + PATH + "\n" + ts + "\n" + nonce + "\n" + sha256Hex("") + "\n" + tenant + "\nmember";
+    /** 与 cloud signInternalCallerHeaders 一致（canonical v3）：GET 无 body，query/tenant/role/userId 均签入。 */
+    static Response signedGet(String tenant, String signKey) {
         return given()
-            .header("X-Internal-Caller", "cloud-bff")
-            .header("X-Aster-Timestamp", Long.toString(ts))
-            .header("X-Aster-Nonce", nonce)
-            .header("X-Internal-Signature", sign(signKey, canonical))
-            .header("X-Tenant-Id", tenant)
-            .header("X-User-Id", "evidence-export")
-            .header("X-User-Role", "member")
+            .headers(InternalCallerSigning.headers(signKey, "GET", PATH, "correlationIds=c-hmac", "",
+                tenant, "member", "evidence-export", List.of()))
             .queryParam("correlationIds", "c-hmac")
             .get(PATH);
     }
@@ -121,15 +109,5 @@ class AuditReceiptHmacAuthTest {
             .queryParam("correlationIds", "c-hmac").get(PATH);
         assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
         assertThat(r.jsonPath().getList("receipts")).hasSize(1);
-    }
-
-    static String sha256Hex(String body) throws Exception {
-        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8)));
-    }
-
-    static String sign(String key, String canonical) throws Exception {
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-        return HexFormat.of().formatHex(mac.doFinal(canonical.getBytes(StandardCharsets.UTF_8)));
     }
 }

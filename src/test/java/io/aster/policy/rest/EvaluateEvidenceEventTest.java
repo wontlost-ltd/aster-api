@@ -10,6 +10,7 @@ import io.aster.policy.entity.AuditLog;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.policy.stability.ToolchainIdentityProvider;
 import io.aster.replay.core.parser.ReplayMappers;
+import io.aster.security.apikey.InternalCallerSigning;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
@@ -19,12 +20,7 @@ import io.restassured.response.Response;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.HashMap;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -243,19 +239,11 @@ class EvaluateEvidenceEventTest {
     req.put("locale", "en-US");
     req.put("agent", agent);
     String body = MAPPER.writeValueAsString(req);
-    long ts = System.currentTimeMillis() / 1000;
-    String nonce = "evidence-" + System.nanoTime();
-    String canonical = "POST\n" + SOURCE_PATH + "\n" + ts + "\n" + nonce + "\n" + sha256Hex(body) + "\n" + tenant + "\n" + ROLE;
+    String query = "simulate=" + simulate + "&replayCapture=" + replayCapture;
     return given().contentType(ContentType.JSON)
-        .header("X-Internal-Caller", "cloud-bff")
-        .header("X-Aster-Timestamp", Long.toString(ts))
-        .header("X-Aster-Nonce", nonce)
-        .header("X-Internal-Signature", sign(canonical))
-        .header("X-Tenant-Id", tenant)
-        .header("X-User-Id", "u-ev")
-        .header("X-User-Role", ROLE)
+        .headers(InternalCallerSigning.headers(HMAC_KEY, "POST", SOURCE_PATH, query, body, tenant, ROLE, "u-ev", List.of()))
         .body(body)
-        .post(SOURCE_PATH + "?simulate=" + simulate + "&replayCapture=" + replayCapture);
+        .post(SOURCE_PATH + "?" + query);
   }
 
   /** 轮询 ≤ 5 s 等异步追加器落链；按 correlation_id 列定位事件行。 */
@@ -276,15 +264,5 @@ class EvaluateEvidenceEventTest {
 
   private static Map<String, Object> metadataOf(AuditLog row) throws Exception {
     return MAPPER.readValue(row.metadata, new TypeReference<Map<String, Object>>() { });
-  }
-
-  private static String sha256Hex(String body) throws Exception {
-    return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8)));
-  }
-
-  private static String sign(String canonical) throws Exception {
-    Mac mac = Mac.getInstance("HmacSHA256");
-    mac.init(new SecretKeySpec(HMAC_KEY.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-    return HexFormat.of().formatHex(mac.doFinal(canonical.getBytes(StandardCharsets.UTF_8)));
   }
 }

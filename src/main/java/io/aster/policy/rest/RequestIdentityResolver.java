@@ -69,6 +69,8 @@ public class RequestIdentityResolver {
     static final String PROP_QUOTA_OWNER_ID = "aster.apikey.quotaOwnerId";
     /** 已验证业务角色集合（ADR 0042 §2.2）：ApiKeyAuthFilter / InternalCallerFilter 写入的 {@code List<String>}。 */
     public static final String PROP_BUSINESS_ROLES = "aster.identity.businessRoles";
+    /** HMAC 内部调用者签过的用户 ID（ADR 0042 §4.1）：InternalCallerFilter 验签通过后写入，可为空串。 */
+    public static final String PROP_IDENTITY_USER_ID = "aster.identity.userId";
 
     private static final String DEFAULT_TENANT = "default";
     private static final String ANONYMOUS_USER = "anonymous";
@@ -121,6 +123,11 @@ public class RequestIdentityResolver {
         if (prop != null) {
             return prop;
         }
+        // HMAC 通道签过的用户 ID（ADR 0042 §4.1）；jaxrsProperty 把空串视为缺失，继续回退。
+        String signed = jaxrsProperty(PROP_IDENTITY_USER_ID);
+        if (signed != null) {
+            return signed;
+        }
         // ★这里**有意**回退读 header，与 apiKeyId() 的严格化是两种不同的语义，不要
         // 「顺手统一」：
         //
@@ -171,9 +178,10 @@ public class RequestIdentityResolver {
     /**
      * 解析调用方的业务角色集合（ADR 0042 §2.2），供审批匹配使用。
      *
-     * <p>先读过滤器写入的已验证属性；无属性（未经 ApiKeyAuthFilter 的路径）时回退读
+     * <p>先读过滤器写入的已验证属性（ApiKeyAuthFilter 或 InternalCallerFilter 验签后写入，
+     * 两者都在时 ApiKeyAuthFilter 晚执行、覆盖之）；无属性（两条通道都没经过）时回退读
      * {@code X-User-Business-Roles} 头（逗号切分、去首尾空白、去空项）；都没有则空列表。
-     * 经过 ApiKeyAuthFilter 的请求，该头已被已验证集合覆盖，调用方自报值不会到达这里。
+     * 经过任一认证通道的请求，调用方自报的未签值不会到达这里。
      */
     public List<String> businessRoles() {
         if (jaxrsCtx != null && jaxrsCtx.getProperty(PROP_BUSINESS_ROLES) instanceof List<?> prop) {
