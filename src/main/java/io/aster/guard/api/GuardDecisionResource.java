@@ -1,13 +1,16 @@
 package io.aster.guard.api;
 
 import io.aster.billing.ApiQuotaGuard;
+import io.aster.guard.GuardApprovalConflictException;
 import io.aster.guard.GuardDecisionService;
+import io.aster.guard.GuardEvidenceDecisionService;
 import io.aster.guard.GuardIdempotencyMismatchException;
 import io.aster.guard.GuardInvalidActionException;
 import io.aster.guard.GuardPolicyNotFoundException;
 import io.aster.policy.rest.RequestIdentityResolver;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
+import io.aster.security.apikey.InternalCallerFilter;
 import jakarta.inject.Inject;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.Consumes;
@@ -17,9 +20,12 @@ import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.container.ContainerRequestContext;
+import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -29,7 +35,8 @@ import java.util.UUID;
  *
  * <p>方法返回 {@link Response}（阻塞签名），由 RESTEasy Reactive 调度到 worker 线程——
  * 决策服务内部同步等待规则评估与审计链写入。不加 {@code @Transactional}：服务内部各写入步骤
- * 自行开启独立事务。路径由 {@code ApiKeyAuthFilter} 统一纳入 API key 鉴权。
+ * 自行开启独立事务。路径由 {@code ApiKeyAuthFilter} 统一纳入 API key 鉴权；{@code GET /{id}} 与
+ * {@code POST /from-evidence} 另对内部 HMAC 通道开放（ADR 0042 §4.2），后者只接受 HMAC。
  */
 @Path("/api/v1/guard/decisions")
 @Produces(MediaType.APPLICATION_JSON)
@@ -52,7 +59,13 @@ public class GuardDecisionResource {
   GuardDecisionService service;
 
   @Inject
+  GuardEvidenceDecisionService evidenceService;
+
+  @Inject
   ApiQuotaGuard apiQuotaGuard;
+
+  @Context
+  ContainerRequestContext requestContext;
 
   /**
    * 对提议动作作出决策；{@code Idempotency-Key} 可选，同租户同键重放同一决策（审批状态取当前值），
@@ -83,6 +96,24 @@ public class GuardDecisionResource {
       return error(UNPROCESSABLE_ENTITY, "idempotency_mismatch", mismatch.getMessage());
     } catch (GuardPolicyNotFoundException nf) {
       return error(Response.Status.NOT_FOUND.getStatusCode(), "policy_not_found", nf.getMessage());
+    }
+  }
+
+  /**
+   * 从证据开决策（ADR 0042 §3.1）：仅内部 HMAC 通道，收据即评估事件。
+   * 路径已由 {@code InternalCallerFilter} 恒要求 HMAC，这里再按验签章兜底；内部调用不计量配额。
+   */
+  @POST
+  @Path("/from-evidence")
+  public Response fromEvidence(GuardFromEvidenceRequest req) {
+    if (!InternalCallerFilter.isHmacVerified(requestContext)) {
+      return error(Response.Status.FORBIDDEN.getStatusCode(), "internal_only", "仅限内部 HMAC 调用者");
+    }
+    try {
+      return Response.ok(evidenceService.createFromEvidence(identityResolver.tenantId(),
+          identityResolver.performedBy(), req)).build();
+    } catch (GuardApprovalConflictException e) {
+      return error(evidenceStatusOf(e.code()), e.code(), e.getMessage(), e.details());
     }
   }
 
@@ -147,7 +178,25 @@ public class GuardDecisionResource {
         .build());
   }
 
+  private static int evidenceStatusOf(String code) {
+    Response.Status status = switch (code) {
+      case "evidence_not_found" -> Response.Status.NOT_FOUND;
+      case "evidence_not_approvable" -> Response.Status.CONFLICT;
+      default -> Response.Status.BAD_REQUEST;
+    };
+    return status.getStatusCode();
+  }
+
   private static Response error(int status, String code, String message) {
-    return Response.status(status).entity(Map.of("error", code, "message", message)).build();
+    return error(status, code, message, Map.of());
+  }
+
+  /** 错误体：error、message 在前，异常附加字段（如 evidence_not_approvable 的 outcome）随后并入。 */
+  private static Response error(int status, String code, String message, Map<String, Object> details) {
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("error", code);
+    body.put("message", message);
+    details.forEach(body::putIfAbsent);
+    return Response.status(status).entity(body).build();
   }
 }

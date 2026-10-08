@@ -49,6 +49,7 @@ POST /api/v1/audit/anomalies/{id}/actions/verify
 POST /api/v1/guard/approvals/{id}/approve
 POST /api/v1/guard/approvals/{id}/reject
 POST /api/v1/guard/decisions
+POST /api/v1/guard/decisions/from-evidence
 POST /api/v1/policies/compile
 POST /api/v1/policies/evaluate
 POST /api/v1/policies/evaluate-json

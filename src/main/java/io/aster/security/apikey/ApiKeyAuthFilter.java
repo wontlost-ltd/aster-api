@@ -14,6 +14,7 @@ import org.jboss.resteasy.reactive.server.ServerRequestFilter;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * API key 认证过滤器
@@ -39,6 +40,20 @@ public class ApiKeyAuthFilter {
     @Inject
     ApiKeyVerifierService verifier;
 
+    /**
+     * HMAC 验签通过即可免 Bearer 的精确路径（ADR 0041 §2.4、ADR 0042 §4.2）。
+     * 仍以 {@link InternalCallerFilter#isHmacVerified} 为前提：路径命中本身不放行任何请求。
+     */
+    static final Set<String> HMAC_BYPASS_PATHS = Set.of(
+        "/api/v1/audit/receipts",
+        "/api/v1/guard/decisions/from-evidence",
+        "/api/v1/guard/approvals");
+
+    /** 同上的前缀集合；不含 {@code /api/v1/guard/decisions} 本身——Agent 提交决策只走 Bearer。 */
+    static final List<String> HMAC_BYPASS_PREFIXES = List.of(
+        "/api/v1/guard/approvals/",
+        "/api/v1/guard/decisions/");
+
     @ConfigProperty(name = "aster.security.apikey.enabled", defaultValue = "true")
     boolean enabled;
 
@@ -63,9 +78,9 @@ public class ApiKeyAuthFilter {
         if (!shouldProtect(path)) {
             return null;
         }
-        // 收据查询：HMAC 内部调用者已由 InternalCallerFilter 验签（签名绑定 tenant/role），无需 Bearer。
+        // 双通道路径：HMAC 内部调用者已由 InternalCallerFilter 验签（签名绑定 tenant/role/user），无需 Bearer。
         if (InternalCallerFilter.isHmacVerified(ctx)
-            && io.aster.security.PathNormalizer.normalize(path).equals("/api/v1/audit/receipts")) {
+            && isHmacBypassPath(io.aster.security.PathNormalizer.normalize(path))) {
             return null;
         }
 
@@ -168,6 +183,12 @@ public class ApiKeyAuthFilter {
         ctx.getHeaders().putSingle("X-User-Business-Roles", String.join(",", roles));
         ctx.getHeaders().putSingle("X-User-Business-Role", roles.isEmpty() ? "" : roles.get(0));
         return null;
+    }
+
+    /** 归一化后的路径是否属于 HMAC 免 Bearer 集合（纯函数，便于单测）。 */
+    static boolean isHmacBypassPath(String normalizedPath) {
+        return HMAC_BYPASS_PATHS.contains(normalizedPath)
+            || HMAC_BYPASS_PREFIXES.stream().anyMatch(normalizedPath::startsWith);
     }
 
     /**

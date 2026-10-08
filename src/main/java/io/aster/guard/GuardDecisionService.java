@@ -5,13 +5,10 @@ import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.api.GuardActionRequest;
 import io.aster.guard.api.GuardDecisionResponse;
-import io.aster.guard.api.GuardDecisionResponse.ApprovalView;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
-import io.aster.guard.api.GuardDecisionResponse.ReceiptView;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.api.model.PolicyEvaluationResult;
 import io.aster.policy.entity.PolicyVersion;
-import io.aster.policy.evidence.AgentIdentity;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.repository.PolicySourceRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -28,7 +25,9 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
-import static io.aster.guard.GuardText.clip;
+import static io.aster.guard.GuardDecisionAssembler.buildResponse;
+import static io.aster.guard.GuardDecisionAssembler.declaredAgent;
+import static io.aster.guard.GuardDecisionAssembler.toApproval;
 import static io.aster.guard.GuardText.isBlank;
 
 /**
@@ -46,7 +45,7 @@ import static io.aster.guard.GuardText.isBlank;
 public class GuardDecisionService {
   private static final Logger LOG = Logger.getLogger(GuardDecisionService.class);
   static final Duration EVALUATION_TIMEOUT = Duration.ofSeconds(10);
-  static final int MAX_COLUMN_TEXT = 255;
+  static final int MAX_COLUMN_TEXT = GuardDecisionAssembler.MAX_COLUMN_TEXT;
   /** waitSeconds 上限与轮询间隔（ADR 0040 §3.1）：等待只是省掉客户端轮询，不能长时间占住 worker 线程。 */
   static final int MAX_WAIT_SECONDS = 30;
   static final long WAIT_POLL_MILLIS = 500;
@@ -64,6 +63,7 @@ public class GuardDecisionService {
   private GuardActionMapper mapper;
   private GuardReceiptBuilder receiptBuilder;
   private GuardJson json;
+  private GuardDecisionAssembler assembler;
   private Duration approvalTtl;
   private VersionLookupTx versionLookupTx;
 
@@ -91,6 +91,7 @@ public class GuardDecisionService {
     this.mapper = mapper;
     this.receiptBuilder = receiptBuilder;
     this.json = new GuardJson(objectMapper);
+    this.assembler = new GuardDecisionAssembler(json);
     this.approvalTtl = approvalTtl;
     this.versionLookupTx = versionLookupTx;
   }
@@ -139,7 +140,7 @@ public class GuardDecisionService {
     GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt);
     GuardApprovalEntity approval = approvalId == null ? null : toApproval(approvalId, decisionId, draft, expiresAt);
     try {
-      store.saveDecision(toEntity(decisionId, draft, receipt, response, performedBy, apiKeyId), approval);
+      store.saveDecision(assembler.toEntity(decisionId, draft, receipt, response, performedBy, apiKeyId), approval);
     } catch (GuardIdempotencyRaceException race) {
       return findByIdempotencyKey(tenantId, idempotencyKey, fingerprint).orElseThrow(() -> race);
     }
@@ -222,18 +223,6 @@ public class GuardDecisionService {
         .orElse(GuardApprovalStatus.EXPIRED);
   }
 
-  /** 旧请求体只带 model/session（provider 缺失）时补 unknown；其余走 AgentIdentity 统一校验，非法转 invalid_action。 */
-  private static AgentIdentity declaredAgent(AgentIdentity raw) {
-    if (raw == null) {
-      return null;
-    }
-    try {
-      return raw.provider() == null ? AgentIdentity.ofModel(raw.model(), raw.session()) : AgentIdentity.validated(raw);
-    } catch (IllegalArgumentException e) {
-      throw new GuardInvalidActionException(e.getMessage());
-    }
-  }
-
   /** 空白视为未提供；超长（列宽 255）或含控制字符在评估与写收据之前就拒绝。 */
   private static String normalizeIdempotencyKey(String key) {
     if (key == null || key.isBlank()) {
@@ -305,62 +294,4 @@ public class GuardDecisionService {
       return null;
     }
   }
-
-  private static GuardDecisionResponse buildResponse(UUID decisionId, GuardDecisionDraft draft, AppendedRecord receipt,
-                                                     UUID approvalId, Instant expiresAt) {
-    ApprovalView approval = approvalId == null ? null
-        : new ApprovalView(expiresAt.toString(), approvalId.toString(), draft.requiredRole(), GuardApprovalStatus.PENDING.name());
-    ReceiptView receiptView = receipt == null ? null
-        : new ReceiptView(receipt.auditId(), receipt.currentHash(), receipt.prevHash());
-    return new GuardDecisionResponse(approval, draft.controls(), decisionId.toString(), draft.effectiveOutcome(),
-        draft.outcome(), draft.policyVersion(), draft.reason(), draft.reasonCodeValue(), receiptView, draft.role(),
-        draft.ruleId());
-  }
-
-  /**
-   * 请求方身份按列宽截到 255：只用于四眼「相等即拒绝」比对，截断只会多拒绝、不会放过同一人
-   * （审批人标识本身限 1–255 字符）。
-   */
-  private GuardDecisionEntity toEntity(UUID decisionId, GuardDecisionDraft draft, AppendedRecord receipt,
-                                       GuardDecisionResponse response, String performedBy, String apiKeyId) {
-    GuardDecisionEntity e = new GuardDecisionEntity();
-    e.id = decisionId;
-    e.tenantId = draft.tenantId();
-    e.idempotencyKey = draft.idempotencyKey();
-    e.policyModule = draft.policyModule();
-    e.policyFunction = draft.policyFunction();
-    e.policyVersionId = draft.policyVersion().id();
-    e.sourceHash = draft.policyVersion().sourceHash();
-    e.principalId = draft.principalId();
-    e.actionName = draft.actionName();
-    e.resourceType = draft.resourceType();
-    e.resourceId = draft.resourceId();
-    e.contextHash = draft.contextHash();
-    e.outcome = draft.outcome();
-    e.reason = draft.reason();
-    e.requiredRole = draft.requiredRole();
-    e.reasonCode = draft.reasonCodeValue();
-    e.ruleId = clip(draft.ruleId(), MAX_COLUMN_TEXT);
-    e.controls = draft.controls().isEmpty() ? null : json.writeJson(draft.controls());
-    e.receiptAuditId = receipt == null ? null : receipt.auditId();
-    e.receiptHash = receipt == null ? null : receipt.currentHash();
-    e.responseJson = json.writeJson(response);
-    e.requestedBy = clip(performedBy, MAX_COLUMN_TEXT);
-    e.requestedApiKeyId = clip(apiKeyId, MAX_COLUMN_TEXT);
-    return e;
-  }
-
-  private static GuardApprovalEntity toApproval(UUID approvalId, UUID decisionId, GuardDecisionDraft draft, Instant expiresAt) {
-    GuardApprovalEntity a = new GuardApprovalEntity();
-    a.id = approvalId;
-    a.tenantId = draft.tenantId();
-    a.decisionId = decisionId;
-    a.outcome = draft.outcome();
-    a.requiredRole = draft.requiredRole();
-    a.principalId = draft.principalId();
-    a.status = GuardApprovalStatus.PENDING;
-    a.expiresAt = expiresAt;
-    return a;
-  }
-
 }

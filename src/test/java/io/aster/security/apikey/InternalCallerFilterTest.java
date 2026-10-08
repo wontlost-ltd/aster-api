@@ -641,4 +641,32 @@ class InternalCallerFilterTest {
         assertEquals(Classification.NOT_PROTECTED,
             InternalCallerFilter.classify("/api/v1/audit/receiptsX", false, false, false, false, true));
     }
+
+    // ADR 0042 §4.2：from-evidence 恒要求 HMAC；审批与决策回读仅在带内部调用头时要求 HMAC。
+    @Test
+    void guardFromEvidenceAlwaysRequiresHmac() {
+        assertEquals(Classification.REQUIRE_HMAC,
+            InternalCallerFilter.classify("/api/v1/guard/decisions/from-evidence", false, false, false, false, false));
+        assertEquals(Classification.REQUIRE_HMAC,
+            InternalCallerFilter.classify("/api/v1/guard/decisions/from-evidence", true, true, true, true, true));
+    }
+
+    @Test
+    void guardApprovalPathsRequireHmacOnlyWithInternalCallerHeaders() {
+        String id = "3f1c2a4e-0000-4000-8000-000000000001";
+        for (String p : List.of("/api/v1/guard/approvals", "/api/v1/guard/approvals/" + id + "/approve",
+                "/api/v1/guard/approvals/" + id + "/reject", "/api/v1/guard/decisions/" + id)) {
+            assertEquals(Classification.REQUIRE_HMAC,
+                InternalCallerFilter.classify(p, false, false, false, false, true), p);
+            assertEquals(Classification.NOT_PROTECTED,
+                InternalCallerFilter.classify(p, false, false, false, false, false), p);
+        }
+        // Agent 提交决策与其它兄弟路径不归本 filter
+        for (String p : List.of("/api/v1/guard/decisions", "/api/v1/guard/approvals/" + id,
+                "/api/v1/guard/approvals/" + id + "/delete", "/api/v1/guard/decisions/" + id + "/x",
+                "/api/v1/guard/approvalsX")) {
+            assertEquals(Classification.NOT_PROTECTED,
+                InternalCallerFilter.classify(p, false, false, false, false, true), p);
+        }
+    }
 }

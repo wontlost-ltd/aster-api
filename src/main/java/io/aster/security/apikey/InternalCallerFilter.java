@@ -182,7 +182,10 @@ public class InternalCallerFilter {
         // 审计收据查询（ADR 0041 §2.4）：cloud 证据导出走 HMAC，其它调用方走 Bearer API key。
         // 仅当携带内部调用头时才要求 HMAC；否则不归本 filter，交给 ApiKeyAuthFilter。
         boolean isAuditReceipts = normalizedPath.equals("/api/v1/audit/receipts");
-        if (isAuditReceipts) {
+        // 从证据开决策（ADR 0042 §3.1）：只对 cloud 开放，无 Bearer 通道，恒要求 HMAC。
+        if (normalizedPath.equals(GUARD_FROM_EVIDENCE_PATH)) return Classification.REQUIRE_HMAC;
+        // guard 审批与决策回读（ADR 0042 §4.2）：cloud 收件箱走 HMAC，SDK 走 Bearer，同收据先例。
+        if (isAuditReceipts || isGuardDualChannel(normalizedPath)) {
             return hasInternalCaller ? Classification.REQUIRE_HMAC : Classification.NOT_PROTECTED;
         }
         if (!isEvaluateSource && !isAi && !isWhatIfBatch) return Classification.NOT_PROTECTED;
@@ -202,6 +205,15 @@ public class InternalCallerFilter {
             return Classification.BYPASS_OK;
         }
         return Classification.REQUIRE_HMAC;
+    }
+
+    static final String GUARD_FROM_EVIDENCE_PATH = "/api/v1/guard/decisions/from-evidence";
+
+    /** 审批列表、审批批准 / 拒绝、单个决策回读：既接受 HMAC 内部调用，也接受 Bearer API key。 */
+    private static boolean isGuardDualChannel(String p) {
+        return p.equals("/api/v1/guard/approvals")
+            || p.matches("/api/v1/guard/approvals/[^/]+/(?:approve|reject)")
+            || p.matches("/api/v1/guard/decisions/[^/]+");
     }
 
     /**

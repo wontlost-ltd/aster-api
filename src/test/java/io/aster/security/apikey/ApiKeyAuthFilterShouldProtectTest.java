@@ -323,4 +323,18 @@ class ApiKeyAuthFilterShouldProtectTest {
         }
     }
 
+
+    // ADR 0042 §4.2：HMAC 验签后免 Bearer 的路径集合；Agent 提交决策（/guard/decisions 本身）不在内。
+    @Test
+    void hmacBypassPathsCoverGuardDualChannelOnly() {
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/audit/receipts"));
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/decisions/from-evidence"));
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/approvals"));
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/approvals/abc/approve"));
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/decisions/abc"));
+        assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/decisions"));
+        assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard"));
+        assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/audit/receiptsX"));
+        assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/policies/evaluate"));
+    }
 }
