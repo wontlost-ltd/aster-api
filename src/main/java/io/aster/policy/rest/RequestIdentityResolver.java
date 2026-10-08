@@ -6,6 +6,9 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.container.ContainerRequestContext;
 
+import java.util.Arrays;
+import java.util.List;
+
 /**
  * 调用方身份解析的**单一事实源**：tenant / user / apiKeyId / quotaOwnerId。
  *
@@ -64,6 +67,8 @@ public class RequestIdentityResolver {
     static final String PROP_USER_ID = "aster.apikey.userId";
     static final String PROP_API_KEY_ID = "aster.apikey.apiKeyId";
     static final String PROP_QUOTA_OWNER_ID = "aster.apikey.quotaOwnerId";
+    /** 已验证业务角色集合（ADR 0042 §2.2）：ApiKeyAuthFilter / InternalCallerFilter 写入的 {@code List<String>}。 */
+    public static final String PROP_BUSINESS_ROLES = "aster.identity.businessRoles";
 
     private static final String DEFAULT_TENANT = "default";
     private static final String ANONYMOUS_USER = "anonymous";
@@ -161,6 +166,24 @@ public class RequestIdentityResolver {
     public String quotaOwnerId() {
         String prop = jaxrsProperty(PROP_QUOTA_OWNER_ID);
         return prop != null ? prop : performedBy();
+    }
+
+    /**
+     * 解析调用方的业务角色集合（ADR 0042 §2.2），供审批匹配使用。
+     *
+     * <p>先读过滤器写入的已验证属性；无属性（未经 ApiKeyAuthFilter 的路径）时回退读
+     * {@code X-User-Business-Roles} 头（逗号切分、去首尾空白、去空项）；都没有则空列表。
+     * 经过 ApiKeyAuthFilter 的请求，该头已被已验证集合覆盖，调用方自报值不会到达这里。
+     */
+    public List<String> businessRoles() {
+        if (jaxrsCtx != null && jaxrsCtx.getProperty(PROP_BUSINESS_ROLES) instanceof List<?> prop) {
+            return prop.stream().filter(String.class::isInstance).map(String.class::cast).toList();
+        }
+        String header = header("X-User-Business-Roles");
+        if (header == null) {
+            return List.of();
+        }
+        return Arrays.stream(header.split(",")).map(String::trim).filter(r -> !r.isEmpty()).toList();
     }
 
     /**

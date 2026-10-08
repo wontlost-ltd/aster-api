@@ -8,6 +8,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -222,5 +223,34 @@ class RequestIdentityResolverTest {
 
         assertEquals("owner-1", resolver(new TenantContext(),
             ctxWith(RequestIdentityResolver.PROP_QUOTA_OWNER_ID, " owner-1 "), null).quotaOwnerId());
+    }
+
+    // ── businessRoles（ADR 0042 §2.2）──────────────────────────────────
+
+    @Test
+    @DisplayName("ADR 0042：businessRoles 属性优先于头")
+    void businessRolesPropertyWinsOverHeader() throws Exception {
+        ContainerRequestContext ctx = mock(ContainerRequestContext.class);
+        when(ctx.getProperty(RequestIdentityResolver.PROP_BUSINESS_ROLES)).thenReturn(List.of("Data Protection Officer"));
+        var r = resolver(new TenantContext(), ctx, rctxWith("X-User-Business-Roles", "CEO"));
+
+        assertEquals(List.of("Data Protection Officer"), r.businessRoles());
+    }
+
+    @Test
+    @DisplayName("ADR 0042：无属性时读 X-User-Business-Roles，逗号切分、trim、去空")
+    void businessRolesFallBackToHeaderSplitTrimmed() throws Exception {
+        var r = resolver(new TenantContext(), mock(ContainerRequestContext.class),
+            rctxWith("X-User-Business-Roles", " DPO , ,CISO"));
+
+        assertEquals(List.of("DPO", "CISO"), r.businessRoles());
+    }
+
+    @Test
+    @DisplayName("ADR 0042：无属性无头 → 空列表")
+    void businessRolesEmptyWhenAbsent() throws Exception {
+        assertEquals(List.of(), resolver(new TenantContext(), mock(ContainerRequestContext.class),
+            rctxWith("X-User-Business-Roles", null)).businessRoles());
+        assertEquals(List.of(), resolver(new TenantContext(), null, null).businessRoles());
     }
 }

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -107,6 +108,38 @@ class ApiKeyAuthFilterTenantOverwriteTest {
         invokeApply(ctx, result);
 
         assertEquals("u1", ctx.getProperty("aster.apikey.quotaOwnerId"));
+    }
+
+    @Test
+    void businessRolesFromVerifiedResultOverwriteCallerHeaders() throws Exception {
+        // ADR 0042 §2.2：业务角色只信 verify/快照下发的集合，调用方自报的两个头一律被覆盖。
+        FakeCtx ctx = new FakeCtx(Map.of(
+            "X-User-Business-Role", "CEO",
+            "X-User-Business-Roles", "CEO,CFO"));
+        ApiKeyVerifyResult result = ApiKeyVerifyResult.valid(
+            "ak1", "member-1", "team-1", "team", "active", "member", "owner-1", List.of("Data Protection Officer"));
+
+        Response resp = invokeApply(ctx, result);
+
+        assertNull(resp);
+        assertEquals("Data Protection Officer", ctx.getHeaderString("X-User-Business-Role"));
+        assertEquals("Data Protection Officer", ctx.getHeaderString("X-User-Business-Roles"));
+        assertEquals(List.of("Data Protection Officer"), ctx.getProperty("aster.identity.businessRoles"));
+    }
+
+    @Test
+    void callerBusinessRoleHeadersAreBlankedWhenResultHasNoRoles() throws Exception {
+        // 个人 key / 旧 cloud 无业务角色：自报头被清成空串，属性为空列表，不得沿用调用方的值。
+        FakeCtx ctx = new FakeCtx(Map.of(
+            "X-User-Business-Role", "CEO",
+            "X-User-Business-Roles", "CEO,CFO"));
+        ApiKeyVerifyResult result = ApiKeyVerifyResult.valid("ak1", "u1", "tenant-a", "pro", "active");
+
+        invokeApply(ctx, result);
+
+        assertEquals("", ctx.getHeaderString("X-User-Business-Role"));
+        assertEquals("", ctx.getHeaderString("X-User-Business-Roles"));
+        assertEquals(List.of(), ctx.getProperty("aster.identity.businessRoles"));
     }
 
     /**

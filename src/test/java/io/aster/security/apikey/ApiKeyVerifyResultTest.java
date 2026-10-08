@@ -2,7 +2,10 @@ package io.aster.security.apikey;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ApiKeyVerifyResultTest {
 
@@ -37,5 +40,19 @@ class ApiKeyVerifyResultTest {
     void valid_withoutQuotaOwner_fallsBackToUserId() {
         assertThat(ApiKeyVerifyResult.valid("key-1", "user-1", "user-1", "pro", "active").quotaOwnerId()).isEqualTo("user-1");
         assertThat(ApiKeyVerifyResult.valid("key-1", "user-1", "user-1", "pro", "active", "owner", " ").quotaOwnerId()).isEqualTo("user-1");
+    }
+
+    @Test
+    void 七参valid的businessRoles为空列表_八参保留顺序去null() {
+        assertThat(ApiKeyVerifyResult.valid("k", "u", "t", "pro", "active", "MEMBER", "u").businessRoles()).isEmpty();
+        var r = ApiKeyVerifyResult.valid("k", "u", "t", "pro", "active", "MEMBER", "u", Arrays.asList("DPO", null, "CISO"));
+        assertThat(r.businessRoles()).containsExactly("DPO", "CISO");
+        assertThatThrownBy(() -> r.businessRoles().add("x")).isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void invalid与八参null的businessRoles均为空列表() {
+        assertThat(ApiKeyVerifyResult.invalid("revoked").businessRoles()).isEmpty();
+        assertThat(ApiKeyVerifyResult.valid("k", "u", "t", "pro", "active", "MEMBER", "u", null).businessRoles()).isEmpty();
     }
 }

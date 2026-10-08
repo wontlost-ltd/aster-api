@@ -2,6 +2,9 @@ package io.aster.security.apikey;
 
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
+import java.util.List;
+import java.util.Objects;
+
 /**
  * API key 验证结果（5 分钟 Caffeine 缓存的 value）
  *
@@ -26,13 +29,22 @@ public record ApiKeyVerifyResult(
     // 缺失/旧 snapshot 时回退到最小权限 MEMBER（fail-safe 下限）。
     String role,
     // 配额归属：团队 key 为 team owner，个人 key 等于 userId；旧 cloud 不返回时回退 userId（ADR 0015 §3）。
-    String quotaOwnerId
+    String quotaOwnerId,
+    // 业务角色（ADR 0042 §2.2，如 "Data Protection Officer"）：cloud verify / 快照下发的已验证集合，
+    // ApiKeyAuthFilter 以它覆盖调用方自报的业务角色头；个人 key / 旧 cloud 为空列表。
+    List<String> businessRoles
 ) {
     /** RBAC 角色缺失时的安全下限。 */
     public static final String DEFAULT_ROLE = "MEMBER";
 
+    /** businessRoles 归一：null → 空列表；去 null/空白、去首尾空白、保序，结果不可变。 */
+    public ApiKeyVerifyResult {
+        businessRoles = businessRoles == null ? List.of() : businessRoles.stream()
+            .filter(Objects::nonNull).map(String::trim).filter(r -> !r.isEmpty()).toList();
+    }
+
     public static ApiKeyVerifyResult invalid(String reason) {
-        return new ApiKeyVerifyResult(false, reason, null, null, null, null, null, null, null);
+        return new ApiKeyVerifyResult(false, reason, null, null, null, null, null, null, null, List.of());
     }
 
     public static ApiKeyVerifyResult valid(
@@ -67,9 +79,23 @@ public record ApiKeyVerifyResult(
         String role,
         String quotaOwnerId
     ) {
+        // 未提供业务角色 → 空列表（个人 key / 旧调用点行为不变）。
+        return valid(apiKeyId, userId, tenantId, plan, subscriptionStatus, role, quotaOwnerId, List.of());
+    }
+
+    public static ApiKeyVerifyResult valid(
+        String apiKeyId,
+        String userId,
+        String tenantId,
+        String plan,
+        String subscriptionStatus,
+        String role,
+        String quotaOwnerId,
+        List<String> businessRoles
+    ) {
         String effectiveRole = (role == null || role.isBlank()) ? DEFAULT_ROLE : role.trim();
         String effectiveOwner = (quotaOwnerId == null || quotaOwnerId.isBlank()) ? userId : quotaOwnerId.trim();
         return new ApiKeyVerifyResult(true, null, apiKeyId, userId, tenantId, plan, subscriptionStatus,
-            effectiveRole, effectiveOwner);
+            effectiveRole, effectiveOwner, businessRoles);
     }
 }

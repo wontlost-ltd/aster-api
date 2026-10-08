@@ -246,7 +246,7 @@ public class ApiKeyVerifierService {
             if (s.tenantId() != null && !s.tenantId().isBlank()) {
                 ApiKeyVerifyResult fromRedis = ApiKeyVerifyResult.valid(
                     s.apiKeyId(), s.userId(), s.tenantId(), s.plan(), null, s.role(),
-                    s.quotaOwnerId());
+                    s.quotaOwnerId(), s.businessRoles());
                 cache.put(keyHash, fromRedis);
                 if (fromRedis.userId() != null) {
                     userIndex.computeIfAbsent(fromRedis.userId(), k -> ConcurrentHashMap.newKeySet()).add(keyHash);
@@ -408,7 +408,9 @@ public class ApiKeyVerifierService {
             // role 缺失（旧 cloud 未升级）时由 valid(...) 回退 MEMBER。
             json.getString("role"),
             // quotaOwnerId 缺失（旧 cloud 未升级）时由 valid(...) 回退 userId。
-            json.getString("quotaOwnerId")
+            json.getString("quotaOwnerId"),
+            // businessRoles 缺失（旧 cloud / 个人 key）为空列表；非字符串元素跳过（ADR 0042 §2.2）。
+            io.aster.billing.snapshot.ApiKeySnapshot.stringList(json.getJsonArray("businessRoles"))
         );
     }
 

@@ -1,5 +1,6 @@
 package io.aster.security.apikey;
 
+import io.aster.policy.rest.RequestIdentityResolver;
 import io.aster.security.apikey.ApiKeyVerifyResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -11,6 +12,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 import org.jboss.resteasy.reactive.server.ServerRequestFilter;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -160,6 +162,11 @@ public class ApiKeyAuthFilter {
         String verifiedRole = result.role() != null && !result.role().isBlank()
             ? result.role() : ApiKeyVerifyResult.DEFAULT_ROLE;
         ctx.getHeaders().putSingle("X-User-Role", verifiedRole);
+        // 业务角色（ADR 0042 §2.2）：只信 verify/快照下发的集合；调用方自报的头一律覆盖。
+        List<String> roles = result.businessRoles();
+        ctx.setProperty(RequestIdentityResolver.PROP_BUSINESS_ROLES, roles);
+        ctx.getHeaders().putSingle("X-User-Business-Roles", String.join(",", roles));
+        ctx.getHeaders().putSingle("X-User-Business-Role", roles.isEmpty() ? "" : roles.get(0));
         return null;
     }
 
