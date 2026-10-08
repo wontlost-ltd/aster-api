@@ -168,7 +168,8 @@ public class SnapshotWarmupService {
                         k.getString("apiKeyId"), k.getString("userId"),
                         k.getString("tenantId"),
                         k.getString("plan"), k.getString("role"),
-                        k.getLong("revokedAtEpochMs"))
+                        k.getLong("revokedAtEpochMs"),
+                        k.getString("quotaOwnerId"))
                     : ApiKeySnapshot.invalid("revoked");
                 snapshot.setApiKey(keyHash, s);
             }

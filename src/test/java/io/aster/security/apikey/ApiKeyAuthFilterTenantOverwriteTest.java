@@ -83,6 +83,32 @@ class ApiKeyAuthFilterTenantOverwriteTest {
         assertEquals(403, resp.getStatus(), "valid 但 tenant 缺失必须 403 拒绝");
     }
 
+    @Test
+    void quotaOwnerIdIsWrittenToProperty() throws Exception {
+        // ADR 0015 §3：团队 key 的配额归属（team owner）经 ctx property 交给 RequestIdentityResolver。
+        FakeCtx ctx = new FakeCtx(Map.of());
+        ApiKeyVerifyResult result = ApiKeyVerifyResult.valid(
+            "ak1", "member-1", "team-1", "team", "active", "member", "owner-1");
+
+        Response resp = invokeApply(ctx, result);
+
+        assertNull(resp);
+        assertEquals(result.quotaOwnerId(), ctx.getProperty("aster.apikey.quotaOwnerId"));
+        assertEquals("owner-1", ctx.getProperty("aster.apikey.quotaOwnerId"));
+        assertEquals("member-1", ctx.getProperty("aster.apikey.userId"));
+    }
+
+    @Test
+    void quotaOwnerIdPropertyFallsBackToUserIdForLegacyResult() throws Exception {
+        // 旧 cloud 不返回 quotaOwnerId：property 仍写入，值为 userId（个人 key 行为不变）。
+        FakeCtx ctx = new FakeCtx(Map.of());
+        ApiKeyVerifyResult result = ApiKeyVerifyResult.valid("ak1", "u1", "tenant-a", "pro", "active");
+
+        invokeApply(ctx, result);
+
+        assertEquals("u1", ctx.getProperty("aster.apikey.quotaOwnerId"));
+    }
+
     /**
      * 最小手写 ContainerRequestContext 假实现：只实现 filter 用到的
      * getHeaderString / getHeaders().putSingle / get/setProperty，其余抛

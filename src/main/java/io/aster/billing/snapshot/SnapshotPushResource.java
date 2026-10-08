@@ -123,7 +123,8 @@ public class SnapshotPushResource {
                     json.getString("tenantId"),
                     json.getString("plan"),
                     json.getString("role"),
-                    json.getLong("revokedAtEpochMs", null)
+                    json.getLong("revokedAtEpochMs", null),
+                    json.getString("quotaOwnerId")
                 );
             } else {
                 s = ApiKeySnapshot.invalid(json.getString("reason", "invalid"));

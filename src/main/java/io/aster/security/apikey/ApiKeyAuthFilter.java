@@ -130,6 +130,8 @@ public class ApiKeyAuthFilter {
         ctx.setProperty("aster.apikey.userId", result.userId());
         ctx.setProperty("aster.apikey.tenantId", result.tenantId());
         ctx.setProperty("aster.apikey.apiKeyId", result.apiKeyId());
+        // 配额归属（团队 key = team owner），由 RequestIdentityResolver.quotaOwnerId() 读出。
+        ctx.setProperty("aster.apikey.quotaOwnerId", result.quotaOwnerId());
         // 无条件以已验证租户覆盖 header：上面已确保 header 要么缺失、要么与
         // 验证结果一致，覆盖后下游（TenantFilter / TenantContext）只会看到
         // 权威值，杜绝任何 header 旁路。

@@ -177,4 +177,38 @@ class RequestIdentityResolverTest {
         assertNull(r.apiKeyId(),
             "未经 ApiKeyAuthFilter 验证的 X-Api-Key-Id 头不得被采信");
     }
+
+    // ── quotaOwnerId ───────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("ADR 0015：quotaOwnerId 读 ApiKeyAuthFilter 写入的 ctx property")
+    void quotaOwnerIdFromProperty() throws Exception {
+        ContainerRequestContext ctx = mock(ContainerRequestContext.class);
+        when(ctx.getProperty(RequestIdentityResolver.PROP_USER_ID)).thenReturn("member-1");
+        when(ctx.getProperty(RequestIdentityResolver.PROP_QUOTA_OWNER_ID)).thenReturn("owner-1");
+        var r = resolver(new TenantContext(), ctx, null);
+
+        assertEquals("owner-1", r.quotaOwnerId(), "团队 key 的配额归属是 team owner");
+        assertEquals("member-1", r.performedBy(), "操作者仍是调用成员本人");
+    }
+
+    @Test
+    @DisplayName("ADR 0015：quotaOwnerId 属性缺失（旧 cloud / 无 key）→ 等于 performedBy()")
+    void quotaOwnerIdFallsBackToPerformedBy() throws Exception {
+        var r = resolver(new TenantContext(),
+            ctxWith(RequestIdentityResolver.PROP_USER_ID, "u-1"), null);
+
+        assertEquals("u-1", r.quotaOwnerId());
+        assertEquals(r.performedBy(), r.quotaOwnerId());
+    }
+
+    @Test
+    @DisplayName("ADR 0015：trial 流量 quotaOwnerId 与 performedBy 一致（trial-anonymous）")
+    void quotaOwnerIdTrialFollowsPerformedBy() throws Exception {
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("trial");
+        var r = resolver(tc, mock(ContainerRequestContext.class), null);
+
+        assertEquals("trial-anonymous", r.quotaOwnerId());
+    }
 }

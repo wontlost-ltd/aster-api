@@ -24,13 +24,15 @@ public record ApiKeyVerifyResult(
     // 用户在其租户内的真实角色返回。authoritative —— ApiKeyAuthFilter 用它
     // 无条件覆盖客户端传的 X-User-Role，杜绝持普通 key 自带 ADMIN 头提权。
     // 缺失/旧 snapshot 时回退到最小权限 MEMBER（fail-safe 下限）。
-    String role
+    String role,
+    // 配额归属：团队 key 为 team owner，个人 key 等于 userId；旧 cloud 不返回时回退 userId（ADR 0015 §3）。
+    String quotaOwnerId
 ) {
     /** RBAC 角色缺失时的安全下限。 */
     public static final String DEFAULT_ROLE = "MEMBER";
 
     public static ApiKeyVerifyResult invalid(String reason) {
-        return new ApiKeyVerifyResult(false, reason, null, null, null, null, null, null);
+        return new ApiKeyVerifyResult(false, reason, null, null, null, null, null, null, null);
     }
 
     public static ApiKeyVerifyResult valid(
@@ -52,7 +54,22 @@ public record ApiKeyVerifyResult(
         String subscriptionStatus,
         String role
     ) {
+        // 未提供 quotaOwnerId → 由 7 参版本回退 userId。
+        return valid(apiKeyId, userId, tenantId, plan, subscriptionStatus, role, null);
+    }
+
+    public static ApiKeyVerifyResult valid(
+        String apiKeyId,
+        String userId,
+        String tenantId,
+        String plan,
+        String subscriptionStatus,
+        String role,
+        String quotaOwnerId
+    ) {
         String effectiveRole = (role == null || role.isBlank()) ? DEFAULT_ROLE : role.trim();
-        return new ApiKeyVerifyResult(true, null, apiKeyId, userId, tenantId, plan, subscriptionStatus, effectiveRole);
+        String effectiveOwner = (quotaOwnerId == null || quotaOwnerId.isBlank()) ? userId : quotaOwnerId.trim();
+        return new ApiKeyVerifyResult(true, null, apiKeyId, userId, tenantId, plan, subscriptionStatus,
+            effectiveRole, effectiveOwner);
     }
 }

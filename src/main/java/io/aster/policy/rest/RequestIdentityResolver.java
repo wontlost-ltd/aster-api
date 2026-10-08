@@ -48,6 +48,7 @@ public class RequestIdentityResolver {
     static final String PROP_TENANT_ID = "aster.apikey.tenantId";
     static final String PROP_USER_ID = "aster.apikey.userId";
     static final String PROP_API_KEY_ID = "aster.apikey.apiKeyId";
+    static final String PROP_QUOTA_OWNER_ID = "aster.apikey.quotaOwnerId";
 
     private static final String DEFAULT_TENANT = "default";
     private static final String ANONYMOUS_USER = "anonymous";
@@ -139,6 +140,12 @@ public class RequestIdentityResolver {
         // 拿不到已验证身份时返回 null（无 key 的请求本就返回 null），调用方据此按
         // 「无 API key」处理，而不是按一个伪造的 key 处理。
         return jaxrsProperty(PROP_API_KEY_ID);
+    }
+
+    /** 配额归属：团队 key 为 team owner，个人 key 等于 performedBy；属性缺失（旧 cloud / 无 key）回退 performedBy。 */
+    public String quotaOwnerId() {
+        String prop = jaxrsProperty(PROP_QUOTA_OWNER_ID);
+        return prop != null && !prop.isBlank() ? prop : performedBy();
     }
 
     /**

@@ -245,7 +245,8 @@ public class ApiKeyVerifierService {
             }
             if (s.tenantId() != null && !s.tenantId().isBlank()) {
                 ApiKeyVerifyResult fromRedis = ApiKeyVerifyResult.valid(
-                    s.apiKeyId(), s.userId(), s.tenantId(), s.plan(), null, s.role());
+                    s.apiKeyId(), s.userId(), s.tenantId(), s.plan(), null, s.role(),
+                    s.effectiveQuotaOwnerId());
                 cache.put(keyHash, fromRedis);
                 if (fromRedis.userId() != null) {
                     userIndex.computeIfAbsent(fromRedis.userId(), k -> ConcurrentHashMap.newKeySet()).add(keyHash);
@@ -405,7 +406,9 @@ public class ApiKeyVerifierService {
             json.getString("plan"),
             json.getString("subscriptionStatus"),
             // role 缺失（旧 cloud 未升级）时由 valid(...) 回退 MEMBER。
-            json.getString("role")
+            json.getString("role"),
+            // quotaOwnerId 缺失（旧 cloud 未升级）时由 valid(...) 回退 userId。
+            json.getString("quotaOwnerId")
         );
     }
 
