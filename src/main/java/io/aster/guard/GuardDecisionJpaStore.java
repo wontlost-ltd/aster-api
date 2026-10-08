@@ -7,6 +7,7 @@ import org.hibernate.exception.ConstraintViolationException;
 
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -34,6 +35,15 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
   @Override
   public Optional<GuardDecisionEntity> findDecision(String tenantId, UUID decisionId) {
     return QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.findByIdAndTenant(decisionId, tenantId));
+  }
+
+  @Override
+  public List<GuardDecisionEntity> findDecisions(String tenantId, Collection<UUID> ids) {
+    if (ids.isEmpty()) {
+      return List.of();
+    }
+    return QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity
+        .<GuardDecisionEntity>list("tenantId = ?1 and id in ?2", tenantId, List.copyOf(ids)));
   }
 
   @Override

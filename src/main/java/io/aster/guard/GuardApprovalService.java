@@ -3,6 +3,7 @@ package io.aster.guard;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
+import io.aster.guard.api.GuardApprovalView;
 import io.aster.guard.api.GuardDecisionResponse;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -10,8 +11,11 @@ import org.jboss.logging.Logger;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import static io.aster.guard.GuardText.isBlank;
 
@@ -64,12 +68,12 @@ public class GuardApprovalService {
    *
    * @param decidedBy        审批人（{@code RequestIdentityResolver.performedBy}）：不得等于发起主体或提交请求的用户
    * @param approverApiKeyId 审批请求所用的已验证 API key：不得等于提交决策请求所用的 key
-   * @param businessRole     审批人的业务角色（{@code X-User-Business-Role}，可信 BFF 标签）；审批指定角色时必须相等
+   * @param businessRoles    审批人已验证的业务角色集合（{@code RequestIdentityResolver.businessRoles}）；审批指定角色时须包含之
    * @param comment          拒绝时必填
    * @throws GuardApprovalConflictException 校验失败、并发冲突或审批事件写入失败
    */
   public GuardDecisionResponse decideApproval(String tenantId, UUID approvalId, String decidedBy,
-                                              String approverApiKeyId, String businessRole, boolean approve,
+                                              String approverApiKeyId, List<String> businessRoles, boolean approve,
                                               String comment) {
     GuardApprovalEntity approval = store.findApproval(tenantId, approvalId)
         .orElseThrow(() -> conflict("approval_not_found", "审批不存在: " + approvalId));
@@ -77,7 +81,7 @@ public class GuardApprovalService {
     Instant now = Instant.now();
     checkPending(approval, now);
     checkSegregation(approval, decision, decidedBy, approverApiKeyId);
-    checkRoleAndInput(approval, decidedBy, businessRole, approve, comment);
+    checkRoleAndInput(approval, decidedBy, businessRoles, approve, comment);
     approval.status = approve ? GuardApprovalStatus.APPROVED : GuardApprovalStatus.REJECTED;
     approval.decidedBy = decidedBy;
     approval.decidedAt = now;
@@ -85,9 +89,23 @@ public class GuardApprovalService {
     return complete(approval, decision).orElseThrow(() -> notPending(approvalId));
   }
 
-  /** 租户内按状态分页列出审批（按创建时间倒序）；PENDING 只含当前仍可审批的行。 */
-  public List<GuardApprovalEntity> list(String tenantId, GuardApprovalStatus status, int page, int size) {
-    return store.listApprovals(tenantId, status, Instant.now(), page, size);
+  /**
+   * 租户内按状态分页列出审批（按创建时间倒序）；PENDING 只含当前仍可审批的行。
+   * 每项合入关联决策的字段（ADR 0042 §4.3）：整页决策一次批量查询，不逐条回读。
+   */
+  public List<GuardApprovalView> list(String tenantId, GuardApprovalStatus status, int page, int size) {
+    List<GuardApprovalEntity> approvals = store.listApprovals(tenantId, status, Instant.now(), page, size);
+    if (approvals.isEmpty()) {
+      return List.of();
+    }
+    Map<UUID, GuardDecisionEntity> byId = store.findDecisions(tenantId,
+            approvals.stream().map(a -> a.decisionId).collect(Collectors.toSet()))
+        .stream().collect(Collectors.toMap(d -> d.id, Function.identity()));
+    return approvals.stream().map(a -> view(a, byId.get(a.decisionId))).toList();
+  }
+
+  private GuardApprovalView view(GuardApprovalEntity a, GuardDecisionEntity d) {
+    return GuardApprovalView.of(a, d, d == null ? null : json.readControls(d));
   }
 
   /**
@@ -142,12 +160,13 @@ public class GuardApprovalService {
 
   /**
    * 角色 → 拒绝须带 comment → 列宽（审批人 1–255、comment ≤ 1000，超长拒绝而不是截断）。
-   * 角色去掉首尾空白后与 required_role 精确比对：BFF 拼头时带出的空格不该变成 role_mismatch。
+   * 角色集合匹配（ADR 0042 §2.3）：所需角色须在已验证集合内；ESCALATE 无所需角色，任何已验证成员可审。
+   * 集合由身份解析层给出（已去空白），这里不再读请求头，也不做二次规整。
    */
-  private static void checkRoleAndInput(GuardApprovalEntity a, String decidedBy, String businessRole,
+  private static void checkRoleAndInput(GuardApprovalEntity a, String decidedBy, List<String> businessRoles,
                                         boolean approve, String comment) {
-    if (a.requiredRole != null && !a.requiredRole.equals(businessRole == null ? null : businessRole.trim())) {
-      throw conflict("role_mismatch", "该审批需要业务角色: " + a.requiredRole);
+    if (a.requiredRole != null && !businessRoles.contains(a.requiredRole)) {
+      throw conflict("role_mismatch", "该审批需要业务角色: " + a.requiredRole, Map.of("verifiedRoles", businessRoles));
     }
     if (!approve && isBlank(comment)) {
       throw conflict("comment_required", "拒绝必须填写 comment");
@@ -195,5 +214,9 @@ public class GuardApprovalService {
 
   private static GuardApprovalConflictException conflict(String code, String message) {
     return new GuardApprovalConflictException(code, message);
+  }
+
+  private static GuardApprovalConflictException conflict(String code, String message, Map<String, Object> details) {
+    return new GuardApprovalConflictException(code, message, details);
   }
 }

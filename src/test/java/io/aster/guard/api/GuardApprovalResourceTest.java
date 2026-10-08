@@ -36,7 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * ADR 0040 §4：待审批列表、批准 / 拒绝（四眼、角色、comment）、过期与 {@code waitSeconds} 端到端。
- * 测试配置下 apikey / rbac 过滤器关闭，审批人身份只靠 {@code X-User-Id} 与 {@code X-User-Business-Role}。
+ * 测试配置下 apikey / rbac 过滤器关闭，审批人身份只靠 {@code X-User-Id}；业务角色由
+ * {@code RequestIdentityResolver.businessRoles()} 回落读取 {@code X-User-Business-Roles}（逗号分隔）。
  */
 @QuarkusTest
 class GuardApprovalResourceTest {
@@ -44,6 +45,9 @@ class GuardApprovalResourceTest {
   private static final String TENANT = "tenant-guard-approval-" + UUID.randomUUID().toString().substring(0, 8);
   private static final String DPO = "Data Protection Officer";
   private static final String APPROVALS = "/api/v1/guard/approvals";
+  /** 探针策略换上规则 ID 与控制项注解：列表项的 ruleId / controls 取自真实决策行。 */
+  private static final String SOURCE = DeployedMapParamProbeTest.SOURCE
+      .replace("@id(\"PROBE-001\")", "@id(\"CUST-DEL-001\")\n@control(\"GDPR:ART17\")");
 
   @Inject CompiledPolicyCache compiledPolicyCache;
   @Inject PolicyVersionResolutionCache versionResolutionCache;
@@ -64,7 +68,7 @@ class GuardApprovalResourceTest {
     compiledPolicyCache.clear();
     versionResolutionCache.clear();
     DeployedMapParamProbeTest.deploy(TENANT, DeployedMapParamProbeTest.MODULE, DeployedMapParamProbeTest.FUNCTION,
-        DeployedMapParamProbeTest.SOURCE);
+        SOURCE);
   }
 
   /** 探针策略对 delete_customer_record 返回 REQUIRE_APPROVAL(Data Protection Officer)。 */
@@ -124,15 +128,20 @@ class GuardApprovalResourceTest {
     return spec.when().get(APPROVALS);
   }
 
-  /** 以 userId / businessRole（null 表示不带头）对审批作出结论；comment 为 null 时请求体为空对象。 */
-  private static Response decide(String approvalId, String verb, String userId, String businessRole, String comment) {
+  /** 以 userId / 业务角色集合（逗号分隔，null 表示不带头）对审批作出结论；comment 为 null 时请求体为空对象。 */
+  private static Response decide(String approvalId, String verb, String userId, String businessRoles, String comment) {
+    return decideWithHeader(approvalId, verb, userId, "X-User-Business-Roles", businessRoles, comment);
+  }
+
+  private static Response decideWithHeader(String approvalId, String verb, String userId, String roleHeader,
+                                           String roleValue, String comment) {
     var spec = given()
         .header("X-Tenant-Id", TENANT)
         .header("X-User-Id", userId)
         .contentType(ContentType.JSON)
         .body(comment == null ? Map.of() : Map.of("comment", comment));
-    if (businessRole != null) {
-      spec = spec.header("X-User-Business-Role", businessRole);
+    if (roleValue != null) {
+      spec = spec.header(roleHeader, roleValue);
     }
     return spec.when().post(APPROVALS + "/" + approvalId + "/" + verb);
   }
@@ -210,6 +219,60 @@ class GuardApprovalResourceTest {
 
     assertThat(r.statusCode()).isEqualTo(403);
     assertThat(r.jsonPath().getString("error")).isEqualTo("role_mismatch");
+  }
+
+  @Test
+  void 自报单值头不再放行() {
+    String[] ids = createPending();
+
+    Response r = decideWithHeader(ids[1], "approve", "dpo-1", "X-User-Business-Role", DPO, null);
+
+    assertThat(r.statusCode()).isEqualTo(403);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("role_mismatch");
+    assertThat(r.jsonPath().getList("verifiedRoles", String.class)).isEmpty();
+    assertThat(approvalRow(ids[1]).status).isEqualTo(GuardApprovalStatus.PENDING);
+  }
+
+  @Test
+  void 多角色集合含所需角色即可() {
+    String[] ids = createPending();
+
+    Response r = decide(ids[1], "approve", "dpo-1", "CISO," + DPO, null);
+
+    assertThat(r.statusCode()).isEqualTo(200);
+    assertThat(r.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+  }
+
+  @Test
+  void 角色不符时错误体带已验证角色集合() {
+    String[] ids = createPending();
+
+    Response r = decide(ids[1], "approve", "dpo-1", "CISO, Engineer", null);
+
+    assertThat(r.statusCode()).isEqualTo(403);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("role_mismatch");
+    assertThat(r.jsonPath().getString("message")).contains(DPO);
+    assertThat(r.jsonPath().getList("verifiedRoles", String.class)).containsExactly("CISO", "Engineer");
+  }
+
+  @Test
+  void 列表项含决策字段() {
+    String[] ids = createPending();
+
+    Response listed = list(null);
+
+    assertThat(listed.statusCode()).isEqualTo(200);
+    assertThat(listed.jsonPath().getString("items[0].id")).isEqualTo(ids[1]);
+    assertThat(listed.jsonPath().getString("items[0].actionName")).isEqualTo("delete_customer_record");
+    assertThat(listed.jsonPath().getString("items[0].ruleId")).isEqualTo("CUST-DEL-001");
+    assertThat(listed.jsonPath().getList("items[0].controls", String.class)).containsExactly("GDPR:ART17");
+    assertThat(listed.jsonPath().getString("items[0].policyModule")).isEqualTo(DeployedMapParamProbeTest.MODULE);
+    assertThat(listed.jsonPath().getString("items[0].policyFunction")).isEqualTo(DeployedMapParamProbeTest.FUNCTION);
+    assertThat(listed.jsonPath().getString("items[0].resourceType")).isEqualTo("customer");
+    assertThat(listed.jsonPath().getString("items[0].resourceId")).isEqualTo("C-1001");
+    assertThat(listed.jsonPath().getString("items[0].reason")).isNotBlank();
+    // 普通决策没有证据相关键：null 字段不写出
+    assertThat(listed.jsonPath().getMap("items[0]")).doesNotContainKey("evidenceCorrelationId");
   }
 
   @Test

@@ -8,22 +8,25 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** 证据相关键：按租户查回、跨租户隔离、同租户重复键转为竞争异常。 */
+/** 证据相关键：按租户查回、跨租户隔离、同租户重复键转为竞争异常；批量取决策同样按租户隔离。 */
 @QuarkusTest
 @QuarkusTestResource(PostgresTestResource.class)
 class GuardDecisionStoreEvidenceTest {
   static final String TENANT = "t-evidence-" + UUID.randomUUID();
+  static final String OTHER = "other-" + TENANT;
   @Inject GuardDecisionStore store;
 
   @BeforeEach void clean() {
     QuarkusTransaction.requiringNew().run(() -> {
-      GuardApprovalEntity.delete("tenantId = ?1", TENANT);
-      GuardDecisionEntity.delete("tenantId = ?1", TENANT);
+      GuardApprovalEntity.delete("tenantId in ?1", List.of(TENANT, OTHER));
+      GuardDecisionEntity.delete("tenantId in ?1", List.of(TENANT, OTHER));
     });
   }
 
@@ -34,6 +37,20 @@ class GuardDecisionStoreEvidenceTest {
     assertThat(store.findByEvidenceCorrelationId("other-" + TENANT, "cid-1")).isEmpty();
     assertThatThrownBy(() -> store.saveDecision(minimal(TENANT, "cid-1"), null))
         .isInstanceOf(GuardIdempotencyRaceException.class);
+  }
+
+  @Test void 批量取决策只返回本租户命中行_空输入返回空() {
+    GuardDecisionEntity a = minimal(TENANT, null);
+    GuardDecisionEntity b = minimal(TENANT, null);
+    GuardDecisionEntity foreign = minimal(OTHER, null);
+    store.saveDecision(a, null);
+    store.saveDecision(b, null);
+    store.saveDecision(foreign, null);
+
+    List<GuardDecisionEntity> found = store.findDecisions(TENANT, Set.of(a.id, b.id, foreign.id, UUID.randomUUID()));
+
+    assertThat(found).extracting(d -> d.id).containsExactlyInAnyOrder(a.id, b.id);
+    assertThat(store.findDecisions(TENANT, Set.of())).isEmpty();
   }
 
   /** 最小合法决策行：response_json 等 NOT NULL 列给占位值。 */

@@ -1,6 +1,7 @@
 package io.aster.guard;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -18,6 +19,9 @@ public interface GuardDecisionStore {
 
   /** 按租户限定查找决策；跨租户返回 empty。 */
   Optional<GuardDecisionEntity> findDecision(String tenantId, UUID decisionId);
+
+  /** 按租户批量取决策（一次 in 查询，审批列表合入决策字段用）；跨租户的 id 不返回，空输入不访问数据库。 */
+  List<GuardDecisionEntity> findDecisions(String tenantId, Collection<UUID> ids);
 
   Optional<GuardApprovalEntity> findApprovalByDecision(UUID decisionId);
 
