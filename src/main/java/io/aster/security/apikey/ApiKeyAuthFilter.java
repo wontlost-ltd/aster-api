@@ -61,6 +61,11 @@ public class ApiKeyAuthFilter {
         if (!shouldProtect(path)) {
             return null;
         }
+        // 收据查询：HMAC 内部调用者已由 InternalCallerFilter 验签（签名绑定 tenant/role），无需 Bearer。
+        if (InternalCallerFilter.isHmacVerified(ctx)
+            && io.aster.security.PathNormalizer.normalize(path).equals("/api/v1/audit/receipts")) {
+            return null;
+        }
 
         String auth = ctx.getHeaderString("Authorization");
         if (auth == null || !auth.startsWith("Bearer ")) {

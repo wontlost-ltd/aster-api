@@ -15,6 +15,7 @@ GET /api/v1/audit/policy-versions/{versionId}/timeline
 GET /api/v1/audit/policy-versions/{versionId}/usage
 GET /api/v1/audit/policy/{policyModule}/{policyFunction}
 GET /api/v1/audit/range
+GET /api/v1/audit/receipts
 GET /api/v1/audit/runtime/{build}/policies
 GET /api/v1/audit/stats/version-usage
 GET /api/v1/audit/type/{eventType}

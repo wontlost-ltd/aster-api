@@ -176,6 +176,12 @@ public class InternalCallerFilter {
         // 正确做法是让服务端校验 BFF 已经在发的那套 HMAC 凭据。
         boolean isWhatIfBatch =
             normalizedPath.matches("/api/v1/policies/[^/]+/whatif-batches(?:/[^/]+)?");
+        // 审计收据查询（ADR 0041 §2.4）：cloud 证据导出走 HMAC，其它调用方走 Bearer API key。
+        // 仅当携带内部调用头时才要求 HMAC；否则不归本 filter，交给 ApiKeyAuthFilter。
+        boolean isAuditReceipts = normalizedPath.equals("/api/v1/audit/receipts");
+        if (isAuditReceipts) {
+            return hasInternalCaller ? Classification.REQUIRE_HMAC : Classification.NOT_PROTECTED;
+        }
         if (!isEvaluateSource && !isAi && !isWhatIfBatch) return Classification.NOT_PROTECTED;
         // What-If 无 public/trial 旁路：它按窗口重跑历史执行，属内部编排能力，
         // 不对匿名浏览器流量开放。始终要求 HMAC。
