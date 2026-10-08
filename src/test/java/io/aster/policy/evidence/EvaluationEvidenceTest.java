@@ -13,14 +13,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EvaluationEvidenceTest {
   @Test void toMetadata扁平键且null不写键() {
     EvaluationEvidence e = new EvaluationEvidence("c-1", "ALLOW", "R-1", List.of("GDPR:ART17"), null,
-        new AgentIdentity("anthropic", "claude", null, "s-1"));
+        new AgentIdentity("anthropic", "claude", null, "s-1"), null, null);
     assertThat(e.toMetadata()).containsExactlyInAnyOrderEntriesOf(Map.of(
         "correlationId", "c-1", "outcome", "ALLOW", "ruleId", "R-1", "controls", List.of("GDPR:ART17"),
         "agentProvider", "anthropic", "agentModel", "claude", "agentSession", "s-1", "agentSource", "declared"));
   }
 
   @Test void 无agent无规则时只剩correlationId() {
-    EvaluationEvidence e = new EvaluationEvidence("c-2", null, null, List.of(), null, null);
+    EvaluationEvidence e = new EvaluationEvidence("c-2", null, null, List.of(), null, null, null, null);
     assertThat(e.toMetadata()).containsOnlyKeys("correlationId");
   }
 
@@ -34,7 +34,7 @@ class EvaluationEvidenceTest {
   @Test void 裁剪保证最坏情况序列化长度小于3800() throws Exception {
     List<String> controls = IntStream.range(0, 40).mapToObj(i -> "C".repeat(100) + i).toList();
     EvaluationEvidence e = new EvaluationEvidence("c".repeat(500), "O".repeat(500), "R".repeat(500), controls,
-        Long.MAX_VALUE, new AgentIdentity("p".repeat(500), "m".repeat(500), "v".repeat(500), "s".repeat(500)));
+        Long.MAX_VALUE, new AgentIdentity("p".repeat(500), "m".repeat(500), "v".repeat(500), "s".repeat(500)), null, null);
     Map<String, Object> m = e.toMetadata();
     List<?> clipped = (List<?>) m.get("controls");
     assertThat(clipped).hasSize(EvaluationEvidence.MAX_CONTROLS);
@@ -48,34 +48,47 @@ class EvaluationEvidenceTest {
   }
 
   @Test void controls为null时不写键() {
-    EvaluationEvidence e = new EvaluationEvidence("c-4", null, null, null, null, null);
+    EvaluationEvidence e = new EvaluationEvidence("c-4", null, null, null, null, null, null, null);
     assertThat(e.toMetadata()).containsOnlyKeys("correlationId");
   }
 
   @Test void controls中的null项被丢弃() {
-    EvaluationEvidence e = new EvaluationEvidence("c-5", null, null, Arrays.asList("a", null, "b"), null, null);
+    EvaluationEvidence e = new EvaluationEvidence("c-5", null, null, Arrays.asList("a", null, "b"), null, null, null, null);
     assertThat(e.toMetadata()).containsEntry("controls", List.of("a", "b"));
   }
 
   @Test void agent五键名常量与线上键名一致() {
     EvaluationEvidence e = new EvaluationEvidence("c-6", null, null, List.of(), null,
-        new AgentIdentity("p", "m", "v", "s"));
+        new AgentIdentity("p", "m", "v", "s"), null, null);
     assertThat(e.toMetadata()).containsEntry("agentProvider", "p").containsEntry("agentModel", "m")
         .containsEntry("agentVersion", "v").containsEntry("agentSession", "s").containsEntry("agentSource", "declared");
   }
 
   @Test void 超长correlationId被裁剪到255() {
-    EvaluationEvidence e = new EvaluationEvidence("x".repeat(300), null, null, List.of(), null, null);
+    EvaluationEvidence e = new EvaluationEvidence("x".repeat(300), null, null, List.of(), null, null, null, null);
     assertThat(e.toMetadata().get("correlationId").toString()).hasSize(255);
   }
 
   @Test void 裁剪不留下孤立代理字符() {
     String s = "a".repeat(254) + "\uD83D\uDE00";
-    EvaluationEvidence e = new EvaluationEvidence("c", s, null, List.of(s.substring(0, 63) + "\uD83D\uDE00"), null, null);
+    EvaluationEvidence e = new EvaluationEvidence("c", s, null, List.of(s.substring(0, 63) + "\uD83D\uDE00"), null, null, null, null);
     String outcome = e.toMetadata().get("outcome").toString();
     assertThat(outcome.length()).isLessThanOrEqualTo(255);
     assertThat(Character.isSurrogate(outcome.charAt(outcome.length() - 1))).isFalse();
     String control = ((List<?>) e.toMetadata().get("controls")).get(0).toString();
     assertThat(Character.isSurrogate(control.charAt(control.length() - 1))).isFalse();
+  }
+
+  @Test void role与reason进扁平键且截到255() {
+    String longReason = "r".repeat(300);
+    var e = EvaluationEvidence.of("REQUIRE_APPROVAL", "R1", List.of(), null, null, "Data Protection Officer", longReason);
+    Map<String, Object> m = e.toMetadata();
+    assertThat(m).containsEntry(EvaluationEvidence.KEY_ROLE, "Data Protection Officer");
+    assertThat((String) m.get(EvaluationEvidence.KEY_REASON)).hasSize(255);
+  }
+
+  @Test void role与reason为空时不写键() {
+    var e = EvaluationEvidence.of("ALLOW", null, null, null, null);
+    assertThat(e.toMetadata()).doesNotContainKeys(EvaluationEvidence.KEY_ROLE, EvaluationEvidence.KEY_REASON);
   }
 }

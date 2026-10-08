@@ -51,7 +51,7 @@
 
 ### 2.2 `POLICY_EVALUATION` 事件 metadata 新增键
 
-`correlationId`、`outcome`（ALLOW / DENY / REQUIRE_APPROVAL / ESCALATE，非 Verdict 结果不写键）、`ruleId`、`controls`（数组，≤ 16 项、每项 ≤ 64 字符）、`agentProvider / agentModel / agentVersion / agentSession / agentSource`（§3，有 agent 时才写，`agentSource` 恒为 `"declared"`）。文本值 ≤ 255 字符截断，null/空值不写键。既有键（`applicantId`、`contextSize`、`sourceFormat` 等）不动；同名键以证据为准。
+`correlationId`、`outcome`（ALLOW / DENY / REQUIRE_APPROVAL / ESCALATE，非 Verdict 结果不写键）、`ruleId`、`role`、`reason`（Verdict 的审批角色与原因，仅执行成功且为 Verdict 时写；ADR 0042 §3.2 补）、`controls`（数组，≤ 16 项、每项 ≤ 64 字符）、`agentProvider / agentModel / agentVersion / agentSession / agentSource`（§3，有 agent 时才写，`agentSource` 恒为 `"declared"`）。文本值 ≤ 255 字符截断，null/空值不写键。既有键（`applicantId`、`contextSize`、`sourceFormat` 等）不动；同名键以证据为准。
 
 本期 `/evaluate*` 事件不写 `policyVersionId`：三个端点的调用点都拿不到版本 id（`PolicyEvaluationResult` 不带版本）。guard 收据照旧携带 `policyVersionId`；`/evaluate*` 的版本回填列入 §10。
 

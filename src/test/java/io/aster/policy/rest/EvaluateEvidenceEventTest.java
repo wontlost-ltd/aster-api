@@ -105,6 +105,7 @@ class EvaluateEvidenceEventTest {
 
     Map<String, Object> md = metadataOf(awaitEvent(TENANT, cid));
     assertThat(md).containsEntry("outcome", "REQUIRE_APPROVAL").doesNotContainKeys("agentProvider", "agentSource");
+    assertThat(md).containsEntry("role", "Data Protection Officer").containsKey("reason");
   }
 
   @Test

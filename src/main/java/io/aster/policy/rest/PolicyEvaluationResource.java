@@ -252,7 +252,8 @@ public class PolicyEvaluationResource {
             // correlationId（ADR 0041 §2.2）：同一个键既进审计链事件、又回给调用方，
             // 让调用方日志与链上事件可一对一关联；/evaluate 本期不写 policyVersionId。
             EvaluationEvidence evidence = EvaluationEvidence.of(
-                outcomeOf(result.getDecision()), result.getRuleId(), result.getControls(), null, agent);
+                outcomeOf(result.getDecision()), result.getRuleId(), result.getControls(), null, agent,
+                roleOf(result.getDecision()), reasonOf(result.getDecision()));
             publishPolicyEvaluationEvent(
                 tenantId,
                 request,
@@ -367,7 +368,8 @@ public class PolicyEvaluationResource {
                 // correlationId（ADR 0041 §2.2）：链上事件与响应共用同一个键
                 VerdictView decision = VerdictView.from(result.result()).orElse(null);
                 EvaluationEvidence evidence = EvaluationEvidence.of(
-                    outcomeOf(decision), result.ruleId(), result.controls(), null, agent);
+                    outcomeOf(decision), result.ruleId(), result.controls(), null, agent,
+                    roleOf(decision), reasonOf(decision));
                 publishPolicyEvaluationEvent(
                     tenantId,
                     new EvaluationRequest(policyModule, policyFunction, contextArray, agent),
@@ -639,7 +641,8 @@ public class PolicyEvaluationResource {
 
                     evidence = EvaluationEvidence.of(
                         outcomeOf(decision),
-                        phase.execResult().ruleId(), phase.execResult().controls(), null, agent);
+                        phase.execResult().ruleId(), phase.execResult().controls(), null, agent,
+                        roleOf(decision), reasonOf(decision));
                     publishPolicyEvaluationEvent(
                         tenantId,
                         new EvaluationRequest(phase.execResult().moduleName(), phase.execResult().functionName(), new Object[]{request.context()}, agent),
@@ -1298,6 +1301,14 @@ public class PolicyEvaluationResource {
 
     private static String outcomeOf(VerdictView decision) {
         return decision == null ? null : decision.outcome();
+    }
+
+    private static String roleOf(VerdictView decision) {
+        return decision == null ? null : decision.role();
+    }
+
+    private static String reasonOf(VerdictView decision) {
+        return decision == null ? null : decision.reason();
     }
 
     private Map<String, Object> buildEvaluationMetadata(EvaluationRequest request) {

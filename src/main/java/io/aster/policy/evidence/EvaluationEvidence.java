@@ -8,7 +8,7 @@ import java.util.UUID;
 
 /** 一次评估的证据键（ADR 0041 §2.2）：进入 POLICY_EVALUATION 事件 metadata，并把 correlationId 回给调用方。 */
 public record EvaluationEvidence(String correlationId, String outcome, String ruleId, List<String> controls,
-                                 Long policyVersionId, AgentIdentity agent) {
+                                 Long policyVersionId, AgentIdentity agent, String role, String reason) {
   public static final int MAX_CONTROLS = 16;
   public static final int MAX_CONTROL_LENGTH = 64;
   public static final String SOURCE_DECLARED = "declared";
@@ -19,10 +19,20 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
   public static final String KEY_AGENT_SESSION = "agentSession";
   public static final String KEY_AGENT_SOURCE = "agentSource";
 
-  /** 生成新的 correlationId（随机 UUID）。 */
+  public static final String KEY_ROLE = "role";
+  public static final String KEY_REASON = "reason";
+
+  /** 生成新的 correlationId（随机 UUID）；无 Verdict 的 role/reason 时使用。 */
   public static EvaluationEvidence of(String outcome, String ruleId, List<String> controls, Long policyVersionId,
                                       AgentIdentity agent) {
-    return new EvaluationEvidence(UUID.randomUUID().toString(), outcome, ruleId, controls, policyVersionId, agent);
+    return of(outcome, ruleId, controls, policyVersionId, agent, null, null);
+  }
+
+  /** role/reason 来自 Verdict（ADR 0042 §3.2）：from-evidence 据此建决策，不重复评估。 */
+  public static EvaluationEvidence of(String outcome, String ruleId, List<String> controls, Long policyVersionId,
+                                      AgentIdentity agent, String role, String reason) {
+    return new EvaluationEvidence(UUID.randomUUID().toString(), outcome, ruleId, controls, policyVersionId, agent,
+        role, reason);
   }
 
   /** 扁平键而非嵌套对象：追加器的脱敏与 guard 的预算收缩只处理顶层 String/List；null/空不写键。 */
@@ -34,6 +44,8 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
     List<String> c = clipControls(controls);
     if (!c.isEmpty()) m.put("controls", c);
     if (policyVersionId != null) m.put("policyVersionId", policyVersionId);
+    put(m, KEY_ROLE, clip(role));
+    put(m, KEY_REASON, clip(reason));
     if (agent != null) {
       put(m, KEY_AGENT_PROVIDER, clip(agent.provider()));
       put(m, KEY_AGENT_MODEL, clip(agent.model()));

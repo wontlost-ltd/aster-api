@@ -43,7 +43,7 @@ class PolicyAuditPublisherTest {
   @Test
   void 证据键并入metadata且覆盖同名键() {
     EvaluationEvidence e = new EvaluationEvidence("c-1", "ALLOW", "R-1", List.of("X"), null,
-        new AgentIdentity("p", "m", null, null));
+        new AgentIdentity("p", "m", null, null), null, null);
     publisher.publish("t", request(), "u", true, 5L, null, Map.of("contextSize", 1, "outcome", "stale"), e);
 
     assertThat(fired().metadata())
