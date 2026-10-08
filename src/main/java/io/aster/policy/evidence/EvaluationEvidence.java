@@ -18,7 +18,7 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
   /** 扁平键而非嵌套对象：追加器的脱敏与 guard 的预算收缩只处理顶层 String/List；null/空不写键。 */
   public Map<String, Object> toMetadata() {
     Map<String, Object> m = new LinkedHashMap<>();
-    put(m, "correlationId", correlationId);
+    put(m, "correlationId", clip(correlationId));
     put(m, "outcome", clip(outcome));
     put(m, "ruleId", clip(ruleId));
     List<String> c = clipControls(controls);
@@ -39,12 +39,19 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
   }
 
   private static String clip(String s) {
-    return s == null || s.length() <= MAX_TEXT ? s : s.substring(0, MAX_TEXT);
+    return clip(s, MAX_TEXT);
+  }
+
+  /** 按 UTF-16 单元裁剪；若截断点落在代理对中间（保留段末位是高位代理），多退一位，避免孤立代理字符。 */
+  private static String clip(String s, int max) {
+    if (s == null || s.length() <= max) return s;
+    int end = Character.isHighSurrogate(s.charAt(max - 1)) ? max - 1 : max;
+    return s.substring(0, end);
   }
 
   private static List<String> clipControls(List<String> controls) {
     if (controls == null) return List.of();
     return controls.stream().filter(Objects::nonNull).limit(MAX_CONTROLS)
-        .map(c -> c.length() <= MAX_CONTROL_LENGTH ? c : c.substring(0, MAX_CONTROL_LENGTH)).toList();
+        .map(c -> clip(c, MAX_CONTROL_LENGTH)).toList();
   }
 }

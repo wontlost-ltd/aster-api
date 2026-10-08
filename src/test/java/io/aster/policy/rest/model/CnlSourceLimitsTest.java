@@ -73,7 +73,7 @@ class CnlSourceLimitsTest {
     @Test
     void sourcePolicyRequestRejectsOversizedSource() {
         String tooBig = sourceOfLength(CnlSourceLimits.MAX_SOURCE_LENGTH + 1);
-        SourcePolicyRequest req = new SourcePolicyRequest(tooBig, java.util.Map.of(), null, null, null, null);
+        SourcePolicyRequest req = new SourcePolicyRequest(tooBig, java.util.Map.of(), null, null, null, null, null);
         var violations = validator.validate(req);
         assertFalse(violations.isEmpty(), "超长 source 必须触发约束违规");
         assertTrue(violations.stream().anyMatch(v -> v.getPropertyPath().toString().equals("source")),
@@ -84,7 +84,7 @@ class CnlSourceLimitsTest {
     void evaluationRequestRejectsTooManyContextElements() {
         Object[] tooMany = new Object[CnlSourceLimits.MAX_CONTEXT_ELEMENTS + 1];
         java.util.Arrays.fill(tooMany, 1);
-        EvaluationRequest req = new EvaluationRequest("m", "f", tooMany);
+        EvaluationRequest req = new EvaluationRequest("m", "f", tooMany, null);
         var violations = validator.validate(req);
         assertFalse(violations.isEmpty(), "超量 context 必须触发约束违规");
         assertTrue(violations.stream().anyMatch(v -> v.getPropertyPath().toString().equals("context")),
@@ -93,7 +93,7 @@ class CnlSourceLimitsTest {
 
     @Test
     void evaluationRequestAcceptsNormalContext() {
-        EvaluationRequest req = new EvaluationRequest("m", "f", new Object[] { 1, "x", true });
+        EvaluationRequest req = new EvaluationRequest("m", "f", new Object[] { 1, "x", true }, null);
         assertTrue(validator.validate(req).isEmpty(), "正常 context 应通过校验");
     }
 
@@ -101,7 +101,7 @@ class CnlSourceLimitsTest {
     void jsonPolicyRequestRejectsOversizedPolicy() {
         StringBuilder sb = new StringBuilder(CnlSourceLimits.MAX_JSON_POLICY_LENGTH + 2);
         while (sb.length() <= CnlSourceLimits.MAX_JSON_POLICY_LENGTH) sb.append('x');
-        JsonPolicyRequest req = new JsonPolicyRequest(sb.toString(), java.util.Map.of());
+        JsonPolicyRequest req = new JsonPolicyRequest(sb.toString(), java.util.Map.of(), null);
         var violations = validator.validate(req);
         assertFalse(violations.isEmpty(), "超长 policy 必须触发约束违规");
         assertTrue(violations.stream().anyMatch(v -> v.getPropertyPath().toString().equals("policy")),

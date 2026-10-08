@@ -1,5 +1,6 @@
 package io.aster.policy.rest.model;
 
+import io.aster.policy.evidence.AgentIdentity;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -25,6 +26,10 @@ public record EvaluationRequest(
     @Size(max = CnlSourceLimits.MAX_CONTEXT_ELEMENTS,
           message = "context 参数过多（最多 " + CnlSourceLimits.MAX_CONTEXT_ELEMENTS + " 个）")
     @JsonProperty("context")
-    Object[] context
+    Object[] context,
+
+    // 行动中的模型身份（ADR 0041 §3）；可选，由调用方自报
+    @JsonProperty("agent")
+    AgentIdentity agent
 ) {
 }

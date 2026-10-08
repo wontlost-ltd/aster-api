@@ -38,4 +38,19 @@ class EvaluationEvidenceTest {
     String json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(m);
     assertThat(json.length()).isLessThan(3800);
   }
+
+  @Test void 超长correlationId被裁剪到255() {
+    EvaluationEvidence e = new EvaluationEvidence("x".repeat(300), null, null, List.of(), null, null);
+    assertThat(e.toMetadata().get("correlationId").toString()).hasSize(255);
+  }
+
+  @Test void 裁剪不留下孤立代理字符() {
+    String s = "a".repeat(254) + "\uD83D\uDE00";
+    EvaluationEvidence e = new EvaluationEvidence("c", s, null, List.of(s.substring(0, 63) + "\uD83D\uDE00"), null, null);
+    String outcome = e.toMetadata().get("outcome").toString();
+    assertThat(outcome.length()).isLessThanOrEqualTo(255);
+    assertThat(Character.isSurrogate(outcome.charAt(outcome.length() - 1))).isFalse();
+    String control = ((List<?>) e.toMetadata().get("controls")).get(0).toString();
+    assertThat(Character.isSurrogate(control.charAt(control.length() - 1))).isFalse();
+  }
 }

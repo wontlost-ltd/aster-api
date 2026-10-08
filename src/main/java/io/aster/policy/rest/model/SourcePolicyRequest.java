@@ -1,5 +1,7 @@
 package io.aster.policy.rest.model;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import io.aster.policy.evidence.AgentIdentity;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
@@ -40,7 +42,11 @@ public record SourcePolicyRequest(
 
     Map<String, Object> vocabulary,
 
-    Map<String, java.util.List<String>> aliasSet
+    Map<String, java.util.List<String>> aliasSet,
+
+    // 行动中的模型身份（ADR 0041 §3）；可选，由调用方自报
+    @JsonProperty("agent")
+    AgentIdentity agent
 ) {
     /**
      * 获取语言配置，默认 en-US

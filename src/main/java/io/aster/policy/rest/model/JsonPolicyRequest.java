@@ -1,5 +1,7 @@
 package io.aster.policy.rest.model;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import io.aster.policy.evidence.AgentIdentity;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
@@ -20,6 +22,10 @@ public record JsonPolicyRequest(
     String policy,
 
     @NotNull(message = "context 不能为空")
-    Object context
+    Object context,
+
+    // 行动中的模型身份（ADR 0041 §3）；可选，由调用方自报
+    @JsonProperty("agent")
+    AgentIdentity agent
 ) {
 }

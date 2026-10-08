@@ -351,7 +351,7 @@ public class PolicyEvaluationResource {
 
                 publishPolicyEvaluationEvent(
                     tenantId,
-                    new EvaluationRequest(policyModule, policyFunction, contextArray),
+                    new EvaluationRequest(policyModule, policyFunction, contextArray, null),
                     performedBy,
                     true,
                     executionTime,
@@ -376,7 +376,7 @@ public class PolicyEvaluationResource {
 
                 publishPolicyEvaluationEvent(
                     tenantId,
-                    new EvaluationRequest(policyModule, policyFunction, contextArray),
+                    new EvaluationRequest(policyModule, policyFunction, contextArray, null),
                     performedBy,
                     false,
                     executionTime,
@@ -607,7 +607,7 @@ public class PolicyEvaluationResource {
 
                     publishPolicyEvaluationEvent(
                         tenantId,
-                        new EvaluationRequest(phase.execResult().moduleName(), phase.execResult().functionName(), new Object[]{request.context()}),
+                        new EvaluationRequest(phase.execResult().moduleName(), phase.execResult().functionName(), new Object[]{request.context()}, null),
                         performedBy,
                         true,
                         phase.execResult().executionTimeMs(),
