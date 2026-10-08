@@ -237,6 +237,23 @@ class GuardApprovalServiceTest {
   }
 
   @Test
+  void 决策controls损坏时列表仍返回该项且省略controls() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    GuardDecisionEntity d = decisionOf(a);
+    d.actionName = "delete_customer_record";
+    d.controls = "not-json";
+    when(store.listApprovals(eq(TENANT), eq(GuardApprovalStatus.PENDING), any(), eq(0), eq(20))).thenReturn(List.of(a));
+    when(store.findDecisions(eq(TENANT), any())).thenReturn(List.of(d));
+
+    List<GuardApprovalView> views = service.list(TENANT, GuardApprovalStatus.PENDING, 0, 20);
+
+    assertThat(views).hasSize(1);
+    assertThat(views.get(0).id()).isEqualTo(a.id.toString());
+    assertThat(views.get(0).actionName()).isEqualTo("delete_customer_record");
+    assertThat(views.get(0).controls()).isNull();
+  }
+
+  @Test
   void 空列表不查决策() {
     when(store.listApprovals(eq(TENANT), any(), any(), anyInt(), anyInt())).thenReturn(List.of());
 

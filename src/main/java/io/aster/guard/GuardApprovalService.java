@@ -105,7 +105,17 @@ public class GuardApprovalService {
   }
 
   private GuardApprovalView view(GuardApprovalEntity a, GuardDecisionEntity d) {
-    return GuardApprovalView.of(a, d, d == null ? null : json.readControls(d));
+    return GuardApprovalView.of(a, d, d == null ? null : controlsOrNull(d));
+  }
+
+  /** 列表只读展示：单行 controls 损坏不应让整页 500，记 warn 后该项省略 controls。 */
+  private List<String> controlsOrNull(GuardDecisionEntity d) {
+    try {
+      return json.readControls(d);
+    } catch (IllegalStateException e) {
+      LOG.warnf(e, "Action Guard 决策 controls 无法解析，列表项省略该字段: tenant=%s decision=%s", d.tenantId, d.id);
+      return null;
+    }
   }
 
   /**
