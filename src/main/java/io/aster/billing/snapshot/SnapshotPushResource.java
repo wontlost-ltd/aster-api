@@ -112,23 +112,7 @@ public class SnapshotPushResource {
         }
 
         try {
-            JsonObject json = new JsonObject(bodyJson);
-            boolean valid = json.getBoolean("valid", false);
-            ApiKeySnapshot s;
-            if (valid) {
-                s = new ApiKeySnapshot(
-                    true, null,
-                    json.getString("apiKeyId"),
-                    json.getString("userId"),
-                    json.getString("tenantId"),
-                    json.getString("plan"),
-                    json.getString("role"),
-                    json.getLong("revokedAtEpochMs", null),
-                    json.getString("quotaOwnerId")
-                );
-            } else {
-                s = ApiKeySnapshot.invalid(json.getString("reason", "invalid"));
-            }
+            ApiKeySnapshot s = ApiKeySnapshot.fromJson(new JsonObject(bodyJson));
             snapshot.setApiKey(keyHash, s);
             LOG.infof("snapshot apikey pushed: hash=%.8s... valid=%s", keyHash, s.valid());
             return Response.ok("{\"ok\":true}").build();

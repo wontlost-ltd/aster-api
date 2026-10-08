@@ -7,7 +7,7 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.container.ContainerRequestContext;
 
 /**
- * 调用方身份解析的**单一事实源**：tenant / user / apiKeyId。
+ * 调用方身份解析的**单一事实源**：tenant / user / apiKeyId / quotaOwnerId。
  *
  * <h2>为什么需要它（issue #174 探勘时发现的真实缺陷）</h2>
  *
@@ -24,12 +24,27 @@ import jakarta.ws.rs.container.ContainerRequestContext;
  *
  * <p>收敛到本类后，解析顺序只有一处定义，补丁（如 R32）不会再只打到一个副本上。
  *
- * <h2>解析顺序（三个方法一致）</h2>
+ * <h2>解析顺序（tenantId / performedBy / apiKeyId 一致）</h2>
  * <ol>
  *   <li>{@link TenantContext} —— TenantFilter 已用权威值填充；trial 流量在此被识别</li>
  *   <li>JAX-RS {@code ctx.property} —— {@code ApiKeyAuthFilter} 写入的验证结果</li>
  *   <li>Vert.x header —— 最后回退</li>
  * </ol>
+ *
+ * <h2>quotaOwnerId 的解析顺序（ADR 0015 §3）</h2>
+ * <ol>
+ *   <li>JAX-RS {@code ctx.property} {@code aster.apikey.quotaOwnerId} —— {@code ApiKeyAuthFilter}
+ *       验证 key 后写入（团队 key 为 team owner，个人 key 等于 userId）</li>
+ *   <li>回退 {@link #performedBy()} —— 无 key、旧 cloud 未下发时，配额归属就是操作者本人</li>
+ * </ol>
+ *
+ * <p>它先读属性、后（经 {@code performedBy()}）判 trial，与 {@code performedBy()} 的顺序相反。
+ * 两者只在「请求既带已验证 key、租户又是 trial」时分叉，生产不可达：{@code TenantFilter} 只在
+ * {@code TrialEndpointGuard} 放行的 {@code /evaluate-source} 上设置 trial 租户，外部传
+ * {@code X-Tenant-Id: trial} 一律拒绝；而 {@code ApiKeyAuthFilter} 不保护 {@code /evaluate-source}
+ * （由 {@code InternalCallerFilter} 守护），该路径上属性从不写入，trial 流量必然回退到
+ * {@code trial-anonymous}。这一结论依赖过滤器不保护 {@code /evaluate-source}；若将来让
+ * {@code ApiKeyAuthFilter} 覆盖该路径，需重新审视此顺序。
  *
  * <h2>不在本类范围内</h2>
  *
@@ -145,7 +160,7 @@ public class RequestIdentityResolver {
     /** 配额归属：团队 key 为 team owner，个人 key 等于 performedBy；属性缺失（旧 cloud / 无 key）回退 performedBy。 */
     public String quotaOwnerId() {
         String prop = jaxrsProperty(PROP_QUOTA_OWNER_ID);
-        return prop != null && !prop.isBlank() ? prop : performedBy();
+        return prop != null ? prop : performedBy();
     }
 
     /**

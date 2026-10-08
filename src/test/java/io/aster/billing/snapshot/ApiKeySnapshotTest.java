@@ -1,6 +1,7 @@
 package io.aster.billing.snapshot;
 
 import io.aster.common.JacksonMappers;
+import io.vertx.core.json.JsonObject;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -99,5 +100,82 @@ class ApiKeySnapshotTest {
 
         assertThat(json).contains("\"quotaOwnerId\":\"owner-1\"");
         assertThat(JacksonMappers.DEFAULT.readValue(json, ApiKeySnapshot.class)).isEqualTo(in);
+    }
+
+    @Test
+    void personalKey_quotaOwnerEqualToUserId_isNormalized_andRedisJsonMatchesLegacyPod() throws Exception {
+        // 新 cloud 对个人 key 也下发 quotaOwnerId=userId：归一为 null 后写入 Redis 的 JSON 与升级前逐字节相同，
+        // 旧 pod / 回滚 pod 仍能读取个人 key 快照。
+        ApiKeySnapshot personal = new ApiKeySnapshot(true, null, "k1", "u1", "u1", "pro", "owner", null, "u1");
+        String json = JacksonMappers.DEFAULT.writeValueAsString(personal);
+        String legacyPodJson = JacksonMappers.DEFAULT.writeValueAsString(
+            new LegacyApiKeySnapshot(true, null, "k1", "u1", "u1", "pro", "owner", null));
+
+        assertThat(personal.quotaOwnerId()).isNull();
+        assertThat(personal.effectiveQuotaOwnerId()).isEqualTo("u1");
+        assertThat(json).doesNotContain("\"quotaOwnerId\"").isEqualTo(legacyPodJson);
+
+        ApiKeySnapshot team = new ApiKeySnapshot(true, null, "k1", "u1", "team-1", "team", "member", null, "owner");
+        assertThat(team.effectiveQuotaOwnerId()).isEqualTo("owner");
+        assertThat(JacksonMappers.DEFAULT.writeValueAsString(team)).contains("\"quotaOwnerId\":\"owner\"");
+    }
+
+    @Test
+    void blankOrPaddedQuotaOwnerId_isNormalized_effectiveOwnerUnchanged() {
+        ApiKeySnapshot blank = new ApiKeySnapshot(true, null, "k1", "u1", "u1", "pro", "owner", null, "  ");
+        assertThat(blank.quotaOwnerId()).isNull();
+        assertThat(blank.effectiveQuotaOwnerId()).isEqualTo("u1");
+
+        ApiKeySnapshot paddedSelf = new ApiKeySnapshot(true, null, "k1", "u1", "u1", "pro", "owner", null, " u1 ");
+        assertThat(paddedSelf.quotaOwnerId()).isNull();
+        assertThat(paddedSelf.effectiveQuotaOwnerId()).isEqualTo("u1");
+
+        ApiKeySnapshot paddedOwner = new ApiKeySnapshot(true, null, "k1", "u1", "team-1", "team", "member", null, " owner-1 ");
+        assertThat(paddedOwner.quotaOwnerId()).isEqualTo("owner-1");
+        assertThat(paddedOwner.effectiveQuotaOwnerId()).isEqualTo("owner-1");
+    }
+
+    @Test
+    void fromJson_validTeamKey_mapsAllFields() {
+        JsonObject json = new JsonObject()
+            .put("valid", true).put("apiKeyId", "k1").put("userId", "member-1").put("tenantId", "team-1")
+            .put("plan", "team").put("role", "member").put("revokedAtEpochMs", 42L).put("quotaOwnerId", "owner-1");
+
+        assertThat(ApiKeySnapshot.fromJson(json)).isEqualTo(
+            new ApiKeySnapshot(true, null, "k1", "member-1", "team-1", "team", "member", 42L, "owner-1"));
+    }
+
+    @Test
+    void fromJson_validWithoutQuotaOwnerId_fallsBackToUserId() {
+        // 旧 cloud 推送 / 全量同步不带 quotaOwnerId
+        JsonObject json = new JsonObject()
+            .put("valid", true).put("apiKeyId", "k1").put("userId", "u1").put("tenantId", "u1")
+            .put("plan", "pro").put("role", "owner");
+
+        ApiKeySnapshot s = ApiKeySnapshot.fromJson(json);
+
+        assertThat(s).isEqualTo(new ApiKeySnapshot(true, null, "k1", "u1", "u1", "pro", "owner", null, null));
+        assertThat(s.effectiveQuotaOwnerId()).isEqualTo("u1");
+    }
+
+    @Test
+    void fromJson_validPersonalKeyWithQuotaOwnerEqualToUser_isNormalized() {
+        JsonObject json = new JsonObject()
+            .put("valid", true).put("apiKeyId", "k1").put("userId", "u1").put("tenantId", "u1")
+            .put("plan", "pro").put("role", "owner").put("quotaOwnerId", "u1");
+
+        assertThat(ApiKeySnapshot.fromJson(json).quotaOwnerId()).isNull();
+    }
+
+    @Test
+    void fromJson_invalid_keepsReason_orDefaultsToInvalid_andIgnoresIdentityFields() {
+        JsonObject revoked = new JsonObject().put("valid", false).put("reason", "revoked")
+            .put("userId", "u1").put("quotaOwnerId", "owner-1");
+        assertThat(ApiKeySnapshot.fromJson(revoked)).isEqualTo(ApiKeySnapshot.invalid("revoked"));
+
+        assertThat(ApiKeySnapshot.fromJson(new JsonObject().put("valid", false)))
+            .isEqualTo(ApiKeySnapshot.invalid("invalid"));
+        assertThat(ApiKeySnapshot.fromJson(new JsonObject()))
+            .isEqualTo(ApiKeySnapshot.invalid("invalid"));
     }
 }

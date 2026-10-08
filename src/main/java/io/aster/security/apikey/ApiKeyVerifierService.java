@@ -246,7 +246,7 @@ public class ApiKeyVerifierService {
             if (s.tenantId() != null && !s.tenantId().isBlank()) {
                 ApiKeyVerifyResult fromRedis = ApiKeyVerifyResult.valid(
                     s.apiKeyId(), s.userId(), s.tenantId(), s.plan(), null, s.role(),
-                    s.effectiveQuotaOwnerId());
+                    s.quotaOwnerId());
                 cache.put(keyHash, fromRedis);
                 if (fromRedis.userId() != null) {
                     userIndex.computeIfAbsent(fromRedis.userId(), k -> ConcurrentHashMap.newKeySet()).add(keyHash);

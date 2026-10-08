@@ -211,4 +211,16 @@ class RequestIdentityResolverTest {
 
         assertEquals("trial-anonymous", r.quotaOwnerId());
     }
+
+    @Test
+    @DisplayName("ADR 0015：quotaOwnerId 属性空白 → 回退 performedBy()；带空白的值去首尾空白")
+    void quotaOwnerIdBlankPropertyFallsBack_paddedPropertyTrimmed() throws Exception {
+        ContainerRequestContext blank = mock(ContainerRequestContext.class);
+        when(blank.getProperty(RequestIdentityResolver.PROP_USER_ID)).thenReturn("u-1");
+        when(blank.getProperty(RequestIdentityResolver.PROP_QUOTA_OWNER_ID)).thenReturn("   ");
+        assertEquals("u-1", resolver(new TenantContext(), blank, null).quotaOwnerId());
+
+        assertEquals("owner-1", resolver(new TenantContext(),
+            ctxWith(RequestIdentityResolver.PROP_QUOTA_OWNER_ID, " owner-1 "), null).quotaOwnerId());
+    }
 }

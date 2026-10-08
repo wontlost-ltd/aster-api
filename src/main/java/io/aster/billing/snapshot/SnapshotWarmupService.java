@@ -163,13 +163,9 @@ public class SnapshotWarmupService {
                 JsonObject k = keys.getJsonObject(i);
                 String keyHash = k.getString("keyHash");
                 if (keyHash == null) continue;
+                // 全量同步的失效条目沿用固定 reason=revoked：它会透出到 401 响应体，保持既有对外口径
                 ApiKeySnapshot s = k.getBoolean("valid", false)
-                    ? new ApiKeySnapshot(true, null,
-                        k.getString("apiKeyId"), k.getString("userId"),
-                        k.getString("tenantId"),
-                        k.getString("plan"), k.getString("role"),
-                        k.getLong("revokedAtEpochMs"),
-                        k.getString("quotaOwnerId"))
+                    ? ApiKeySnapshot.fromJson(k)
                     : ApiKeySnapshot.invalid("revoked");
                 snapshot.setApiKey(keyHash, s);
             }
