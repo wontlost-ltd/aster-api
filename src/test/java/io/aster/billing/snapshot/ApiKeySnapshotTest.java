@@ -73,4 +73,31 @@ class ApiKeySnapshotTest {
         assertThat(json).doesNotContain("effectiveQuotaOwnerId");
         assertThat(JacksonMappers.DEFAULT.readValue(json, ApiKeySnapshot.class)).isEqualTo(in);
     }
+
+    /** 升级前 pod 的 ApiKeySnapshot 形状（无 quotaOwnerId），用于验证新旧 pod 共享 Redis 时旧 pod 仍可读。 */
+    record LegacyApiKeySnapshot(boolean valid, String reason, String apiKeyId, String userId, String tenantId,
+                                String plan, String role, Long revokedAtEpochMs) {}
+
+    @Test
+    void redisJson_nullQuotaOwnerId_isOmitted_byteIdenticalToLegacyPod() throws Exception {
+        // 旧 cloud 的 key（quotaOwnerId 缺省）由新 pod 写入 Redis：JSON 必须与升级前 pod 写出的逐字节相同，
+        // 否则旧 pod（vanilla mapper，未知字段即失败）读到 "quotaOwnerId":null 会把每次命中都当成 miss。
+        ApiKeySnapshot in = new ApiKeySnapshot(true, null, "k1", "u1", "u1", "pro", "owner", null, null);
+        String json = JacksonMappers.DEFAULT.writeValueAsString(in);
+        String legacyPodJson = JacksonMappers.DEFAULT.writeValueAsString(
+            new LegacyApiKeySnapshot(true, null, "k1", "u1", "u1", "pro", "owner", null));
+
+        assertThat(json).doesNotContain("quotaOwnerId").isEqualTo(legacyPodJson);
+        assertThat(JacksonMappers.DEFAULT.readValue(json, LegacyApiKeySnapshot.class).userId()).isEqualTo("u1");
+        assertThat(JacksonMappers.DEFAULT.readValue(json, ApiKeySnapshot.class)).isEqualTo(in);
+    }
+
+    @Test
+    void redisJson_presentQuotaOwnerId_isWritten() throws Exception {
+        ApiKeySnapshot in = new ApiKeySnapshot(true, null, "k1", "u1", "team-1", "team", "member", null, "owner-1");
+        String json = JacksonMappers.DEFAULT.writeValueAsString(in);
+
+        assertThat(json).contains("\"quotaOwnerId\":\"owner-1\"");
+        assertThat(JacksonMappers.DEFAULT.readValue(json, ApiKeySnapshot.class)).isEqualTo(in);
+    }
 }
