@@ -669,4 +669,15 @@ class InternalCallerFilterTest {
                 InternalCallerFilter.classify(p, false, false, false, false, true), p);
         }
     }
+
+    // ADR 0042 §3.1：guard 路径缺内部凭证的 reason 为 internal_only，其余路径沿用既有码。
+    @Test
+    void missingCredentialReasonIsInternalOnlyForGuardPaths() {
+        assertEquals("internal_only", InternalCallerFilter.missingCredentialReason("/api/v1/guard/decisions/from-evidence"));
+        assertEquals("internal_only", InternalCallerFilter.missingCredentialReason("/api/v1/guard/approvals"));
+        assertEquals("ai_internal_only", InternalCallerFilter.missingCredentialReason("/api/v1/ai/complete"));
+        assertEquals("evaluate_source_internal_only",
+            InternalCallerFilter.missingCredentialReason("/api/v1/policies/evaluate-source"));
+        assertEquals("evaluate_source_internal_only", InternalCallerFilter.missingCredentialReason("/api/v1/audit/receipts"));
+    }
 }

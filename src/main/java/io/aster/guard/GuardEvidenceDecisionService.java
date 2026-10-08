@@ -47,6 +47,7 @@ public class GuardEvidenceDecisionService {
   private GuardDecisionService decisionService;
   private GuardActionMapper mapper;
   private ObjectMapper objectMapper;
+  private GuardJson json;
   private GuardDecisionAssembler assembler;
   private Duration approvalTtl;
 
@@ -62,7 +63,8 @@ public class GuardEvidenceDecisionService {
     this.decisionService = decisionService;
     this.mapper = mapper;
     this.objectMapper = objectMapper;
-    this.assembler = new GuardDecisionAssembler(new GuardJson(objectMapper));
+    this.json = new GuardJson(objectMapper);
+    this.assembler = new GuardDecisionAssembler(json);
     this.approvalTtl = approvalTtl;
   }
 
@@ -98,6 +100,8 @@ public class GuardEvidenceDecisionService {
     GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt);
     GuardDecisionEntity entity = assembler.toEntity(decisionId, draft, receipt, response, performedBy, null);
     entity.evidenceCorrelationId = correlationId;
+    // 版本列取事件 metadata（ADR 0041 有值时才写）；响应体的 policyVersion 按裁定保持 null
+    entity.policyVersionId = metadata.get("policyVersionId") instanceof Number n ? n.longValue() : null;
     try {
       store.saveDecision(entity, toApproval(approvalId, decisionId, draft, expiresAt));
     } catch (GuardIdempotencyRaceException race) {
@@ -115,10 +119,14 @@ public class GuardEvidenceDecisionService {
     return cid;
   }
 
-  /** 既有决策按当前审批状态回放（含读取时的过期判定），与 Idempotency-Key 重放同一语义。 */
+  /**
+   * 既有决策按当前审批状态回放（含读取时的过期判定），与 Idempotency-Key 重放同一语义。
+   * 决策行已命中却回读不到（两次读取之间被删除）时回放该行存储的响应：行已存在就绝不再插入，
+   * 否则会撞唯一索引变成 500。
+   */
   private Optional<GuardDecisionResponse> existing(String tenantId, String correlationId) {
     return store.findByEvidenceCorrelationId(tenantId, correlationId)
-        .flatMap(e -> decisionService.get(tenantId, e.id));
+        .map(e -> decisionService.get(tenantId, e.id).orElseGet(() -> json.readResponse(e)));
   }
 
   /** 租户内同相关键的评估事件；跨租户与非评估事件一律视为不存在，不泄露存在性。 */
@@ -158,7 +166,7 @@ public class GuardEvidenceDecisionService {
 
   private static List<String> controls(Map<String, Object> m) {
     return m.get("controls") instanceof List<?> list
-        ? list.stream().filter(Objects::nonNull).map(String::valueOf).toList()
+        ? list.stream().filter(String.class::isInstance).map(String.class::cast).toList()
         : List.of();
   }
 

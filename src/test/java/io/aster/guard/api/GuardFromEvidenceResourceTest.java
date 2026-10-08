@@ -2,12 +2,14 @@ package io.aster.guard.api;
 
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
+import io.aster.guard.GuardDecisionEntity;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import io.aster.security.apikey.ApiKeyVerifierService;
 import io.aster.security.apikey.ApiKeyVerifyResult;
 import io.aster.security.apikey.InternalCallerSigning;
 import io.aster.test.PostgresTestResource;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
@@ -72,6 +74,10 @@ class GuardFromEvidenceResourceTest {
     if (role != null) {
       metadata.put("role", role);
     }
+    return append(tenant, metadata);
+  }
+
+  private AppendedRecord append(String tenant, Map<String, Object> metadata) {
     return appender.appendSync(new AuditEvent(EventType.POLICY_EVALUATION, Instant.now(), tenant, "guard.customer",
         "decide", null, null, null, "u-req", true, 5L, null, metadata, null, null, null, null));
   }
@@ -143,8 +149,10 @@ class GuardFromEvidenceResourceTest {
     String cid = newCid();
     appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
     assertThat(signedPost(FROM_EVIDENCE, body(cid), OTHER, "u-req", List.of()).statusCode()).isEqualTo(404);
-    assertThat(given().header("Authorization", "Bearer " + BEARER_KEY).contentType("application/json")
-        .body(body(cid)).post(FROM_EVIDENCE).statusCode()).isEqualTo(403);
+    Response bearer = given().header("Authorization", "Bearer " + BEARER_KEY).contentType("application/json")
+        .body(body(cid)).post(FROM_EVIDENCE);
+    assertThat(bearer.statusCode()).isEqualTo(403);
+    assertThat(bearer.jsonPath().getString("reason")).isEqualTo("internal_only");
     Response noUser = signedPost(FROM_EVIDENCE, body(cid), TENANT, "", List.of());
     assertThat(noUser.statusCode()).isEqualTo(400);
     assertThat(noUser.jsonPath().getString("error")).isEqualTo("user_required");
@@ -190,5 +198,23 @@ class GuardFromEvidenceResourceTest {
         "{}", TENANT, "u-reviewer", List.of());
     assertThat(ok.statusCode()).as(ok.asString()).isEqualTo(200);
     assertThat(ok.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+  }
+
+  @Test
+  void 事件带策略版本时落库版本列_非字符串controls被跳过() {
+    String cid = newCid();
+    append(TENANT, Map.of("correlationId", cid, "outcome", "REQUIRE_APPROVAL", "role", DPO,
+        "ruleId", "CUST-DEL-001", "policyVersionId", 7L,
+        "controls", List.of("GDPR:ART17", 42, Map.of("k", "v"), "SOX:404")));
+    Response opened = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(opened.statusCode()).as(opened.asString()).isEqualTo(200);
+    assertThat(opened.jsonPath().getList("controls")).containsExactly("GDPR:ART17", "SOX:404");
+    assertThat(opened.jsonPath().getString("policyVersion")).isNull();
+
+    UUID decisionId = UUID.fromString(opened.jsonPath().getString("decisionId"));
+    GuardDecisionEntity row = QuarkusTransaction.requiringNew()
+        .call(() -> GuardDecisionEntity.<GuardDecisionEntity>findById(decisionId));
+    assertThat(row.policyVersionId).isEqualTo(7L);
+    assertThat(row.evidenceCorrelationId).isEqualTo(cid);
   }
 }

@@ -311,9 +311,7 @@ public class InternalCallerFilter {
         String nonce = ctx.getHeaderString("X-Aster-Nonce");
 
         if (!"cloud-bff".equals(caller) || timestamp == null || signature == null || nonce == null) {
-            String reason = p.startsWith("/api/v1/ai/")
-                ? "ai_internal_only" : "evaluate_source_internal_only";
-            throw forbidden(reason, p);
+            throw forbidden(missingCredentialReason(p), p);
         }
 
         // 时间戳防重放（5 min 窗口）
@@ -403,6 +401,15 @@ public class InternalCallerFilter {
             }
         }).runSubscriptionOn(io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool())
           .replaceWithVoid();
+    }
+
+    /**
+     * 缺内部调用凭证时的 reason：guard 路径（ADR 0042 §3.1）为 {@code internal_only}；
+     * AI 与 evaluate-source 等沿用既有码（客户端已按它分支）。
+     */
+    static String missingCredentialReason(String path) {
+        if (path.startsWith("/api/v1/guard/")) return "internal_only";
+        return path.startsWith("/api/v1/ai/") ? "ai_internal_only" : "evaluate_source_internal_only";
     }
 
     private static String headerOrEmpty(ContainerRequestContext ctx, String name) {
