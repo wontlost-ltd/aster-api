@@ -25,6 +25,7 @@ import java.util.UUID;
 import static io.aster.guard.GuardDecisionAssembler.buildResponse;
 import static io.aster.guard.GuardDecisionAssembler.declaredAgent;
 import static io.aster.guard.GuardDecisionAssembler.toApproval;
+import static io.aster.guard.GuardText.isAnonymous;
 import static io.aster.guard.GuardText.isBlank;
 
 /**
@@ -40,7 +41,6 @@ public class GuardEvidenceDecisionService {
   static final Set<String> APPROVABLE = Set.of(GuardDecisionDraft.REQUIRE_APPROVAL, GuardDecisionDraft.ESCALATE);
   /** 与 audit_logs.correlation_id / guard_decisions.evidence_correlation_id 列宽一致。 */
   static final int MAX_CORRELATION_ID = 64;
-  private static final String ANONYMOUS_USER = "anonymous";
   private static final TypeReference<Map<String, Object>> METADATA_TYPE = new TypeReference<>() { };
 
   private GuardDecisionStore store;
@@ -76,7 +76,7 @@ public class GuardEvidenceDecisionService {
    *                                        {@code evidence_not_found}(404)、{@code evidence_not_approvable}(409)
    */
   public GuardDecisionResponse createFromEvidence(String tenantId, String performedBy, GuardFromEvidenceRequest req) {
-    if (isBlank(performedBy) || ANONYMOUS_USER.equals(performedBy)) {
+    if (isAnonymous(performedBy)) {
       throw new GuardApprovalConflictException("user_required", "from-evidence 需要签名内的用户身份");
     }
     String correlationId = validCorrelationId(req);
@@ -87,7 +87,8 @@ public class GuardEvidenceDecisionService {
     AuditLog event = evaluationEvent(tenantId, correlationId);
     Map<String, Object> metadata = metadataOf(event);
     String outcome = text(metadata, "outcome");
-    if (!APPROVABLE.contains(outcome)) {
+    // 无 outcome（失败的评估事件、metadata 被截断无法解析）同样不可审批；Set.of 的 contains(null) 会抛 NPE，须先判空
+    if (outcome == null || !APPROVABLE.contains(outcome)) {
       throw new GuardApprovalConflictException("evidence_not_approvable", "评估结论不需要审批",
           Map.of("outcome", String.valueOf(outcome)));
     }
@@ -129,7 +130,11 @@ public class GuardEvidenceDecisionService {
         .map(e -> decisionService.get(tenantId, e.id).orElseGet(() -> json.readResponse(e)));
   }
 
-  /** 租户内同相关键的评估事件；跨租户与非评估事件一律视为不存在，不泄露存在性。 */
+  /**
+   * 租户内同相关键的评估事件；跨租户与非评估事件一律视为不存在，不泄露存在性。
+   * 相关键是随机 UUID，正常不会重复；万一同键有多条评估事件，{@code findByCorrelationIds} 按 id 升序返回，
+   * {@code findFirst()} 固定取最早的一条。
+   */
   private static AuditLog evaluationEvent(String tenantId, String correlationId) {
     List<AuditLog> rows = QuarkusTransaction.requiringNew()
         .call(() -> AuditLog.findByCorrelationIds(tenantId, List.of(correlationId)));

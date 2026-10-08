@@ -314,6 +314,17 @@ class GuardApprovalServiceTest {
   }
 
   @Test
+  void 审批人空白或anonymous_user_required且不读审批行() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+
+    for (String who : new String[] {null, "", "  ", "anonymous"}) {
+      assertCode(() -> service.decideApproval(TENANT, a.id, who, null, List.of(DPO), true, null), "user_required");
+    }
+    verify(store, never()).findApproval(any(), any());
+    verifyNothingWritten();
+  }
+
+  @Test
   void 批准成功写APPROVAL事件且metadata指回决策收据哈希() throws Exception {
     GuardApprovalEntity a = pending(DPO);
 

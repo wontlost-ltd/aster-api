@@ -187,6 +187,37 @@ class GuardFromEvidenceResourceTest {
   }
 
   @Test
+  void 无outcome的评估事件409_outcome为字符串null() {
+    String cid = newCid();
+    // 失败的 /evaluate 事件只写相关键不写 outcome；metadata 截断无法解析时同样取不到 outcome
+    append(TENANT, Map.of("correlationId", cid, "error", "evaluation_failed"));
+    Response r = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(409);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("evidence_not_approvable");
+    assertThat(r.jsonPath().getString("outcome")).isEqualTo("null");
+  }
+
+  @Test
+  void HMAC签空userId批准或拒绝400_user_required_审批仍待处理() {
+    String cid = newCid();
+    appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+    Response opened = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(opened.statusCode()).as(opened.asString()).isEqualTo(200);
+    String base = "/api/v1/guard/approvals/" + opened.jsonPath().getString("approval.id");
+
+    Response approve = signedPost(base + "/approve", "{}", TENANT, "", List.of(DPO));
+    assertThat(approve.statusCode()).as(approve.asString()).isEqualTo(400);
+    assertThat(approve.jsonPath().getString("error")).isEqualTo("user_required");
+    Response reject = signedPost(base + "/reject", "{\"comment\":\"no\"}", TENANT, "", List.of(DPO));
+    assertThat(reject.statusCode()).as(reject.asString()).isEqualTo(400);
+    assertThat(reject.jsonPath().getString("error")).isEqualTo("user_required");
+
+    Response ok = signedPost(base + "/approve", "{}", TENANT, "u-dpo", List.of(DPO));
+    assertThat(ok.statusCode()).as(ok.asString()).isEqualTo(200);
+    assertThat(ok.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+  }
+
+  @Test
   void 无role键的待审批事件开出任意复核人可批的决策() {
     String cid = newCid();
     appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", null);

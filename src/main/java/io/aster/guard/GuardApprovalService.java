@@ -17,6 +17,7 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import static io.aster.guard.GuardText.isAnonymous;
 import static io.aster.guard.GuardText.isBlank;
 
 /**
@@ -66,7 +67,8 @@ public class GuardApprovalService {
   /**
    * 批准或拒绝一条待审批，返回重算后的决策响应（批准 ALLOW，拒绝 DENY）。
    *
-   * @param decidedBy        审批人（{@code RequestIdentityResolver.performedBy}）：不得等于发起主体或提交请求的用户
+   * @param decidedBy        审批人（{@code RequestIdentityResolver.performedBy}）：不得等于发起主体或提交请求的用户；
+   *                         空白或 {@code anonymous} 一律 {@code user_required}，不以兜底身份落库
    * @param approverApiKeyId 审批请求所用的已验证 API key：不得等于提交决策请求所用的 key
    * @param businessRoles    审批人已验证的业务角色集合（{@code RequestIdentityResolver.businessRoles}）；审批指定角色时须包含之
    * @param comment          拒绝时必填
@@ -75,6 +77,9 @@ public class GuardApprovalService {
   public GuardDecisionResponse decideApproval(String tenantId, UUID approvalId, String decidedBy,
                                               String approverApiKeyId, List<String> businessRoles, boolean approve,
                                               String comment) {
+    if (isAnonymous(decidedBy)) {
+      throw conflict("user_required", "审批需要已验证的用户身份");
+    }
     GuardApprovalEntity approval = store.findApproval(tenantId, approvalId)
         .orElseThrow(() -> conflict("approval_not_found", "审批不存在: " + approvalId));
     GuardDecisionEntity decision = decisionOf(approval);
@@ -169,7 +174,7 @@ public class GuardApprovalService {
   }
 
   /**
-   * 角色 → 拒绝须带 comment → 列宽（审批人 1–255、comment ≤ 1000，超长拒绝而不是截断）。
+   * 角色 → 拒绝须带 comment → 列宽（审批人 ≤ 255（空白已在入口按 user_required 拒绝）、comment ≤ 1000，超长拒绝而不是截断）。
    * 角色集合匹配（ADR 0042 §2.3）：所需角色须在已验证集合内；ESCALATE 无所需角色，任何已验证成员可审。
    * 集合由身份解析层给出（已去空白），这里不再读请求头，也不做二次规整。
    */
@@ -181,7 +186,7 @@ public class GuardApprovalService {
     if (!approve && isBlank(comment)) {
       throw conflict("comment_required", "拒绝必须填写 comment");
     }
-    if (isBlank(decidedBy) || decidedBy.length() > MAX_DECIDED_BY || (comment != null && comment.length() > MAX_COMMENT)) {
+    if (decidedBy.length() > MAX_DECIDED_BY || (comment != null && comment.length() > MAX_COMMENT)) {
       throw conflict("invalid_approval", "审批人标识须为 1–" + MAX_DECIDED_BY + " 字符，comment 不超过 " + MAX_COMMENT + " 字符");
     }
   }

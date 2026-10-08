@@ -263,7 +263,7 @@ approve / reject 的请求体是 JSON 对象，形如 `{ "comment": "…" }`；�
 
 `X-User-Business-Role` 此前 aster-api **从未读取**。本子项目只在审批端点以 `@HeaderParam` 读取它，把它当作**可信 BFF 传入的标签**：值由调用方声明，aster-api 不校验其真实性，去掉首尾空白后与 `required_role` 做字符串精确比对（大小写敏感）。所以角色匹配的强度取决于 BFF。经过验证的角色来源与受控词表留给子项目 3（§10）。
 
-校验顺序：存在（取审批行与决策行）→ PENDING 且未过期 → 四眼 → 角色 → 拒绝须带 comment → 列宽。错误码：
+校验顺序：审批人身份（空白或 `anonymous` → `user_required`）→ 存在（取审批行与决策行）→ PENDING 且未过期 → 四眼 → 角色 → 拒绝须带 comment → 列宽。错误码：
 
 | 错误码 | HTTP | 情况 |
 |---|---|---|
@@ -271,8 +271,9 @@ approve / reject 的请求体是 JSON 对象，形如 `{ "comment": "…" }`；�
 | `approval_not_pending` | 409 | 非 PENDING、已过期，或 tx2 复核失败 |
 | `segregation_of_duties` | 403 | 审批人等于发起主体或提交请求的用户，或与提交请求共用同一 API key |
 | `role_mismatch` | 403 | `X-User-Business-Role` 与 `required_role` 不等 |
+| `user_required` | 400 | 审批人标识为空白或为兜底值 `anonymous`（如 HMAC 签了空 `X-User-Id`，ADR 0042 §4.2） |
 | `comment_required` | 400 | 拒绝未带 comment |
-| `invalid_approval` | 400 | 审批人标识为空白或超过 255 字符，或 comment 超过 1000 字符（按列宽拒绝，不静默截断） |
+| `invalid_approval` | 400 | 审批人标识超过 255 字符，或 comment 超过 1000 字符（按列宽拒绝，不静默截断） |
 | `invalid_status` | 400 | 列表的 `status` 非法 |
 | `receipt_unavailable` | 503 | 审批事件写入审计链失败；审批状态不变 |
 
