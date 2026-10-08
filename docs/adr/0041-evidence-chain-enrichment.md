@@ -59,11 +59,11 @@
 
 `correlationId` 加入 `AuditChainAppender.isRedactionExempt` 的身份键白名单（与 ADR 0015 修复的 `decisionId` 等同列）：规范 UUID 值本已整串豁免，入白名单是为了将来非 UUID 形态的值也不被信用卡脱敏改写。
 
-键的唯一来源是 `io.aster.policy.evidence.EvaluationEvidence#toMetadata`，经 `PolicyAuditPublisher.publish` 并入事件 metadata。`policy/audit/AuditLogger.logPolicyEvaluation` 在主代码无调用方，不改。
+键的唯一来源是 `io.aster.policy.evidence.EvaluationEvidence#toMetadata`，经 `PolicyAuditPublisher.publish` 并入事件 metadata。五个 agent 键名是 `EvaluationEvidence.KEY_AGENT_*` 常量，guard 收据（§3）引用同一组常量。`policy/audit/AuditLogger.logPolicyEvaluation` 在主代码无调用方，不改。
 
 ### 2.3 响应
 
-`/evaluate`、`/evaluate-json`、`/evaluate-source` 的 `EvaluationResponse` 新增 `evidence: { correlationId }`（字母序排版、`NON_NULL`，与既有字段规则一致）；未发事件的路径（见 §2.2）不带该字段。`EvaluationResponse` 的字段序测试同步更新。
+`/evaluate`、`/evaluate-json`、`/evaluate-source` 的 `EvaluationResponse` 新增 `evidence: { correlationId }`（字母序排版、`NON_NULL`，与既有字段规则一致）；未发事件的路径（见 §2.2）不带该字段。`EvaluationResponse` 的字段序测试同步更新。`/evaluate/batch` 的条目虽同为 `EvaluationRequest`、可以携带 `agent`，但批量端点忽略该字段：不校验、不生成 correlationId、响应不带 `evidence`。
 
 ### 2.4 收据查询接口
 
@@ -82,9 +82,9 @@
     "eventType": "POLICY_EVALUATION", "hashVersion": 2, "metadata": { … }, "prevHash": "…", "timestamp": "…" } ] }
 ```
 
-字段字母序，空集合与 null 不输出。`missing` 为请求中未命中的 id，保持请求顺序。`correlationIds` 路径只返回 `receipts` 与 `missing`；`decisionIds` 路径返回 `ACTION_GUARD_DECISION` 收据，并在 `approvals` 中返回同一 `decision_id` 的全部 `ACTION_GUARD_APPROVAL` 事件（`decidedAt` 取行时间戳，其余取该行 metadata）。旧行 metadata 若是被截断的非法 JSON，`metadata` 原样返回为 `{"_raw": "…"}`，不丢信息。接口只读，不触碰链。实现：`io.aster.audit.rest.AuditReceiptResource` + `io.aster.audit.service.AuditReceiptService`，公共 API 契约 golden 收录该路径。
+字段字母序，空集合与 null 不输出。`missing` 为请求中未命中的 id，保持请求顺序。`correlationIds` 路径只返回 `receipts` 与 `missing`；`decisionIds` 路径返回 `ACTION_GUARD_DECISION` 收据，并在 `approvals` 中返回同一 `decision_id` 的全部 `ACTION_GUARD_APPROVAL` 事件（`decidedAt` 取行时间戳，其余取该行 metadata）；审批只随命中的决策收据返回，同一 id 不会同时出现在 `approvals` 与 `missing` 中。旧行 metadata 若是被截断的非法 JSON，`metadata` 原样返回为 `{"_raw": "…"}`，不丢信息。接口只读，不触碰链。实现：`io.aster.audit.rest.AuditReceiptResource` + `io.aster.audit.service.AuditReceiptService`，公共 API 契约 golden 收录该路径。
 
-查询走冗余列而非 metadata：迁移 V6.28.0 给 `audit_logs` 增 `correlation_id VARCHAR(64)`、`decision_id VARCHAR(64)` 两列及按 `(tenant_id, 列)` 的部分索引（`WHERE 列 IS NOT NULL`，Flyway checksum golden 同步）。两列由 `AuditChainAppender.toAuditLog` 从事件 metadata 的同名字符串键投影，超过 64 字符截断，**不进哈希载荷**；迁移前的旧行为 NULL，查询报 `missing`。不用 metadata 表达式索引：metadata 超限时追加器写入的是截断后的非法 JSON，按 JSON 解析的索引表达式会让该行插入失败。
+查询走冗余列而非 metadata：迁移 V6.28.0 给 `audit_logs` 增 `correlation_id VARCHAR(64)`、`decision_id VARCHAR(64)` 两列及按 `(tenant_id, 列)` 的部分索引 `idx_audit_logs_tenant_correlation`、`idx_audit_logs_tenant_decision`（`WHERE 列 IS NOT NULL`，Flyway checksum golden 同步）。两列由 `AuditChainAppender.toAuditLog` 从事件 metadata 的同名字符串键投影，超过 64 字符截断，**不进哈希载荷**；迁移前的旧行为 NULL，查询报 `missing`。不用 metadata 表达式索引：metadata 超限时追加器写入的是截断后的非法 JSON，按 JSON 解析的索引表达式会让该行插入失败。
 
 ---
 
@@ -97,7 +97,7 @@ public record AgentIdentity(String provider, String model, String version, Strin
 - 每字段 ≤ 255 字符、无控制字符；`provider` 与 `model` 必填（有 agent 时），`version`/`session` 可选。缺省整体为 null，不影响评估。
 - `/evaluate*`：三个请求记录 `EvaluationRequest`、`JsonPolicyRequest`、`SourcePolicyRequest` 都新增可选 `agent`，经 §2.2 进事件 metadata。非法 `agent` 在端点入口即返回 400 `invalid_agent`（`EvaluationResponse.diagnostic` 形态），早于配额与并发闸门。
 - guard：`GuardActionRequest.Action.agent` 改为 `AgentIdentity`；只给 `model`（旧 `{model, session}` 形状）时 `provider` 取 `"unknown"`，非法值按 guard 既有口径拒绝。规则输入不变：`GuardActionMapper` 仍只传 `agent_model`（键序被 `GuardActionMapperTest` 钉死，已部署规则声明固定字段），结构化身份只进收据。
-- 进链形状是**扁平顶层键** `agentProvider / agentModel / agentVersion / agentSession / agentSource`，不是嵌套对象：追加器的脱敏与 guard 的预算收缩只处理顶层 String/List。guard 收据保留原顶层 `agentModel` 键，新增其余四键。
+- 进链形状是**扁平顶层键** `agentProvider / agentModel / agentVersion / agentSession / agentSource`，不是嵌套对象：追加器的脱敏与 guard 的预算收缩只处理顶层 String/List。guard 收据保留原顶层 `agentModel` 键：无 agent 时仍写空串 `""`，与引入结构化身份前的收据形态一致；其余四键只在有 agent 时写入（`GuardReceiptBuilderTest` 钉住）。
 - `agentSource` 本期恒为 `"declared"`，诚实表明是调用方自报；未来可增 `"key-bound"`（与 ADR 0015 的 key 身份绑定）而不改形状。
 - guard 收据 3800 字符预算的收缩顺序：`reason → agentSession → agentVersion → principalRoles → agentModel → agentProvider → principalType → resourceType → resourceId → actionName → principalId`；`decisionId / approvalId / contextHash / outcome / effectiveOutcome / reasonCode / ruleId / policyVersionId / sourceHash / idempotencyKey` 永不收缩，自由文本全部清空仍超限时最后才删 `controls`。
 
@@ -122,7 +122,7 @@ public record AgentIdentity(String provider, String model, String version, Strin
 
 `receipt` 判定：无 `evidenceCorrelationId` → `legacy`；所在批取收据失败 → `unavailable`；A 未返回收据 → `missing`。
 
-`agent` 读取时由 `agentOf`（`lib/evidence-export.ts`）校验：须为对象，`provider`/`model` 为字符串，`version`/`session` 可选且须为字符串，只重建已知字段并附 `source: "declared"`；否则为 null。畸形历史行既不会污染 `agentTally`，也不会让 canonical 哈希失败而中断导出。
+`agent` 的进包形状是 `{ provider, model, version?, session?, source: "declared" }`——`source` 是 C 附加的字段，同样进 `bundleHash`，非 JS 校验方重算时须一并纳入。`agent` 读取时由 `agentOf`（`lib/evidence-export.ts`）校验：须为对象，`provider`/`model` 为字符串，`version`/`session` 可选且须为字符串，只重建已知字段并附 `source: "declared"`；否则为 null。畸形历史行既不会污染 `agentTally`，也不会让 canonical 哈希失败而中断导出。
 
 ### 5.2 Reviewer 形状
 
@@ -132,6 +132,8 @@ type Reviewer = {
   outcome: string; decidedAt: string; ref: string; roleVerified: boolean;
 };
 ```
+
+七个字段全部进 `bundleHash`；除 §2.4 收据已有的 `decidedAt` 外，`outcome` 与 `roleVerified` 是 C 为复核者附加的字段，非 JS 校验方重算时须一并纳入。
 
 - `guard-approval`：§2.4 `decisionIds` 路径的 `approvals`，`role = requiredRole`，`outcome` 为审批结论，`ref = auditId`。`role` 是 BFF 自报头，`roleVerified: false`；3b 落地经验证角色后改 true。
 - `policy-proof`：该执行 `policyVersionRowId` 对应的 `PolicyProof`。proof 是 append-only、按节点追加覆盖，故按 `(policyVersionId, policyId, nodeId)` 只取 `createdAt` 最新的一条；`role = subjectKind`，`outcome = verdict`，`ref = proof.id`，`roleVerified: true`（身份来自 PolicyReviewer 授权记录）。
@@ -174,7 +176,7 @@ C 的 `services/evidence/receipts-client.ts` 按策略所属租户（`teamId ?? 
 
 - `agent` 不合法 → A 返回 400 `invalid_agent`（早于配额与并发闸门），C 的 v1 路由返回 400；缺省不影响评估。
 - 相关键只做身份，不含业务数据；guard 收据预算收缩顺序见 §3。
-- 只有走到策略执行的路径发事件、回 `evidence`；`/evaluate-source` 早退异常分支、`/evaluate-json` 外层 catch 与 simulate 模式都不发、不回（§2.2）。
+- 只有走到策略执行的路径发事件、回 `evidence`；`/evaluate-source` 早退异常分支、`/evaluate-json` 外层 catch 与 simulate 模式都不发、不回（§2.2）。`/evaluate-source` 成功事件发布之后若回放元数据或骨架阶段抛错，错误响应仍带同一个 `evidence.correlationId`。
 - `/evaluate*` 事件本期不写 `policyVersionId`（§2.2）。
 - 哈希链 append-only 不动；冗余列不进哈希载荷；不新增同步写入热路径；收据接口只读。
 - 旧 C（不传 `agent`、不读 `evidence`）与旧 A（不返回 `evidence`）互相兼容：字段均为可选追加。
@@ -182,7 +184,7 @@ C 的 `services/evidence/receipts-client.ts` 按策略所属租户（`teamId ?? 
 ### 7.1 开放问题
 
 1. 内部调用者 HMAC 签名不覆盖查询串：C→A 的 `/api/v1/audit/receipts` 请求在 5 分钟时间窗内可被替换 id 重放。影响限于只读、同租户。后续两端同时把查询串纳入签名。
-2. 收据路径 HMAC 验签失败时，拒绝响应体仍是 `POST /evaluate-source is internal-only…` 的文案，需改为按路径给出。
+2. （已解决）收据路径 HMAC 验签失败时的拒绝响应：`error` / `reason` 码沿用 `evaluate_source_forbidden` / `evaluate_source_internal_only` 等，`message` 改为按实际路径给出（`<path> is internal-only: it requires an HMAC-signed call from aster-cloud.`，仅 `/evaluate-source` 附带改用 `/evaluate` 的提示）。
 3. `executions.metadata.guardDecisionId` 在 3b（C 调用 guard）之前没有写入方，`guard-approval` 复核者在生产数据中暂为空。
 
 ---
@@ -191,7 +193,7 @@ C 的 `services/evidence/receipts-client.ts` 按策略所属租户（`teamId ?? 
 
 ### 8.1 guard 收据 metadata 键变化
 
-顶层 `agentModel` 键保留，新增 `agentProvider / agentVersion / agentSession / agentSource` 四个顶层键（旧请求只给 model 时 `agentProvider = "unknown"`）。已落链的旧收据不变（链不可改）。`GuardReceiptBuilder` 的预算测试与 `GuardReceiptPersistenceTest` 同步；规则输入（`agent_model`）不变，aster-guard SDK 与 README 不受影响。
+顶层 `agentModel` 键保留（无 agent 时为空串 `""`，与旧收据一致），新增 `agentProvider / agentVersion / agentSession / agentSource` 四个顶层键（旧请求只给 model 时 `agentProvider = "unknown"`）。已落链的旧收据不变（链不可改）。`GuardReceiptBuilder` 的预算测试与 `GuardReceiptPersistenceTest` 同步；规则输入（`agent_model`）不变，aster-guard SDK 与 README 不受影响。
 
 ### 8.2 顺序
 
