@@ -47,6 +47,8 @@ class ReplayBatchRunnerTest {
         for (ReplayOutcome o : ReplayOutcome.values()) {
             byTarget.put(o, 0);
         }
+        // 与转移矩阵 "ALLOW->ALLOW"=total 保持一致：目标侧全部为 ALLOW
+        byTarget.put(ReplayOutcome.ALLOW, total);
         return new ReplayBatchOutcome.Completed(changed, na, nr, total, null,
             Map.of("ALLOW->ALLOW", total), byTarget, incomparable, 0);
     }
@@ -235,6 +237,13 @@ class ReplayBatchRunnerTest {
         assertThatThrownBy(() -> new ReplayBatchOutcome.Completed(0, 0, 0, 4, null,
             Map.of("ALLOW->ALLOW", 3), completed(0, 0, 0, 4, 0).byTargetOutcome(), 0, 0))
             .as("转移矩阵合计必须等于样本总数")
+            .isInstanceOf(IllegalArgumentException.class);
+
+        Map<ReplayOutcome, Integer> skewed = new EnumMap<>(completed(0, 0, 0, 4, 0).byTargetOutcome());
+        skewed.put(A, 3);
+        assertThatThrownBy(() -> new ReplayBatchOutcome.Completed(0, 0, 0, 4, null,
+            Map.of("ALLOW->ALLOW", 4), skewed, 0, 0))
+            .as("目标分布合计必须等于样本总数")
             .isInstanceOf(IllegalArgumentException.class);
     }
 

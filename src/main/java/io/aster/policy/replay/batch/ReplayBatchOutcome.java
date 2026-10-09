@@ -71,6 +71,9 @@ public sealed interface ReplayBatchOutcome {
             if (byTargetOutcome == null || !byTargetOutcome.keySet().containsAll(EnumSet.allOf(ReplayOutcome.class))) {
                 throw new IllegalArgumentException("目标结论码分布必须含全部六个键");
             }
+            if (sum(byTargetOutcome) != totalSampled) {
+                throw new IllegalArgumentException("目标结论码分布合计必须等于样本总数 " + totalSampled);
+            }
             transitions = Collections.unmodifiableMap(new TreeMap<>(transitions));
             byTargetOutcome = Collections.unmodifiableMap(new EnumMap<>(byTargetOutcome));
         }
