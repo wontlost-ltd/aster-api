@@ -48,18 +48,18 @@
 
 - aster-lang-locales 新 Gradle 任务 `exportControls`：JSON Schema 校验、键唯一、clause 的 control 必须存在、来源词表合法；输出 `build/controls/registry.json`。构建失败即不发包。
 - npm 包 `@aster-cloud/controls`（独立版本号，发版流程同 `@aster-cloud/ui-messages`），内容为 registry.json + TypeScript 类型 + `loadControlRegistry()`。
-- aster-api 以 classpath 资源副本加载（同 `UiMessagesService`），启动时校验并记录版本；加载失败 → 启动失败。
+- aster-api 以 classpath 资源副本加载（同 `UiMessagesService` 的资源与「字节一致」守护测试做法；副本由 locales 构建复制），启动时校验并记录版本；与 `UiMessagesService` 容忍缺失不同，注册表缺失 → 启动失败（词表是治理检查的输入，不能静默为空）。
 - aster-lang-ts 内置一份 JSON 作为默认注册表（构建期从包复制），避免运行时依赖链；aster-lang-core 同样内置 classpath 副本。
 
 ## 3. 决策二：编译期 W704 与补全
 
-- 错误码 `GOV_CONTROL_UNREGISTERED` = **W704**（ADR 0031 单一来源 `error_codes.json` → 生成 Java `ErrorCode`）。触发：键形态非法或不在注册表。定位到该注解；帮助文案三语，含注册表版本。
-- aster-lang-ts：`checkGovernance(module, opts?: { controls?: ControlRegistry })`，`ControlRegistry = { version: string; has(key: string): boolean }`，默认内置注册表。
+- 错误码 `GOV_CONTROL_UNREGISTERED` = **W704**（ADR 0031：`error_codes.json`、TS `error_codes.ts`、Java `ErrorCode` 三处手工同步，由既有 parity 测试守护）。触发：键形态非法或不在注册表。消息含该键与注册表版本；帮助文案英文（与 W700–E703 同口径，三语覆盖留待错误码本地化机制）。定位：Core IR 注解无源位置，诊断落在规则（函数）范围上。
+- aster-lang-ts：`checkGovernance(decls, opts?: { controls?: ControlRegistry })`，`ControlRegistry = { version: string; has(key: string): boolean }`，默认内置注册表；`CompileOptions` 增 `controls?: ControlRegistry` 并经 `compileAndTypecheck` 透传（`compile()` 本就不做类型检查，不受影响）。
 - aster-lang-core：`GovernanceChecker` 同名注入点，默认 classpath 注册表。
 - 永不阻断：W704 是警告；既有策略只多出提示。
 - LSP：`@control("` 处补全注册表键（detail = 当前 locale 标题），hover 显示框架与条款标题。
-- aster-api `CompileResponse` 增 `controlsRegistryVersion`，诊断本身经既有路径透传到 cloud 编辑器。
-- aster-lang-test 增诊断 parity 语料 `governance-control-unregistered.aster`（一已登记、一未登记）。
+- aster-api：`PolicyCompiler.compile` 目前只做 parse/lowering/StabilityEnforcement/RuleConflict 扫描，**不跑治理检查**，W700–E702 从未进入 `CompileResponse`。本 ADR 在编译端点追加 `GovernanceChecker.checkModule(core)` 扫描（含 W704），诊断与既有扫描同格式合并；`CompileResponse` 增 `controlsRegistryVersion`。这是行为变化：既有策略的 W700/E702 从此会在编辑器显示（均为既定语义，不阻断）。
+- 诊断一致性：aster-lang-test 的 parity 只有 parse/ir/eval 三种模式，诊断黄金仅 TS 侧 tier3。本 ADR 不新增模式：同一源文 `governance-control-unregistered.aster` 进 tier3 诊断黄金（TS），并在 aster-lang-core `GovernanceCheckerTest` 以同一源文断言同一组码（Java），两侧各守一边。
 
 ## 4. 决策三：注册表驱动的对照表（aster-cloud）
 
@@ -73,26 +73,26 @@
 | `reviewers.any` | reviewers 非空（三来源） | reviewers |
 | `reviewers.guard.any` | 存在 source=guard-approval 且 roleVerified | reviewers |
 | `reviewers.guard.approved` / `reviewers.guard.rejected` | 上者且 outcome=APPROVED / REJECTED | reviewers |
-| `reviewers.guard.two` | guard-approval 且 roleVerified 的复核者 ≥ 2 | reviewers |
+| `reviewers.guard.two` | 同一条目内 guard-approval 且 roleVerified 的复核者 ≥ 2 | reviewers |
 | `whatIf.comparable` | whatIf 非空且 targetOutcome 非空非 ERROR | whatIf |
 | `rule.reason` | ruleId 非空且 reasonCodes 非空数组 | ruleId、reasonCodes（两条引用） |
 
-判定：`evidenced` 列表中每个来源都至少命中一条 entry → evidenced；否则 `partial` 列表任一来源命中 → partial；否则 none。证据为各命中来源的引用并集。
+判定：`evidenced` 列表中每个来源都至少命中一条 entry（跨条目）→ evidenced；否则 `partial` 列表任一来源命中 → partial；否则 none。证据为各命中来源的引用并集。需要「同一条目同时满足」的语义由单个来源内部表达（如 `reviewers.guard.two`），不在列表层组合。
 
-Article 14 九款数据：14(1) evidenced=[control]；14(2) evidenced=[outcome.pending]；14(3) evidenced=[control, reviewers.any]、partial=[control, reviewers.any]；14(4)(a) partial=[whatIf.comparable]；14(4)(b) 空；14(4)(c) evidenced=[rule.reason]；14(4)(d) evidenced=[reviewers.guard.rejected]、partial=[reviewers.guard.approved]；14(4)(e) evidenced=[outcome.requireApproval, reviewers.guard.any]、partial=[outcome.requireApproval]；14(5) evidenced=[reviewers.guard.two]。
+Article 14 九款数据：14(1) evidenced=[control]；14(2) evidenced=[outcome.pending]；14(3) evidenced=[control, reviewers.any]、partial=[control, reviewers.any]；14(4)(a) partial=[whatIf.comparable]；14(4)(b) 空；14(4)(c) evidenced=[rule.reason]；14(4)(d) evidenced=[reviewers.guard.rejected]、partial=[reviewers.guard.approved]；14(4)(e) evidenced=[reviewers.guard.any]（guard 复核者只会出现在被阻断的条目上，故单来源即表达「阻断且被人决定」）、partial=[outcome.requireApproval]；14(5) evidenced=[reviewers.guard.two]。与 ADR 0044 修订后实现的差异：14(4)(e) 不再要求同一条目同时含 REQUIRE_APPROVAL；14(5) 新增 roleVerified 要求。试点预期表不变。
 
 ### 4.2 模块与 manifest
 
 - `src/services/evidence/regulatory-mapping.ts` 取代 `article14.ts`：`mapRegulatory(entries, registry = defaultRegistry, locale = 'en')`。
-- manifest `schemaVersion: '4'`，`regulatoryMapping: { registryVersion, frameworks: [{ framework, article, clauses: [{ clause, titleKey, title, status, evidence }] }] }`；v3 类型冻结只读，`stored.ts` 识别 '4'。
+- manifest `schemaVersion: '4'`，`regulatoryMapping: { registryVersion, frameworks: [{ framework, article, clauses: [{ clause, title: {en,zh,de}, status, evidence }] }] }`；现行 v3 类型复制为 `*V3` 冻结只读，`stored.ts` 识别 '4'。
 - 只为 entries 中出现过的 control 所属框架生成；entries 为空 → 注册表中含 clause 的框架全部 none。
-- `title` 按导出者 locale 取三语标题（缺省 en），`titleKey = clause` 供 UI 再本地化。
+- `title` 为三语对象 `{ en, zh, de }` 原样写入（导出路径无 locale，UI 按当前 locale 取用）；不再有 `titleKey`。
 
 ## 5. 决策四：报告页渲染
 
 - 报告列表行可展开「对照」：v4 包按框架渲染表格（条款 | 标题 | 状态徽标 | 证据条数，可展开 `executionId:field`）；v1–v3 显示「此版本不含对照」。
 - 新 `GET /api/reports/{id}/mapping` 只返回 `regulatoryMapping`。
-- 文案 `DEMO_SUPPLEMENT.reports.mapping.*` 四语；不加 `ComplianceType` 枚举，仍存 `custom`。
+- 文案 `DEMO_SUPPLEMENT.evidenceExport.mapping.*` 四语（报告页既有命名空间是 `evidenceExport`）；不加 `ComplianceType` 枚举，仍存 `custom`。
 - 信贷试点指南三语：对照表来源改为注册表版本驱动。
 
 ## 6. 错误处理与兼容
@@ -103,7 +103,7 @@ Article 14 九款数据：14(1) evidenced=[control]；14(2) evidenced=[outcome.p
 
 ## 7. 发版依赖（不在本 ADR 内执行）
 
-- 新包 `@aster-cloud/controls` 发布；aster-lang-ts、aster-cloud 引入。
+- 新包 `@aster-cloud/controls` 发布：需在 aster-lang-platform `release-plan.json` 登记并配置 npm trusted publisher；aster-lang-ts、aster-cloud 引入。
 - aster-lang-ts 需发布含 W704（及 ADR 0044 §10 的 Verdict 内置）的版本，cloud 浏览器端才有提示。实施阶段用本地 `file:` 依赖验证并在 ADR 记差距。
 
 ## 8. 测试
