@@ -137,6 +137,68 @@ public class PlanGateService {
         }
     }
 
+    /**
+     * 权益判定专用的 plan 查询：**区分「确认无权益」与「无法确认」**。
+     *
+     * <p>{@link #lookupPlan} 在故障时返回 {@link PlanInfo#failOpen()} 哨兵——它对读类/软门控
+     * 合理，但该哨兵的 concurrentReplayBatches=0 与真实 free 档无法区分，
+     * 导致 cloud 超时/5xx 时 Pro 用户被告知「需 Pro 套餐」。本方法故障时改为抛
+     * {@link PlanLookupUnavailableException}，由调用方映射为 503，仍然 fail-closed。
+     *
+     * <p>映射：200 且可解析 → 真实 plan；404 → 租户无订阅记录，按 free 处理（确认无权益）；
+     * 超时 / 连接失败 / 其他非 2xx / 响应体不可解析 → 不可用。
+     * plan-gate 未启用或 tenantId 为空时沿用 {@link #lookupPlan} 的既有语义。
+     */
+    public PlanInfo lookupPlanForEntitlement(String tenantId) {
+        if (!config.enabled() || tenantId == null || tenantId.isBlank()) {
+            return lookupPlan(tenantId);
+        }
+        PlanInfo cached = cache.getIfPresent(tenantId);
+        if (cached != null) return cached;
+
+        // event-loop 上不能阻塞等 cloud：后台预热，本次如实报告「暂不可用」，客户端按 Retry-After 重试即命中缓存
+        String threadName = Thread.currentThread().getName();
+        if (threadName != null && threadName.startsWith("vert.x-eventloop")) {
+            triggerAsyncLookup(tenantId);
+            throw new PlanLookupUnavailableException("plan_lookup_unavailable");
+        }
+
+        HttpResponse<String> resp;
+        try {
+            resp = sendPlanRequest(tenantId);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new PlanLookupUnavailableException("plan_lookup_failed");
+        } catch (Exception e) {
+            LOG.warnf("PlanGate 权益查询失败 tenant=%s: %s（按不可用处理）", tenantId, e.getMessage());
+            throw new PlanLookupUnavailableException("plan_lookup_failed");
+        }
+        PlanInfo plan = interpretEntitlementResponse(resp.statusCode(), resp.body());
+        cache.put(tenantId, plan);
+        return plan;
+    }
+
+    /** cloud 对无订阅记录租户返回 404 时使用的 free 档。 */
+    static final PlanInfo FREE_PLAN = new PlanInfo("free", null, false, 1, 0L, 0L, 0);
+
+    /**
+     * 把 cloud 响应映射为权益判定结果（纯函数，便于单测）。
+     * 仅 200+可解析 与 404 视为「已确认」，其余一律视为「无法确认」。
+     */
+    static PlanInfo interpretEntitlementResponse(int status, String body) {
+        if (status == 404) {
+            return FREE_PLAN;
+        }
+        if (status != 200) {
+            throw new PlanLookupUnavailableException("plan_lookup_status_" + status);
+        }
+        try {
+            return toPlanInfo(new JsonObject(body));
+        } catch (RuntimeException parseFail) {
+            throw new PlanLookupUnavailableException("plan_lookup_unparsable");
+        }
+    }
+
     private void triggerAsyncLookup(String tenantId) {
         if (tenantId == null || lookupPool == null) return;
         if (lookupInFlight.putIfAbsent(tenantId, Boolean.TRUE) != null) return;
@@ -161,6 +223,16 @@ public class PlanGateService {
      * R32 hotfix v3: 同步阻塞 send()，跑在 lookupPool 上不依赖任何 event-loop 调度。
      */
     private PlanInfo fetchFromCloudHttpClient(String tenantId) throws Exception {
+        HttpResponse<String> resp = sendPlanRequest(tenantId);
+        if (resp.statusCode() != 200) {
+            throw new RuntimeException(
+                "cloud /internal/tenant/" + tenantId + "/plan 返回 " + resp.statusCode());
+        }
+        return toPlanInfo(new JsonObject(resp.body()));
+    }
+
+    /** 发出带签名的 plan 查询请求；超时/连接错误以异常抛出，状态码由调用方解释。 */
+    private HttpResponse<String> sendPlanRequest(String tenantId) throws Exception {
         URI baseUri = URI.create(config.cloudInternalUrl());
         // 本层自卫：对 tenantId 做 path-segment 编码，避免内部调用方未来传入
         // 含 '/'、'?'、'%2F' 的值造成 path / HMAC 签名歧义（当前 TenantFilter
@@ -198,13 +270,8 @@ public class PlanGateService {
             .GET()
             .build();
 
-        HttpResponse<String> resp = sharedHttpClient.client()
+        return sharedHttpClient.client()
             .send(request, HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() != 200) {
-            throw new RuntimeException(
-                "cloud /internal/tenant/" + tenantId + "/plan 返回 " + resp.statusCode());
-        }
-        return toPlanInfo(new JsonObject(resp.body()));
     }
 
     /** 是否允许审批流（≥Pro 档） */

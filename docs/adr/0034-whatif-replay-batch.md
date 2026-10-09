@@ -328,6 +328,19 @@ S0 性能实测已在 0033 §5.1 完成且**在本模型下依然有效**：
 测试必须分别覆盖：free 租户 → 403（无权益）；pro 租户已有批次 → 409（并发超限）。
 **两者状态码不同**，因为「你没这个功能」与「你现在不能再开一个」是不同的事。
 
+**创建批次的错误契约**（2026-10-09 补充：区分「确认无权益」与「无法确认」）：
+
+| 场景 | 状态 | `error` | 备注 |
+|---|---|---|---|
+| plan 已确认且 `concurrentReplayBatches=0`（含 cloud 返回 404 → 按 free） | 403 | `whatif_not_entitled` | `upgrade: true` |
+| plan 查询超时 / 连接失败 / 非 2xx（404 除外）/ 响应不可解析 | **503** | `plan_check_unavailable` | `Retry-After: 5`；`message`「权益校验暂不可用，请稍后重试」；仍 fail-closed，不创建批次 |
+| 已有活跃批次达上限 | 409 | `whatif_batch_in_progress` | 带 `currentBatchId` |
+
+★此前查询失败落到 `PlanInfo.failOpen()` 哨兵（`concurrentReplayBatches=0`），与真实 free 档无法区分，
+cloud 一抖动 Pro 用户就被告知「需 Pro 套餐」。现由 `PlanGateService.lookupPlanForEntitlement` 在故障时抛
+`PlanLookupUnavailableException`，资源层映射为 503。其他 plan 消费方（审批 `allowsApproval`、`ApiQuotaGuard`）
+沿用 `lookupPlan` 的 fail-open 语义——其哨兵是宽松取值，不会把故障误报为「无权益」，故不受此缺陷影响。
+
 #### 谁写入（已定）
 
 **我方运营/客服在 plan-gate 侧配置，租户管理员只读。**
