@@ -465,7 +465,7 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
 
 ## 10. 尚未回答的问题
 
-- **经过验证的角色来源**：`required_role` 与 `X-User-Business-Role` 的匹配目前是字符串相等，且该头由调用方声明、aster-api 不校验（可信 BFF 标签）。需要由 aster-api 可验证的角色来源（如 API key 或用户绑定的业务角色）与受控词表（与 cloud 的团队角色对齐），留到子项目 3。
+- ~~**经过验证的角色来源**~~（已由 ADR 0042 解决）：业务角色挂在 cloud 团队成员/用户上，随 API key verify 与快照或 HMAC v3 签名下发，`required_role` 与已验证角色集合匹配，调用方自报的 `X-User-Business-Role` 头不再被信任（ADR 0042 §2）。
 - 租户级「工具名 → 策略」绑定（路径 B）：有多策略路由需求时再做。
 - webhook / 推送通知审批人：本期只轮询。
 - Verdict `obligations`（如「执行前脱敏」）：guard 端点有真实消费方后再以追加键方式扩展。

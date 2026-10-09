@@ -133,14 +133,14 @@ type Reviewer = {
 };
 ```
 
-七个字段全部进 `bundleHash`；除 §2.4 收据已有的 `decidedAt` 外，`outcome` 与 `roleVerified` 是 C 为复核者附加的字段，非 JS 校验方重算时须一并纳入。
+七个字段全部进 `bundleHash`；除 §2.4 收据已有的 `decidedAt` 外，`outcome` 与 `roleVerified` 是 C 为复核者附加的字段，非 JS 校验方重算时须一并纳入。三种来源的 `roleVerified` 现均为 `true`；ADR 0042 之前导出的包中 `guard-approval` 为 `false`，重算须按包内原值，不得按来源推断。
 
-- `guard-approval`：§2.4 `decisionIds` 路径的 `approvals`，`role = requiredRole`，`outcome` 为审批结论，`ref = auditId`。`role` 是 BFF 自报头，`roleVerified: false`；3b 落地经验证角色后改 true。
+- `guard-approval`：§2.4 `decisionIds` 路径的 `approvals`，`role = requiredRole`，`outcome` 为审批结论，`ref = auditId`。`roleVerified: true`：审批时 aster-api 以 verify/快照下发或 HMAC v3 签入的已验证业务角色集合匹配 `requiredRole`（ADR 0042 §2.3），不再信任调用方自报的角色头。
 - `policy-proof`：该执行 `policyVersionRowId` 对应的 `PolicyProof`。proof 是 append-only、按节点追加覆盖，故按 `(policyVersionId, policyId, nodeId)` 只取 `createdAt` 最新的一条；`role = subjectKind`，`outcome = verdict`，`ref = proof.id`，`roleVerified: true`（身份来自 PolicyReviewer 授权记录）。
 - `version-approval`：`PolicyApproval` 中该版本的审批人，`role` 固定 `approver`，`outcome = decision`，`ref = approval.id`，`roleVerified: true`。
 - `PolicyProof` 与 `PolicyApproval` 表没有租户列，加载函数不做租户过滤；版本 id 只取自已按租户过滤的执行行，以此保证不越租户。
 
-guard 决策与 C 执行的关联：读 `executions.metadata.guardDecisionId`（非空字符串）。本期 C 尚无路由调用 guard、该键无写入方（见 §7 开放问题），故 `guard-approval` 只对 `metadata.guardDecisionId` 非空的条目取数，其余为空数组；ACTION_GUARD_DECISION 收据本身不进 entry，只取其审批人。
+guard 决策与 C 执行的关联：读 `executions.metadata.guardDecisionId`（非空字符串），由 C 执行路由经 from-evidence 写入（ADR 0042 §5.1）；`guard-approval` 只对 `metadata.guardDecisionId` 非空的条目取数，其余为空数组；ACTION_GUARD_DECISION 收据本身不进 entry，只取其审批人。
 
 ### 5.3 manifest
 
