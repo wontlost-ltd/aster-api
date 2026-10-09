@@ -273,6 +273,7 @@ What-if 回放（ADR 0033 / 0034）的 base / target 比较随之获得新两态
 当作**真实的非批准决策**参与比较（target 记为未通过），而不是 INDETERMINATE 式的「无法判定」。
 已知粒度限制：What-if 只区分「批准 / 非批准」，baseline 为 REQUIRE_APPROVAL、target 为 DENY 时两者都是非批准，计为「无变化」；
 按 outcome 细分的比较随子项目 3 一并细化。
+**已解决（ADR 0043）**：What-if 逐条落 base/target 四态结论码并按转移对汇总，REQUIRE_APPROVAL→DENY 现计为 changed。
 
 ### 5.3 不在本子项目范围
 

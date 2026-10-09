@@ -227,7 +227,7 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 ## 10. 后续（不在本 ADR）
 
 - **3b 审批闭环**：四眼 `required_role` 匹配改用 ADR 0015 已验证团队角色 / PolicyReviewer 授权（`roleVerified: true`）；cloud 审批收件箱 UI；C 执行路由真正调用 guard 并记录 `guardDecisionId`。
-- **3c What-if 四态**：`replay_batch_item` 的 `base_outcome / target_outcome`、C 窗口接口下发 `outcome`、runner 按转移对计数（消除 ADR 0039 §5.2 限制）。
+- **3c What-if 四态**（已完成，见 ADR 0043）：`replay_batch_item` 的 `base_outcome / target_outcome`、C 窗口接口下发 `outcome`、runner 按转移对计数（消除 ADR 0039 §5.2 限制）。
 - `/evaluate*` 事件的 `policyVersionId` 回填（需评估结果携带版本 id）。
 - 内部调用者 HMAC 签名覆盖查询串（§7.1）。
 - `source: "key-bound"` 模型身份；证据包签名或链锚定引用；`agent.session` 的跨请求关联。
