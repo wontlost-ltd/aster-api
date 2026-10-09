@@ -1,6 +1,7 @@
 package io.aster.guard;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.aster.audit.chain.AuditChainAppender;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardDecisionResponse.ReceiptView;
 import io.aster.guard.api.GuardFromEvidenceRequest;
@@ -27,7 +28,7 @@ class GuardEvidenceDecisionServiceTest {
   private final GuardDecisionStore store = mock(GuardDecisionStore.class);
   private final GuardDecisionService decisionService = mock(GuardDecisionService.class);
   private final GuardEvidenceDecisionService service = new GuardEvidenceDecisionService(store, decisionService,
-      new GuardActionMapper(), objectMapper, Duration.ofHours(24));
+      new GuardActionMapper(), mock(AuditChainAppender.class), mock(GuardReceiptBuilder.class), objectMapper, Duration.ofHours(24));
 
   private GuardDecisionEntity storedRow(GuardDecisionResponse response) throws Exception {
     GuardDecisionEntity e = new GuardDecisionEntity();

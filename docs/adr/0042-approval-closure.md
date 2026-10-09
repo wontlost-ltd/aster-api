@@ -82,7 +82,7 @@ ADR 0041 §5.2 的 `guard-approval` 复核者随之从 `roleVerified=false` 改�
 6. 同一保存内建 `guard_approvals`（PENDING，TTL 同 ADR 0040 `aster.guard.approval-ttl`）。并发同一 correlationId 时唯一索引让后写者失败，捕获后回读先到者的决策返回。
 7. 响应 `GuardDecisionResponse`（同 `POST /guard/decisions`，`receipt` 指向评估事件）。
 
-不发布新的 ACTION_GUARD_DECISION 审计事件：决策本身就是评估事件 + 账本行。审批事件（ACTION_GUARD_APPROVAL）照旧发布，`decision_id` 列照旧投影。
+from-evidence 决策同样写 ACTION_GUARD_DECISION 收据行（metadata 含 evidenceCorrelationId），以便收据查询与证据导出按 decisionId 取回审批（ADR 0044 验收发现）；`receipt_audit_id` / `receipt_hash` 与响应 `receipt` 指向该决策行，写入失败按 DENY `receipt_unavailable`。审批事件（ACTION_GUARD_APPROVAL）照旧发布，`decision_id` 列照旧投影。
 
 ### 3.2 评估事件补两个键
 

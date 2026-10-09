@@ -3,6 +3,7 @@ package io.aster.guard;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardFromEvidenceRequest;
@@ -12,6 +13,7 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -31,8 +33,9 @@ import static io.aster.guard.GuardText.isBlank;
 /**
  * 从证据开决策（ADR 0042 §3.1）：以审计链上已有的 {@code POLICY_EVALUATION} 事件为锚，开一条待审批的 guard 决策。
  *
- * <p>不重新评估、不写新的决策事件：结论（outcome / role / reason / ruleId / controls）与策略地址全部取自事件行，
- * 收据即该事件本身。同一租户同一相关键只开一次决策，重复调用返回既有决策（{@code action} 不比对）。
+ * <p>不重新评估：结论（outcome / role / reason / ruleId / controls）与策略地址全部取自事件行。
+ * 决策另写一条 {@code ACTION_GUARD_DECISION} 收据行（metadata 含 {@code evidenceCorrelationId} 指回评估事件），
+ * 使收据查询与证据导出能按 decisionId 取回审批；收据写入失败按 DENY {@code receipt_unavailable} 处理。同一租户同一相关键只开一次决策，重复调用返回既有决策（{@code action} 不比对）。
  *
  * <p>阻塞方法：须在非事务的 worker 线程调用——存储层每步自开独立事务，唯一索引冲突时才能干净地回读先到者。
  */
@@ -42,10 +45,13 @@ public class GuardEvidenceDecisionService {
   /** 与 audit_logs.correlation_id / guard_decisions.evidence_correlation_id 列宽一致。 */
   static final int MAX_CORRELATION_ID = 64;
   private static final TypeReference<Map<String, Object>> METADATA_TYPE = new TypeReference<>() { };
+  private static final Logger LOG = Logger.getLogger(GuardEvidenceDecisionService.class);
 
   private GuardDecisionStore store;
   private GuardDecisionService decisionService;
   private GuardActionMapper mapper;
+  private AuditChainAppender appender;
+  private GuardReceiptBuilder receiptBuilder;
   private ObjectMapper objectMapper;
   private GuardJson json;
   private GuardDecisionAssembler assembler;
@@ -57,11 +63,14 @@ public class GuardEvidenceDecisionService {
 
   @Inject
   public GuardEvidenceDecisionService(GuardDecisionStore store, GuardDecisionService decisionService,
-                                      GuardActionMapper mapper, ObjectMapper objectMapper,
+                                      GuardActionMapper mapper, AuditChainAppender appender,
+                                      GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
                                       @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl) {
     this.store = store;
     this.decisionService = decisionService;
     this.mapper = mapper;
+    this.appender = appender;
+    this.receiptBuilder = receiptBuilder;
     this.objectMapper = objectMapper;
     this.json = new GuardJson(objectMapper);
     this.assembler = new GuardDecisionAssembler(json);
@@ -69,7 +78,7 @@ public class GuardEvidenceDecisionService {
   }
 
   /**
-   * 以评估事件为锚开决策并建待审批。
+   * 以评估事件为锚开决策、写决策收据并建待审批；收据写不进链时决策改判 DENY 且不建审批。
    *
    * @param performedBy 签名内的用户（{@code RequestIdentityResolver.performedBy}），记为请求方供四眼校验
    * @throws GuardApprovalConflictException {@code user_required} / {@code invalid_action}(400)、
@@ -96,20 +105,36 @@ public class GuardEvidenceDecisionService {
 
     UUID decisionId = UUID.randomUUID();
     UUID approvalId = UUID.randomUUID();
+    AppendedRecord receipt = appendReceipt(draft, decisionId, approvalId, performedBy, correlationId);
+    if (receipt == null) {
+      draft = draft.deny(GuardReasonCode.RECEIPT_UNAVAILABLE);
+      approvalId = null;
+    }
     Instant expiresAt = Instant.now().plus(approvalTtl);
-    AppendedRecord receipt = new AppendedRecord(event.id, event.currentHash, event.prevHash);
     GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt);
+    GuardApprovalEntity approval = approvalId == null ? null : toApproval(approvalId, decisionId, draft, expiresAt);
     GuardDecisionEntity entity = assembler.toEntity(decisionId, draft, receipt, response, performedBy, null);
     entity.evidenceCorrelationId = correlationId;
     // 版本列取事件 metadata（ADR 0041 有值时才写）；响应体的 policyVersion 按裁定保持 null
     entity.policyVersionId = metadata.get("policyVersionId") instanceof Number n ? n.longValue() : null;
     try {
-      store.saveDecision(entity, toApproval(approvalId, decisionId, draft, expiresAt));
+      store.saveDecision(entity, approval);
     } catch (GuardIdempotencyRaceException race) {
       // 并发同一证据：唯一索引让后写者失败，回读先到者的决策
       return existing(tenantId, correlationId).orElseThrow(() -> race);
     }
     return response;
+  }
+
+  /** 同步写决策收据（带锚定的评估相关键）；失败返回 null，由调用方改判 DENY receipt_unavailable。 */
+  private AppendedRecord appendReceipt(GuardDecisionDraft draft, UUID decisionId, UUID approvalId, String performedBy,
+                                       String correlationId) {
+    try {
+      return appender.appendSync(receiptBuilder.decisionEvent(draft, decisionId, approvalId, performedBy, correlationId));
+    } catch (AuditChainAppender.AuditAppendException e) {
+      LOG.errorf(e, "from-evidence 决策收据写入失败，按 DENY 处理: decision=%s", decisionId);
+      return null;
+    }
   }
 
   private static String validCorrelationId(GuardFromEvidenceRequest req) {
