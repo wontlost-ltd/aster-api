@@ -28,23 +28,23 @@
 
 ### 2.1 规则
 
-输入记录 `applicant { creditScore, monthlyIncome, monthlyDebt, requestedAmount, hasActiveDefault }`。规则均 `@id`，均 `@control("EU_AI_ACT:ART14")`；产出自动拒绝的规则再加 `@control("GDPR:ART22")`。
+输入记录 `Applicant { creditScore: Int, monthlyIncome: Decimal, monthlyDebt: Decimal, requestedAmount: Decimal, activeDefaults: Int }`（用违约笔数代替布尔，避开各语种布尔类型关键字）。策略只有一条入口规则 `decide`，因为 `POST /api/v1/policies/{id}/execute` 不接受 functionName。规则均 `@id`，均 `@control("EU_AI_ACT:ART14")`；产出自动拒绝的规则再加 `@control("GDPR:ART22")`。
 
 | @id | 条件 | 结论 |
 |---|---|---|
-| `CP-001 active_default` | `hasActiveDefault` | `Verdict.deny("active_default")` |
-| `CP-002 dti_too_high` | `monthlyDebt / monthlyIncome > 0.45` | `Verdict.deny("dti_exceeds_limit")` |
+| `CP-001 active_default` | `activeDefaults ≥ 1` | `Verdict.deny("active_default")` |
+| `CP-002 dti_too_high` | `monthlyDebt > monthlyIncome × 0.45` | `Verdict.deny("dti_exceeds_limit")` |
 | `CP-003 large_amount_review` | `requestedAmount ≥ 50000` | `Verdict.require_approval("Credit Officer", "large_exposure")` |
 | `CP-004 borderline_score` | `620 ≤ creditScore ≤ 679` | `Verdict.escalate("borderline_credit_score")` |
 | `CP-005 default_allow` | 其余 | `Verdict.allow()` |
 
-判定顺序即表序（拒绝优先于审批，审批优先于升级）。v2 仅把 CP-003 阈值提到 80 000，用于 What-If 制造 `REQUIRE_APPROVAL → ALLOW` 转移。
+五个 `@id` 对应同一规则 `decide` 内的五个分支；`@id`/`@control` 标在规则上（`CP-DECIDE`），分支由 reason 区分。判定顺序即表序（拒绝优先于审批，审批优先于升级）。v2 仅把 CP-003 阈值提到 80 000，用于 What-If 制造 `REQUIRE_APPROVAL → ALLOW` 转移。
 
 ### 2.2 落点
 
 - `aster-lang-test/corpus/tier1-equivalence/policies/credit-pilot.aster` + `inputs/credit-pilot.cases.json`：四种结论各一组用例，走三引擎一致性。
 - aster-cloud 本地化校验：`src/__tests__/credit-pilot-locales.test.ts` 用 en/zh/de 三份源文各编译一次并断言同一输入得到同一 Verdict（zh 源即 seed 模板内容）。
-- `seed-usability-tenant.ts`：`tpl-blank-loan` 保留；`tpl-half-loan`（只含 CP-001/CP-005）、`tpl-complete-loan`（全部五条）迁为中文 Verdict 版，补 `sourceToolchainId`。这兑现 ADR 0039 行 304 的欠账。
+- `seed-usability-tenant.ts`：`tpl-blank-loan` 保留；`tpl-half-loan`（只含 CP-001/CP-005）、`tpl-complete-loan`（全部五条）迁为中文 Verdict 版。这兑现 ADR 0039 行 304 的欠账。用研模板只用于编辑器任务，不建 PolicyVersion 行。
 
 ## 3. 决策二：Article 14 对照内嵌证据包
 
@@ -60,7 +60,7 @@
 | 14(4)(a) 理解能力 | 存在 `whatIf` 非 null 条目 | partial（可比对不等于理解），否则 none |
 | 14(4)(b) 自动化偏见 | 无可证字段 | 恒 none |
 | 14(4)(c) 解读输出 | `ruleId` 与 `reasonCodes` 均非空 | evidenced，否则 none |
-| 14(4)(d) 否决/不使用 | `reviewers` 含 `roleVerified: true` 且 `decision = reject` | evidenced；只有 approve partial；无 none |
+| 14(4)(d) 否决/不使用 | `reviewers` 含 `roleVerified: true` 且 `outcome = REJECTED` | evidenced；只有 APPROVED partial；无 none |
 | 14(4)(e) 干预/停止 | `outcome = REQUIRE_APPROVAL` 且 `reviewers.length > 0` | evidenced；有阻断无复核 partial |
 | 14(5) 双人验证 | 任一条目 `reviewers.length ≥ 2` | evidenced，否则 none |
 
@@ -72,13 +72,13 @@ entries 为空：全部 none。不产生评分、不写建议文案。
 
 ### 3.3 条目新增 `whatIf`
 
-`EvidenceEntry.whatIf: { batchId, baseOutcome, targetOutcome, baseLegacy } | null`，来自 api 的最近一次回放。取不到（超时/非 2xx）→ 所有条目 null，`notes.whatIfUnavailable` 计数，导出照常完成。
+`EvidenceEntry.whatIf: { batchId, baseOutcome, targetOutcome, baseLegacy } | null`，来自 api 的最近一次回放。取不到（超时/非 2xx）→ 所有条目 null，`notes.whatIfUnavailable` 计数，导出照常完成。`bundleHash` 覆盖 entries，因此 v3 的哈希包含 `whatIf`；这与收据引用在 entries 内的既有做法一致，审计方按 notes.verification 重算即可。
 
 ## 4. 决策三：aster-api 回放逐项查询端点
 
 `GET /api/v1/replay/items?executionIds=<csv>`，同 `/api/v1/audit/receipts` 先例：上限复用 `AuditLog.MAX_LOOKUP_IDS`，超限 400 `too_many_ids`；双通道（内部 HMAC v3 或 Bearer），`InternalCallerFilter` 与 `ApiKeyAuthFilter` 旁路列表各加一项。
 
-- 租户隔离：`replay_batch_item` 经 `replay_batch.tenant_id` 过滤，非本租户 id 静默不返回。
+- 租户隔离：`replay_batch_item` 无租户列，经 `replay_batch.tenant_id` 过滤，非本租户 id 静默不返回。
 - 多次回放取 `replay_batch.created_at` 最新一条；无回放的 id 不出现在结果里。
 - 响应 `{ items: [{ executionId, batchId, baseOutcome, targetOutcome, baseLegacy }] }`，只返回结论码不返回结论体（ADR 0043 §2 隐私规则）。
 - 了结 ADR 0043 §10 第一条。
@@ -87,10 +87,10 @@ entries 为空：全部 none。不产生评分、不写建议文案。
 
 | 产物 | 位置 | 职责 |
 |---|---|---|
-| `pnpm seed:credit-pilot` | `aster-cloud/src/scripts/seed-credit-pilot.ts` | 幂等播种团队 `credit-pilot`、`cp-owner`、`cp-officer`（businessRole "Credit Officer"）、`cp-analyst`，策略 v1/v2 含 `sourceToolchainId`，推送 team key snapshot |
+| `pnpm seed:credit-pilot` | `aster-cloud/src/scripts/seed-credit-pilot.ts` | 幂等播种团队 `credit-pilot`（plan team）、`cp-owner`、`cp-officer`（businessRole "Credit Officer"）、`cp-analyst`，策略 `pol-credit-pilot`（content=v2，version=2）及 PolicyVersion 行 `pv-credit-pilot-1/2`（APPROVED，含 `sourceToolchainId`），cp-analyst 的 team API key（明文打印一次），推送 team key snapshot |
 | `scripts/run-credit-pilot.ts` | aster-cloud | 纯 HTTP：四组 fixture 各执行一次 → cp-officer 批准 require_approval 那条 → v1→v2 What-If → 导出到 `./credit-pilot-bundle.json` → 打印对照状态；任一款与预期表不符退出码非零 |
 | `credit-pilot.spec.ts` | `src/__tests__/e2e-browser/local-stack/` | 串行：cp-analyst 执行大额申请 → 日志页 guard 链接 → cp-officer `/approvals` 批准 → What-If 面板显示 REQUIRE_APPROVAL→ALLOW → 报告页导出 → 断言 14(4)(d)/(e) evidenced、14(4)(b) none |
-| 文档 | `src/app/[locale]/docs/guides/credit-pilot/{en,zh,de}.mdx` + sidebar + `docs.sidebar.*` 三语 | 试点流程、对照表含义、每款证据来源、用 `GET /api/v1/audit/receipts` 独立核验 |
+| 文档 | `src/app/[locale]/docs/guides/credit-pilot/{page.tsx,en,zh,de}.mdx` + `sidebar.ts` 新节 + `page-actions.ts` 登记 + `DEMO_SUPPLEMENT.docs.sidebar.guides.*` 四语 | 试点流程、对照表含义、每款证据来源、用 `GET /api/v1/audit/receipts` 独立核验。标签走本地补充层，不动 ui-messages 包 |
 
 预期表（run 脚本与 spec 共用）：14(1)/14(2)/14(3)/14(4)(c)/14(4)(e) evidenced；14(4)(a)/14(4)(d) partial（脚本只做 approve）；14(4)(b)/14(5) none。
 
