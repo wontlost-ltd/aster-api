@@ -46,6 +46,7 @@ public class ApiKeyAuthFilter {
      */
     static final Set<String> HMAC_BYPASS_PATHS = Set.of(
         "/api/v1/audit/receipts",
+        "/api/v1/replay/items",
         "/api/v1/guard/decisions/from-evidence",
         "/api/v1/guard/approvals");
 
@@ -244,6 +245,9 @@ public class ApiKeyAuthFilter {
 
         // Action Guard（ADR 0040）：Agent 直连端点，全部走 API key。
         if (p.equals("/api/v1/guard") || p.startsWith("/api/v1/guard/")) return true;
+
+        // 回放逐项查询（ADR 0044 §4）：租户谓词必须来自已验证身份，Bearer 通道走 API key。
+        if (p.equals("/api/v1/replay/items")) return true;
 
         if (!p.startsWith("/api/v1/policies/")) return false;
         // 公开 evaluate 端点（按调用量计费）

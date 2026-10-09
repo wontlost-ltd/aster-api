@@ -182,10 +182,12 @@ public class InternalCallerFilter {
         // 审计收据查询（ADR 0041 §2.4）：cloud 证据导出走 HMAC，其它调用方走 Bearer API key。
         // 仅当携带内部调用头时才要求 HMAC；否则不归本 filter，交给 ApiKeyAuthFilter。
         boolean isAuditReceipts = normalizedPath.equals("/api/v1/audit/receipts");
+        // 回放逐项查询（ADR 0044 §4）：同收据先例的双通道。
+        boolean isReplayItems = normalizedPath.equals("/api/v1/replay/items");
         // 从证据开决策（ADR 0042 §3.1）：只对 cloud 开放，无 Bearer 通道，恒要求 HMAC。
         if (normalizedPath.equals(GUARD_FROM_EVIDENCE_PATH)) return Classification.REQUIRE_HMAC;
         // guard 审批与决策回读（ADR 0042 §4.2）：cloud 收件箱走 HMAC，SDK 走 Bearer，同收据先例。
-        if (isAuditReceipts || isGuardDualChannel(normalizedPath)) {
+        if (isAuditReceipts || isReplayItems || isGuardDualChannel(normalizedPath)) {
             return hasInternalCaller ? Classification.REQUIRE_HMAC : Classification.NOT_PROTECTED;
         }
         if (!isEvaluateSource && !isAi && !isWhatIfBatch) return Classification.NOT_PROTECTED;
