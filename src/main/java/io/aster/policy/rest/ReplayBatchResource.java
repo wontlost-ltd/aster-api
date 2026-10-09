@@ -160,7 +160,7 @@ public class ReplayBatchResource {
         batch.windowFrom = w.from();
         batch.windowTo = w.to();
         // plannedCount 由 worker 从**冻结窗口**派生并在开跑前落库
-        // （见 ReplayBatchService.replayAll）。创建时窗口尚未拉取，故为 0。
+        // （见 ReplayBatchService.freezeWindow）。创建时窗口尚未拉取，故为 0。
         batch.plannedCount = 0;
         batch.toolchainId = "pending";
         batch.expiresAt = Instant.now().plus(java.time.Duration.ofDays(RETENTION_DAYS));

@@ -44,7 +44,12 @@ public enum ReplayOutcome {
         if (decision != null && !decision.isBlank()) {
             return new Base(fromLegacyDecision(decision.trim().toLowerCase(Locale.ROOT)), true);
         }
-        return new Base(success ? ALLOW : DENY, true);
+        return new Base(fromLegacyBoolean(success), true);
+    }
+
+    /** 布尔遗留值的唯一折算口径：true → ALLOW，false → DENY（V6.30.0 迁移 CASE 与此一致）。 */
+    public static ReplayOutcome fromLegacyBoolean(boolean approved) {
+        return approved ? ALLOW : DENY;
     }
 
     /** 转移键，形如 "ALLOW->DENY"。 */
@@ -63,7 +68,11 @@ public enum ReplayOutcome {
         };
     }
 
-    private static Optional<ReplayOutcome> parse(String s) {
+    /** 严格解析大写结论码（不 trim、不忽略大小写）；未知值返回 empty，由调用方决定如何处置。 */
+    static Optional<ReplayOutcome> parse(String s) {
+        if (s == null) {
+            return Optional.empty();
+        }
         try {
             return Optional.of(valueOf(s));
         } catch (IllegalArgumentException e) {

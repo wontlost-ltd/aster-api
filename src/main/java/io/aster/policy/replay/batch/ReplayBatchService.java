@@ -812,89 +812,11 @@ public class ReplayBatchService {
     // ── 内部 ───────────────────────────────────────────────────────────
 
     /**
-     * 逐条重跑窗口内的执行。
-     *
-     * <p>★S2 阶段留桩：真实重跑接线在 S3 完成（需要 Execution 查询与
-     * evaluate-source 调用）。当前返回空列表会让 {@code decide} 抛出
-     * 「条数不符」——这是**有意的**：宁可炸掉暴露未接线，
-     * 也不要返回一个看似成功的空结果。
-     */
-    /**
-     * 拉窗口 → 逐条重跑 → 收集结果。
-     *
-     * <p>★<b>先全量拉、再逐条跑</b>，不边拉边跑：批次要先知道 plannedCount
-     * 才能判定「全量成功」（§1.1）。边拉边跑时中途拉取失败会让 planned 本身
-     * 就不可信——那时无论结果如何都不该出数字。
-     *
-     * <p>★每条重跑都过 {@link WhatIfCapacityGate}——**独立池是隔离，不是豁免**。
-     * 任何「批次太慢就绕过闸门」的改动都要被拒绝，那等于把隔离墙拆了。
-     */
-    private List<ReplayBatchRunner.ItemResult> replayAll(ReplayBatchEntity batch) {
-        // 目标版本源码：content 列是冻结的（updatable=false），可安全复用
-        // 见上：源码的系统真相在 cloud，本服务不查本地缓存表。
-        // 取不到 = 版本已删或不属于该用户 → 整批失败，属「重跑无用」那一类。
-        var target = versionSourceClient.fetch(batch.targetVersionId, batch.userId)
-            .orElseThrow(() -> new TargetVersionMissingException(batch.targetVersionId));
-
-        // ★总体由**冻结集合**定义，不由「此刻拉到什么」定义（ADR 0034 §10.2）。
-        //
-        //   冻结表只存 id 与基线（不存 input——那会把用户数据复制一份，
-        //   扩大 PII 面，正是 §3.1 要避免的）。所以重跑时仍需向上游取 payload，
-        //   但**成员资格以冻结集合为准**：
-        //     · 冻结内、上游还在  → 正常重跑
-        //     · 冻结内、上游已没  → 记为失败（诚实：这条属于总体但跑不了）
-        //     · 不在冻结内        → **忽略**，哪怕上游新增了
-        //
-        //   这样窗口漂移不会改变总体，§1.1 的「样本即总体全量」前提才成立。
-        List<ReplayBatchItemEntity> frozen = ReplayBatchItemEntity
-            .list("batchId = ?1 order by executionId", batch.id);
-
-        Map<String, ExecutionWindowClient.WindowedExecution> upstream =
-            windowClient.fetchWindow(batch.policyId, batch.userId, batch.windowFrom, batch.windowTo)
-                .stream()
-                .collect(java.util.stream.Collectors.toMap(
-                    ExecutionWindowClient.WindowedExecution::executionId,
-                    java.util.function.Function.identity(),
-                    (a, b) -> a));
-
-        // ★取证日志：定位「冻结成功但重放全失败」。
-        //   生产实测 126 条全部走到下面的 e == null 分支，但冻结时同一窗口
-        //   明明取到了 126 条。是 upstream 空、还是 key 对不上，只有这一行能分辨。
-        if (upstream.size() != frozen.size()) {
-            String frozenSample = frozen.stream().limit(3)
-                .map(i -> i.executionId).collect(java.util.stream.Collectors.joining(","));
-            String upstreamSample = upstream.keySet().stream().limit(3)
-                .collect(java.util.stream.Collectors.joining(","));
-            Log.errorf("重放集合不匹配 batch=%s 冻结=%d 上游=%d 冻结样本=[%s] 上游样本=[%s]",
-                batch.id, frozen.size(), upstream.size(), frozenSample, upstreamSample);
-        }
-
-        List<ReplayBatchRunner.ItemResult> results = new ArrayList<>(frozen.size());
-        for (ReplayBatchItemEntity item : frozen) {
-            ExecutionWindowClient.WindowedExecution e = upstream.get(item.executionId);
-            if (e == null) {
-                // 冻结时还在、现在没了（删除／状态变更）。这是**真实失败**，
-                // 不能假装它不属于总体——那就退回成「拿成功子集出数」了。
-                ReplayOutcome.Base base = frozenBase(item);
-                results.add(ReplayBatchRunner.ItemResult.failed(
-                    item.executionId, base.outcome(), base.legacy(),
-                    ReplayFailureKind.INPUT_INCOMPATIBLE));
-                continue;
-            }
-            // ★基线取**冻结时**的值，不取上游当前值：
-            //   上游 decision 可能因数据订正而变，那会让「变化了多少条」
-            //   这个结论随时间漂移。
-            results.add(replayOne(e, frozenBase(item), target, batch.tenantId));
-        }
-        return results;
-    }
-
-    /**
      * 冻结总体：拉取窗口、把 execution id 与基线落表、派生 {@code plannedCount}。
      *
      * <p>★<b>独立事务</b>（{@code REQUIRES_NEW}）：这是本次修复的关键。
      * 上一版把 {@code plannedCount = window.size(); persist();} 写在
-     * {@code replayAll} 里，而后者由 {@code @Transactional runBatch} 调用、
+     * 早已删除的 {@code replayAll} 里，而后者由 {@code @Transactional runBatch} 调用、
      * <b>加入同一个长事务</b>——Panache 的 {@code persist()} 不提交，
      * worker 崩溃后事务回滚，库里仍是创建时的 0。
      * 我曾在 commit message 里声称「在任何一条重跑开始前落库」，
@@ -1064,7 +986,7 @@ public class ReplayBatchService {
      */
     static ReplayOutcome.Base frozenBase(ReplayBatchItemEntity i) {
         if (i.baseOutcome == null) {
-            return new ReplayOutcome.Base(i.baseApproved ? ReplayOutcome.ALLOW : ReplayOutcome.DENY, true);
+            return new ReplayOutcome.Base(ReplayOutcome.fromLegacyBoolean(i.baseApproved), true);
         }
         return new ReplayOutcome.Base(parseOutcome(i.baseOutcome), i.baseLegacy);
     }
@@ -1072,7 +994,7 @@ public class ReplayBatchService {
     /** 成功行的目标结论码：新列优先，旧行按 {@code targetApproved} 折算。 */
     private static ReplayOutcome storedTarget(ReplayBatchItemEntity i) {
         if (i.targetOutcome == null) {
-            return Boolean.TRUE.equals(i.targetApproved) ? ReplayOutcome.ALLOW : ReplayOutcome.DENY;
+            return ReplayOutcome.fromLegacyBoolean(Boolean.TRUE.equals(i.targetApproved));
         }
         return parseOutcome(i.targetOutcome);
     }

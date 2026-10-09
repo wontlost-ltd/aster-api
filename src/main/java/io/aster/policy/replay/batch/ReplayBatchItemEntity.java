@@ -102,7 +102,7 @@ public class ReplayBatchItemEntity extends PanacheEntityBase {
 
     /** 旧布尔基线入口：按布尔推导结论码并标记为遗留基线。 */
     public ReplayBatchItemEntity(UUID batchId, String executionId, boolean baseApproved) {
-        this(batchId, executionId, baseApproved, baseApproved ? "ALLOW" : "DENY", true);
+        this(batchId, executionId, baseApproved, ReplayOutcome.fromLegacyBoolean(baseApproved).name(), true);
     }
 
     public ReplayBatchItemEntity(UUID batchId, String executionId, boolean baseApproved,

@@ -160,8 +160,7 @@ public class ExecutionWindowClient {
         if (outcome == null || outcome.isBlank()) {
             return;
         }
-        if (ReplayOutcome.fromWindow(outcome, null, false).outcome() == ReplayOutcome.ERROR
-            && !"ERROR".equals(outcome.trim())) {
+        if (ReplayOutcome.parse(outcome.trim()).isEmpty()) {
             Log.warnf("执行窗口出现未知 outcome=%s execution=%s，按 ERROR 处理", outcome, executionId);
         }
     }
