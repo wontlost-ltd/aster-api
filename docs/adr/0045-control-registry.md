@@ -130,7 +130,7 @@ Article 14 九款数据：14(1) evidenced=[control]；14(2) evidenced=[outcome.p
 ## 10. 后续（不在本 ADR）
 
 - aster-lang-core `TypeChecker` 把比较运算符（`>`、`at least` 等）报为 UNDEFINED_VARIABLE（`BaseTypeChecker` 名称查找未识别运算符），本 ADR 实施中发现、与注册表无关，需单独修复。
-- aster-lang-ts 的 type-checker 黄金回归跑器陈旧（读 npm 语料 1.0.3、无脚本引用），W704 黄金暂由新增单元测试经兄弟仓执行。
+- aster-lang-ts 的 type-checker 黄金回归跑器陈旧（读 npm 语料 1.0.3、无脚本引用），W704 黄金暂由新增单元测试经兄弟仓执行；ts CI 的 `test` 作业不检出 aster-lang-test，故该黄金在 CI 中跳过（本地有兄弟仓时执行）。补一步 `checkout-sibling` aster-lang-test 即可让它在 CI 运行。
 
 - `@control` 悬停提示（LSP hover）。
 - `@aster-cloud/controls` 发布后 cloud 改依赖 npm 包并删除副本。
