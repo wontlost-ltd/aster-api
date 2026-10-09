@@ -1,7 +1,7 @@
 # ADR 0044：Annex III 信贷试点 —— 端到端跑通并产出对照 Article 14 的证据包（AI 治理方向·子项目 4）
 
-- 状态：**PROPOSED**（2026-10-09）
-- 提出：2026-10-09；实施计划 `docs/superpowers/plans/2026-10-09-credit-pilot.md`（待写）
+- 状态：**ACCEPTED**（2026-10-09；栈验收见 §9.1，最终整分支评审与修复见 .superpowers 记录）
+- 提出：2026-10-09；实施计划 `docs/superpowers/plans/2026-10-09-credit-pilot.md`
 - 决策者：用户已拍板「对照表内嵌证据包 manifest + 文档页，报告类型枚举待子项目 5 后再做；新写 Verdict 版信贷策略替换 seed 模板；脚本与 Playwright 两者都做；缺证条款逐条列出并标 none」
 - 相关：ADR 0039（路线图 §1 行 4；§1 行 304 推迟的模板迁移）、ADR 0041（证据包 v2、收据查询）、ADR 0042（审批闭环、验证角色）、ADR 0043（四态回放；§10 逐项查询端点）
 
