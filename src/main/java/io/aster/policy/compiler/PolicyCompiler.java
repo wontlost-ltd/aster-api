@@ -41,15 +41,24 @@ public class PolicyCompiler {
     private final PolicySourceRepository policySourceRepository;
     private final io.aster.policy.stability.StabilityEnforcement stabilityEnforcement;
     private final io.aster.policy.analysis.RuleConflictDiagnostics ruleConflictDiagnostics;
-    private final GovernanceChecker governanceChecker = new GovernanceChecker();
+    private final GovernanceChecker governanceChecker;
 
     @Inject
     public PolicyCompiler(PolicySourceRepository policySourceRepository,
                           io.aster.policy.stability.StabilityEnforcement stabilityEnforcement,
                           io.aster.policy.analysis.RuleConflictDiagnostics ruleConflictDiagnostics) {
+        this(policySourceRepository, stabilityEnforcement, ruleConflictDiagnostics, new GovernanceChecker());
+    }
+
+    /** 可注入治理检查器（测试用：验证检查器异常时编译不受影响）。 */
+    PolicyCompiler(PolicySourceRepository policySourceRepository,
+                   io.aster.policy.stability.StabilityEnforcement stabilityEnforcement,
+                   io.aster.policy.analysis.RuleConflictDiagnostics ruleConflictDiagnostics,
+                   GovernanceChecker governanceChecker) {
         this.policySourceRepository = policySourceRepository;
         this.stabilityEnforcement = stabilityEnforcement;
         this.ruleConflictDiagnostics = ruleConflictDiagnostics;
+        this.governanceChecker = governanceChecker;
     }
 
     /**

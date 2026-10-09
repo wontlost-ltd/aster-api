@@ -3,6 +3,7 @@ package io.aster.policy.compiler;
 import aster.core.ir.CoreModel;
 import aster.core.typecheck.governance.GovernanceChecker;
 import aster.core.typecheck.model.Diagnostic;
+import org.jboss.logging.Logger;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -13,14 +14,26 @@ import java.util.List;
  * <p>编译端点此前不跑治理检查；ADR 0045 起与稳定性（W600）、规则冲突（W601）诊断
  * 走同一 diagnostics 通道合流。治理诊断只作提示：blocking 恒 false，不改变编译成功与否。
  * 只调用 {@link GovernanceChecker#checkModule}，不跑完整类型检查。
+ * 检查器抛出运行时异常时降级为无治理诊断（与 RuleConflictDiagnostics 同构）：
+ * 该路径同时服务 /validate 与求值的缓存编译，治理检查绝不能把成功编译变成失败。
  */
 public final class GovernanceDiagnostics {
+
+    private static final Logger LOG = Logger.getLogger(GovernanceDiagnostics.class);
 
     private GovernanceDiagnostics() {}
 
     /** 对 Core IR 模块跑治理检查，逐条转换为编译诊断（保持 core 输出顺序）。 */
     public static List<CompilationResult.Diagnostic> scan(CoreModel.Module core, GovernanceChecker checker) {
-        List<Diagnostic> found = checker.checkModule(core);
+        try {
+            return map(checker.checkModule(core));
+        } catch (RuntimeException e) {
+            LOG.warnf("治理检查失败（降级为不提示，不影响编译）: %s", e.getMessage());
+            return List.of();
+        }
+    }
+
+    private static List<CompilationResult.Diagnostic> map(List<Diagnostic> found) {
         List<CompilationResult.Diagnostic> mapped = new ArrayList<>(found.size());
         for (Diagnostic d : found) {
             mapped.add(toCompilationDiagnostic(d));
