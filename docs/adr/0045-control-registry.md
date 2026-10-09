@@ -48,8 +48,8 @@
 
 - aster-lang-locales 新 Gradle 任务 `exportControls`：JSON Schema 校验、键唯一、clause 的 control 必须存在、来源词表合法；输出 `build/controls/registry.json`。构建失败即不发包。
 - npm 包 `@aster-cloud/controls`（独立版本号，发版流程同 `@aster-cloud/ui-messages`），内容为 registry.json + TypeScript 类型 + `loadControlRegistry()`。
-- aster-api 以 classpath 资源副本加载（同 `UiMessagesService` 的资源与「字节一致」守护测试做法；副本由 locales 构建复制），启动时校验并记录版本；与 `UiMessagesService` 容忍缺失不同，注册表缺失 → 启动失败（词表是治理检查的输入，不能静默为空）。
-- aster-lang-ts 内置一份 JSON 作为默认注册表（构建期从包复制），避免运行时依赖链；aster-lang-core 同样内置 classpath 副本。
+- aster-lang-core 在 classpath 内置副本 `governance/controls-registry.json`，aster-api 经 composite build 直接使用 core 的副本，不再另存一份；api 启动时加载并记录版本；与 `UiMessagesService` 容忍缺失不同，注册表缺失或不合法 → 启动失败（词表是治理检查的输入，不能静默为空）。
+- 发布前的消费方式：aster-lang-ts（TS 数据模块 `src/governance/controls-registry.data.ts`）、aster-lang-core（classpath JSON）、aster-cloud（`src/config/controls-registry.json`）各持一份副本，每份配「与 aster-lang-locales 真相源深度相等」的守护测试（兄弟仓缺失时跳过，同 `UiMessagesClasspathSiblingParityTest` 先例）。`@aster-cloud/controls` 发布后，cloud 改为依赖 npm 包、删除副本。
 
 ## 3. 决策二：编译期 W704 与补全
 
@@ -57,7 +57,7 @@
 - aster-lang-ts：`checkGovernance(decls, opts?: { controls?: ControlRegistry })`，`ControlRegistry = { version: string; has(key: string): boolean }`，默认内置注册表；`CompileOptions` 增 `controls?: ControlRegistry` 并经 `compileAndTypecheck` 透传（`compile()` 本就不做类型检查，不受影响）。
 - aster-lang-core：`GovernanceChecker` 同名注入点，默认 classpath 注册表。
 - 永不阻断：W704 是警告；既有策略只多出提示。
-- LSP：`@control("` 处补全注册表键（detail = 当前 locale 标题），hover 显示框架与条款标题。
+- LSP：`@control("` 处补全注册表键（detail = 英文标题，documentation = 框架与三语标题）。悬停提示不在本 ADR（completion.ts 无悬停处理器，另行接入）。
 - aster-api：`PolicyCompiler.compile` 目前只做 parse/lowering/StabilityEnforcement/RuleConflict 扫描，**不跑治理检查**，W700–E702 从未进入 `CompileResponse`。本 ADR 在编译端点追加 `GovernanceChecker.checkModule(core)` 扫描（含 W704），诊断与既有扫描同格式合并；`CompileResponse` 增 `controlsRegistryVersion`。这是行为变化：既有策略的 W700/E702 从此会在编辑器显示（均为既定语义，不阻断）。
 - 诊断一致性：aster-lang-test 的 parity 只有 parse/ir/eval 三种模式，诊断黄金仅 TS 侧 tier3。本 ADR 不新增模式：同一源文 `governance-control-unregistered.aster` 进 tier3 诊断黄金（TS），并在 aster-lang-core `GovernanceCheckerTest` 以同一源文断言同一组码（Java），两侧各守一边。
 
@@ -119,6 +119,9 @@ Article 14 九款数据：14(1) evidenced=[control]；14(2) evidenced=[outcome.p
 - ADR 0044 §10：注册表驱动对照表、报告页渲染两条标记已做。
 
 ## 10. 后续（不在本 ADR）
+
+- `@control` 悬停提示（LSP hover）。
+- `@aster-cloud/controls` 发布后 cloud 改依赖 npm 包并删除副本。
 
 - 租户自定义控制点（api 表 + 目录端点）。
 - 控制点层级（框架 → 条款 → 子款）汇总。
