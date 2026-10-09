@@ -38,7 +38,7 @@ Aster 要从「业务规则 Policy-as-Code」走向「AI 推理与真实动作�
 | **1** | **Verdict 原语 + 规则元数据（本 ADR）** | 语言与 Core IR 层原语，DecisionInterpreter 退役 | 无 |
 | 2 | Action Guard 服务面 | guard 端点、待审批动作实体、决策收据入哈希链、MCP 代理参考实现 | 1 |
 | 3 | 证据链补齐 | 执行记录与证据包增加规则 ID / 模型身份 / 复核者 | 1 |
-| 4 | Annex III 信贷试点 | 用信贷演示跑通端到端，产出对照 EU AI Act Article 14 的证据包 | 1、2、3 |
+| 4 | Annex III 信贷试点 | 用信贷演示跑通端到端，产出对照 EU AI Act Article 14 的证据包 → **ADR 0044** | 1、2、3 |
 | 5 | Control 注册表与影响分析 | 挂在 MappingIR / ProofIR 上 | 1 |
 | 6 | Governance Profile 语法糖 + Cedar 编译目标 | 对外形态收窄、与现有网关互操作 | 1 |
 
@@ -303,6 +303,7 @@ ALLOW → approved；DENY → denied 并带 reason；REQUIRE_APPROVAL / ESCALATE
 **不破坏**：`Define Decision has approved, reason` 模板约定继续被 §5.2 第三条规则识别；现网策略无需改动。
 `policy-examples.ts` 模板改为推荐写法 `Verdict.allow()` / `Verdict.deny(reason)` **推迟到子项目 4**：多语言模板使用本地化关键字，
 改写涉及 zh / de 词法，与信贷演示迁移一并处理；旧写法仍合法。本子项目只让 cloud 结果解析器正确识别 Verdict（§5.3）。
+（ADR 0044：用研 seed 模板已迁 Verdict；`policy-examples.ts` 仍待迁，列入 ADR 0044 §10。）
 
 ### 6.2 回滚
 

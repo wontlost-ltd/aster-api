@@ -59,7 +59,7 @@
 | 14(3) 监督措施内建 | 同 14(1) 且存在 `reviewers.length > 0` | evidenced；仅满足其一 partial |
 | 14(4)(a) 理解能力 | 存在 `whatIf` 非 null 条目 | partial（可比对不等于理解），否则 none |
 | 14(4)(b) 自动化偏见 | 无可证字段 | 恒 none |
-| 14(4)(c) 解读输出 | `ruleId` 与 `reasonCodes` 均非空 | evidenced，否则 none |
+| 14(4)(c) 解读输出 | `ruleId` 与 `reasonCodes` 均非空（cloud 执行路径把 Verdict reason 落为 `reasonCodes=[reason]`，回放自带的优先） | evidenced，否则 none |
 | 14(4)(d) 否决/不使用 | `reviewers` 含 `roleVerified: true` 且 `outcome = REJECTED` | evidenced；只有 APPROVED partial；无 none |
 | 14(4)(e) 干预/停止 | `outcome = REQUIRE_APPROVAL` 且 `reviewers.length > 0` | evidenced；有阻断无复核 partial |
 | 14(5) 双人验证 | 任一条目 `reviewers.length ≥ 2` | evidenced，否则 none |
@@ -72,7 +72,7 @@ entries 为空：全部 none。不产生评分、不写建议文案。
 
 ### 3.3 条目新增 `whatIf`
 
-`EvidenceEntry.whatIf: { batchId, baseOutcome, targetOutcome, baseLegacy } | null`，来自 api 的最近一次回放。取不到（超时/非 2xx）→ 所有条目 null，`notes.whatIfUnavailable` 计数，导出照常完成。`bundleHash` 覆盖 entries，因此 v3 的哈希包含 `whatIf`；这与收据引用在 entries 内的既有做法一致，审计方按 notes.verification 重算即可。
+`EvidenceEntry.whatIf: { batchId, baseOutcome, targetOutcome, baseLegacy } | null`，来自 api 的最近一次回放。回放查询按**策略所有者 userId** 分组（What-If 批次以其为租户，ADR 0034 §4.3），收据查询仍按策略租户（teamId || userId）。取不到（超时/非 2xx）→ 所有条目 null，`notes.whatIfUnavailable` 计数，导出照常完成。`bundleHash` 覆盖 entries，因此 v3 的哈希包含 `whatIf`；这与收据引用在 entries 内的既有做法一致，审计方按 notes.verification 重算即可。
 
 ## 4. 决策三：aster-api 回放逐项查询端点
 
@@ -87,7 +87,7 @@ entries 为空：全部 none。不产生评分、不写建议文案。
 
 | 产物 | 位置 | 职责 |
 |---|---|---|
-| `pnpm seed:credit-pilot` | `aster-cloud/src/scripts/seed-credit-pilot.ts` | 幂等播种团队 `credit-pilot`（plan team）、`cp-owner`、`cp-officer`（businessRole "Credit Officer"）、`cp-analyst`，策略 `pol-credit-pilot`（content=v2，version=2）及 PolicyVersion 行 `pv-credit-pilot-1/2`（APPROVED，含 `sourceToolchainId`），cp-analyst 的 team API key（明文打印一次），推送 team key snapshot |
+| `pnpm seed:credit-pilot` | `aster-cloud/src/scripts/seed-credit-pilot.ts` | 幂等播种团队 `credit-pilot`（plan team）、`cp-owner`、`cp-officer`（businessRole "Credit Officer"）、`cp-analyst`，策略 `pol-credit-pilot` **在线 v1**（content=50000 版，version=1）及 PolicyVersion 行 `pv-credit-pilot-1`（isDefault）/`pv-credit-pilot-2`（What-If 目标；均 APPROVED，含 `sourceToolchainId`），**cp-owner 的 team API key**（明文打印一次），推送 team key snapshot。执行须由策略所有者发起：What-If 的窗口、版本源与日志均按 `policies.userId`/`executions.userId` 单用户隔离（ADR 0034 §4.3），团队成员的执行记录无法被回放 |
 | `scripts/run-credit-pilot.ts` | aster-cloud | 纯 HTTP：四组 fixture 各执行一次 → cp-officer 批准 require_approval 那条 → v1→v2 What-If → 导出到 `./credit-pilot-bundle.json` → 打印对照状态；任一款与预期表不符退出码非零 |
 | `credit-pilot.spec.ts` | `src/__tests__/e2e-browser/local-stack/` | 串行：cp-analyst 执行大额申请 → 日志页 guard 链接 → cp-officer `/approvals` 批准 → What-If 面板显示 REQUIRE_APPROVAL→ALLOW → 报告页导出 → 断言 14(4)(d)/(e) evidenced、14(4)(b) none |
 | 文档 | `src/app/[locale]/docs/guides/credit-pilot/{page.tsx,en,zh,de}.mdx` + `sidebar.ts` 新节 + `page-actions.ts` 登记 + `DEMO_SUPPLEMENT.docs.sidebar.guides.*` 四语 | 试点流程、对照表含义、每款证据来源、用 `GET /api/v1/audit/receipts` 独立核验。标签走本地补充层，不动 ui-messages 包 |
@@ -116,12 +116,24 @@ entries 为空：全部 none。不产生评分、不写建议文案。
 - 公开演示 `credit-risk-demo.ts` 迁 Verdict。
 - 对照表给评分或合规建议。
 
-## 9. 写回
+## 9. 写回与验收
 
-- ADR 0039 §1 行 4 指向本 ADR；行 304 模板迁移标记已做。
+- ADR 0039 §1 行 4 指向本 ADR；行 304：用研 seed 模板已迁 Verdict，`policy-examples.ts` 仍待迁（见 §10）。
 - ADR 0043 §10 第一条标记已做并指向 §4。
+- ADR 0042 §3.1：from-evidence 决策同样写 ACTION_GUARD_DECISION 收据行（本 ADR 验收发现，详见 §9.1）。
+
+### 9.1 栈验收（2026-10-09，本地 podman 栈）
+
+- `pnpm seed:credit-pilot` 两次幂等（ApiKey 1 行、PolicyVersion 2 行）。
+- `scripts/run-credit-pilot.ts` 第 7 次运行 exit 0：四种结论各一；Credit Officer 批准；What-If v1→v2 完成；导出 v3 包，九款状态与 §5 预期表逐项一致；bundle 中 `reasonCodes=['large_exposure']`、`reviewers=[Credit Officer/APPROVED/roleVerified]`、`whatIf=(REQUIRE_APPROVAL→ALLOW)`。日志 `/private/tmp/aster-stack/sub4-run-7.log`，包 `credit-pilot-bundle.json`。
+- 验收过程中发现并修复的产品缺陷：(a) from-evidence 决策无 ACTION_GUARD_DECISION 链行，收据服务按 decisionId 取不到审批（aster-api）；(b) 导出按团队 id 查回放批次而批次租户为所有者 userId（aster-cloud）；(c) Verdict reason 未落 `reasonCodes`（aster-cloud）。前 6 次运行的失败依次为：在线版本误为 v2、cookie 请求缺 Origin（CSRF）、批次 id 字段名、What-If 单用户隔离（两次）、cloud 冷启动致 503 plan_check_unavailable。
 
 ## 10. 后续（不在本 ADR）
+
+- 团队成员对团队策略的 What-If / 日志 / 导出：ADR 0034 §4.3 的单用户隔离使其只对策略所有者可用，需单独 ADR 改为策略租户口径。
+- `policy-examples.ts` 多语言贷款模板迁 Verdict（ADR 0039 行 304 的另一半）。
+- `@aster-cloud/aster-lang-ts` 需发布含 Verdict 内置的版本并在 cloud 升级依赖，`credit-pilot-source.compile.test.ts` 才能在已安装引擎下转绿（本地构建 12/12 通过）。
+- 验收前已存在的 from-evidence 决策无收据行，审批不可导出（无回填）。
 
 - 对照表改由子项目 5 控制注册表驱动，替换 §3.1 静态表。
 - 14(4)(b)、14(5) 的证据来源需产品层能力（偏见监测、双人审批）。

@@ -142,7 +142,7 @@ cloud 面板实际渲染 `transitions`、`incomparable`、`legacyBase`；`byTarg
 
 ## 10. 后续（不在本 ADR）
 
-- 逐条查看端点（需另行评估隐私面）。
+- ~~逐条查看端点~~ 已做：ADR 0044 §4 `GET /api/v1/replay/items`（只返回结论码）。
 - 用回放密文而非明文 `input` 回放（ADR 0030 遗留）。
 - 估值 `estimatedValueDelta` 对四态的扩展。
 - 面板矩阵对未知结论码键的兜底渲染，以及固定的行顺序。
