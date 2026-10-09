@@ -201,4 +201,44 @@ public class PolicyCompileResourceTest {
             .body("diagnostics.find { it.code == 'W704' }.message", containsString("ACME:ART1"))
             .body("diagnostics.find { it.code == 'W704' }.blocking", is(false));
     }
+
+    @Test
+    public void compileDuplicateRuleId_returnsE701AsWarning() {
+        // cloud 保存门按 severity==='error' 拒绝：治理诊断在编译通道必须是 warning
+        String source = String.join("\n",
+            "Module governance.dup.", "",
+            "@id(\"R-1\")",
+            "Rule first given amount, produce Verdict:",
+            "  Return Verdict.allow().", "",
+            "@id(\"R-1\")",
+            "Rule second given amount, produce Verdict:",
+            "  Return Verdict.allow().", "");
+        assertGovernanceWarning(source, "E701");
+    }
+
+    @Test
+    public void compileBlankRuleId_returnsE702AsWarning() {
+        String source = String.join("\n",
+            "Module governance.blank.", "",
+            "@id(\"\")",
+            "Rule decide given amount, produce Verdict:",
+            "  Return Verdict.allow().", "");
+        assertGovernanceWarning(source, "E702");
+    }
+
+    private void assertGovernanceWarning(String source, String code) {
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body(java.util.Map.of("source", source, "locale", "en-US"))
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200)
+            .body("success", is(true))
+            .body("diagnostics.findAll { it.code == '" + code + "' }", not(empty()))
+            .body("diagnostics.findAll { it.severity == 'error' }", hasSize(0))
+            .body("diagnostics.findAll { it.code == '" + code + "' }.severity", everyItem(is("warning")))
+            .body("diagnostics.findAll { it.code == '" + code + "' }.blocking", everyItem(is(false)));
+    }
 }

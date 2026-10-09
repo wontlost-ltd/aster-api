@@ -6,7 +6,6 @@ import aster.core.typecheck.model.Diagnostic;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * 治理诊断（W700/E701/E702/W704）→ 编译诊断。
@@ -29,17 +28,29 @@ public final class GovernanceDiagnostics {
         return mapped;
     }
 
-    /** 行列取 core span 起点（1-based），缺失时归一为 1/1；severity 用小写字符串契约。 */
+    /**
+     * 行列取 core span（1-based），缺失时归一为 1/1，终点缺失时取起点。
+     * 编译通道上治理诊断恒为 warning——cloud 保存门按 severity==='error' 拒绝，治理检查按
+     * ADR 0045 永不阻断；语言层检查器的严重级不变。code 保留原值（E701/E702 仍为 E70x）。
+     */
     private static CompilationResult.Diagnostic toCompilationDiagnostic(Diagnostic d) {
-        CoreModel.Position start = d.span().map(o -> o.start).orElse(null);
-        int line = start != null && start.line > 0 ? start.line : 1;
-        int col = start != null && start.col > 0 ? start.col : 1;
+        CoreModel.Origin origin = d.span().orElse(null);
+        CoreModel.Position start = origin == null ? null : origin.start;
+        CoreModel.Position end = origin == null || origin.end == null ? start : origin.end;
         return new CompilationResult.Diagnostic(
-            line, col, line, col,
+            lineOf(start), colOf(start), lineOf(end), colOf(end),
             d.message(),
             d.code().code(),
-            d.severity().name().toLowerCase(Locale.ROOT),
+            "warning",
             null, null,
             false);
+    }
+
+    private static int lineOf(CoreModel.Position p) {
+        return p != null && p.line > 0 ? p.line : 1;
+    }
+
+    private static int colOf(CoreModel.Position p) {
+        return p != null && p.col > 0 ? p.col : 1;
     }
 }

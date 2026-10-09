@@ -32,4 +32,40 @@ class PolicyCompilerGovernanceTest {
         assertThat(d.line()).isGreaterThanOrEqualTo(1);
         assertThat(d.column()).isGreaterThanOrEqualTo(1);
     }
+
+    static final String DUP_ID_SRC = String.join("\n",
+        "Module governance.dup.", "",
+        "@id(\"R-1\")",
+        "Rule first given amount, produce Verdict:",
+        "  Return Verdict.allow().", "",
+        "@id(\"R-1\")",
+        "Rule second given amount, produce Verdict:",
+        "  Return Verdict.allow().", "");
+
+    static final String BLANK_ID_SRC = String.join("\n",
+        "Module governance.blank.", "",
+        "@id(\"\")",
+        "Rule decide given amount, produce Verdict:",
+        "  Return Verdict.allow().", "");
+
+    @Test
+    void 重复id的E701在编译通道降为warning且不阻断() {
+        assertGovernanceWarning(DUP_ID_SRC, "E701");
+    }
+
+    @Test
+    void 空id的E702在编译通道降为warning且不阻断() {
+        assertGovernanceWarning(BLANK_ID_SRC, "E702");
+    }
+
+    private void assertGovernanceWarning(String src, String code) {
+        var result = compiler.compile(src, "en-US");
+        assertThat(result.isSuccess()).isTrue();
+        var hits = result.getDiagnostics().stream().filter(d -> code.equals(d.code())).toList();
+        assertThat(hits).isNotEmpty();
+        assertThat(hits).allSatisfy(d -> {
+            assertThat(d.severity()).isEqualTo("warning");
+            assertThat(d.blocking()).isFalse();
+        });
+    }
 }
