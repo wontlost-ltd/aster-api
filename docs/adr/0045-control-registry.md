@@ -83,8 +83,8 @@ Article 14 九款数据：14(1) evidenced=[control]；14(2) evidenced=[outcome.p
 
 ### 4.2 模块与 manifest
 
-- `src/services/evidence/regulatory-mapping.ts` 取代 `article14.ts`：`mapRegulatory(entries, registry = defaultRegistry, locale = 'en')`。
-- manifest `schemaVersion: '4'`，`regulatoryMapping: { registryVersion, frameworks: [{ framework, article, clauses: [{ clause, title: {en,zh,de}, status, evidence }] }] }`；现行 v3 类型复制为 `*V3` 冻结只读，`stored.ts` 识别 '4'。
+- `src/services/evidence/regulatory-mapping.ts` 取代 `article14.ts`：`mapRegulatory(entries, registry = defaultControlRegistry)`，无 `locale` 参数（标题以三语对象存储，见下）。
+- manifest `schemaVersion: '4'`，`regulatoryMapping: { registryVersion, frameworks: [{ framework, article, control, clauses: [{ clause, title: {en,zh,de}, status, evidence }] }] }`；每个分组带所属控制键 `control`；现行 v3 类型复制为 `*V3` 冻结只读，`stored.ts` 识别 '4'。
 - 只为 entries 中出现过的 control 所属框架生成；entries 为空 → 注册表中含 clause 的框架全部 none。
 - `title` 为三语对象 `{ en, zh, de }` 原样写入（导出路径无 locale，UI 按当前 locale 取用）；不再有 `titleKey`。
 
@@ -134,6 +134,9 @@ Article 14 九款数据：14(1) evidenced=[control]；14(2) evidenced=[outcome.p
 
 - `@control` 悬停提示（LSP hover）。
 - `@aster-cloud/controls` 发布后 cloud 改依赖 npm 包并删除副本。
+- cloud 的注册表副本在 `@aster-cloud/controls` 发布前不受 CI 跨仓守护：cloud CI 不 checkout 兄弟仓，`control-registry-parity` 测试在 CI 中跳过；本地并列 checkout aster-lang-locales 时会校验。CI 中只跑不依赖兄弟仓的结构自检（来源词表、条款引用、条款 id 唯一）。
+- `controls/package.json` 目前只打包源文件 `registry.json`，与 §2.2 不符；TS 类型与 `loadControlRegistry()` 随包发布（§7）一并补齐。
+- 报告页对照表标题目前显示原始控制键（如 `EU_AI_ACT:ART14`），本地化的框架与控制点标题后续补上。
 
 - 租户自定义控制点（api 表 + 目录端点）。
 - 控制点层级（框架 → 条款 → 子款）汇总。
