@@ -1,6 +1,7 @@
 package io.aster.security.apikey;
 
 import io.aster.policy.replay.batch.ReplayBatchEntity;
+import io.aster.policy.replay.batch.ReplayBatchStatus;
 import io.aster.policy.replay.batch.ReplayBatchItemEntity;
 import io.aster.test.PostgresTestResource;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -58,28 +59,26 @@ class ReplayItemLookupHmacAuthTest {
             em.createNativeQuery("DELETE FROM replay_batch_item").executeUpdate();
             em.createNativeQuery("DELETE FROM replay_batch").executeUpdate();
         });
-        item(batch(TENANT), "e-hmac");
-        item(batch(OTHER), "e-hmac");
+        completedReplay(TENANT, "e-hmac");
+        completedReplay(OTHER, "e-hmac");
         verifier.seedCacheForTest(BEARER_KEY,
             ApiKeyVerifyResult.valid("ak-rp-1", "user-rp", TENANT, "pro", "active", "MEMBER"));
     }
 
-    UUID batch(String tenant) {
+    /** 已完成批次带一条成功条目，同事务落库：查询口径只认 COMPLETED 且 success 的条目，完成计数由提交时的延迟约束对账。 */
+    void completedReplay(String tenant, String execId) {
         Instant now = Instant.now();
         ReplayBatchEntity b = new ReplayBatchEntity();
         b.id = UUID.randomUUID();
         b.tenantId = tenant; b.userId = "u"; b.policyId = "p";
         b.baseVersionId = "v1"; b.targetVersionId = "v2";
         b.windowKind = "LAST_MONTH"; b.windowLabel = "x"; b.windowFrom = now; b.windowTo = now.plusSeconds(1);
-        b.status = io.aster.policy.replay.batch.ReplayBatchStatus.FAILED; b.toolchainId = "tc"; b.expiresAt = now.plusSeconds(3600); b.createdAt = now;
-        QuarkusTransaction.requiringNew().run(b::persist);
-        return b.id;
-    }
-
-    void item(UUID batchId, String execId) {
-        ReplayBatchItemEntity i = new ReplayBatchItemEntity(batchId, execId, true, "ALLOW", false);
+        b.status = ReplayBatchStatus.COMPLETED; b.toolchainId = "tc"; b.expiresAt = now.plusSeconds(3600); b.createdAt = now;
+        // 满足表上按状态的 CHECK：COMPLETED 带结果摘要且全数成功
+        b.plannedCount = 1; b.completedCount = 1; b.resultSummary = "{}";
+        ReplayBatchItemEntity i = new ReplayBatchItemEntity(b.id, execId, true, "ALLOW", false);
         i.targetOutcome = "ALLOW"; i.success = true;
-        QuarkusTransaction.requiringNew().run(i::persist);
+        QuarkusTransaction.requiringNew().run(() -> { b.persist(); i.persist(); });
     }
 
     /** 与 cloud signInternalCallerHeaders 一致（canonical v3）：GET 无 body，query/tenant/role/userId 均签入。 */
