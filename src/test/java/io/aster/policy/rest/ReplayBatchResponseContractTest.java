@@ -113,6 +113,24 @@ class ReplayBatchResponseContractTest {
         assertThat(body).doesNotContainKey("rejected");
     }
 
+    /** ADR 0043 §5：完成态摘要的四态新键（transitions）随 result 原样下发为对象，不是转义字符串。 */
+    @Test
+    void 完成态的转移矩阵必须是对象而非转义字符串() {
+        ReplayBatchEntity b = batch(ReplayBatchStatus.COMPLETED);
+        b.completedCount = 200;
+        b.resultSummary = "{\"changed\":2,\"incomparable\":0,"
+            + "\"transitions\":{\"ALLOW->REQUIRE_APPROVAL\":2,\"DENY->DENY\":198}}";
+
+        Object result = ReplayBatchResource.describe(b).get("result");
+
+        assertThat(result).isInstanceOf(Map.class);
+        Object transitions = ((Map<?, ?>) result).get("transitions");
+        assertThat(transitions)
+            .as("★transitions 必须是 Map；String 会让 cloud 侧按字符枚举")
+            .isInstanceOf(Map.class);
+        assertThat(((Map<?, ?>) transitions).get("ALLOW->REQUIRE_APPROVAL")).isEqualTo(2);
+    }
+
     /**
      * ★P0-3：JSON 列必须以**对象**下发，不能是转义字符串。
      *

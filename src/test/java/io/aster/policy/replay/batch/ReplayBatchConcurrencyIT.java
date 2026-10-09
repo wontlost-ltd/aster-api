@@ -137,7 +137,7 @@ class ReplayBatchConcurrencyIT {
                     out.add(new ExecutionWindowClient.WindowedExecution(
                         id, java.util.Map.of("amount", 150), "approved", true,
                         "decide", "en-US", new io.vertx.core.json.JsonObject(),
-                        String.valueOf(targetVersionRowId)));
+                        String.valueOf(targetVersionRowId), null));
                 }
                 return out;
             });
@@ -1112,7 +1112,7 @@ class ReplayBatchConcurrencyIT {
                     out.add(new ExecutionWindowClient.WindowedExecution(
                         eid, java.util.Map.of("amount", 150), "approved", true,
                         "decide", "en-US", new io.vertx.core.json.JsonObject(),
-                        String.valueOf(targetVersionRowId)));
+                        String.valueOf(targetVersionRowId), null));
                 }
                 return out;
             });
@@ -1248,7 +1248,7 @@ class ReplayBatchConcurrencyIT {
                     out.add(new ExecutionWindowClient.WindowedExecution(
                         eid, java.util.Map.of("amount", 150), "approved", true,
                         "decide", "en-US", new io.vertx.core.json.JsonObject(),
-                        String.valueOf(targetVersionRowId)));
+                        String.valueOf(targetVersionRowId), null));
                 }
                 return out;
             });

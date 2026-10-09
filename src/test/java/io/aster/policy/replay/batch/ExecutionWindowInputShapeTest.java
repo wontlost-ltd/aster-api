@@ -53,7 +53,8 @@ class ExecutionWindowInputShapeTest {
             .put("decision", "APPROVED")
             .put("success", true)
             .put("functionName", "evaluateLoan")
-            .put("locale", "en-US");
+            .put("locale", "en-US")
+            .put("outcome", "ALLOW");
     }
 
     @Test

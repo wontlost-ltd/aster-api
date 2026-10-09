@@ -114,10 +114,11 @@ class ReplayBatchPlannedCountTest {
             .as("★基线必须取**冻结时**的值并传入 replayOne——"
                 + "上游 decision 可能因数据订正而变，"
                 + "读当前值会让「变化了多少条」随时间漂移")
-            .contains("replayOne(e, item.baseApproved,");
+            .contains("replayOne(e, frozenBase(item),");
         assertThat(src)
             .as("★不得在重跑时读上游的当前基线")
-            .doesNotContain("replayOne(e, e.baseApproved()");
+            .doesNotContain("replayOne(e, e.base()");
+        assertThat(src).doesNotContain("replayOne(e, e.baseApproved()");
     }
 
     /**

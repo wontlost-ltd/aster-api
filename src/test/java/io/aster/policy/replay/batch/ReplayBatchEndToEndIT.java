@@ -116,7 +116,50 @@ class ReplayBatchEndToEndIT {
     private ExecutionWindowClient.WindowedExecution exec(String id, int amount, String decision) {
         return new ExecutionWindowClient.WindowedExecution(
             id, Map.of("amount", amount), decision, true,
-            "decide", "en-US", new JsonObject(), String.valueOf(targetVersionRowId));
+            "decide", "en-US", new JsonObject(), String.valueOf(targetVersionRowId), null);
+    }
+
+    /** Verdict 策略的历史执行：outcome 为新 cloud 下发值，为 null 时走 decision 折算（旧 cloud）。 */
+    private ExecutionWindowClient.WindowedExecution execVerdict(
+        String id, String action, String outcome, String decision) {
+        return new ExecutionWindowClient.WindowedExecution(
+            id, Map.of("r", Map.of("action", action)), decision, true,
+            "decide", "en-US", new JsonObject(), String.valueOf(targetVersionRowId), outcome);
+    }
+
+    /** 同一份窗口同时桩给冻结（fetchWindow）与分段（fetchSegment）。 */
+    private void stubWindow(List<ExecutionWindowClient.WindowedExecution> rows) {
+        Mockito.when(windowClient.fetchWindow(
+                Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(Instant.class), Mockito.any(Instant.class)))
+            .thenReturn(rows);
+        Mockito.when(windowClient.fetchSegment(
+                Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(Instant.class), Mockito.any(Instant.class),
+                Mockito.any(), Mockito.anyInt()))
+            .thenReturn(rows);
+    }
+
+    private void stubTarget(String source) {
+        Mockito.when(versionSourceClient.fetch(Mockito.anyString(), Mockito.anyString()))
+            .thenReturn(java.util.Optional.of(new PolicyVersionSourceClient.VersionSource(
+                "pv-2", "p-e2e", 2, source)));
+    }
+
+    private JsonObject summaryOf(UUID batchId) {
+        Object raw = QuarkusTransaction.requiringNew().call(() ->
+            em.createNativeQuery("SELECT result_summary::text FROM replay_batch WHERE id = ?1")
+                .setParameter(1, batchId).getSingleResult());
+        assertThat(raw).as("批次必须完成并产出摘要").isNotNull();
+        return new JsonObject(String.valueOf(raw));
+    }
+
+    private String itemColumn(UUID batchId, String executionId, String column) {
+        Object v = QuarkusTransaction.requiringNew().call(() ->
+            em.createNativeQuery("SELECT " + column + "::text FROM replay_batch_item"
+                    + " WHERE batch_id = ?1 AND execution_id = ?2")
+                .setParameter(1, batchId).setParameter(2, executionId).getSingleResult());
+        return String.valueOf(v);
     }
 
     private Long seedVersions() {
@@ -207,6 +250,43 @@ class ReplayBatchEndToEndIT {
         assertThat(summary.getInteger("totalSampled"))
             .as("样本必须是总体全量（§1.1）")
             .isEqualTo(3);
+        assertThat(summary.getJsonObject("transitions").getInteger("ALLOW->DENY"))
+            .as("e2 的翻转必须进入转移矩阵").isEqualTo(1);
+        assertThat(summary.getInteger("incomparable")).as("布尔策略全部可比").isZero();
+    }
+
+    private static final String VERDICT_BASE =
+        "Module M.\n\nDefine Req has action.\n\nRule decide given r as Req, produce Verdict:\n  If r.action equals to \"delete\":\n    Return Verdict.allow().\n  Otherwise:\n    Return Verdict.deny(\"not delete\").\n";
+    private static final String VERDICT_TARGET =
+        "Module M.\n\nDefine Req has action.\n\nRule decide given r as Req, produce Verdict:\n  If r.action equals to \"delete\":\n    Return Verdict.require_approval(\"DPO\", \"review\").\n  Otherwise:\n    Return Verdict.deny(\"not delete\").\n";
+
+    /**
+     * ADR 0043：Verdict 策略的四态变化必须进入转移矩阵，旧 cloud 行按 decision 折算并计入 legacyBase。
+     * VERDICT_BASE 仅说明窗口基线的来源；基线取自 cloud 下发的 outcome/decision，不在本地重算。
+     */
+    @Test
+    void Verdict策略的四态变化进入转移矩阵() {
+        // 窗口三条：v1 基线 outcome=ALLOW（新 cloud）、v2 基线 outcome 缺失但 decision=approved（旧 cloud）、v3 基线 DENY
+        stubWindow(List.of(execVerdict("v1", "delete", "ALLOW", null),
+            execVerdict("v2", "delete", null, "approved"),
+            execVerdict("v3", "read", "DENY", null)));
+        stubTarget(VERDICT_TARGET);
+        UUID batchId = seedPendingBatch();
+        service.claimNextPending();
+        service.runBatch(batchId);
+        JsonObject summary = summaryOf(batchId);
+        assertThat(summary.getInteger("changed")).isEqualTo(2);
+        assertThat(summary.getInteger("newlyRejected")).isEqualTo(2);
+        assertThat(summary.getJsonObject("transitions").getInteger("ALLOW->REQUIRE_APPROVAL")).isEqualTo(2);
+        assertThat(summary.getJsonObject("transitions").getInteger("DENY->DENY")).isEqualTo(1);
+        assertThat(summary.getInteger("incomparable")).isZero();
+        assertThat(summary.getInteger("legacyBase")).isEqualTo(1);
+        assertThat(summary.getJsonObject("byTargetOutcome").getInteger("REQUIRE_APPROVAL")).isEqualTo(2);
+        // 逐条列
+        assertThat(itemColumn(batchId, "v2", "base_outcome")).isEqualTo("ALLOW");
+        assertThat(itemColumn(batchId, "v2", "base_legacy")).isEqualTo("true");
+        assertThat(itemColumn(batchId, "v1", "target_outcome")).isEqualTo("REQUIRE_APPROVAL");
+        assertThat(itemColumn(batchId, "v1", "target_approved")).isEqualTo("false");
     }
 
     /**
@@ -226,7 +306,7 @@ class ReplayBatchEndToEndIT {
                 exec("e1", 50, "denied"),
                 new ExecutionWindowClient.WindowedExecution(
                     "e2", Map.of("wrong_field", 1), "approved", true,
-                    "decide", "en-US", new JsonObject(), String.valueOf(targetVersionRowId)),
+                    "decide", "en-US", new JsonObject(), String.valueOf(targetVersionRowId), null),
                 exec("e3", 200, "approved")));
 
         UUID batchId = seedPendingBatch();

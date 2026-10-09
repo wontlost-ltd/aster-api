@@ -559,7 +559,7 @@ public class ReplayBatchService {
             for (ReplayBatchItemEntity r : done) {
                 written += em.createNativeQuery(
                         "UPDATE replay_batch_item SET success = ?1, failure_kind = ?2,"
-                            + " target_approved = ?3, claimed_by = NULL, claimed_at = NULL"
+                            + " target_approved = ?3, target_outcome = ?7, claimed_by = NULL, claimed_at = NULL"
                             + " WHERE batch_id = ?4 AND execution_id = ?5 AND claimed_by = ?6")
                     .setParameter(1, r.success)
                     .setParameter(2, r.failureKind)
@@ -567,6 +567,7 @@ public class ReplayBatchService {
                     .setParameter(4, batchId)
                     .setParameter(5, r.executionId)
                     .setParameter(6, owner)
+                    .setParameter(7, r.targetOutcome)
                     .executeUpdate();
             }
             return written;
@@ -637,13 +638,16 @@ public class ReplayBatchService {
                 //   去排查一个不存在的数据问题，还会错误继承不可重试语义。
                 item.success = false;
                 item.failureKind = ReplayFailureKind.SOURCE_EXECUTION_UNAVAILABLE.name();
+                item.targetOutcome = ReplayOutcome.ERROR.name();
                 continue;
             }
             ReplayBatchRunner.ItemResult r =
-                replayOne(e, item.baseApproved, target, snap.tenantId());
+                replayOne(e, frozenBase(item), target, snap.tenantId());
             item.success = r.failureKind() == null;
             item.failureKind = r.failureKind() == null ? null : r.failureKind().name();
             item.targetApproved = r.failureKind() == null ? r.targetApproved() : null;
+            // 失败行写 ERROR（ADR §7）；成功行写真实结论码，INDETERMINATE 不再伪装成基线
+            item.targetOutcome = r.targetOutcome().name();
         }
 
         // ★必须显式写回：本方法**无事务**，todo 里的实体是游离态（detached），
@@ -742,12 +746,12 @@ public class ReplayBatchService {
             .list("batchId = ?1 order by executionId", batchId);
         List<ReplayBatchRunner.ItemResult> out = new ArrayList<>(items.size());
         for (ReplayBatchItemEntity i : items) {
+            ReplayOutcome.Base base = frozenBase(i);
             if (Boolean.TRUE.equals(i.success)) {
-                out.add(ReplayBatchRunner.ItemResult.ok(i.executionId, boolOutcome(i.baseApproved), false,
-                    boolOutcome(Boolean.TRUE.equals(i.targetApproved)), null));
+                out.add(ReplayBatchRunner.ItemResult.ok(i.executionId, base.outcome(), base.legacy(),
+                    storedTarget(i), null));
             } else {
-                out.add(ReplayBatchRunner.ItemResult.failed(i.executionId,
-                    boolOutcome(i.baseApproved), true,
+                out.add(ReplayBatchRunner.ItemResult.failed(i.executionId, base.outcome(), base.legacy(),
                     ReplayFailureKind.valueOf(
                         i.failureKind == null ? ReplayFailureKind.UNKNOWN.name() : i.failureKind)));
             }
@@ -871,15 +875,16 @@ public class ReplayBatchService {
             if (e == null) {
                 // 冻结时还在、现在没了（删除／状态变更）。这是**真实失败**，
                 // 不能假装它不属于总体——那就退回成「拿成功子集出数」了。
+                ReplayOutcome.Base base = frozenBase(item);
                 results.add(ReplayBatchRunner.ItemResult.failed(
-                    item.executionId, boolOutcome(item.baseApproved), true,
+                    item.executionId, base.outcome(), base.legacy(),
                     ReplayFailureKind.INPUT_INCOMPATIBLE));
                 continue;
             }
             // ★基线取**冻结时**的值，不取上游当前值：
             //   上游 decision 可能因数据订正而变，那会让「变化了多少条」
             //   这个结论随时间漂移。
-            results.add(replayOne(e, item.baseApproved, target, batch.tenantId));
+            results.add(replayOne(e, frozenBase(item), target, batch.tenantId));
         }
         return results;
     }
@@ -931,7 +936,9 @@ public class ReplayBatchService {
         }
 
         for (ExecutionWindowClient.WindowedExecution e : window) {
-            new ReplayBatchItemEntity(batchId, e.executionId(), e.baseApproved()).persist();
+            ReplayOutcome.Base base = e.base();
+            new ReplayBatchItemEntity(batchId, e.executionId(), base.outcome() == ReplayOutcome.ALLOW,
+                base.outcome().name(), base.legacy()).persist();
         }
         batch.plannedCount = window.size();
         batch.windowFrozenAt = java.time.Instant.now();
@@ -947,7 +954,7 @@ public class ReplayBatchService {
      */
     private ReplayBatchRunner.ItemResult replayOne(
         ExecutionWindowClient.WindowedExecution e,
-        boolean frozenBaseApproved,
+        ReplayOutcome.Base base,
         PolicyVersionSourceClient.VersionSource target,
         String tenantId) {
 
@@ -974,25 +981,16 @@ public class ReplayBatchService {
 
             var targetVerdict = DecisionInterpreter.interpret(execResult.result());
 
-            // ★不是准入决策的执行（值输出）不参与比较——
-            //   强行归入通过或拒绝都会造出假的「变化」。
-            //   这类执行**仍算成功重跑**，只是决策视为未变。
-            if (targetVerdict == DecisionInterpreter.Verdict.INDETERMINATE) {
-                return ReplayBatchRunner.ItemResult.ok(
-                    e.executionId(), boolOutcome(frozenBaseApproved), false,
-                    boolOutcome(frozenBaseApproved), null);
-            }
-
-            // REQUIRE_APPROVAL / ESCALATE 是真实的非批准决策，按「未通过」参与比较
-            boolean targetApproved = targetVerdict == DecisionInterpreter.Verdict.APPROVED;
+            // ★目标结论码如实记录：值输出记 INDETERMINATE（成功重跑但不可比），
+            //   由 decide 计入 incomparable，而不是伪装成「与基线相同」。
             return ReplayBatchRunner.ItemResult.ok(
-                e.executionId(), boolOutcome(frozenBaseApproved), false,
-                boolOutcome(targetApproved), null);
+                e.executionId(), base.outcome(), base.legacy(),
+                ReplayOutcome.fromVerdict(targetVerdict), null);
 
         } catch (WhatIfCapacityGate.WhatIfThrottledException throttled) {
             // 服务端繁忙，不是用户数据的问题——文案上必须与 INPUT_INCOMPATIBLE 区分
             return ReplayBatchRunner.ItemResult.failed(
-                e.executionId(), boolOutcome(frozenBaseApproved), true, ReplayFailureKind.THROTTLED);
+                e.executionId(), base.outcome(), base.legacy(), ReplayFailureKind.THROTTLED);
 
         } catch (Exception ex) {
             ReplayFailureKind kind = classify(ex);
@@ -1004,7 +1002,7 @@ public class ReplayBatchService {
             //   条目表只存分类（无 message 列），故这里是唯一的取证点。
             Log.errorf(ex, "重放失败 execution=%s 归类=%s", e.executionId(), kind);
             return ReplayBatchRunner.ItemResult.failed(
-                e.executionId(), boolOutcome(frozenBaseApproved), true, kind);
+                e.executionId(), base.outcome(), base.legacy(), kind);
         }
     }
 
@@ -1060,9 +1058,32 @@ public class ReplayBatchService {
         }
     }
 
-    /** 旧布尔列到结论码的过渡映射；Task 4 接入结论码列后移除。 */
-    private static ReplayOutcome boolOutcome(boolean approved) {
-        return approved ? ReplayOutcome.ALLOW : ReplayOutcome.DENY;
+    /**
+     * 冻结行的基线：优先读 {@code base_outcome}；V6.30.0 之前冻结且未回填的旧行
+     * 只有布尔列，按 {@code baseApproved} 折算并标记 legacy。
+     */
+    static ReplayOutcome.Base frozenBase(ReplayBatchItemEntity i) {
+        if (i.baseOutcome == null) {
+            return new ReplayOutcome.Base(i.baseApproved ? ReplayOutcome.ALLOW : ReplayOutcome.DENY, true);
+        }
+        return new ReplayOutcome.Base(parseOutcome(i.baseOutcome), i.baseLegacy);
+    }
+
+    /** 成功行的目标结论码：新列优先，旧行按 {@code targetApproved} 折算。 */
+    private static ReplayOutcome storedTarget(ReplayBatchItemEntity i) {
+        if (i.targetOutcome == null) {
+            return Boolean.TRUE.equals(i.targetApproved) ? ReplayOutcome.ALLOW : ReplayOutcome.DENY;
+        }
+        return parseOutcome(i.targetOutcome);
+    }
+
+    /** 库内结论码只由本服务写入；万一出现未知值按 ERROR（不可比）处理。 */
+    private static ReplayOutcome parseOutcome(String code) {
+        try {
+            return ReplayOutcome.valueOf(code);
+        } catch (IllegalArgumentException ex) {
+            return ReplayOutcome.ERROR;
+        }
     }
 
     /** 批次摘要（ADR 0043 §5）：旧五键在前，四态统计键在后；结论码键统一用 name() 串。 */

@@ -55,20 +55,20 @@ public class ExecutionWindowClient {
         String functionName,
         String locale,
         JsonObject aliasSetJson,
-        String policyVersionRowId
+        String policyVersionRowId,
+        String outcome
     ) {
         /**
-         * 基线是否「通过」。
-         *
-         * <p>★用 {@code decision} 而非 {@code success}：后者是旧语义
-         * （值输出也算 false），会把「返回一个数字」误判成拒绝。
-         * {@code decision} 为空的历史行回退到 {@code success}。
+         * 基线结论码（ADR 0043 §2）：cloud 的 {@code outcome} 列优先，
+         * 旧 cloud 未下发时按 {@code decision}、再按 {@code success} 折算（legacy）。
          */
+        public ReplayOutcome.Base base() {
+            return ReplayOutcome.fromWindow(outcome, decision, success);
+        }
+
+        /** 基线是否「通过」：仅 ALLOW 算通过，保留给旧布尔列。 */
         public boolean baseApproved() {
-            if (decision != null && !decision.isBlank()) {
-                return "approved".equals(decision);
-            }
-            return success;
+            return base().outcome() == ReplayOutcome.ALLOW;
         }
     }
 
@@ -134,6 +134,8 @@ public class ExecutionWindowClient {
     }
 
     private static WindowedExecution toExecution(JsonObject o) {
+        String outcome = o.getString("outcome");
+        warnIfUnknownOutcome(o.getString("id"), outcome);
         return new WindowedExecution(
             o.getString("id"),
             // ★必须转成**普通 Map/List**，不能直接传 Vert.x JsonObject。
@@ -149,7 +151,19 @@ public class ExecutionWindowClient {
             o.getString("functionName"),
             o.getString("locale"),
             o.getJsonObject("aliasSetJson"),
-            o.getString("policyVersionRowId"));
+            o.getString("policyVersionRowId"),
+            outcome);
+    }
+
+    /** 未知的非空 outcome 会被折算为 ERROR（不可比），记一条告警便于排查 cloud 契约漂移。 */
+    private static void warnIfUnknownOutcome(String executionId, String outcome) {
+        if (outcome == null || outcome.isBlank()) {
+            return;
+        }
+        if (ReplayOutcome.fromWindow(outcome, null, false).outcome() == ReplayOutcome.ERROR
+            && !"ERROR".equals(outcome.trim())) {
+            Log.warnf("执行窗口出现未知 outcome=%s execution=%s，按 ERROR 处理", outcome, executionId);
+        }
     }
 
     private JsonObject fetchPage(
