@@ -1,7 +1,10 @@
 package io.aster.policy.replay.batch;
 
 import java.util.Collections;
+import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * 批次跑完后的结局：**要么全量成功带数字，要么拒答带失败分布**。
@@ -22,13 +25,21 @@ public sealed interface ReplayBatchOutcome {
      * @param totalSampled        样本总数（= plannedCount，全量）
      * @param estimatedValueDelta 业务价值变化估算；无金额基线时为 null
      *                            （★不是 0——「无法估算」与「估算为零」是两回事）
+     * @param transitions         前后结论码转移矩阵，键形如 "ALLOW->DENY"，值之和 = totalSampled
+     * @param byTargetOutcome     目标侧六种结论码的分布，六键齐全（无则为 0）
+     * @param incomparable        任一侧不可比（INDETERMINATE/ERROR）而不参与变化统计的条数
+     * @param legacyBase          基线由旧列折算而来的条数
      */
     record Completed(
         int changed,
         int newlyApproved,
         int newlyRejected,
         int totalSampled,
-        java.math.BigDecimal estimatedValueDelta
+        java.math.BigDecimal estimatedValueDelta,
+        Map<String, Integer> transitions,
+        Map<ReplayOutcome, Integer> byTargetOutcome,
+        int incomparable,
+        int legacyBase
     ) implements ReplayBatchOutcome {
 
         public Completed {
@@ -47,6 +58,25 @@ public sealed interface ReplayBatchOutcome {
                     "通过/拒绝翻转之和 " + (newlyApproved + newlyRejected)
                         + " 不得超过变化总数 " + changed);
             }
+            if (incomparable < 0 || legacyBase < 0) {
+                throw new IllegalArgumentException("计数不得为负");
+            }
+            if (incomparable + changed > totalSampled) {
+                throw new IllegalArgumentException(
+                    "不可比 " + incomparable + " 与变化 " + changed + " 之和不得超过样本总数 " + totalSampled);
+            }
+            if (transitions == null || sum(transitions) != totalSampled) {
+                throw new IllegalArgumentException("转移矩阵合计必须等于样本总数 " + totalSampled);
+            }
+            if (byTargetOutcome == null || !byTargetOutcome.keySet().containsAll(EnumSet.allOf(ReplayOutcome.class))) {
+                throw new IllegalArgumentException("目标结论码分布必须含全部六个键");
+            }
+            transitions = Collections.unmodifiableMap(new TreeMap<>(transitions));
+            byTargetOutcome = Collections.unmodifiableMap(new EnumMap<>(byTargetOutcome));
+        }
+
+        private static int sum(Map<?, Integer> m) {
+            return m.values().stream().mapToInt(Integer::intValue).sum();
         }
     }
 

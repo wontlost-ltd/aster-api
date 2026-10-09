@@ -6,7 +6,9 @@ import org.junit.jupiter.params.provider.EnumSource;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -23,19 +25,36 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class ReplayBatchRunnerTest {
 
-    private static ReplayBatchRunner.ItemResult ok(String id, boolean base, boolean target) {
-        return ReplayBatchRunner.ItemResult.ok(id, base, target, null);
+    private static final ReplayOutcome A = ReplayOutcome.ALLOW;
+    private static final ReplayOutcome D = ReplayOutcome.DENY;
+
+    private static ReplayBatchRunner.ItemResult ok(String id, ReplayOutcome base, ReplayOutcome target) {
+        return ReplayBatchRunner.ItemResult.ok(id, base, false, target, null);
     }
 
     private static ReplayBatchRunner.ItemResult okWithValue(
-        String id, boolean base, boolean target, String delta) {
-        return ReplayBatchRunner.ItemResult.ok(id, base, target, new BigDecimal(delta));
+        String id, ReplayOutcome base, ReplayOutcome target, String delta) {
+        return ReplayBatchRunner.ItemResult.ok(id, base, false, target, new BigDecimal(delta));
+    }
+
+    private static ReplayBatchRunner.ItemResult failed(String id, ReplayFailureKind kind) {
+        return ReplayBatchRunner.ItemResult.failed(id, A, false, kind);
+    }
+
+    /** 构造满足矩阵不变量的 Completed：全部记为 ALLOW->ALLOW。 */
+    private static ReplayBatchOutcome.Completed completed(int changed, int na, int nr, int total, int incomparable) {
+        Map<ReplayOutcome, Integer> byTarget = new EnumMap<>(ReplayOutcome.class);
+        for (ReplayOutcome o : ReplayOutcome.values()) {
+            byTarget.put(o, 0);
+        }
+        return new ReplayBatchOutcome.Completed(changed, na, nr, total, null,
+            Map.of("ALLOW->ALLOW", total), byTarget, incomparable, 0);
     }
 
     private static List<ReplayBatchRunner.ItemResult> allOk(int n) {
         List<ReplayBatchRunner.ItemResult> l = new ArrayList<>();
         for (int i = 0; i < n; i++) {
-            l.add(ok("e" + i, true, true));
+            l.add(ok("e" + i, A, A));
         }
         return l;
     }
@@ -47,7 +66,7 @@ class ReplayBatchRunnerTest {
         // ★这正是 Phase 4 的场景：199 条成功、1 条失败。
         //   上一版会对那 199 条出数字；本设计必须拒答。
         List<ReplayBatchRunner.ItemResult> results = allOk(199);
-        results.add(ReplayBatchRunner.ItemResult.failed("e199", ReplayFailureKind.INPUT_INCOMPATIBLE));
+        results.add(failed("e199", ReplayFailureKind.INPUT_INCOMPATIBLE));
 
         ReplayBatchOutcome outcome = ReplayBatchRunner.decide(200, results);
 
@@ -65,7 +84,7 @@ class ReplayBatchRunnerTest {
         //   不是「有字段但填 0」，是**类型上不存在**。
         //   这是刻意的：给了前端就会自行算比率，那正是 §1.1 要防的。
         List<ReplayBatchRunner.ItemResult> results = new ArrayList<>(allOk(4));
-        results.add(ReplayBatchRunner.ItemResult.failed("x", ReplayFailureKind.TIMEOUT));
+        results.add(failed("x", ReplayFailureKind.TIMEOUT));
 
         ReplayBatchOutcome outcome = ReplayBatchRunner.decide(5, results);
 
@@ -84,7 +103,7 @@ class ReplayBatchRunnerTest {
     @EnumSource(ReplayFailureKind.class)
     void 任何一类失败都导致拒答(ReplayFailureKind kind) {
         List<ReplayBatchRunner.ItemResult> results = new ArrayList<>(allOk(9));
-        results.add(ReplayBatchRunner.ItemResult.failed("bad", kind));
+        results.add(failed("bad", kind));
 
         assertThat(ReplayBatchRunner.decide(10, results))
             .isInstanceOf(ReplayBatchOutcome.Rejected.class);
@@ -94,9 +113,9 @@ class ReplayBatchRunnerTest {
     void 多类失败的分布如实回报() {
         // 「失败了」不够——用户要知道是自己数据的问题还是服务端繁忙
         List<ReplayBatchRunner.ItemResult> results = new ArrayList<>(allOk(5));
-        results.add(ReplayBatchRunner.ItemResult.failed("a", ReplayFailureKind.INPUT_INCOMPATIBLE));
-        results.add(ReplayBatchRunner.ItemResult.failed("b", ReplayFailureKind.INPUT_INCOMPATIBLE));
-        results.add(ReplayBatchRunner.ItemResult.failed("c", ReplayFailureKind.TIMEOUT));
+        results.add(failed("a", ReplayFailureKind.INPUT_INCOMPATIBLE));
+        results.add(failed("b", ReplayFailureKind.INPUT_INCOMPATIBLE));
+        results.add(failed("c", ReplayFailureKind.TIMEOUT));
 
         var r = (ReplayBatchOutcome.Rejected) ReplayBatchRunner.decide(8, results);
 
@@ -110,8 +129,8 @@ class ReplayBatchRunnerTest {
     @Test
     void 全部可重试类失败才标记为可重试() {
         List<ReplayBatchRunner.ItemResult> results = new ArrayList<>(allOk(2));
-        results.add(ReplayBatchRunner.ItemResult.failed("a", ReplayFailureKind.TIMEOUT));
-        results.add(ReplayBatchRunner.ItemResult.failed("b", ReplayFailureKind.THROTTLED));
+        results.add(failed("a", ReplayFailureKind.TIMEOUT));
+        results.add(failed("b", ReplayFailureKind.THROTTLED));
 
         var r = (ReplayBatchOutcome.Rejected) ReplayBatchRunner.decide(4, results);
         assertThat(r.allRetryable()).isTrue();
@@ -147,10 +166,10 @@ class ReplayBatchRunnerTest {
     @Test
     void 全部成功时样本即全量() {
         List<ReplayBatchRunner.ItemResult> results = List.of(
-            ok("e1", true, true),
-            ok("e2", true, false),    // 通过 → 拒绝
-            ok("e3", false, true),    // 拒绝 → 通过
-            ok("e4", false, false));
+            ok("e1", A, A),
+            ok("e2", A, D),    // 通过 → 拒绝
+            ok("e3", D, A),    // 拒绝 → 通过
+            ok("e4", D, D));
 
         var c = (ReplayBatchOutcome.Completed) ReplayBatchRunner.decide(4, results);
 
@@ -165,7 +184,7 @@ class ReplayBatchRunnerTest {
         // ★「无法估算」与「估算为零」是两回事。渲染成 0 会被读成
         //   「换版本没有金额影响」——一个没有依据的结论。
         var c = (ReplayBatchOutcome.Completed) ReplayBatchRunner.decide(2,
-            List.of(ok("e1", true, false), ok("e2", true, true)));
+            List.of(ok("e1", A, D), ok("e2", A, A)));
 
         assertThat(c.estimatedValueDelta())
             .as("无金额基线必须是 null，不得兜底成 0")
@@ -175,9 +194,9 @@ class ReplayBatchRunnerTest {
     @Test
     void 有金额基线时累加变化条目() {
         var c = (ReplayBatchOutcome.Completed) ReplayBatchRunner.decide(3, List.of(
-            okWithValue("e1", true, false, "-100.50"),
-            okWithValue("e2", false, true, "200.25"),
-            okWithValue("e3", true, true, "999")));   // 未变化 → 不计入
+            okWithValue("e1", A, D, "-100.50"),
+            okWithValue("e2", D, A, "200.25"),
+            okWithValue("e3", A, A, "999")));   // 未变化 → 不计入
 
         assertThat(c.estimatedValueDelta()).isEqualByComparingTo(new BigDecimal("99.75"));
         assertThat(c.changed()).isEqualTo(2);
@@ -188,19 +207,64 @@ class ReplayBatchRunnerTest {
     @Test
     void Completed的计数不变量() {
         assertThatThrownBy(() ->
-            new ReplayBatchOutcome.Completed(5, 3, 3, 4, null))
+            completed(5, 3, 3, 4, 0))
             .as("翻转之和不得超过变化总数")
             .isInstanceOf(IllegalArgumentException.class);
 
         assertThatThrownBy(() ->
-            new ReplayBatchOutcome.Completed(10, 0, 0, 5, null))
+            completed(10, 0, 0, 5, 0))
             .as("变化条数不得超过样本总数")
             .isInstanceOf(IllegalArgumentException.class);
 
         assertThatThrownBy(() ->
-            new ReplayBatchOutcome.Completed(0, 0, 0, 0, null))
+            completed(0, 0, 0, 0, 0))
             .as("样本数必须为正")
             .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> completed(3, 0, 0, 4, 2))
+            .as("不可比与变化之和不得超过样本总数")
+            .isInstanceOf(IllegalArgumentException.class);
+
+        Map<ReplayOutcome, Integer> partial = new EnumMap<>(ReplayOutcome.class);
+        partial.put(A, 4);
+        assertThatThrownBy(() -> new ReplayBatchOutcome.Completed(0, 0, 0, 4, null,
+            Map.of("ALLOW->ALLOW", 4), partial, 0, 0))
+            .as("目标分布必须六键齐全")
+            .isInstanceOf(IllegalArgumentException.class);
+
+        assertThatThrownBy(() -> new ReplayBatchOutcome.Completed(0, 0, 0, 4, null,
+            Map.of("ALLOW->ALLOW", 3), completed(0, 0, 0, 4, 0).byTargetOutcome(), 0, 0))
+            .as("转移矩阵合计必须等于样本总数")
+            .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // ── 四态（ADR 0043 §4） ────────────────────────────────────────────
+
+    @Test
+    void 四态变化按可比性统计() {
+        var c = (ReplayBatchOutcome.Completed) ReplayBatchRunner.decide(6, List.of(
+            ok("e1", ReplayOutcome.ALLOW, ReplayOutcome.REQUIRE_APPROVAL),
+            ok("e2", ReplayOutcome.REQUIRE_APPROVAL, ReplayOutcome.ESCALATE),
+            ok("e3", ReplayOutcome.DENY, ReplayOutcome.ALLOW),
+            ok("e4", ReplayOutcome.ALLOW, ReplayOutcome.INDETERMINATE),
+            ok("e5", ReplayOutcome.ERROR, ReplayOutcome.ALLOW),
+            ok("e6", ReplayOutcome.ALLOW, ReplayOutcome.ALLOW)));
+        assertThat(c.changed()).isEqualTo(3);
+        assertThat(c.newlyRejected()).isEqualTo(1);
+        assertThat(c.newlyApproved()).isEqualTo(1);
+        assertThat(c.incomparable()).isEqualTo(2);
+        assertThat(c.transitions()).containsEntry("ALLOW->REQUIRE_APPROVAL", 1)
+            .containsEntry("ERROR->ALLOW", 1).doesNotContainKey("DENY->DENY");
+        assertThat(c.byTargetOutcome()).containsEntry(ReplayOutcome.ALLOW, 3).containsEntry(ReplayOutcome.DENY, 0);
+    }
+
+    @Test
+    void legacy基线计数() {
+        var c = (ReplayBatchOutcome.Completed) ReplayBatchRunner.decide(2, List.of(
+            ReplayBatchRunner.ItemResult.ok("e1", ReplayOutcome.ALLOW, true, ReplayOutcome.ALLOW, null),
+            ok("e2", ReplayOutcome.DENY, ReplayOutcome.DENY)));
+        assertThat(c.legacyBase()).isEqualTo(1);
+        assertThat(c.changed()).isZero();
     }
 
     @Test
@@ -221,7 +285,7 @@ class ReplayBatchRunnerTest {
 
     @Test
     void 失败条目必须带分类() {
-        assertThatThrownBy(() -> ReplayBatchRunner.ItemResult.failed("x", null))
+        assertThatThrownBy(() -> ReplayBatchRunner.ItemResult.failed("x", A, false, null))
             .isInstanceOf(IllegalArgumentException.class);
     }
 }

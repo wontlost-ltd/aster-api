@@ -743,10 +743,11 @@ public class ReplayBatchService {
         List<ReplayBatchRunner.ItemResult> out = new ArrayList<>(items.size());
         for (ReplayBatchItemEntity i : items) {
             if (Boolean.TRUE.equals(i.success)) {
-                out.add(ReplayBatchRunner.ItemResult.ok(i.executionId, i.baseApproved,
-                    Boolean.TRUE.equals(i.targetApproved), null));
+                out.add(ReplayBatchRunner.ItemResult.ok(i.executionId, boolOutcome(i.baseApproved), false,
+                    boolOutcome(Boolean.TRUE.equals(i.targetApproved)), null));
             } else {
                 out.add(ReplayBatchRunner.ItemResult.failed(i.executionId,
+                    boolOutcome(i.baseApproved), true,
                     ReplayFailureKind.valueOf(
                         i.failureKind == null ? ReplayFailureKind.UNKNOWN.name() : i.failureKind)));
             }
@@ -871,7 +872,8 @@ public class ReplayBatchService {
                 // 冻结时还在、现在没了（删除／状态变更）。这是**真实失败**，
                 // 不能假装它不属于总体——那就退回成「拿成功子集出数」了。
                 results.add(ReplayBatchRunner.ItemResult.failed(
-                    item.executionId, ReplayFailureKind.INPUT_INCOMPATIBLE));
+                    item.executionId, boolOutcome(item.baseApproved), true,
+                    ReplayFailureKind.INPUT_INCOMPATIBLE));
                 continue;
             }
             // ★基线取**冻结时**的值，不取上游当前值：
@@ -977,18 +979,20 @@ public class ReplayBatchService {
             //   这类执行**仍算成功重跑**，只是决策视为未变。
             if (targetVerdict == DecisionInterpreter.Verdict.INDETERMINATE) {
                 return ReplayBatchRunner.ItemResult.ok(
-                    e.executionId(), frozenBaseApproved, frozenBaseApproved, null);
+                    e.executionId(), boolOutcome(frozenBaseApproved), false,
+                    boolOutcome(frozenBaseApproved), null);
             }
 
             // REQUIRE_APPROVAL / ESCALATE 是真实的非批准决策，按「未通过」参与比较
             boolean targetApproved = targetVerdict == DecisionInterpreter.Verdict.APPROVED;
             return ReplayBatchRunner.ItemResult.ok(
-                e.executionId(), frozenBaseApproved, targetApproved, null);
+                e.executionId(), boolOutcome(frozenBaseApproved), false,
+                boolOutcome(targetApproved), null);
 
         } catch (WhatIfCapacityGate.WhatIfThrottledException throttled) {
             // 服务端繁忙，不是用户数据的问题——文案上必须与 INPUT_INCOMPATIBLE 区分
             return ReplayBatchRunner.ItemResult.failed(
-                e.executionId(), ReplayFailureKind.THROTTLED);
+                e.executionId(), boolOutcome(frozenBaseApproved), true, ReplayFailureKind.THROTTLED);
 
         } catch (Exception ex) {
             ReplayFailureKind kind = classify(ex);
@@ -999,7 +1003,8 @@ public class ReplayBatchService {
             //   日志、item 表里都没有任何线索，只能靠猜。
             //   条目表只存分类（无 message 列），故这里是唯一的取证点。
             Log.errorf(ex, "重放失败 execution=%s 归类=%s", e.executionId(), kind);
-            return ReplayBatchRunner.ItemResult.failed(e.executionId(), kind);
+            return ReplayBatchRunner.ItemResult.failed(
+                e.executionId(), boolOutcome(frozenBaseApproved), true, kind);
         }
     }
 
@@ -1055,7 +1060,13 @@ public class ReplayBatchService {
         }
     }
 
-    private static Map<String, Object> summaryOf(ReplayBatchOutcome.Completed c) {
+    /** 旧布尔列到结论码的过渡映射；Task 4 接入结论码列后移除。 */
+    private static ReplayOutcome boolOutcome(boolean approved) {
+        return approved ? ReplayOutcome.ALLOW : ReplayOutcome.DENY;
+    }
+
+    /** 批次摘要（ADR 0043 §5）：旧五键在前，四态统计键在后；结论码键统一用 name() 串。 */
+    static Map<String, Object> summaryOf(ReplayBatchOutcome.Completed c) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("changed", c.changed());
         m.put("newlyApproved", c.newlyApproved());
@@ -1063,6 +1074,12 @@ public class ReplayBatchService {
         m.put("totalSampled", c.totalSampled());
         // null 表示「无金额基线，无法估算」——与「估算为 0」是两回事，前端必须能区分
         m.put("estimatedValueDelta", c.estimatedValueDelta());
+        m.put("transitions", c.transitions());
+        Map<String, Integer> byTarget = new LinkedHashMap<>();
+        c.byTargetOutcome().forEach((k, v) -> byTarget.put(k.name(), v));
+        m.put("byTargetOutcome", byTarget);
+        m.put("incomparable", c.incomparable());
+        m.put("legacyBase", c.legacyBase());
         return m;
     }
 

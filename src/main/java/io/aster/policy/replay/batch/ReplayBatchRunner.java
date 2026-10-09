@@ -1,8 +1,10 @@
 package io.aster.policy.replay.batch;
 
+import java.math.BigDecimal;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * 批次执行的**纯逻辑**部分：给定逐条重跑结果，判定批次结局。
@@ -20,29 +22,49 @@ public final class ReplayBatchRunner {
     private ReplayBatchRunner() {
     }
 
-    /** 单条重跑的结果。{@code failureKind} 非空即表示这一条失败。 */
+    /**
+     * 单条重跑的结果（ADR 0043 §4：携带前后两侧结论码）。
+     * {@code failureKind} 非空即表示这一条失败，此时目标侧恒为 {@link ReplayOutcome#ERROR}。
+     * {@code baseLegacy} 为真表示基线由旧列折算而来，仅用于计数提示。
+     */
     public record ItemResult(
         String sourceExecutionId,
-        boolean baseApproved,
-        boolean targetApproved,
-        java.math.BigDecimal valueDelta,
+        ReplayOutcome baseOutcome,
+        boolean baseLegacy,
+        ReplayOutcome targetOutcome,
+        BigDecimal valueDelta,
         ReplayFailureKind failureKind
     ) {
 
-        public static ItemResult ok(String id, boolean baseApproved, boolean targetApproved,
-                                    java.math.BigDecimal valueDelta) {
-            return new ItemResult(id, baseApproved, targetApproved, valueDelta, null);
+        public ItemResult {
+            if (baseOutcome == null || targetOutcome == null) {
+                throw new IllegalArgumentException("前后结论码不得为 null");
+            }
         }
 
-        public static ItemResult failed(String id, ReplayFailureKind kind) {
+        public static ItemResult ok(String id, ReplayOutcome base, boolean baseLegacy,
+                                    ReplayOutcome target, BigDecimal valueDelta) {
+            return new ItemResult(id, base, baseLegacy, target, valueDelta, null);
+        }
+
+        public static ItemResult failed(String id, ReplayOutcome base, boolean baseLegacy,
+                                        ReplayFailureKind kind) {
             if (kind == null) {
                 throw new IllegalArgumentException("失败必须带分类——「失败了」不足以让用户决策");
             }
-            return new ItemResult(id, false, false, null, kind);
+            return new ItemResult(id, base, baseLegacy, ReplayOutcome.ERROR, null, kind);
         }
 
         public boolean isFailure() {
             return failureKind != null;
+        }
+
+        public boolean baseApproved() {
+            return baseOutcome == ReplayOutcome.ALLOW;
+        }
+
+        public boolean targetApproved() {
+            return targetOutcome == ReplayOutcome.ALLOW;
         }
     }
 
@@ -90,28 +112,55 @@ public final class ReplayBatchRunner {
             return new ReplayBatchOutcome.Rejected(failures);
         }
 
+        return tally(plannedCount, results);
+    }
+
+    /**
+     * 全量成功后的统计（ADR 0043 §4）：任一侧不可比（INDETERMINATE/ERROR）的条目
+     * 只进转移矩阵与 incomparable，不计入 changed——强行比较会造出假的「变化」。
+     */
+    private static ReplayBatchOutcome.Completed tally(int plannedCount, List<ItemResult> results) {
         int changed = 0;
         int newlyApproved = 0;
         int newlyRejected = 0;
-        java.math.BigDecimal delta = null;
+        int incomparable = 0;
+        int legacyBase = 0;
+        BigDecimal delta = null;
+        // TreeMap 保证输出顺序稳定；EnumMap 预填六键，让「零」显式出现而不是缺键
+        Map<String, Integer> transitions = new TreeMap<>();
+        Map<ReplayOutcome, Integer> byTarget = new EnumMap<>(ReplayOutcome.class);
+        for (ReplayOutcome o : ReplayOutcome.values()) {
+            byTarget.put(o, 0);
+        }
 
         for (ItemResult r : results) {
-            if (r.baseApproved() != r.targetApproved()) {
-                changed++;
-                if (r.targetApproved()) {
-                    newlyApproved++;
-                } else {
-                    newlyRejected++;
-                }
-                // ★金额基线缺失时保持 null 而非累加 0——
-                //   「无法估算」与「估算为零」是两回事，前端必须能区分。
-                if (r.valueDelta() != null) {
-                    delta = (delta == null) ? r.valueDelta() : delta.add(r.valueDelta());
-                }
+            boolean comparable = r.baseOutcome().comparable() && r.targetOutcome().comparable();
+            transitions.merge(ReplayOutcome.transitionKey(r.baseOutcome(), r.targetOutcome()), 1, Integer::sum);
+            byTarget.merge(r.targetOutcome(), 1, Integer::sum);
+            if (r.baseLegacy()) {
+                legacyBase++;
+            }
+            if (!comparable) {
+                incomparable++;
+                continue;
+            }
+            if (r.baseOutcome() == r.targetOutcome()) {
+                continue;
+            }
+            changed++;
+            if (r.targetOutcome() == ReplayOutcome.ALLOW) {
+                newlyApproved++;
+            } else if (r.baseOutcome() == ReplayOutcome.ALLOW) {
+                newlyRejected++;
+            }
+            // ★金额基线缺失时保持 null 而非累加 0——
+            //   「无法估算」与「估算为零」是两回事，前端必须能区分。
+            if (r.valueDelta() != null) {
+                delta = (delta == null) ? r.valueDelta() : delta.add(r.valueDelta());
             }
         }
 
-        return new ReplayBatchOutcome.Completed(
-            changed, newlyApproved, newlyRejected, plannedCount, delta);
+        return new ReplayBatchOutcome.Completed(changed, newlyApproved, newlyRejected, plannedCount,
+            delta, transitions, byTarget, incomparable, legacyBase);
     }
 }

@@ -50,7 +50,7 @@ class ReplayBatchPlannedCountTest {
     @Test
     void 结果条数与plannedCount不符必须抛出() {
         var oneOk = java.util.List.of(
-            ReplayBatchRunner.ItemResult.ok("e1", true, true, null));
+            ReplayBatchRunner.ItemResult.ok("e1", ReplayOutcome.ALLOW, false, ReplayOutcome.ALLOW, null));
 
         assertThatThrownBy(() -> ReplayBatchRunner.decide(2, oneOk))
             .as("★1 条结果 vs 计划 2 条：样本不是全量，不得判定结局")
