@@ -1,7 +1,7 @@
 # ADR 0045：控制注册表 —— `@control` 受控词表、编译期提示与注册表驱动的对照表（AI 治理方向·子项目 5）
 
-- 状态：**PROPOSED**（2026-10-09）
-- 提出：2026-10-09；实施计划 `docs/superpowers/plans/2026-10-09-control-registry.md`（待写）
+- 状态：**ACCEPTED**（2026-10-10；栈验收见 §9.1）
+- 提出：2026-10-09；实施计划 `docs/superpowers/plans/2026-10-10-control-registry.md`
 - 决策者：用户已拍板「真相源在 aster-lang-locales、走包分发；未登记给 W704 警告不阻断；两个编译器的治理检查器各实现并可注入词表；条目带证据来源声明、对照判定通用化；报告页渲染对照表但不加 ComplianceType 枚举；版本随证据包 manifest 固化」
 - 相关：ADR 0039（§3 `@control` 键定义；§1 行 5）、ADR 0031（错误码单一来源）、ADR 0041（证据包、controls 进链）、ADR 0044（§3.1 静态对照表；§8/§10 推迟到本项目的事项）、ADR 0015（模块目录先例）
 
@@ -118,7 +118,19 @@ Article 14 九款数据：14(1) evidenced=[control]；14(2) evidenced=[outcome.p
 - ADR 0039 §1 行 5 指向本 ADR。
 - ADR 0044 §10：注册表驱动对照表、报告页渲染两条标记已做。
 
+### 9.1 栈验收（2026-10-10，本地 podman 栈）
+
+- aster-api 启动日志：`控制注册表 1.0.0 已加载（5 个控制点）`。
+- `POST /api/v1/policies/compile`（含 `@control("ACME:ART1")` 与 `@control("EU_AI_ACT:ART14")`）：`success: true`，`controlsRegistryVersion: "1.0.0"`，仅一条 W704（ACME:ART1，`severity: warning`，`blocking: false`）。
+- 信贷试点脚本 exit 0：证据包 `schemaVersion: '4'`、`registryVersion: '1.0.0'`、单组 `EU_AI_ACT:ART14` 九款，状态与 ADR 0044 预期表一致。
+- 本地栈 Playwright：8 passed / 1 skipped（既有 skip），含报告页展开对照表的新断言。首轮 5 例超时，原因为 cloud 重启后开发服务器冷编译叠加主机负载，服务器空闲后重跑全部通过。
+- 门禁：aster-lang-locales `check`、aster-lang-core 全量、aster-lang-ts `pnpm test`（单元与集成）、aster-cloud tsc/lint/test:run/locales/docs 通过；aster-api 全量仅剩既有基线（GraphQL 两例、Prisma 一例）。`routes:check` 与 `check:message-keys` 的 /approvals 相关失败为子项目 3b 遗留。
+- 实施中的裁决：编译通道上的治理诊断一律以 `warning` 下发并保留原码——aster-cloud 保存门按 `severity === 'error'` 拒绝，否则 E701/E702 会让既有可保存的策略无法保存（语言层检查器的严重级不变）。
+
 ## 10. 后续（不在本 ADR）
+
+- aster-lang-core `TypeChecker` 把比较运算符（`>`、`at least` 等）报为 UNDEFINED_VARIABLE（`BaseTypeChecker` 名称查找未识别运算符），本 ADR 实施中发现、与注册表无关，需单独修复。
+- aster-lang-ts 的 type-checker 黄金回归跑器陈旧（读 npm 语料 1.0.3、无脚本引用），W704 黄金暂由新增单元测试经兄弟仓执行。
 
 - `@control` 悬停提示（LSP hover）。
 - `@aster-cloud/controls` 发布后 cloud 改依赖 npm 包并删除副本。
