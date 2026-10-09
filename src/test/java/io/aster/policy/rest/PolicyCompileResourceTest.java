@@ -175,4 +175,30 @@ public class PolicyCompileResourceTest {
             .body("success", is(true))
             .body("diagnostics.findAll { it.code == 'W601' }", hasSize(0));
     }
+
+    @Test
+    public void compileUnregisteredControl_returnsW704AndRegistryVersion() {
+        // ADR 0045 §3：未登记控制点只给 W704 warning，编译仍成功，并回带注册表版本
+        String source = String.join("\n",
+            "Module governance.probe.", "",
+            "@id(\"GP-001\")", "@control(\"EU_AI_ACT:ART14\")", "@control(\"ACME:ART1\")",
+            "Rule decide given amount, produce Verdict:",
+            "  If amount at least 100:", "    Return Verdict.require_approval(\"Reviewer\", \"large\").",
+            "  Return Verdict.allow().", "");
+
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body(java.util.Map.of("source", source, "locale", "en-US"))
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200)
+            .body("success", is(true))
+            .body("controlsRegistryVersion", is("1.0.0"))
+            .body("diagnostics.findAll { it.code == 'W704' }", hasSize(1))
+            .body("diagnostics.find { it.code == 'W704' }.severity", is("warning"))
+            .body("diagnostics.find { it.code == 'W704' }.message", containsString("ACME:ART1"))
+            .body("diagnostics.find { it.code == 'W704' }.blocking", is(false));
+    }
 }
