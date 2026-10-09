@@ -41,20 +41,29 @@ public class PlanGateService {
     @Inject
     io.aster.common.http.SharedHttpClient sharedHttpClient;
 
-    private Cache<String, PlanInfo> cache;
+    /** 与 {@link #lookupPlan} 共享的 plan 缓存（仅存已确认的 200 结果）。 */
+    Cache<String, PlanInfo> cache;
+
+    /** 权益判定专用：cloud 返回 404 的租户短期标记，不进共享缓存，TTL 刻意很短以吸收部署期瞬时 404。 */
+    Cache<String, Boolean> notFoundTenants;
 
     /**
      * R32 hotfix v3: 同 ApiQuotaGuard，hot path 不能阻塞 event-loop 等 cf 回包。
      * Cache miss 时立刻返回 failOpen + 后台 warmup，下次同 tenantId 命中走 0 RTT 路径。
      */
-    private ExecutorService lookupPool;
+    ExecutorService lookupPool;
     private final ConcurrentHashMap<String, Boolean> lookupInFlight = new ConcurrentHashMap<>();
+    private static final Duration NOT_FOUND_TTL = Duration.ofSeconds(30);
     private static final Duration LOOKUP_TIMEOUT = Duration.ofMillis(1500);
 
     void onStart(@Observes StartupEvent ev) {
         cache = Caffeine.newBuilder()
             .maximumSize(config.cacheMaxEntries())
             .expireAfterWrite(config.cacheTtl())
+            .build();
+        notFoundTenants = Caffeine.newBuilder()
+            .maximumSize(config.cacheMaxEntries())
+            .expireAfterWrite(NOT_FOUND_TTL)
             .build();
         lookupPool = Executors.newFixedThreadPool(4, r -> {
             Thread t = new Thread(r, "plan-gate-worker");
@@ -140,13 +149,14 @@ public class PlanGateService {
     /**
      * 权益判定专用的 plan 查询：**区分「确认无权益」与「无法确认」**。
      *
-     * <p>{@link #lookupPlan} 在故障时返回 {@link PlanInfo#failOpen()} 哨兵——它对读类/软门控
-     * 合理，但该哨兵的 concurrentReplayBatches=0 与真实 free 档无法区分，
+     * <p>{@link #lookupPlan} 在故障时返回 {@link PlanInfo#failOpen()} 占位值——它对读类/软门控
+     * 合理，但占位值的 concurrentReplayBatches=0 与真实 free 档无法区分，
      * 导致 cloud 超时/5xx 时 Pro 用户被告知「需 Pro 套餐」。本方法故障时改为抛
-     * {@link PlanLookupUnavailableException}，由调用方映射为 503，仍然 fail-closed。
+     * {@link PlanLookupUnavailableException}（由其 mapper 统一映射为 503），仍然 fail-closed。
      *
-     * <p>映射：200 且可解析 → 真实 plan；404 → 租户无订阅记录，按 free 处理（确认无权益）；
-     * 超时 / 连接失败 / 其他非 2xx / 响应体不可解析 → 不可用。
+     * <p>映射见 {@link #interpretEntitlementResponse}。404（cloud 契约：无订阅记录）只用于
+     * **本次**权益判定，不写入与 {@link #lookupPlan} 共享的 plan 缓存——否则部署期间的
+     * 瞬时 404 会让 Pro 租户的审批/What-If 被拒整整一个缓存 TTL。
      * plan-gate 未启用或 tenantId 为空时沿用 {@link #lookupPlan} 的既有语义。
      */
     public PlanInfo lookupPlanForEntitlement(String tenantId) {
@@ -155,6 +165,7 @@ public class PlanGateService {
         }
         PlanInfo cached = cache.getIfPresent(tenantId);
         if (cached != null) return cached;
+        if (notFoundTenants.getIfPresent(tenantId) != null) return FREE_PLAN;
 
         // event-loop 上不能阻塞等 cloud：后台预热，本次如实报告「暂不可用」，客户端按 Retry-After 重试即命中缓存
         String threadName = Thread.currentThread().getName();
@@ -173,8 +184,20 @@ public class PlanGateService {
             LOG.warnf("PlanGate 权益查询失败 tenant=%s: %s（按不可用处理）", tenantId, e.getMessage());
             throw new PlanLookupUnavailableException("plan_lookup_failed");
         }
-        PlanInfo plan = interpretEntitlementResponse(resp.statusCode(), resp.body());
-        cache.put(tenantId, plan);
+        return rememberEntitlementResult(tenantId, resp.statusCode(), resp.body());
+    }
+
+    /**
+     * 解释响应并按结果分别记忆：确认的 plan 写共享缓存；404 只记入权益专用的短期标记
+     * （让 event-loop 路径下的 404 租户能拿到确定答案，而不是永远 503）。
+     */
+    private PlanInfo rememberEntitlementResult(String tenantId, int status, String body) {
+        PlanInfo plan = interpretEntitlementResponse(status, body);
+        if (status == 404) {
+            notFoundTenants.put(tenantId, Boolean.TRUE);
+        } else {
+            cache.put(tenantId, plan);
+        }
         return plan;
     }
 
@@ -205,8 +228,8 @@ public class PlanGateService {
         try {
             lookupPool.submit(() -> {
                 try {
-                    PlanInfo fetched = fetchFromCloudHttpClient(tenantId);
-                    cache.put(tenantId, fetched);
+                    HttpResponse<String> resp = sendPlanRequest(tenantId);
+                    rememberEntitlementResult(tenantId, resp.statusCode(), resp.body());
                 } catch (Exception e) {
                     LOG.debugf("async plan-gate warmup failed tenant=%s: %s",
                         tenantId, e.getMessage());
@@ -232,7 +255,7 @@ public class PlanGateService {
     }
 
     /** 发出带签名的 plan 查询请求；超时/连接错误以异常抛出，状态码由调用方解释。 */
-    private HttpResponse<String> sendPlanRequest(String tenantId) throws Exception {
+    HttpResponse<String> sendPlanRequest(String tenantId) throws Exception {
         URI baseUri = URI.create(config.cloudInternalUrl());
         // 本层自卫：对 tenantId 做 path-segment 编码，避免内部调用方未来传入
         // 含 '/'、'?'、'%2F' 的值造成 path / HMAC 签名歧义（当前 TenantFilter

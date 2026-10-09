@@ -332,13 +332,18 @@ S0 性能实测已在 0033 §5.1 完成且**在本模型下依然有效**：
 
 | 场景 | 状态 | `error` | 备注 |
 |---|---|---|---|
-| plan 已确认且 `concurrentReplayBatches=0`（含 cloud 返回 404 → 按 free） | 403 | `whatif_not_entitled` | `upgrade: true` |
+| plan 已确认且 `concurrentReplayBatches=0`（含 cloud 返回 404 → 按 free） | 403 | `whatif_not_entitled` | `upgrade: true`；cloud 契约「404 = 无订阅记录」，该结论**只用于本次判定**，不写入与 `lookupPlan` 共享的 plan 缓存（仅记 30 s 权益专用标记），避免部署期瞬时 404 让 Pro 租户的审批/What-If 被拒整个 TTL |
+| plan-gate 未启用（`aster.plan-gate.enabled=false`） | 403 | `whatif_not_entitled` | **既有行为**：返回 `failOpen()` 占位值（`concurrentReplayBatches=0`），What-If 一律不可用 |
 | plan 查询超时 / 连接失败 / 非 2xx（404 除外）/ 响应不可解析 | **503** | `plan_check_unavailable` | `Retry-After: 5`；`message`「权益校验暂不可用，请稍后重试」；仍 fail-closed，不创建批次 |
 | 已有活跃批次达上限 | 409 | `whatif_batch_in_progress` | 带 `currentBatchId` |
 
 ★此前查询失败落到 `PlanInfo.failOpen()` 哨兵（`concurrentReplayBatches=0`），与真实 free 档无法区分，
 cloud 一抖动 Pro 用户就被告知「需 Pro 套餐」。现由 `PlanGateService.lookupPlanForEntitlement` 在故障时抛
-`PlanLookupUnavailableException`，资源层映射为 503。其他 plan 消费方（审批 `allowsApproval`、`ApiQuotaGuard`）
+`PlanLookupUnavailableException`，由 `PlanLookupUnavailableExceptionMapper` 统一映射为 503（单一 owner，资源层不再自行构造）。
+event-loop 线程上缓存未命中时同样报 503 并后台预热，预热按同一映射记忆结果（含 404），重试即得到确定答案。
+★**更名**：该 mapper 此前对所有端点输出 `plan_lookup_unavailable`（附 `reason`/`retryable`，`Retry-After: 2`），
+现统一为 `plan_check_unavailable` + 中文 `message`、`Retry-After: 5`，内部 `reason` 不再下发；
+仓库内（含 aster-cloud）无客户端依赖旧错误码，仅 mapper 单测随之更新。其他 plan 消费方（审批 `allowsApproval`、`ApiQuotaGuard`）
 沿用 `lookupPlan` 的 fail-open 语义——其哨兵是宽松取值，不会把故障误报为「无权益」，故不受此缺陷影响。
 
 #### 谁写入（已定）

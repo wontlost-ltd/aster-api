@@ -3,6 +3,7 @@ package io.aster.policy.rest;
 import io.aster.billing.PlanGateService;
 import io.aster.billing.PlanInfo;
 import io.aster.billing.PlanLookupUnavailableException;
+import io.aster.billing.PlanLookupUnavailableExceptionMapper;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -10,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -34,11 +36,14 @@ class ReplayBatchPlanCheckUnavailableTest {
     }
 
     @Test
-    void 查询不可用返回503与重试头() {
+    void 查询不可用经统一mapper返回503与重试头() {
         when(planGate.lookupPlanForEntitlement("t-pro"))
             .thenThrow(new PlanLookupUnavailableException("plan_lookup_failed"));
 
-        Response r = resource.create("p1", null);
+        // 资源层不吞异常：交由 PlanLookupUnavailableExceptionMapper 统一产出 503（单一 owner）
+        PlanLookupUnavailableException ex = catchThrowableOfType(
+            PlanLookupUnavailableException.class, () -> resource.create("p1", null));
+        Response r = new PlanLookupUnavailableExceptionMapper().toResponse(ex);
 
         assertThat(r.getStatus()).isEqualTo(503);
         assertThat(r.getHeaderString("Retry-After")).isEqualTo("5");

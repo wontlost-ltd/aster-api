@@ -2,7 +2,6 @@ package io.aster.policy.rest;
 
 import io.aster.billing.PlanGateService;
 import io.aster.billing.PlanInfo;
-import io.aster.billing.PlanLookupUnavailableException;
 import io.aster.policy.replay.batch.ReplayBatchEntity;
 import io.aster.policy.replay.batch.ReplayBatchStatus;
 import io.aster.policy.security.rbac.RequireRole;
@@ -102,19 +101,11 @@ public class ReplayBatchResource {
         String userId = identityResolver.performedBy();
 
         // ── 1. 权益：有没有这个功能 ────────────────────────────────────
-        // ★「无法确认」≠「确认无权益」：plan 查询超时/失败时返回 503 可重试，
+        // ★「无法确认」≠「确认无权益」：plan 查询超时/失败时抛 PlanLookupUnavailableException，
+        //   由 PlanLookupUnavailableExceptionMapper 统一映射为 503 plan_check_unavailable（可重试），
         //   而不是 403 让 Pro 用户误以为需要升级；两种情况都不创建批次（fail-closed）。
-        PlanInfo plan;
-        try {
-            plan = planGateService.lookupPlanForEntitlement(tenantId);
-        } catch (PlanLookupUnavailableException unavailable) {
-            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
-                .header("Retry-After", "5")
-                .entity(Map.of(
-                    "error", "plan_check_unavailable",
-                    "message", "权益校验暂不可用，请稍后重试"))
-                .build();
-        }
+        //   本方法无 @NonBlocking 且带 @Transactional，运行在 worker 线程，可同步查询 cloud。
+        PlanInfo plan = planGateService.lookupPlanForEntitlement(tenantId);
         if (!plan.allowsReplayBatch()) {
             // ★403 而非 409：这不是「现在不行」，是「你没买这个功能」
             return Response.status(Response.Status.FORBIDDEN)

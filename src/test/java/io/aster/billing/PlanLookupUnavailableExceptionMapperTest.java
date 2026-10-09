@@ -29,17 +29,18 @@ class PlanLookupUnavailableExceptionMapperTest {
     }
 
     @Test
-    void includesRetryAfterAndRetryableFlag() {
+    void emitsPlanCheckUnavailableContract() {
         Response r = mapper.toResponse(
             new PlanLookupUnavailableException("plan_lookup_unavailable"));
 
-        assertEquals("2", r.getHeaderString("Retry-After"), "应提示客户端稍后重试");
+        assertEquals("5", r.getHeaderString("Retry-After"), "应提示客户端稍后重试");
 
         @SuppressWarnings("unchecked")
         Map<String, Object> body = (Map<String, Object>) r.getEntity();
-        assertEquals("plan_lookup_unavailable", body.get("error"));
-        assertEquals(true, body.get("retryable"));
-        assertEquals("plan_lookup_unavailable", body.get("reason"));
+        // 统一契约（ADR 0034 §7.2）：只下发 error + message，内部 reason 不外泄
+        assertEquals(Map.of(
+            "error", "plan_check_unavailable",
+            "message", "权益校验暂不可用，请稍后重试"), body);
         // 关键：响应体不得出现 upgrade 语义（那是 402 PlanLimitException 的领域）。
         assertTrue(!body.containsKey("upgrade"), "不应包含 upgrade 字段");
     }

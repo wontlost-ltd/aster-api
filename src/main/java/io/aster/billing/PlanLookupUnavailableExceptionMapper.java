@@ -20,15 +20,14 @@ public class PlanLookupUnavailableExceptionMapper
 
     @Override
     public Response toResponse(PlanLookupUnavailableException ex) {
+        // 所有端点统一同一契约（ADR 0034 §7.2）；内部 reason 不下发（服务层已记 warn 日志）
         Map<String, Object> body = Map.of(
-            "error", "plan_lookup_unavailable",
-            "reason", ex.reason(),
-            "retryable", true,
-            "message", "Plan information is temporarily unavailable; please retry."
+            "error", "plan_check_unavailable",
+            "message", "权益校验暂不可用，请稍后重试"
         );
 
         return Response.status(503)
-            .header("Retry-After", "2")
+            .header("Retry-After", "5")
             .type(MediaType.APPLICATION_JSON)
             .entity(body)
             .build();
