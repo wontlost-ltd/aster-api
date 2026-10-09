@@ -85,13 +85,33 @@ public class ReplayBatchItemEntity extends PanacheEntityBase {
     @Column(name = "claimed_at")
     public java.time.Instant claimedAt;
 
+    /** 基线四态结论码（ALLOW/DENY/REQUIRE_APPROVAL/ESCALATE/INDETERMINATE/ERROR）；存量行由迁移回填。 */
+    @Column(name = "base_outcome", length = 20)
+    public String baseOutcome;
+
+    /** 目标结论码；{@code null} = 尚未重跑或重跑失败（失败行不回填）。 */
+    @Column(name = "target_outcome", length = 20)
+    public String targetOutcome;
+
+    /** 基线是否由布尔值回填而来（精度不足，汇总时计入 legacyBase）。 */
+    @Column(name = "base_legacy", nullable = false)
+    public boolean baseLegacy;
+
     public ReplayBatchItemEntity() {
     }
 
+    /** 旧布尔基线入口：按布尔推导结论码并标记为遗留基线。 */
     public ReplayBatchItemEntity(UUID batchId, String executionId, boolean baseApproved) {
+        this(batchId, executionId, baseApproved, baseApproved ? "ALLOW" : "DENY", true);
+    }
+
+    public ReplayBatchItemEntity(UUID batchId, String executionId, boolean baseApproved,
+                                 String baseOutcome, boolean baseLegacy) {
         this.batchId = batchId;
         this.executionId = executionId;
         this.baseApproved = baseApproved;
+        this.baseOutcome = baseOutcome;
+        this.baseLegacy = baseLegacy;
     }
 
     /** 复合主键：同一批次内 executionId 唯一（天然去重）。 */

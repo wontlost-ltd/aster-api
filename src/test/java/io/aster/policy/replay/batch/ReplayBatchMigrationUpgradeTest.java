@@ -222,4 +222,21 @@ class ReplayBatchMigrationUpgradeTest {
             .as("★RUNNING 必须同时有 lease 与 owner——只有 lease 挡不住旧 worker 写入")
             .contains("lease_expires_at IS NOT NULL AND lease_owner IS NOT NULL");
     }
+
+    private static String outcomesMigration() throws Exception {
+        return Files.readString(Path.of(
+            "src/main/resources/db/migration/V6.30.0__replay_batch_item_outcomes.sql"));
+    }
+
+    @Test
+    void 四态迁移先回填再建约束_失败行目标不回填() throws Exception {
+        String sql = outcomesMigration();
+        int addBase = sql.indexOf("ADD COLUMN base_outcome");
+        int backfillBase = sql.indexOf("SET base_outcome = CASE");
+        int backfillTarget = sql.indexOf("SET target_outcome = CASE");
+        assertThat(addBase).isGreaterThanOrEqualTo(0).isLessThan(backfillBase);
+        assertThat(sql.substring(backfillTarget)).contains("success = true");
+        assertThat(sql).contains("base_legacy = true");
+        assertThat(sql).contains("CHECK (base_outcome IS NULL OR base_outcome IN ('ALLOW','DENY','REQUIRE_APPROVAL','ESCALATE','INDETERMINATE','ERROR'))");
+    }
 }
