@@ -255,14 +255,12 @@ class ReplayBatchEndToEndIT {
         assertThat(summary.getInteger("incomparable")).as("布尔策略全部可比").isZero();
     }
 
-    private static final String VERDICT_BASE =
-        "Module M.\n\nDefine Req has action.\n\nRule decide given r as Req, produce Verdict:\n  If r.action equals to \"delete\":\n    Return Verdict.allow().\n  Otherwise:\n    Return Verdict.deny(\"not delete\").\n";
     private static final String VERDICT_TARGET =
         "Module M.\n\nDefine Req has action.\n\nRule decide given r as Req, produce Verdict:\n  If r.action equals to \"delete\":\n    Return Verdict.require_approval(\"DPO\", \"review\").\n  Otherwise:\n    Return Verdict.deny(\"not delete\").\n";
 
     /**
      * ADR 0043：Verdict 策略的四态变化必须进入转移矩阵，旧 cloud 行按 decision 折算并计入 legacyBase。
-     * VERDICT_BASE 仅说明窗口基线的来源；基线取自 cloud 下发的 outcome/decision，不在本地重算。
+     * 基线取自 cloud 下发的 outcome/decision，不在本地重算，故本用例无需 base 版本源码。
      */
     @Test
     void Verdict策略的四态变化进入转移矩阵() {
@@ -287,6 +285,36 @@ class ReplayBatchEndToEndIT {
         assertThat(itemColumn(batchId, "v2", "base_legacy")).isEqualTo("true");
         assertThat(itemColumn(batchId, "v1", "target_outcome")).isEqualTo("REQUIRE_APPROVAL");
         assertThat(itemColumn(batchId, "v1", "target_approved")).isEqualTo("false");
+        assertThat(itemColumn(batchId, "v3", "base_outcome")).isEqualTo("DENY");
+        assertThat(itemColumn(batchId, "v3", "base_legacy")).isEqualTo("false");
+        assertThat(itemColumn(batchId, "v3", "target_outcome")).isEqualTo("DENY");
+        assertThat(itemColumn(batchId, "v3", "target_approved")).isEqualTo("false");
+    }
+
+    /** 目标版本返回值输出（Int），不是准入决策 → 解读为 INDETERMINATE。 */
+    private static final String VALUE_TARGET =
+        "Module M.\n\nRule decide given amount as Int, produce Int:\n  Return amount.\n";
+
+    /**
+     * ADR 0043：目标侧 INDETERMINATE 是成功重跑（不是失败），但不可比——
+     * 计入 incomparable，不计入 changed，且 target_approved 必须为 false。
+     */
+    @Test
+    void 目标返回值输出时计为不可比且重跑成功() {
+        stubWindow(List.of(exec("i1", 150, "approved")));
+        stubTarget(VALUE_TARGET);
+        UUID batchId = seedPendingBatch();
+        service.claimNextPending();
+        service.runBatch(batchId);
+        JsonObject summary = summaryOf(batchId);
+        assertThat(summary.getInteger("totalSampled")).isEqualTo(1);
+        assertThat(summary.getInteger("incomparable")).as("值输出不可比").isEqualTo(1);
+        assertThat(summary.getInteger("changed")).as("不可比不得计为变化").isZero();
+        assertThat(summary.getJsonObject("transitions").getInteger("ALLOW->INDETERMINATE")).isEqualTo(1);
+        assertThat(summary.getJsonObject("byTargetOutcome").getInteger("INDETERMINATE")).isEqualTo(1);
+        assertThat(itemColumn(batchId, "i1", "success")).isEqualTo("true");
+        assertThat(itemColumn(batchId, "i1", "target_outcome")).isEqualTo("INDETERMINATE");
+        assertThat(itemColumn(batchId, "i1", "target_approved")).isEqualTo("false");
     }
 
     /**

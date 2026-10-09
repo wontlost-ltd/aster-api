@@ -229,12 +229,15 @@ class ReplayBatchMigrationUpgradeTest {
     }
 
     @Test
-    void 四态迁移先回填再建约束_失败行目标不回填() throws Exception {
+    void 四态迁移先加列建约束后回填_失败行目标不回填() throws Exception {
         String sql = outcomesMigration();
         int addBase = sql.indexOf("ADD COLUMN base_outcome");
         int backfillBase = sql.indexOf("SET base_outcome = CASE");
         int backfillTarget = sql.indexOf("SET target_outcome = CASE");
-        assertThat(addBase).isGreaterThanOrEqualTo(0).isLessThan(backfillBase);
+        int baseCheck = sql.indexOf("ADD CONSTRAINT replay_batch_item_base_outcome_ck");
+        // 文件实际顺序：加列 → 建 CHECK（允许 NULL）→ 回填；CASE 只产出集合内值，故顺序安全
+        assertThat(addBase).isGreaterThanOrEqualTo(0).isLessThan(baseCheck);
+        assertThat(baseCheck).isGreaterThanOrEqualTo(0).isLessThan(backfillBase);
         assertThat(sql.substring(backfillTarget)).contains("success = true");
         assertThat(sql).contains("base_legacy = true");
         assertThat(sql).contains("CHECK (base_outcome IS NULL OR base_outcome IN ('ALLOW','DENY','REQUIRE_APPROVAL','ESCALATE','INDETERMINATE','ERROR'))");
