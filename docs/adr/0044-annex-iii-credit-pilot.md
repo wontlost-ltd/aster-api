@@ -43,7 +43,7 @@
 ### 2.2 落点
 
 - `aster-lang-test/corpus/tier1-equivalence/policies/credit-pilot.aster` + `inputs/credit-pilot.cases.json`：四种结论各一组用例，走三引擎一致性。
-- aster-cloud 本地化校验：`src/__tests__/credit-pilot-locales.test.ts` 用 en/zh/de 三份源文各编译一次并断言同一输入得到同一 Verdict（zh 源即 seed 模板内容）。
+- aster-cloud 本地化校验：`src/__tests__/credit-pilot-source.compile.test.ts` 用 en/zh/de 三份源文各编译一次并断言同一输入得到同一 Verdict（zh 源即 seed 模板内容）。
 - `seed-usability-tenant.ts`：`tpl-blank-loan` 保留；`tpl-half-loan`（只含 CP-001/CP-005）、`tpl-complete-loan`（全部五条）迁为中文 Verdict 版。这兑现 ADR 0039 行 304 的欠账。用研模板只用于编辑器任务，不建 PolicyVersion 行。
 
 ## 3. 决策二：Article 14 对照内嵌证据包
@@ -57,12 +57,14 @@
 | 14(1) 监督设计 | 任一条目 `controls` 含 `EU_AI_ACT:ART14` | evidenced，否则 none |
 | 14(2) 风险配置 | 存在 `outcome ∈ {REQUIRE_APPROVAL, ESCALATE}` 条目 | evidenced，否则 none |
 | 14(3) 监督措施内建 | 同 14(1) 且存在 `reviewers.length > 0` | evidenced；仅满足其一 partial |
-| 14(4)(a) 理解能力 | 存在 `whatIf` 非 null 条目 | partial（可比对不等于理解），否则 none |
+| 14(4)(a) 理解能力 | 存在 `whatIf` 非 null 且 `whatIf.targetOutcome` 非空且非 ERROR 的条目 | partial（可比对不等于理解），否则 none |
 | 14(4)(b) 自动化偏见 | 无可证字段 | 恒 none |
-| 14(4)(c) 解读输出 | `ruleId` 与 `reasonCodes` 均非空（cloud 执行路径把 Verdict reason 落为 `reasonCodes=[reason]`，回放自带的优先） | evidenced，否则 none |
-| 14(4)(d) 否决/不使用 | `reviewers` 含 `roleVerified: true` 且 `outcome = REJECTED` | evidenced；只有 APPROVED partial；无 none |
-| 14(4)(e) 干预/停止 | `outcome = REQUIRE_APPROVAL` 且 `reviewers.length > 0` | evidenced；有阻断无复核 partial |
-| 14(5) 双人验证 | 任一条目 `reviewers.length ≥ 2` | evidenced，否则 none |
+| 14(4)(c) 解读输出 | `ruleId` 与 `reasonCodes` 均非空（cloud 执行路径把 Verdict reason 落为 `reasonCodes=[reason]`，回放自带的优先）；佐证每条输出两个 ref（`field: 'ruleId'`、`field: 'reasonCodes'`） | evidenced，否则 none |
+| 14(4)(d) 否决/不使用 | `reviewers` 含 guard-approval 来源、`roleVerified: true` 且 `outcome = REJECTED` | evidenced；只有 APPROVED partial；无 none |
+| 14(4)(e) 干预/停止 | `outcome = REQUIRE_APPROVAL` 且存在 guard-approval 来源复核者 | evidenced；有阻断无复核 partial |
+| 14(5) 双人验证 | 任一条目 guard-approval 来源复核者 ≥ 2 | evidenced，否则 none |
+
+14(4)(d)/(e)、14(5) 仅计 `source === 'guard-approval'` 的执行级复核者，版本级 proof/approval 不作为单条执行的人工干预证据；14(3) 仍计三种来源。
 
 entries 为空：全部 none。不产生评分、不写建议文案。
 
@@ -89,7 +91,7 @@ entries 为空：全部 none。不产生评分、不写建议文案。
 |---|---|---|
 | `pnpm seed:credit-pilot` | `aster-cloud/src/scripts/seed-credit-pilot.ts` | 幂等播种团队 `credit-pilot`（plan team）、`cp-owner`、`cp-officer`（businessRole "Credit Officer"）、`cp-analyst`，策略 `pol-credit-pilot` **在线 v1**（content=50000 版，version=1）及 PolicyVersion 行 `pv-credit-pilot-1`（isDefault）/`pv-credit-pilot-2`（What-If 目标；均 APPROVED，含 `sourceToolchainId`），**cp-owner 的 team API key**（明文打印一次），推送 team key snapshot。执行须由策略所有者发起：What-If 的窗口、版本源与日志均按 `policies.userId`/`executions.userId` 单用户隔离（ADR 0034 §4.3），团队成员的执行记录无法被回放 |
 | `scripts/run-credit-pilot.ts` | aster-cloud | 纯 HTTP：四组 fixture 各执行一次 → cp-officer 批准 require_approval 那条 → v1→v2 What-If → 导出到 `./credit-pilot-bundle.json` → 打印对照状态；任一款与预期表不符退出码非零 |
-| `credit-pilot.spec.ts` | `src/__tests__/e2e-browser/local-stack/` | 串行：cp-analyst 执行大额申请 → 日志页 guard 链接 → cp-officer `/approvals` 批准 → What-If 面板显示 REQUIRE_APPROVAL→ALLOW → 报告页导出 → 断言 14(4)(d)/(e) evidenced、14(4)(b) none |
+| `credit-pilot.spec.ts` | `src/__tests__/e2e-browser/local-stack/` | 串行：cp-owner key 执行大额申请 → 日志页 guard 链接 → cp-officer `/approvals` 批准 → What-If 面板显示 REQUIRE_APPROVAL→ALLOW → 报告页导出 → 断言 14(4)(d)/(e) evidenced、14(4)(b) none |
 | 文档 | `src/app/[locale]/docs/guides/credit-pilot/{page.tsx,en,zh,de}.mdx` + `sidebar.ts` 新节 + `page-actions.ts` 登记 + `DEMO_SUPPLEMENT.docs.sidebar.guides.*` 四语 | 试点流程、对照表含义、每款证据来源、用 `GET /api/v1/audit/receipts` 独立核验。标签走本地补充层，不动 ui-messages 包 |
 
 预期表（run 脚本与 spec 共用）：14(1)/14(2)/14(3)/14(4)(c)/14(4)(e) evidenced；14(4)(a)/14(4)(d) partial（脚本只做 approve）；14(4)(b)/14(5) none。
@@ -133,6 +135,7 @@ entries 为空：全部 none。不产生评分、不写建议文案。
 - 团队成员对团队策略的 What-If / 日志 / 导出：ADR 0034 §4.3 的单用户隔离使其只对策略所有者可用，需单独 ADR 改为策略租户口径。
 - `policy-examples.ts` 多语言贷款模板迁 Verdict（ADR 0039 行 304 的另一半）。
 - `@aster-cloud/aster-lang-ts` 需发布含 Verdict 内置的版本并在 cloud 升级依赖，`credit-pilot-source.compile.test.ts` 才能在已安装引擎下转绿（本地构建 12/12 通过）。
+- 在依赖升级前，`credit-pilot-source.compile.test.ts` 在模块加载时探测已安装引擎是否支持 Verdict，不支持则整组 skip 并打印警告（指向本节）。
 - 验收前已存在的 from-evidence 决策无收据行，审批不可导出（无回填）。
 
 - 对照表改由子项目 5 控制注册表驱动，替换 §3.1 静态表。

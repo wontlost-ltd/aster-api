@@ -15,7 +15,8 @@ import java.util.Map;
  * 按 executionId 取该租户最新一次回放的结论码。
  *
  * <p>replay_batch_item 无租户列，经 replay_batch.tenant_id 过滤；跨租户与无回放的 id 不出现在结果里。
- * 按 created_at 倒序读出后按 executionId 取首条，上限由资源层把住，内存量有界。
+ * 只认已完成批次中成功的条目（在途批次的 null 结论与失败项的 ERROR 不是比对结论）；
+ * 按 created_at、id 倒序读出后按 executionId 取首条，上限由资源层把住，内存量有界。
  */
 @ApplicationScoped
 public class ReplayItemLookupService {
@@ -28,9 +29,11 @@ public class ReplayItemLookupService {
                 "select i.executionId, b.id, i.baseOutcome, i.targetOutcome, i.baseLegacy "
                 + "from ReplayBatchItemEntity i, ReplayBatchEntity b "
                 + "where i.batchId = b.id and b.tenantId = :tenant and i.executionId in :ids "
-                + "order by b.createdAt desc", Object[].class)
+                + "and b.status = :completed and i.success = true "
+                + "order by b.createdAt desc, b.id desc", Object[].class)
             .setParameter("tenant", tenantId)
             .setParameter("ids", executionIds)
+            .setParameter("completed", ReplayBatchStatus.COMPLETED)
             .getResultList();
         Map<String, Item> latest = new LinkedHashMap<>();
         for (Object[] r : rows) {

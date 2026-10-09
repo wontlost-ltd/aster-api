@@ -80,7 +80,7 @@ ADR 0041 §5.2 的 `guard-approval` 复核者随之从 `roleVerified=false` 改�
 4. 解析 metadata；metadata 缺失或无法解析、无 `outcome`、或 `outcome ∉ {REQUIRE_APPROVAL, ESCALATE}` → 409 `evidence_not_approvable`（响应体 `outcome` 为字符串，取不到时为 `"null"`）。
 5. 建 `guard_decisions`：outcome/reason/required_role/rule_id/controls 取自事件 metadata（`role`、`reason` 键见 §3.2）；事件无 `role` → `required_role = null`；`receipt_audit_id = 事件 id`、`receipt_hash = current_hash`；`requested_by = performedBy()`（签过的用户）、`requested_api_key_id = null`；`policy_version_id` 取事件 metadata 的 `policyVersionId`（ADR 0041 本轮未写该键，实际为 null），响应的 `policyVersion` 恒为 null。
 6. 同一保存内建 `guard_approvals`（PENDING，TTL 同 ADR 0040 `aster.guard.approval-ttl`）。并发同一 correlationId 时唯一索引让后写者失败，捕获后回读先到者的决策返回。
-7. 响应 `GuardDecisionResponse`（同 `POST /guard/decisions`，`receipt` 指向评估事件）。
+7. 响应 `GuardDecisionResponse`（同 `POST /guard/decisions`，`receipt` 指向决策收据行）。
 
 from-evidence 决策同样写 ACTION_GUARD_DECISION 收据行（metadata 含 evidenceCorrelationId），以便收据查询与证据导出按 decisionId 取回审批（ADR 0044 验收发现）；`receipt_audit_id` / `receipt_hash` 与响应 `receipt` 指向该决策行，写入失败按 DENY `receipt_unavailable`。审批事件（ACTION_GUARD_APPROVAL）照旧发布，`decision_id` 列照旧投影。
 
