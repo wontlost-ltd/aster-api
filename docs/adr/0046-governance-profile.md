@@ -60,6 +60,7 @@ Profile "eu-ai-act-high-risk".
 
 - 同一规则同一要求、同一键只报一次：`missing @id` 与框架要求每条规则至多一条，`unregistered control {control}` 按每个不同的控制点键各报一条。W700/W704 照常报出（警告），E706 是档案层面的额外错误。
 - aster-api 编译通道：E705/E706 **保持 error 严重级**（其余治理码仍按 ADR 0045 §9.1 降为 warning）。编译 `success` 仍为 true；aster-cloud 现有保存门按 `severity === 'error'` 拒绝保存，因此声明了档案且不合规的模块无法保存、建版或审批。未声明档案的模块不受影响，所以今天能保存的策略明天仍能保存。
+- 检查器失败的取舍：治理检查器抛运行时异常时，编译通道沿用 ADR 0045 的降级，结果中不带任何治理诊断（包括 E705/E706），档案保存门在这种情况下会放行；aster-api 以 error 级别记录该异常，便于发现。
 
 ## 5. 决策四：When / Otherwise 语法糖
 
@@ -102,6 +103,7 @@ Rule decide given applicant as Applicant, produce Verdict:
 - 未声明档案、未使用语法糖的模块：语法、IR、诊断、保存行为均不变。
 - 新关键字可能与用户标识符冲突：实施时对语料、模板、示例做冲突扫描；冲突处理按既有软关键字规则。
 - 与子项目 5 相同：浏览器端编辑器要等 aster-lang-ts 与 aster-lang-locales（含新词法与注册表）发布后才能看到；aster-api 编译通道经 composite build 本地即可用。发布由用户决定。
+- aster-cloud 当前锁定的 aster-lang-ts 为 1.0.28，解析不了 `Profile` 与语法糖；编辑器在客户端编译有错误时禁用保存，所以在 cloud 于发版后升级 aster-lang-ts 依赖之前，声明了档案或使用语法糖的模块无法从 UI 保存。服务端保存路径、API 与试点种子数据现在就可用。
 
 ## 8. 测试
 

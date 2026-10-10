@@ -30,7 +30,8 @@ public final class GovernanceDiagnostics {
         try {
             return map(checker.checkModule(core));
         } catch (RuntimeException e) {
-            LOG.warnf("治理检查失败（降级为不提示，不影响编译）: %s", e.getMessage());
+            // 降级会连同阻断性的 E705/E706 一起丢掉，档案保存门因此放行，须以 error 级别记录
+            LOG.errorf(e, "治理检查失败（降级为无治理诊断，E705/E706 一并缺失，不影响编译）: %s", e.getMessage());
             return List.of();
         }
     }
