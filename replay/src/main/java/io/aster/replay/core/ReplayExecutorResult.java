@@ -14,10 +14,17 @@ public record ReplayExecutorResult(
         String functionName,
         long executionTimeMs,
         String ruleId,
-        List<String> controls) {
+        List<String> controls,
+        String profile) {
 
     /** ruleId / controls（ADR 0039 §3）为空的便捷构造：无规则元数据的执行器（如测试桩）使用。 */
     public ReplayExecutorResult(Object result, String moduleName, String functionName, long executionTimeMs) {
-        this(result, moduleName, functionName, executionTimeMs, null, List.of());
+        this(result, moduleName, functionName, executionTimeMs, null, List.of(), null);
+    }
+
+    /** 无治理档案（ADR 0046 §6）的便捷构造。 */
+    public ReplayExecutorResult(Object result, String moduleName, String functionName, long executionTimeMs,
+                                String ruleId, List<String> controls) {
+        this(result, moduleName, functionName, executionTimeMs, ruleId, controls, null);
     }
 }

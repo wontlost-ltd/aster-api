@@ -222,12 +222,12 @@ public class PolicyEvaluationService {
         }
         long endMarker = System.nanoTime();
         long durationNanos = deterministicTiming ? 0L : Math.max(0, endMarker - startMarker);
-        // 治理字段（ADR 0039）：ruleId / controls 读被执行函数的 Core IR 注解；
+        // 治理字段（ADR 0039/0046）：ruleId / controls 读被执行函数的 Core IR 注解，profile 读模块声明；
         // 解析失败只降级为无元数据，不影响评估结果。
         CoreModel.Module module = parseCoreModule(coreJson);
         RuleMetadata meta = RuleMetadata.of(module, cacheKey.getPolicyFunction());
         return new PolicyEvaluationResult(executionResult.result(), durationNanos / 1_000_000.0, false,
-            VerdictView.from(executionResult.result()).orElse(null), meta.ruleId(), meta.controls());
+            VerdictView.from(executionResult.result()).orElse(null), meta.ruleId(), meta.controls(), meta.profile());
     }
 
     /**
@@ -497,7 +497,8 @@ public class PolicyEvaluationService {
             fromCache,
             original.getDecision(),
             original.getRuleId(),
-            original.getControls()
+            original.getControls(),
+            original.getProfile()
         );
     }
 

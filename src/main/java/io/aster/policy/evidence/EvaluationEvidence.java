@@ -6,9 +6,13 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
-/** 一次评估的证据键（ADR 0041 §2.2）：进入 POLICY_EVALUATION 事件 metadata，并把 correlationId 回给调用方。 */
+/**
+ * 一次评估的证据键（ADR 0041 §2.2）：进入 POLICY_EVALUATION 事件 metadata，并把 correlationId 回给调用方。
+ * profile 为被执行模块声明的治理档案 id（ADR 0046 §6），未声明时为 null 且不写键。
+ */
 public record EvaluationEvidence(String correlationId, String outcome, String ruleId, List<String> controls,
-                                 Long policyVersionId, AgentIdentity agent, String role, String reason) {
+                                 Long policyVersionId, AgentIdentity agent, String role, String reason,
+                                 String profile) {
   public static final int MAX_CONTROLS = 16;
   public static final int MAX_CONTROL_LENGTH = 64;
   public static final String SOURCE_DECLARED = "declared";
@@ -21,6 +25,13 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
 
   public static final String KEY_ROLE = "role";
   public static final String KEY_REASON = "reason";
+  public static final String KEY_PROFILE = "profile";
+
+  /** 无治理档案的构造。 */
+  public EvaluationEvidence(String correlationId, String outcome, String ruleId, List<String> controls,
+                            Long policyVersionId, AgentIdentity agent, String role, String reason) {
+    this(correlationId, outcome, ruleId, controls, policyVersionId, agent, role, reason, null);
+  }
 
   /** 生成新的 correlationId（随机 UUID）；无 Verdict 的 role/reason 时使用。 */
   public static EvaluationEvidence of(String outcome, String ruleId, List<String> controls, Long policyVersionId,
@@ -31,8 +42,14 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
   /** role/reason 来自 Verdict（ADR 0042 §3.2）：from-evidence 据此建决策，不重复评估。 */
   public static EvaluationEvidence of(String outcome, String ruleId, List<String> controls, Long policyVersionId,
                                       AgentIdentity agent, String role, String reason) {
+    return of(outcome, ruleId, controls, policyVersionId, agent, role, reason, null);
+  }
+
+  /** 携带模块声明的治理档案（ADR 0046 §6）。 */
+  public static EvaluationEvidence of(String outcome, String ruleId, List<String> controls, Long policyVersionId,
+                                      AgentIdentity agent, String role, String reason, String profile) {
     return new EvaluationEvidence(UUID.randomUUID().toString(), outcome, ruleId, controls, policyVersionId, agent,
-        role, reason);
+        role, reason, profile);
   }
 
   /** 扁平键而非嵌套对象：追加器的脱敏与 guard 的预算收缩只处理顶层 String/List；null/空不写键。 */
@@ -46,6 +63,7 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
     if (policyVersionId != null) m.put("policyVersionId", policyVersionId);
     put(m, KEY_ROLE, clip(role));
     put(m, KEY_REASON, clip(reason));
+    put(m, KEY_PROFILE, clip(profile));
     if (agent != null) {
       put(m, KEY_AGENT_PROVIDER, clip(agent.provider()));
       put(m, KEY_AGENT_MODEL, clip(agent.model()));

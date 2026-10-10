@@ -195,7 +195,7 @@ public class PolicyCompileResourceTest {
         .then()
             .statusCode(200)
             .body("success", is(true))
-            .body("controlsRegistryVersion", is("1.0.0"))
+            .body("controlsRegistryVersion", is("1.1.0"))
             .body("diagnostics.findAll { it.code == 'W704' }", hasSize(1))
             .body("diagnostics.find { it.code == 'W704' }.severity", is("warning"))
             .body("diagnostics.find { it.code == 'W704' }.message", containsString("ACME:ART1"))
@@ -224,6 +224,62 @@ public class PolicyCompileResourceTest {
             "Rule decide given amount, produce Verdict:",
             "  Return Verdict.allow().", "");
         assertGovernanceWarning(source, "E702");
+    }
+
+    @Test
+    public void compileUnknownProfile_returnsE705AsErrorAndProfile() {
+        // ADR 0046 §4：档案违规保留 error，cloud 保存门据此拒绝；编译本身仍成功
+        String source = String.join("\n",
+            "Module governance.nope.",
+            "Profile \"nope\".", "",
+            "@id(\"P-1\")",
+            "Rule decide given amount, produce Verdict:",
+            "  Return Verdict.allow().", "");
+        compile(source)
+            .body("success", is(true))
+            .body("profile", is("nope"))
+            .body("diagnostics.findAll { it.code == 'E705' }", hasSize(1))
+            .body("diagnostics.find { it.code == 'E705' }.severity", is("error"))
+            .body("diagnostics.find { it.code == 'E705' }.blocking", is(false));
+    }
+
+    @Test
+    public void compileGovernedProfileViolation_returnsE706ErrorAndW700Warning() {
+        String source = String.join("\n",
+            "Module governance.gov.",
+            "Profile \"governed\".", "",
+            "Rule decide given amount, produce Verdict:",
+            "  Return Verdict.allow().", "");
+        compile(source)
+            .body("success", is(true))
+            .body("profile", is("governed"))
+            .body("diagnostics.findAll { it.code == 'E706' }", not(empty()))
+            .body("diagnostics.findAll { it.code == 'E706' }.severity", everyItem(is("error")))
+            .body("diagnostics.findAll { it.code == 'W700' }", not(empty()))
+            .body("diagnostics.findAll { it.code == 'W700' }.severity", everyItem(is("warning")));
+    }
+
+    @Test
+    public void compileWithoutProfile_omitsProfileField() {
+        String source = String.join("\n",
+            "Module governance.plain.", "",
+            "Rule decide given amount, produce Verdict:",
+            "  Return Verdict.allow().", "");
+        compile(source)
+            .body("success", is(true))
+            .body("$", not(hasKey("profile")))
+            .body("diagnostics.findAll { it.severity == 'error' }", hasSize(0));
+    }
+
+    private io.restassured.response.ValidatableResponse compile(String source) {
+        return given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body(java.util.Map.of("source", source, "locale", "en-US"))
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200);
     }
 
     private void assertGovernanceWarning(String source, String code) {

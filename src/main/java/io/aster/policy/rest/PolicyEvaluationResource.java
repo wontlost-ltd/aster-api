@@ -253,7 +253,7 @@ public class PolicyEvaluationResource {
             // 让调用方日志与链上事件可一对一关联；/evaluate 本期不写 policyVersionId。
             EvaluationEvidence evidence = EvaluationEvidence.of(
                 outcomeOf(result.getDecision()), result.getRuleId(), result.getControls(), null, agent,
-                roleOf(result.getDecision()), reasonOf(result.getDecision()));
+                roleOf(result.getDecision()), reasonOf(result.getDecision()), result.getProfile());
             publishPolicyEvaluationEvent(
                 tenantId,
                 request,
@@ -268,7 +268,7 @@ public class PolicyEvaluationResource {
             LOG.infof("Policy evaluation completed in %dms: %s.%s", executionTime, request.policyModule(), request.policyFunction());
             recordApiCall("/api/v1/policies/evaluate", "success", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
             return EvaluationResponse.success(result.getResult(), executionTime, null, null,
-                result.getDecision(), result.getRuleId(), result.getControls())
+                result.getDecision(), result.getRuleId(), result.getControls(), result.getProfile())
                 .withEvidence(evidence.correlationId());
         })
         .onFailure().recoverWithItem(throwable -> {
@@ -369,7 +369,7 @@ public class PolicyEvaluationResource {
                 VerdictView decision = VerdictView.from(result.result()).orElse(null);
                 EvaluationEvidence evidence = EvaluationEvidence.of(
                     outcomeOf(decision), result.ruleId(), result.controls(), null, agent,
-                    roleOf(decision), reasonOf(decision));
+                    roleOf(decision), reasonOf(decision), result.profile());
                 publishPolicyEvaluationEvent(
                     tenantId,
                     new EvaluationRequest(policyModule, policyFunction, contextArray, agent),
@@ -384,7 +384,7 @@ public class PolicyEvaluationResource {
                 LOG.infof("JSON policy evaluation completed in %dms: %s.%s", executionTime, policyModule, policyFunction);
                 recordApiCall("/api/v1/policies/evaluate-json", "success", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
                 return EvaluationResponse.success(result.result(), executionTime, null, null,
-                    decision, result.ruleId(), result.controls())
+                    decision, result.ruleId(), result.controls(), result.profile())
                     .withEvidence(evidence.correlationId());
             })
             .onFailure().recoverWithItem(throwable -> {
@@ -642,7 +642,7 @@ public class PolicyEvaluationResource {
                     evidence = EvaluationEvidence.of(
                         outcomeOf(decision),
                         phase.execResult().ruleId(), phase.execResult().controls(), null, agent,
-                        roleOf(decision), reasonOf(decision));
+                        roleOf(decision), reasonOf(decision), phase.execResult().profile());
                     publishPolicyEvaluationEvent(
                         tenantId,
                         new EvaluationRequest(phase.execResult().moduleName(), phase.execResult().functionName(), new Object[]{request.context()}, agent),
@@ -681,7 +681,8 @@ public class PolicyEvaluationResource {
                     phase.execResult().functionName(),
                     decision,
                     phase.execResult().ruleId(),
-                    phase.execResult().controls())
+                    phase.execResult().controls(),
+                    phase.execResult().profile())
                     .withEvidence(evidence == null ? null : evidence.correlationId());
 
                 if (effectiveReplayCapture) {
@@ -941,7 +942,8 @@ public class PolicyEvaluationResource {
             java.util.List<CompileDiagnostic> warnings = result.getDiagnostics().stream()
                 .map(CompileDiagnostic::from)
                 .toList();
-            return CompileResponse.ok(extractModuleInfo(result.getCoreJson()), warnings);
+            return CompileResponse.ok(extractModuleInfo(result.getCoreJson()), warnings,
+                extractProfile(result.getCoreJson()));
         }
         // 结构化诊断优先（含 1-based 行列 + W600 code/severity）；无位置信息的失败回退到
         // 行列=1 的兜底诊断，保证前端总能拿到至少一条标记。
@@ -957,6 +959,19 @@ public class PolicyEvaluationResource {
         }
         String error = result.getErrors().isEmpty() ? "编译失败" : result.getErrors().get(0);
         return CompileResponse.fail(diags, error);
+    }
+
+    /** 从 Core IR JSON 读模块声明的治理档案 id（ADR 0046 §6；best-effort，未声明或失败返回 null）。 */
+    private String extractProfile(String coreJson) {
+        if (coreJson == null || coreJson.isBlank()) {
+            return null;
+        }
+        try {
+            return io.aster.common.JacksonMappers.PRETTY.readTree(coreJson).path("profile").asText(null);
+        } catch (Exception e) {
+            LOG.debugf("档案提取失败（不影响编译成功判定）: %s", e.getMessage());
+            return null;
+        }
     }
 
     /** 从 Core IR JSON 提取模块概要 {name, functions[], types[]}（best-effort，失败返回 null）。 */
@@ -1135,7 +1150,8 @@ public class PolicyEvaluationResource {
                         null,
                         attempt.getResult().getDecision(),
                         attempt.getResult().getRuleId(),
-                        attempt.getResult().getControls()
+                        attempt.getResult().getControls(),
+                        attempt.getResult().getProfile()
                     ));
                     recordApiCall("/api/v1/policies/evaluate/batch", "success", execTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
                 }

@@ -58,6 +58,57 @@ class PolicyCompilerGovernanceTest {
         assertGovernanceWarning(BLANK_ID_SRC, "E702");
     }
 
+    static final String UNKNOWN_PROFILE_SRC = String.join("\n",
+        "Module governance.nope.",
+        "Profile \"nope\".", "",
+        "@id(\"P-1\")",
+        "Rule decide given amount, produce Verdict:",
+        "  Return Verdict.allow().", "");
+
+    static final String GOVERNED_MISSING_ID_SRC = String.join("\n",
+        "Module governance.gov.",
+        "Profile \"governed\".", "",
+        "Rule decide given amount, produce Verdict:",
+        "  Return Verdict.allow().", "");
+
+    static final String NO_PROFILE_MISSING_ID_SRC = String.join("\n",
+        "Module governance.plain.", "",
+        "Rule decide given amount, produce Verdict:",
+        "  Return Verdict.allow().", "");
+
+    @Test
+    void 未知档案的E705在编译通道保留error且编译成功() {
+        var result = compiler.compile(UNKNOWN_PROFILE_SRC, "en-US");
+        assertThat(result.isSuccess()).isTrue();
+        var e705 = result.getDiagnostics().stream().filter(d -> "E705".equals(d.code())).toList();
+        assertThat(e705).hasSize(1);
+        assertThat(e705.get(0).severity()).isEqualTo("error");
+        assertThat(e705.get(0).blocking()).isFalse();
+    }
+
+    @Test
+    void 档案违规的E706为error而W700仍为warning() {
+        var result = compiler.compile(GOVERNED_MISSING_ID_SRC, "en-US");
+        assertThat(result.isSuccess()).isTrue();
+        var e706 = result.getDiagnostics().stream().filter(d -> "E706".equals(d.code())).toList();
+        assertThat(e706).isNotEmpty();
+        assertThat(e706).allSatisfy(d -> {
+            assertThat(d.severity()).isEqualTo("error");
+            assertThat(d.blocking()).isFalse();
+        });
+        var w700 = result.getDiagnostics().stream().filter(d -> "W700".equals(d.code())).toList();
+        assertThat(w700).isNotEmpty();
+        assertThat(w700).allSatisfy(d -> assertThat(d.severity()).isEqualTo("warning"));
+    }
+
+    @Test
+    void 未声明档案时治理诊断全部为warning() {
+        var result = compiler.compile(NO_PROFILE_MISSING_ID_SRC, "en-US");
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getDiagnostics()).anyMatch(d -> "W700".equals(d.code()));
+        assertThat(result.getDiagnostics()).noneMatch(d -> "error".equals(d.severity()));
+    }
+
     private void assertGovernanceWarning(String src, String code) {
         var result = compiler.compile(src, "en-US");
         assertThat(result.isSuccess()).isTrue();

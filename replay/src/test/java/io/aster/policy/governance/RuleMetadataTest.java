@@ -26,5 +26,12 @@ class RuleMetadataTest {
     assertEquals(new RuleMetadata(null, List.of()), RuleMetadata.of(mod, "decide"));
     assertEquals(new RuleMetadata(null, List.of()), RuleMetadata.of(mod, "nope"));
     assertEquals(new RuleMetadata(null, List.of()), RuleMetadata.of(null, "decide"));
+    assertEquals(null, RuleMetadata.NONE.profile());
+  }
+  @Test void 读取模块声明的profile() {
+    var mod = new CoreModel.Module(); mod.profile = "governed";
+    mod.decls = List.of(func("decide", ann("id", "G-1")));
+    assertEquals(new RuleMetadata("G-1", List.of(), "governed"), RuleMetadata.of(mod, "decide"));
+    assertEquals(new RuleMetadata(null, List.of(), "governed"), RuleMetadata.of(mod, "nope"));
   }
 }

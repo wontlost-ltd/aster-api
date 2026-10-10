@@ -21,6 +21,19 @@ class EvaluationResponseEvidenceTest {
     assertThat(mapper.writeValueAsString(EvaluationResponse.success(42, 3L))).doesNotContain("evidence");
   }
 
+  @Test void 声明档案时输出profile且with方法保留() throws Exception {
+    EvaluationResponse r = EvaluationResponse.success(1, 1L, null, "f", null, "R-1", java.util.List.of(), "governed")
+        .withEvidence("c-1").withReplayMetadata(null).withTraceSkeleton(null);
+    assertThat(r.profile()).isEqualTo("governed");
+    assertThat(mapper.writeValueAsString(r)).contains("\"profile\":\"governed\"");
+  }
+
+  @Test void 未声明档案时响应字节不变() throws Exception {
+    EvaluationResponse legacy = EvaluationResponse.success(1, 1L, null, "f", null, "R-1", java.util.List.of());
+    EvaluationResponse none = EvaluationResponse.success(1, 1L, null, "f", null, "R-1", java.util.List.of(), null);
+    assertThat(mapper.writeValueAsString(none)).isEqualTo(mapper.writeValueAsString(legacy)).doesNotContain("profile");
+  }
+
   @Test void withReplayMetadata与withTraceSkeleton保留evidence() {
     EvaluationResponse r = EvaluationResponse.success(1, 1L).withEvidence("c-9").withReplayMetadata(null).withTraceSkeleton(null);
     assertThat(r.evidence().correlationId()).isEqualTo("c-9");

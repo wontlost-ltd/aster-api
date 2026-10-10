@@ -60,4 +60,16 @@ class PolicyEvaluationResultJacksonTest {
         assertThat(r.getRuleId()).isNull();
         assertThat(r.getControls()).isEmpty();
     }
+
+    @Test
+    void profile往返且未声明时不写入缓存JSON() throws Exception {
+        PolicyEvaluationResult governed = new PolicyEvaluationResult(true, 1.0, false, null, "R-1", List.of(), "governed");
+        PolicyEvaluationResult back = mapper.readValue(mapper.writeValueAsString(governed), PolicyEvaluationResult.class);
+        assertThat(back).isEqualTo(governed);
+        assertThat(back.getProfile()).isEqualTo("governed");
+
+        PolicyEvaluationResult none = new PolicyEvaluationResult(true, 1.0, false, null, "R-1", List.of());
+        assertThat(mapper.writeValueAsString(none)).doesNotContain("profile");
+        assertThat(mapper.readValue(REDIS_JSON, PolicyEvaluationResult.class).getProfile()).isNull();
+    }
 }

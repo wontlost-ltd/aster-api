@@ -103,6 +103,7 @@ public class DynamicCnlExecutor {
      * 动态执行结果
      *
      * <p>ruleId / controls 来自被执行函数的 Core IR 注解（ADR 0039 §3）；无注解时为 null / 空列表。
+     * profile 为模块声明的治理档案 id（ADR 0046 §6），未声明时为 null。
      */
     public record ExecutionResult(
         Object result,
@@ -110,7 +111,8 @@ public class DynamicCnlExecutor {
         String functionName,
         long executionTimeMs,
         String ruleId,
-        List<String> controls
+        List<String> controls,
+        String profile
     ) {}
 
     private record CoreIrCacheKey(String key) {}
@@ -333,7 +335,7 @@ public class DynamicCnlExecutor {
             LOG.infof("Core IR 直接执行完成: %s.%s, 耗时 %dms", moduleName, targetFunction, executionTime);
             RuleMetadata meta = RuleMetadata.of(coreModule, targetFunction);
             return new ExecutionResult(result, moduleName, targetFunction, executionTime,
-                meta.ruleId(), meta.controls());
+                meta.ruleId(), meta.controls(), meta.profile());
         } catch (DynamicExecutionException e) {
             throw e;
         } catch (Exception e) {
@@ -509,7 +511,8 @@ public class DynamicCnlExecutor {
                 targetFunction,
                 executionTime,
                 meta.ruleId(),
-                meta.controls()
+                meta.controls(),
+                meta.profile()
             );
 
         } catch (InProcessCnlParser.CnlParseException e) {

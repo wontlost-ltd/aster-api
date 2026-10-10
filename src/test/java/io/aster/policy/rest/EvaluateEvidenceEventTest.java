@@ -55,6 +55,8 @@ class EvaluateEvidenceEventTest {
       "@control(\"EU_AI_ACT:ART14\")",
       "Rule main given amount as Int, produce Verdict:",
       "  Return Verdict.allow().");
+  private static final String GOVERNED_SOURCE =
+      VERDICT_SOURCE.replace("Module evidence.src.", "Module evidence.gov.\nProfile \"governed\".");
 
   private static boolean deployed;
 
@@ -87,7 +89,8 @@ class EvaluateEvidenceEventTest {
         .containsEntry("agentSession", "s-1").containsEntry("agentSource", "declared")
         .containsEntry("contextSize", 1);
     // /evaluate 本期不写版本（ADR 0041 修正 #2）
-    assertThat(md).doesNotContainKey("policyVersionId");
+    assertThat(md).doesNotContainKeys("policyVersionId", "profile");
+    assertThat(MAPPER.readTree(resp.asString()).has("profile")).as(resp.asString()).isFalse();
   }
 
   @Test
@@ -167,7 +170,33 @@ class EvaluateEvidenceEventTest {
     Map<String, Object> md = metadataOf(awaitEvent(TENANT, cid));
     assertThat(md).containsEntry("outcome", "ALLOW").containsEntry("ruleId", "EV-SRC-001")
         .containsEntry("controls", List.of("EU_AI_ACT:ART14")).containsEntry("agentModel", "claude-fable-5-1")
-        .containsEntry("agentSource", "declared").containsEntry("sourceFormat", "cnl");
+        .containsEntry("agentSource", "declared").containsEntry("sourceFormat", "cnl")
+        .doesNotContainKey("profile");
+    assertThat(MAPPER.readTree(resp.asString()).has("profile")).as(resp.asString()).isFalse();
+  }
+
+  @Test
+  void evaluateSource声明档案时响应与链事件带profile() throws Exception {
+    Response resp = evaluateSource(TENANT, GOVERNED_SOURCE, AGENT, false, false);
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("profile")).as(resp.asString()).isEqualTo("governed");
+    String cid = resp.jsonPath().getString("evidence.correlationId");
+
+    Map<String, Object> md = metadataOf(awaitEvent(TENANT, cid));
+    assertThat(md).containsEntry("profile", "governed").containsEntry("ruleId", "EV-SRC-001");
+  }
+
+  @Test
+  void evaluateJson声明档案时响应与链事件带profile() throws Exception {
+    Map<String, Object> body = Map.of("policy", coreIrJsonOf(GOVERNED_SOURCE, "evidence.govjson"),
+        "context", Map.of("amount", 1), "agent", AGENT);
+    Response resp = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
+        .body(body).post("/api/v1/policies/evaluate-json");
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("profile")).as(resp.asString()).isEqualTo("governed");
+    String cid = resp.jsonPath().getString("evidence.correlationId");
+
+    assertThat(metadataOf(awaitEvent(TENANT, cid))).containsEntry("profile", "governed");
   }
 
   /** 成功事件已发布后回放元数据阶段抛错：错误响应仍须带同一个 correlationId（ADR 0041 §2.2）。 */
@@ -198,7 +227,8 @@ class EvaluateEvidenceEventTest {
 
     Map<String, Object> md = metadataOf(awaitEvent(TENANT, cid));
     assertThat(md).containsEntry("outcome", "ALLOW").containsEntry("ruleId", "EV-SRC-001")
-        .containsEntry("agentProvider", "anthropic").containsEntry("sourceFormat", "json");
+        .containsEntry("agentProvider", "anthropic").containsEntry("sourceFormat", "json")
+        .doesNotContainKey("profile");
   }
 
   // ---------------------------------------------------------------- helpers
@@ -218,7 +248,11 @@ class EvaluateEvidenceEventTest {
 
   /** 把 Verdict 源码改名后编译为 Core IR JSON，作为 /evaluate-json 的 policy 载荷。 */
   private static String coreIrJsonOf(String module) throws Exception {
-    String cnl = VERDICT_SOURCE.replace("Module evidence.src.", "Module " + module + ".");
+    return coreIrJsonOf(VERDICT_SOURCE, module);
+  }
+
+  private static String coreIrJsonOf(String source, String module) throws Exception {
+    String cnl = source.replaceFirst("Module [a-z.]+\\.", "Module " + module + ".");
     var parsed = InProcessCnlParser.parse(cnl, null, null);
     CoreModel.Module core = new CoreLowering().lowerModule(parsed.module());
     return ReplayMappers.DEFAULT.writeValueAsString(core);
@@ -232,8 +266,13 @@ class EvaluateEvidenceEventTest {
   /** replayCapture 只对 HMAC 已验证调用方生效，会走到成功事件之后的回放元数据阶段。 */
   private static Response evaluateSource(String tenant, Map<String, Object> agent, boolean simulate,
                                          boolean replayCapture) throws Exception {
+    return evaluateSource(tenant, VERDICT_SOURCE, agent, simulate, replayCapture);
+  }
+
+  private static Response evaluateSource(String tenant, String source, Map<String, Object> agent, boolean simulate,
+                                         boolean replayCapture) throws Exception {
     Map<String, Object> req = new HashMap<>();
-    req.put("source", VERDICT_SOURCE);
+    req.put("source", source);
     req.put("context", Map.of("amount", 1));
     req.put("functionName", "main");
     req.put("locale", "en-US");

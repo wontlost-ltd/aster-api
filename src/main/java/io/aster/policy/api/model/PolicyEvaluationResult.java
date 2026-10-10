@@ -2,6 +2,7 @@ package io.aster.policy.api.model;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.aster.policy.governance.VerdictView;
 
@@ -13,6 +14,7 @@ import java.util.Objects;
  *
  * <p>decision / ruleId / controls 为治理字段（ADR 0039）：decision 仅在结果为内置 Verdict 值时非 null；
  * ruleId / controls 来自被执行函数的 {@code @id} / {@code @control} 注解，无注解时为 null / 空列表。
+ * profile 为模块声明的治理档案 id（ADR 0046 §6），未声明时为 null 且不进入缓存 JSON。
  *
  * <p>本类会作为 {@code policy-results} 缓存值写入 Redis（生产默认缓存后端）并在命中时按 JSON 还原。
  * 类有两个多参构造器，Jackson 无法自行推断用哪个创建实例，命中时会报 “no Creators” 解码失败，
@@ -28,10 +30,17 @@ public class PolicyEvaluationResult {
     private final VerdictView decision;
     private final String ruleId;
     private final List<String> controls;
+    private final String profile;
 
     /** 不携带治理字段的构造（decision / ruleId 为 null，controls 为空）。 */
     public PolicyEvaluationResult(Object result, double executionTimeMs, boolean fromCache) {
         this(result, executionTimeMs, fromCache, null, null, List.of());
+    }
+
+    /** 无治理档案的构造（profile 为 null）。 */
+    public PolicyEvaluationResult(Object result, double executionTimeMs, boolean fromCache,
+                                  VerdictView decision, String ruleId, List<String> controls) {
+        this(result, executionTimeMs, fromCache, decision, ruleId, controls, null);
     }
 
     @JsonCreator
@@ -40,13 +49,15 @@ public class PolicyEvaluationResult {
                                   @JsonProperty("fromCache") boolean fromCache,
                                   @JsonProperty("decision") VerdictView decision,
                                   @JsonProperty("ruleId") String ruleId,
-                                  @JsonProperty("controls") List<String> controls) {
+                                  @JsonProperty("controls") List<String> controls,
+                                  @JsonProperty("profile") String profile) {
         this.result = result;
         this.executionTimeMs = executionTimeMs;
         this.fromCache = fromCache;
         this.decision = decision;
         this.ruleId = ruleId;
         this.controls = controls == null ? List.of() : List.copyOf(controls);
+        this.profile = profile;
     }
 
     public Object getResult() {
@@ -73,6 +84,11 @@ public class PolicyEvaluationResult {
         return controls;
     }
 
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public String getProfile() {
+        return profile;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -87,11 +103,12 @@ public class PolicyEvaluationResult {
             && Objects.equals(result, that.result)
             && Objects.equals(decision, that.decision)
             && Objects.equals(ruleId, that.ruleId)
-            && Objects.equals(controls, that.controls);
+            && Objects.equals(controls, that.controls)
+            && Objects.equals(profile, that.profile);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(result, executionTimeMs, fromCache, decision, ruleId, controls);
+        return Objects.hash(result, executionTimeMs, fromCache, decision, ruleId, controls, profile);
     }
 }
