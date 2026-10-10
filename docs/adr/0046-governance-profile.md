@@ -29,11 +29,11 @@ Cedar 编译目标拆为子项目 6b，另立 ADR。
 
 ```
 Module aster.pilot.credit.
-Profile eu-ai-act-high-risk.
+Profile "eu-ai-act-high-risk".
 ```
 
-- 可选，紧跟 `Module` 行之后，至多一条。档案 id 形如 `^[a-z][a-z0-9-]{0,63}$`。
-- 关键字 `Profile` 进入四个词法包（en `Profile`、zh `档案`、de `Profil`、hi 经既有词法包流程）。最终用词在实施时做与既有关键字的冲突检查后确定，记录于本 ADR §9。
+- 可选，紧跟 `Module` 行之后，至多一条。档案 id 用**字符串字面量**书写（两个引擎的词法都把 `-` 切成 MINUS，裸标识符无法承载连字符），形如 `^[a-z][a-z0-9-]{0,63}$`，不合形态为解析错误。
+- 新 `SemanticTokenKind.PROFILE`：en `Profile`、zh `档案`、de `Profil`、hi `प्रोफ़ाइल`。Java 语法不新增硬词法记号：`module` 规则在 `moduleHeader` 之后接受 `TYPE_IDENT STRING_LITERAL DOT` 并在 AstBuilder 校验其文本为 `Profile`（经 Canonicalizer 规范化后），从而不夺走用户的 `profile` 参数名或 `Profile` 类型名。
 - IR：Java `CoreModel.Module` 与 TS `Core.Module` 增可选字段 `profile`，仅在存在时序列化。未声明档案的模块 IR 与今天逐字节相同，既有 parity 语料不受影响。
 
 ## 3. 决策二：档案定义作为注册表数据
@@ -55,7 +55,7 @@ Profile eu-ai-act-high-risk.
 
 | 码 | 名称 | 触发 |
 |---|---|---|
-| E705 | `GOV_PROFILE_UNKNOWN` | 声明的档案不在注册表中（定位在模块） |
+| E705 | `GOV_PROFILE_UNKNOWN` | 声明的档案不在注册表中（定位在模块起始，即 `Module` 行） |
 | E706 | `GOV_PROFILE_VIOLATION` | `requires.ruleId` 且规则缺 `@id`；`requires.registeredControls` 且规则含未登记或形态非法的 `@control`；`requires.frameworks` 非空且规则没有任何一个属于这些框架的已登记 `@control`。消息参数含档案 id、规则名、被违反的要求 |
 
 - 同一规则对同一要求只报一次。W700/W704 照常报出（警告），E706 是档案层面的额外错误。
@@ -72,16 +72,30 @@ Rule decide given applicant as Applicant, produce Verdict:
 ```
 
 - 语句：`When <cond>, <outcome>.` 与 `Otherwise <outcome>.`；`<outcome>` ∈ `allow` | `deny <text>` | `escalate <text>` | `require approval by <text> because <text>`。
+- `When` / `Otherwise` **复用既有** `WHEN`（Match 分支词）与 `OTHERWISE` 词法项：en When/Otherwise、zh 当/否则、de bei/sonst、hi जब/अन्यथा。语句级 `When` 只出现在规则体语句位置，Match 分支内的 `When` 语义不变；`If` 块后紧随的 `Otherwise` 仅当其后是结论词时才作语法糖（TS 解析器加前瞻，Java 语法本就要求 else 分支后换行）。
+- 新 `SemanticTokenKind`：`ALLOW`、`DENY`、`ESCALATE`、`REQUIRE_APPROVAL_BY`、`BECAUSE`，每项是一个连续短语：
+
+  | kind | en | zh | de | hi |
+  |---|---|---|---|---|
+  | ALLOW | allow | 允许 | erlauben | अनुमति |
+  | DENY | deny | 拒绝 | ablehnen | अस्वीकार |
+  | ESCALATE | escalate | 升级 | eskalieren | आगे बढ़ाएँ |
+  | REQUIRE_APPROVAL_BY | require approval by | 需审批人 | Genehmigung durch | अनुमोदक |
+  | BECAUSE | because | 因为 | weil | क्योंकि |
+
+  这些词在 Java 侧经 Canonicalizer 规范化为英文后，作为软关键字（`structKeywordName`）出现在语法糖语句中，不新增硬词法记号，因而 `Verdict.allow()` 等成员名不受影响。新 kind 与 PROFILE 在 Java `OPTIONAL_KINDS` 与 TS `CI_OPTIONAL_KINDS` 中保留到发版完成（ADR 0029 先例）。hi 用词为暂定，待母语审校。
 - 降糖在两个前端的解析/AST 构建阶段完成：`When` → `If <cond>: Return Verdict.<op>(…)`；`Otherwise` → `Return Verdict.<op>(…)`。不新增 IR 节点、不改求值器；trace、证据与长写法一致。
-- `Otherwise` 必须是所在块的最后一条语句，否则 **E707 `SUGAR_OTHERWISE_NOT_LAST`**。参数的类型与个数检查沿用降糖后对 `Verdict.*` 的既有检查（E703）。
-- 关键字四语进词法包（en `When`/`Otherwise`/`allow`/`deny`/`escalate`/`require approval by`/`because`；zh 当/否则/允许/拒绝/升级/需由…审批/因为；de Wenn/Sonst/erlauben/ablehnen/eskalieren/Genehmigung durch…erforderlich/weil）。与既有关键字（如 `Otherwise`、`If`）语义一致时复用既有词法项；最终用词实施时确定并记入 §9。
+- `Otherwise` 必须是所在块的最后一条语句，否则为**解析错误**（消息 `Otherwise must be the last statement of its block`，无错误码）：两个引擎都没有带码的解析期诊断通道，原设想的 E707 撤销。参数的类型与个数检查沿用降糖后对 `Verdict.*` 的既有检查（E703）。
+- 语法糖与长写法的 IR 在去除 origin 后相等（语法糖把 If 与 Return 放在同一行，origin 行号不同）；parity 对比以此为准。
+- TS 格式化器从 AST 打印：保留 `Profile` 行，语法糖按长写法输出（语义不变）——已知限制，见 §10。
 
 ## 6. 决策五：向 aster-api、aster-cloud 与证据传播
 
 - aster-api 编译响应带 `profile`（模块声明的档案 id，无则省略）。
 - 评估证据：执行时从模块 IR 读出 `profile`，与 `ruleId`/`controls` 一样写入评估证据与执行行；证据包条目带 `profile`。manifest 升 `schemaVersion: '5'`，新增 `profilesUsed: [{ id, title }]` 与所用注册表版本；v1–v4 只读。
 - aster-cloud：编辑器与策略详情页显示档案徽标；报告页对照视图列出所用档案。
-- 信贷试点：`pol-credit-pilot` 增 v3，用语法糖改写并声明 `Profile eu-ai-act-high-risk.`；试点脚本仍须得到与 ADR 0044 相同的九款状态。
+- 信贷试点：`pol-credit-pilot` 增 v3（`pv-credit-pilot-3`，成为在线版本），即 v1 的五个分支用语法糖逐条改写并声明 `Profile "eu-ai-act-high-risk".`（§5 示例仅为示意，不得省略 DTI 分支或改变边界）；What-If 仍对比 v1→v2。试点脚本仍须得到与 ADR 0044 相同的九款状态。
+- 档案只沿评估路径（`RuleMetadata` → 三条评估结果 → `EvaluationEvidence` 与 `EvaluationResponse`）传播；guard 决策路径不在本 ADR。
 
 ## 7. 兼容与发版
 
@@ -91,7 +105,7 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 ## 8. 测试
 
-- 两个编译器：E705/E706/E707 逐条用例；语法糖与长写法 IR 相等；未声明档案的模块零新增诊断。
+- 两个编译器：E705/E706 与「Otherwise 非末尾」解析错误逐条用例；语法糖与长写法 IR 相等；未声明档案的模块零新增诊断。
 - aster-lang-test：一对「语法糖/长写法」样本，parse/ir/eval 三种 parity 全部一致；一个声明档案的样本。
 - aster-lang-locales：`profiles` 校验的正负夹具。
 - aster-api：编译通道 E705/E706 为 error 而其余治理码仍为 warning；证据带 `profile`。
@@ -105,6 +119,8 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 ## 10. 后续（不在本 ADR）
 
+- TS 格式化器保留语法糖原样输出。
+- 发版：新词法 kind 要走 ADR 0029 发版列车（core → locales/hi → ts）；本地验证经 mavenLocal 构建的词法包完成。
 - 子项目 6b：Cedar 编译目标（REQUIRE_APPROVAL/ESCALATE 的表达方式、可翻译子集与 schema 生成）。
 - 租户级「强制档案」（租户要求其所有策略必须声明某档案）。
 - 档案要求的扩展（如强制 `@reason`、禁止某些结论类型）。
