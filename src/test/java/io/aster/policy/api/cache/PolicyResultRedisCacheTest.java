@@ -10,8 +10,6 @@ import io.aster.policy.entity.PolicyArtifact;
 import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.test.RedisEnabledTest;
-import io.quarkus.cache.Cache;
-import io.quarkus.cache.CacheName;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
@@ -19,7 +17,6 @@ import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -45,7 +42,6 @@ class PolicyResultRedisCacheTest {
     @Inject PolicyEvaluationService evaluationService;
     @Inject CompiledPolicyCache compiledPolicyCache;
     @Inject PolicyVersionResolutionCache versionResolutionCache;
-    @Inject @CacheName("policy-compile-by-version") Cache compileByVersionCache;
 
     /** 租户带随机后缀，确保缓存键不与其他测试或历史运行冲突。 */
     private String tenant;
@@ -54,15 +50,6 @@ class PolicyResultRedisCacheTest {
         tenant = prefix + UUID.randomUUID().toString().substring(0, 8);
         DeployedMapParamProbeTest.deploy(tenant, MODULE, FUNCTION, DeployedMapParamProbeTest.SOURCE);
         return tenant;
-    }
-
-    /**
-     * 编译缓存按版本主键存于 Redis；本地 Redis 跨运行保留而测试库会复用主键，
-     * 先清空以免命中上一次运行同号版本的旧编译结果。
-     */
-    @BeforeEach
-    void dropStaleCompileCache() {
-        compileByVersionCache.invalidateAll().await().indefinitely();
     }
 
     @AfterEach
