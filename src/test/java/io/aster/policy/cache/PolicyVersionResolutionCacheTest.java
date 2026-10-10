@@ -82,4 +82,38 @@ class PolicyVersionResolutionCacheTest {
         assertThat(c.get("tenantA", "m", "f").versionId()).isEqualTo("A");
         assertThat(c.get("tenantB", "m", "f").versionId()).isEqualTo("B");
     }
+
+    @Test
+    void 取得stamp后发生失效则写回被丢弃() {
+        PolicyVersionResolutionCache c = newCache(5000);
+        long stamp = c.stamp("t", "m", "f");
+        c.invalidate("t", "m", "f");
+        c.putIfUnchanged("t", "m", "f", "old", stamp);
+        assertThat(c.get("t", "m", "f").isPresent()).isFalse();
+    }
+
+    @Test
+    void 租户失效与清空同样使旧stamp失效() {
+        PolicyVersionResolutionCache c = newCache(5000);
+        long beforeTenant = c.stamp("t", "m", "f");
+        c.invalidateTenant("t");
+        c.putIfUnchanged("t", "m", "f", "old", beforeTenant);
+        long beforeClear = c.stamp("t", "m", "f");
+        c.clear();
+        c.putIfUnchanged("t", "m", "f", "old", beforeClear);
+        assertThat(c.get("t", "m", "f").isPresent()).isFalse();
+    }
+
+    @Test
+    void 租户失效只影响该租户() {
+        PolicyVersionResolutionCache c = newCache(5000);
+        c.put("t", "m", "f", "1");
+        c.put("u", "m", "f", "2");
+        long other = c.stamp("u", "m", "g");
+        c.invalidateTenant("t");
+        c.putIfUnchanged("u", "m", "g", "3", other);
+        assertThat(c.get("t", "m", "f").isPresent()).isFalse();
+        assertThat(c.get("u", "m", "f").versionId()).isEqualTo("2");
+        assertThat(c.get("u", "m", "g").versionId()).isEqualTo("3");
+    }
 }

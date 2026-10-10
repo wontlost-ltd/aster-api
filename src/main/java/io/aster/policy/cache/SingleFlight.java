@@ -24,6 +24,19 @@ public final class SingleFlight<T> {
     }
 
     /**
+     * 让之后的调用不再加入该键当前的在途执行（数据已变更，在途结果可能过期）；
+     * 在途执行照常完成，已加入的调用仍拿到它的结果。
+     */
+    public void forget(String key) {
+        inFlight.remove(key);
+    }
+
+    /** 对满足条件的所有键执行 {@link #forget}。 */
+    public void forgetIf(java.util.function.Predicate<String> keyMatches) {
+        inFlight.keySet().removeIf(keyMatches);
+    }
+
+    /**
      * 结束时只移除自己：在途表里该键若已换成另一次执行，不能把它一并移走。
      * 语句块 lambda 选中 eventually(Runnable)；表达式 lambda 会返回被移除的 Uni，
      * 匹配到 eventually(Supplier&lt;Uni&gt;) 而去等待自身，造成死锁。

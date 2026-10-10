@@ -151,12 +151,36 @@ public class PolicyEvaluationService {
      * 同一策略的并发未命中合并为一次解析；调用方用 emitOn 把各订阅者分回 worker pool。
      */
     private Uni<String> resolveVersionId(String tenantId, String policyModule, String policyFunction) {
-        String key = tenantId + ":" + policyModule + ":" + policyFunction;
-        return versionResolutions.run(key, () -> Uni.createFrom()
-            .item(() -> QuarkusTransaction.requiringNew()
-                .call(() -> loadVersionId(tenantId, policyModule, policyFunction)))
-            .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
-            .invoke(versionId -> versionResolutionCache.put(tenantId, policyModule, policyFunction, versionId)));
+        return versionResolutions.run(resolutionKey(tenantId, policyModule, policyFunction), () -> {
+            // stamp 先于 DB 读取：读取期间若发生失效，写回被丢弃
+            long stamp = versionResolutionCache.stamp(tenantId, policyModule, policyFunction);
+            return Uni.createFrom()
+                .item(() -> QuarkusTransaction.requiringNew()
+                    .call(() -> loadVersionId(tenantId, policyModule, policyFunction)))
+                .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
+                .invoke(versionId -> versionResolutionCache.putIfUnchanged(
+                    tenantId, policyModule, policyFunction, versionId, stamp));
+        });
+    }
+
+    private static String resolutionKey(String tenantId, String policyModule, String policyFunction) {
+        return tenantId + ":" + policyModule + ":" + policyFunction;
+    }
+
+    /**
+     * 策略变更后失效版本解析：先让新请求不再加入在途解析，再推进失效代次并移除缓存条目，
+     * 使读到旧版本的在途解析无法写回。module 与 function 都给定时只失效该策略，否则失效整个租户。
+     */
+    private void invalidateVersionResolution(String tenantId, String policyModule, String policyFunction) {
+        boolean single = policyModule != null && !policyModule.isBlank()
+            && policyFunction != null && !policyFunction.isBlank();
+        if (single) {
+            versionResolutions.forget(resolutionKey(tenantId, policyModule, policyFunction));
+            versionResolutionCache.invalidate(tenantId, policyModule, policyFunction);
+            return;
+        }
+        versionResolutions.forgetIf(key -> key.startsWith(tenantId + ":"));
+        versionResolutionCache.invalidateTenant(tenantId);
     }
 
     /**
@@ -409,7 +433,7 @@ public class PolicyEvaluationService {
         Object[] normalizedContext = normalizeContext(tenantId, context);
         PolicyCacheKey cacheKey = new PolicyCacheKey(tenantId, policyModule, policyFunction, normalizedContext);
         // 策略变更 → 版本解析缓存也要立即失效，避免短 TTL 窗口内继续解析到旧版本。
-        versionResolutionCache.invalidate(tenantId, policyModule, policyFunction);
+        invalidateVersionResolution(tenantId, policyModule, policyFunction);
         return invalidateCacheWithKey(cacheKey);
     }
 
@@ -417,6 +441,8 @@ public class PolicyEvaluationService {
      * 按租户维度批量失效缓存，可选过滤模块与函数
      */
     public Uni<Void> invalidateCache(String tenantId, String policyModule, String policyFunction) {
+        // 版本解析的失效不依赖结果缓存快照：在途解析尚未产生任何结果缓存键
+        invalidateVersionResolution(tenantId, policyModule, policyFunction);
         Set<PolicyCacheKey> keys = policyCacheManager.snapshotTenantCacheKeys(tenantId);
         if (keys.isEmpty()) {
             return Uni.createFrom().voidItem();
@@ -433,15 +459,6 @@ public class PolicyEvaluationService {
         if (targets.isEmpty()) {
             return Uni.createFrom().voidItem();
         }
-
-        // 同步失效版本解析缓存（按 module.function 去重）。
-        targets.stream()
-            .map(k -> k.getTenantId() + ":" + k.getPolicyModule() + ":" + k.getPolicyFunction())
-            .distinct()
-            .forEach(sig -> {
-                String[] parts = sig.split(":", 3);
-                versionResolutionCache.invalidate(parts[0], parts[1], parts[2]);
-            });
 
         java.util.List<Uni<Void>> invalidations = new java.util.ArrayList<>();
         Cache cache = policyCacheManager.getPolicyResultCache();

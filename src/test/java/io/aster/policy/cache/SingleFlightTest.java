@@ -65,6 +65,24 @@ class SingleFlightTest {
         assertThat(executions.get()).isEqualTo(1);
     }
 
+    @Test
+    void forget后新调用另起执行且旧执行结束不会移除新执行() {
+        CompletableFuture<String> oldGate = new CompletableFuture<>();
+        CompletableFuture<String> newGate = new CompletableFuture<>();
+        var stale = flight.run("k", () -> pending(oldGate)).subscribeAsCompletionStage();
+
+        flight.forget("k");
+        var fresh = flight.run("k", () -> pending(newGate)).subscribeAsCompletionStage();
+        oldGate.complete("old");
+        var joined = flight.run("k", () -> pending(newGate)).subscribeAsCompletionStage();
+        newGate.complete("new");
+
+        assertThat(stale.join()).isEqualTo("old");
+        assertThat(fresh.join()).isEqualTo("new");
+        assertThat(joined.join()).isEqualTo("new");
+        assertThat(executions.get()).isEqualTo(2);
+    }
+
     private Uni<String> pending(CompletableFuture<String> gate) {
         return Uni.createFrom().completionStage(() -> {
             executions.incrementAndGet();
