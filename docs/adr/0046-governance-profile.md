@@ -95,7 +95,7 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 - aster-api 编译响应带 `profile`（模块声明的档案 id，无则省略）。
 - 评估证据：执行时从模块 IR 读出 `profile`，与 `ruleId`/`controls` 一样写入评估证据与执行行；证据包条目带 `profile`。manifest 升 `schemaVersion: '5'`，新增 `profilesUsed: [{ id, title }]` 与所用注册表版本；v1–v4 只读。
-- aster-cloud：编辑器与策略详情页显示档案徽标；报告页对照视图列出所用档案。编辑器徽标在实施计划中漏列，于 Task 8 修复轮补上：编辑器侧栏 Decision 页签从浏览器端 Core IR 读取 `profile`，显示「档案 + 注册表标题」；已安装的 aster-lang-ts 尚不产出 `profile` 时不显示（见 §7）。详情页徽标经 `/api/policies/compile` 取得档案（带 aliasSet，独立限流桶 `policy-profile:<user>`）。
+- aster-cloud：编辑器与策略详情页显示档案徽标；报告页对照视图列出所用档案。编辑器徽标在实施计划中漏列，于 Task 8 修复轮补上：编辑器侧栏 Decision 页签从浏览器端 Core IR 读取 `profile`，显示「档案 + 注册表标题」；已安装的 aster-lang-ts 尚不产出 `profile` 时不显示（见 §7）。详情页徽标直接读取版本行的 `PolicyVersion.profile`（cloud 迁移 0054，可空）：该列在保存版本时由保存门的编译结果写入，查看详情时不再调用编译端点；旧版本与未声明档案的版本为 NULL（不回填），不显示徽标。
 - 信贷试点：`pol-credit-pilot` 增 v3（`pv-credit-pilot-3`，成为在线版本），即 v1 的五个分支用语法糖逐条改写并声明 `Profile "eu-ai-act-high-risk".`（§5 示例仅为示意，不得省略 DTI 分支或改变边界）；What-If 仍对比 v1→v2。试点脚本仍须得到与 ADR 0044 相同的九款状态。
 - 档案只沿评估路径（`RuleMetadata` → 三条评估结果 → `EvaluationEvidence` 与 `EvaluationResponse`）传播；guard 决策路径不在本 ADR。
 
