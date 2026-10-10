@@ -319,8 +319,8 @@ public class PolicyEvaluationService {
             // 热路径优化：cacheKey 已带 versionId（动态加载模式下 evaluatePolicy 已解析过活跃
             // 版本，见 loadVersionId + versionResolutionCache）时，直接按 id 单查 findVersionById，
             // **跳过 findActiveCatalog + findActiveVersion 的重复解析**（后者=catalog.findByIdOptional
-            // + version.find 两次往返）。此前本方法无条件重解析，与 evaluatePolicy 里已
-            // 做的版本解析重复。仅 versionId 缺失（非动态加载路径）才回退到按 module/function 解析活跃版本。
+            // + version.find 两次往返），避免与 evaluatePolicy 里已做的版本解析重复。
+            // 仅 versionId 缺失（非动态加载路径）才回退到按 module/function 解析活跃版本。
             java.util.Optional<PolicyVersion> version;
             String preResolvedVersionId = cacheKey.getVersionId();
             Long preResolvedVersionIdLong = null;

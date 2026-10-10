@@ -17,8 +17,9 @@ public final class CompilationResult {
      * {@code code="W600"}、{@code severity="warning"}（strict 拒绝也不升 error）、
      * {@code featureId/nodeKind} 机器可读、{@code blocking} 标记 strict surface 是否拒。
      * 语法/语义错误：{@code code=null, severity="error", blocking=true, featureId/nodeKind=null}。
-     * 治理诊断（ADR 0045）同样走本通道且恒为 {@code severity="warning"}；例外是档案码 E705/E706
+     * 治理诊断（ADR 0045）同样走本通道且恒为 {@code severity="warning"}；例外是档案码 E705/E706/E707
      * （ADR 0046 §4）保持 {@code severity="error"}，供 cloud 保存门拒绝，{@code blocking} 仍为 false。
+     * 其中 E707 由 GovernanceDiagnostics 在检查器故障时为声明了档案的模块合成。
      */
     public record Diagnostic(
         int line, int column, int endLine, int endColumn,

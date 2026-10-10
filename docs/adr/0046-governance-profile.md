@@ -106,6 +106,7 @@ Rule decide given applicant as Applicant, produce Verdict:
 - 新关键字可能与用户标识符冲突：实施时对语料、模板、示例做冲突扫描；冲突处理按既有软关键字规则。
 - 与子项目 5 相同：浏览器端编辑器要等 aster-lang-ts 与 aster-lang-locales（含新词法与注册表）发布后才能看到；aster-api 编译通道经 composite build 本地即可用。发布由用户决定。
 - aster-cloud 当前锁定的 aster-lang-ts 为 1.0.28，解析不了 `Profile` 与语法糖；编辑器在客户端编译有错误时禁用保存，所以在 cloud 于发版后升级 aster-lang-ts 依赖之前，声明了档案或使用语法糖的模块无法从 UI 保存。服务端保存路径、API 与试点种子数据现在就可用。
+- aster-api 的 Redis 缓存键改为 `<根>:<缓存名>:<键>`（C8）后，首次部署不再读取旧前缀下的条目：Redis 缓存冷启动一次，旧键随 30 分钟 TTL 自然过期，无需手工清理。
 
 ## 8. 测试
 
