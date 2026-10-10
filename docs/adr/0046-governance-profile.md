@@ -167,6 +167,7 @@ Rule decide given applicant as Applicant, produce Verdict:
 环境记录：
 
 - aster-api 默认按来源 IP 限流（每分钟 60 次），本地栈中 cloud 到 api 的服务端调用全部来自同一容器 IP，浏览器 E2E 连跑时出现 429（日志 `限流拒绝 identifier=rest:ip:<cloud 容器>`），表现为审阅人、收据或 What-If 结果缺失。以 `ASTER_RATELIMIT_REST_MAX=600` 重建 api 容器后 9/9 通过，随后按配方恢复默认值。
+- 上一条的 api 侧处理（终审 §4 (b)）：`RateLimitFilter` 对携带内部调用头的请求复用 `InternalCallerFilter` 的头预检与 canonical v3 验签（不消费 nonce），签名有效时按 `rest:internal:cloud-bff:<X-Tenant-Id>` 分桶，额度为 `aster.ratelimit.internal.max-requests`（环境变量 `ASTER_RATELIMIT_INTERNAL_MAX`，默认每窗口 600 次，窗口沿用 `aster.ratelimit.rest.window-seconds`）；验签不通过或未带内部头的请求仍按 IP（或已建立的租户上下文）计入 `aster.ratelimit.rest.max-requests`。限流 filter 早于 `InternalCallerFilter` 执行，选择就地验签而不调换顺序，是为了让未认证洪泛仍在最前面被拦下。cloud 目前只对 evaluate-source、What-If 与 guard 路径签内部头；`/api/v1/policies/compile` 等其余服务端调用要改用租户桶，须由 cloud 对这些调用同样签发内部头（api 对这些路径只用签名来分桶，不改变鉴权）。签名在 5 分钟时间戳窗口内可被重放来消耗该租户的内部额度，受保护路径上的重放仍由 `InternalCallerFilter` 的 nonce 去重拒绝。
 - 栈夹具会老化：guard 待审批 24 小时后过期，`pol-adr0041-team` 种子执行的审批已过期；验收时将该条审批恢复为 PENDING，并用 aster-guard `scripts/e2e-local.mjs` 补一条 `e2e-` 待审批。
 
 ## 10. 后续（不在本 ADR）
