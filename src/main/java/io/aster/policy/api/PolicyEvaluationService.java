@@ -105,7 +105,7 @@ public class PolicyEvaluationService {
     private final io.aster.policy.cache.SingleFlight<String> versionResolutions =
         new io.aster.policy.cache.SingleFlight<>();
 
-    /** 在途的按版本加载 + 编译（键 tenant:module:function:versionId），见 {@link #compiledFor}。 */
+    /** 在途的按版本加载 + 编译（键 tenant:module:function:versionId），见 {@link #compileOnce}。 */
     private final io.aster.policy.cache.SingleFlight<io.aster.policy.cache.CompiledPolicy> compilations =
         new io.aster.policy.cache.SingleFlight<>();
 
@@ -214,34 +214,41 @@ public class PolicyEvaluationService {
      * Internal method with cache key for proper caching
      */
     Uni<PolicyEvaluationResult> evaluatePolicyWithKey(PolicyCacheKey cacheKey) {
-        return compiledFor(cacheKey)
-            .emitOn(Infrastructure.getDefaultWorkerPool())
+        return Uni.createFrom().item(() -> cachedCompiled(cacheKey))
+            .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
+            .chain(hit -> hit != null ? Uni.createFrom().item(hit) : compileOnce(cacheKey))
             .map(compiled -> executeCompiled(cacheKey, compiled.getCoreJson(), compiled.getMetadata(),
                 System.nanoTime(), resolveDeterminismContext() != null))
             .onFailure().transform(e -> new RuntimeException("Policy evaluation failed", e));
     }
 
     /**
-     * 取可执行的编译结果。热路径：用 cacheKey 已带的 versionId 直接探编译缓存，命中即零 DB、
-     * 不开事务、不占 JDBC 连接（500 RPS 下每次都进事务会占满连接池，请求排队等连接、延迟爆炸）。
-     * 未命中才在独立事务中加载策略源并编译；同一版本的并发未命中合并为一次（single-flight），
-     * 执行放在事务之外，连接只在加载与编译期间占用。
+     * 热路径：用 cacheKey 已带的 versionId 直接探编译缓存，命中即零 DB、不开事务、不占 JDBC 连接
+     * （500 RPS 下每次都进事务会占满连接池，请求排队等连接、延迟爆炸）。探测与执行同在一次
+     * worker 分派内完成，与命中路径只有一跳。未命中或无 versionId 返回 null。
      */
-    private Uni<io.aster.policy.cache.CompiledPolicy> compiledFor(PolicyCacheKey cacheKey) {
+    private io.aster.policy.cache.CompiledPolicy cachedCompiled(PolicyCacheKey cacheKey) {
         String versionId = cacheKey.getVersionId();
-        if (versionId != null) {
-            java.util.Optional<io.aster.policy.cache.CompiledPolicy> hit = compiledPolicyCache.get(
-                cacheKey.getTenantId(), cacheKey.getPolicyModule(), cacheKey.getPolicyFunction(), versionId);
-            if (hit.isPresent()) {
-                return Uni.createFrom().item(hit.get());
-            }
+        if (versionId == null) {
+            return null;
         }
+        return compiledPolicyCache.get(cacheKey.getTenantId(), cacheKey.getPolicyModule(),
+            cacheKey.getPolicyFunction(), versionId).orElse(null);
+    }
+
+    /**
+     * 编译缓存未命中：在独立事务中加载策略源并编译，同一版本的并发未命中合并为一次
+     * （single-flight）。执行放在事务之外，连接只在加载与编译期间占用；结果在完成编译的线程上
+     * 发出，用 emitOn 把各等待者分回 worker pool。
+     */
+    private Uni<io.aster.policy.cache.CompiledPolicy> compileOnce(PolicyCacheKey cacheKey) {
         String key = cacheKey.getTenantId() + ":" + cacheKey.getPolicyModule() + ":"
-            + cacheKey.getPolicyFunction() + ":" + versionId;
+            + cacheKey.getPolicyFunction() + ":" + cacheKey.getVersionId();
         LOG.debugf("使用动态执行路径: %s.%s", cacheKey.getPolicyModule(), cacheKey.getPolicyFunction());
         return compilations.run(key, () -> Uni.createFrom()
-            .item(() -> QuarkusTransaction.requiringNew().call(() -> loadAndCompile(cacheKey)))
-            .runSubscriptionOn(Infrastructure.getDefaultWorkerPool()));
+                .item(() -> QuarkusTransaction.requiringNew().call(() -> loadAndCompile(cacheKey)))
+                .runSubscriptionOn(Infrastructure.getDefaultWorkerPool()))
+            .emitOn(Infrastructure.getDefaultWorkerPool());
     }
 
     /**
