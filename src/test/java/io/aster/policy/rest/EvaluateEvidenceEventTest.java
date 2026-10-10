@@ -6,6 +6,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.common.JacksonMappers;
 import io.aster.guard.DeployedMapParamProbeTest;
+import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.entity.AuditLog;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.policy.stability.ToolchainIdentityProvider;
@@ -17,6 +18,7 @@ import io.quarkus.test.junit.TestProfile;
 import io.quarkus.test.junit.mockito.InjectSpy;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
+import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -58,7 +60,16 @@ class EvaluateEvidenceEventTest {
   private static final String GOVERNED_SOURCE =
       VERDICT_SOURCE.replace("Module evidence.src.", "Module evidence.gov.\nProfile \"governed\".");
 
+  /** 已部署的声明 governed 档案且合规（有 @id、无未登记控制点）的模块，走 /evaluate 的数据库加载路径。 */
+  private static final String GOVERNED_MODULE = "evidence.gov.deployed";
+  private static final String GOVERNED_DEPLOYED_SOURCE = DeployedMapParamProbeTest.SOURCE
+      .replace("Module guard.probe.", "Module " + GOVERNED_MODULE + ".\nProfile \"governed\".")
+      .replace("@id(\"PROBE-001\")", "@id(\"GOV-001\")\n@control(\"EU_AI_ACT:ART14\")");
+
   private static boolean deployed;
+
+  @Inject
+  PolicyEvaluationService policyEvaluationService;
 
   /** 只在「成功事件后抛错」用例里打桩，其余用例走真实实现。 */
   @InjectSpy
@@ -69,6 +80,8 @@ class EvaluateEvidenceEventTest {
     if (deployed) return;
     DeployedMapParamProbeTest.deploy(TENANT, DeployedMapParamProbeTest.MODULE, DeployedMapParamProbeTest.FUNCTION,
         DeployedMapParamProbeTest.SOURCE);
+    DeployedMapParamProbeTest.deploy(TENANT, GOVERNED_MODULE, DeployedMapParamProbeTest.FUNCTION,
+        GOVERNED_DEPLOYED_SOURCE);
     deployed = true;
   }
 
@@ -91,6 +104,29 @@ class EvaluateEvidenceEventTest {
     // /evaluate 本期不写版本（ADR 0041 修正 #2）
     assertThat(md).doesNotContainKeys("policyVersionId", "profile");
     assertThat(MAPPER.readTree(resp.asString()).has("profile")).as(resp.asString()).isFalse();
+  }
+
+  /** 首次走编译+执行（Core JSON 宽松重解析取档案），第二次命中 policy-results 缓存，两次都须带 profile。 */
+  @Test
+  void evaluate声明档案时冷启动与缓存命中均带profile() throws Exception {
+    Map<String, Object> body = Map.of("policyModule", GOVERNED_MODULE, "policyFunction", DeployedMapParamProbeTest.FUNCTION,
+        "context", List.of(guardRequest("read_customer_record")), "agent", AGENT);
+
+    assertEvaluateCarriesProfile(body);
+    assertThat(policyEvaluationService.snapshotTenantCacheKeys(TENANT))
+        .anyMatch(k -> GOVERNED_MODULE.equals(k.getPolicyModule()));
+    assertEvaluateCarriesProfile(body);
+  }
+
+  private static void assertEvaluateCarriesProfile(Map<String, Object> body) throws Exception {
+    Response resp = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
+        .body(body).post("/api/v1/policies/evaluate");
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("profile")).as(resp.asString()).isEqualTo("governed");
+    assertThat(resp.jsonPath().getString("ruleId")).isEqualTo("GOV-001");
+    String cid = resp.jsonPath().getString("evidence.correlationId");
+    assertThat(metadataOf(awaitEvent(TENANT, cid))).containsEntry("profile", "governed")
+        .containsEntry("ruleId", "GOV-001");
   }
 
   @Test

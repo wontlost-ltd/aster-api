@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 // replay 模块测试只依赖 JUnit（无 AssertJ），断言语义与 brief 中 AssertJ 版本一致。
 class RuleMetadataTest {
@@ -26,7 +27,7 @@ class RuleMetadataTest {
     assertEquals(new RuleMetadata(null, List.of()), RuleMetadata.of(mod, "decide"));
     assertEquals(new RuleMetadata(null, List.of()), RuleMetadata.of(mod, "nope"));
     assertEquals(new RuleMetadata(null, List.of()), RuleMetadata.of(null, "decide"));
-    assertEquals(null, RuleMetadata.NONE.profile());
+    assertNull(RuleMetadata.NONE.profile());
   }
   @Test void 读取模块声明的profile() {
     var mod = new CoreModel.Module(); mod.profile = "governed";

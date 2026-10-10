@@ -10,6 +10,8 @@ import io.aster.policy.entity.PolicyArtifact;
 import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.test.RedisEnabledTest;
+import io.quarkus.cache.Cache;
+import io.quarkus.cache.CacheName;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
@@ -17,6 +19,7 @@ import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -42,6 +45,7 @@ class PolicyResultRedisCacheTest {
     @Inject PolicyEvaluationService evaluationService;
     @Inject CompiledPolicyCache compiledPolicyCache;
     @Inject PolicyVersionResolutionCache versionResolutionCache;
+    @Inject @CacheName("policy-compile-by-version") Cache compileByVersionCache;
 
     /** 租户带随机后缀，确保缓存键不与其他测试或历史运行冲突。 */
     private String tenant;
@@ -50,6 +54,15 @@ class PolicyResultRedisCacheTest {
         tenant = prefix + UUID.randomUUID().toString().substring(0, 8);
         DeployedMapParamProbeTest.deploy(tenant, MODULE, FUNCTION, DeployedMapParamProbeTest.SOURCE);
         return tenant;
+    }
+
+    /**
+     * 编译缓存按版本主键存于 Redis；本地 Redis 跨运行保留而测试库会复用主键，
+     * 先清空以免命中上一次运行同号版本的旧编译结果。
+     */
+    @BeforeEach
+    void dropStaleCompileCache() {
+        compileByVersionCache.invalidateAll().await().indefinitely();
     }
 
     @AfterEach
@@ -107,6 +120,27 @@ class PolicyResultRedisCacheTest {
         assertThat(second.statusCode()).isEqualTo(200);
         assertThat(second.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
         assertThat(second.jsonPath().getMap("$")).doesNotContainKey("reasonCode");
+    }
+
+    /** 档案（ADR 0046 §6）须随 Redis 缓存值往返：命中缓存的结果仍带 profile。 */
+    @Test
+    void 声明档案的策略命中Redis缓存仍带profile() {
+        tenant = "tenant-redis-cache-profile-" + UUID.randomUUID().toString().substring(0, 8);
+        String source = DeployedMapParamProbeTest.SOURCE
+            .replace("Module guard.probe.", "Module guard.probe.\nProfile \"governed\".");
+        DeployedMapParamProbeTest.deploy(tenant, MODULE, FUNCTION, source);
+        Map<String, Object> req = Map.of(
+            "principal_id", "agent-42", "principal_type", "agent", "principal_roles", List.of("ops-bot"),
+            "action", "read_customer_record", "resource_type", "customer", "resource_id", "C-1001",
+            "context", Map.of("amount", 250000), "agent_model", "claude-fable-5-1");
+
+        PolicyEvaluationResult first = evaluate(tenant, req);
+        PolicyEvaluationResult second = evaluate(tenant, req);
+
+        assertThat(first.getProfile()).isEqualTo("governed");
+        assertThat(second.isFromCache()).isTrue();
+        assertThat(second.getProfile()).isEqualTo("governed");
+        assertThat(second.getRuleId()).isEqualTo("PROBE-001");
     }
 
     private PolicyEvaluationResult evaluate(String t, Map<String, Object> req) {

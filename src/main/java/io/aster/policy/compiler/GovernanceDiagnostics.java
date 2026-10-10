@@ -10,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 治理诊断（W700/E701/E702/W704）→ 编译诊断。
+ * 治理诊断（W700/E701/E702/W704/E705/E706）→ 编译诊断。
  *
  * <p>编译端点此前不跑治理检查；ADR 0045 起与稳定性（W600）、规则冲突（W601）诊断
  * 走同一 diagnostics 通道合流。治理诊断 blocking 恒 false，不改变编译成功与否；
