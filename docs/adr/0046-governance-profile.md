@@ -1,7 +1,7 @@
 # ADR 0046：Governance Profile 与 When/Otherwise 语法糖（AI 治理方向·子项目 6a）
 
 - 状态：**PROPOSED**（2026-10-10）
-- 实施计划：待写（`docs/superpowers/plans/2026-10-10-governance-profile.md`）
+- 实施计划：`docs/superpowers/plans/2026-10-10-governance-profile.md`
 - 决策者：用户已拍板「子项目 6 拆为 6a（Profile + 语法糖）与 6b（Cedar 目标），先做 6a；Profile 写在策略源码里、提升治理严格度；Profile 定义作为数据放在控制注册表旁；语法糖为规则内的语句级 When/Otherwise；违反 Profile 的诊断在所有通道都是错误、会阻止保存」
 - 相关：ADR 0039（§1 行 6；§2.1「语法糖降糖为同一个内置模块调用」）、ADR 0045（控制注册表、W704、编译通道治理诊断降为 warning 的裁决）、ADR 0031（错误码单一来源）、ADR 0016（双引擎 parity）
 
