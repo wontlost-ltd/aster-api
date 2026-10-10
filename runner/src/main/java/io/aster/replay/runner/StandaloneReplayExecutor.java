@@ -30,6 +30,6 @@ public final class StandaloneReplayExecutor implements ReplayExecutor {
                 tenantId, source, context, functionName, locale,
                 vocabIndex, legacyEvaluateSentinel, aliasSet, aliasesTrusted);
         return new ReplayExecutorResult(r.result(), r.moduleName(), r.functionName(), r.executionTimeMs(),
-                r.ruleId(), r.controls());
+                r.ruleId(), r.controls(), r.profile());
     }
 }

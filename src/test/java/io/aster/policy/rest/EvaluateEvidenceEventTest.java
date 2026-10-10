@@ -6,6 +6,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.common.JacksonMappers;
 import io.aster.guard.DeployedMapParamProbeTest;
+import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.entity.AuditLog;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.policy.stability.ToolchainIdentityProvider;
@@ -17,6 +18,7 @@ import io.quarkus.test.junit.TestProfile;
 import io.quarkus.test.junit.mockito.InjectSpy;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
+import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -55,8 +57,19 @@ class EvaluateEvidenceEventTest {
       "@control(\"EU_AI_ACT:ART14\")",
       "Rule main given amount as Int, produce Verdict:",
       "  Return Verdict.allow().");
+  private static final String GOVERNED_SOURCE =
+      VERDICT_SOURCE.replace("Module evidence.src.", "Module evidence.gov.\nProfile \"governed\".");
+
+  /** 已部署的声明 governed 档案且合规（有 @id、无未登记控制点）的模块，走 /evaluate 的数据库加载路径。 */
+  private static final String GOVERNED_MODULE = "evidence.gov.deployed";
+  private static final String GOVERNED_DEPLOYED_SOURCE = DeployedMapParamProbeTest.SOURCE
+      .replace("Module guard.probe.", "Module " + GOVERNED_MODULE + ".\nProfile \"governed\".")
+      .replace("@id(\"PROBE-001\")", "@id(\"GOV-001\")\n@control(\"EU_AI_ACT:ART14\")");
 
   private static boolean deployed;
+
+  @Inject
+  PolicyEvaluationService policyEvaluationService;
 
   /** 只在「成功事件后抛错」用例里打桩，其余用例走真实实现。 */
   @InjectSpy
@@ -67,6 +80,8 @@ class EvaluateEvidenceEventTest {
     if (deployed) return;
     DeployedMapParamProbeTest.deploy(TENANT, DeployedMapParamProbeTest.MODULE, DeployedMapParamProbeTest.FUNCTION,
         DeployedMapParamProbeTest.SOURCE);
+    DeployedMapParamProbeTest.deploy(TENANT, GOVERNED_MODULE, DeployedMapParamProbeTest.FUNCTION,
+        GOVERNED_DEPLOYED_SOURCE);
     deployed = true;
   }
 
@@ -87,7 +102,31 @@ class EvaluateEvidenceEventTest {
         .containsEntry("agentSession", "s-1").containsEntry("agentSource", "declared")
         .containsEntry("contextSize", 1);
     // /evaluate 本期不写版本（ADR 0041 修正 #2）
-    assertThat(md).doesNotContainKey("policyVersionId");
+    assertThat(md).doesNotContainKeys("policyVersionId", "profile");
+    assertThat(MAPPER.readTree(resp.asString()).has("profile")).as(resp.asString()).isFalse();
+  }
+
+  /** 首次走编译+执行（Core JSON 宽松重解析取档案），第二次命中 policy-results 缓存，两次都须带 profile。 */
+  @Test
+  void evaluate声明档案时冷启动与缓存命中均带profile() throws Exception {
+    Map<String, Object> body = Map.of("policyModule", GOVERNED_MODULE, "policyFunction", DeployedMapParamProbeTest.FUNCTION,
+        "context", List.of(guardRequest("read_customer_record")), "agent", AGENT);
+
+    assertEvaluateCarriesProfile(body);
+    assertThat(policyEvaluationService.snapshotTenantCacheKeys(TENANT))
+        .anyMatch(k -> GOVERNED_MODULE.equals(k.getPolicyModule()));
+    assertEvaluateCarriesProfile(body);
+  }
+
+  private static void assertEvaluateCarriesProfile(Map<String, Object> body) throws Exception {
+    Response resp = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
+        .body(body).post("/api/v1/policies/evaluate");
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("profile")).as(resp.asString()).isEqualTo("governed");
+    assertThat(resp.jsonPath().getString("ruleId")).isEqualTo("GOV-001");
+    String cid = resp.jsonPath().getString("evidence.correlationId");
+    assertThat(metadataOf(awaitEvent(TENANT, cid))).containsEntry("profile", "governed")
+        .containsEntry("ruleId", "GOV-001");
   }
 
   @Test
@@ -167,7 +206,33 @@ class EvaluateEvidenceEventTest {
     Map<String, Object> md = metadataOf(awaitEvent(TENANT, cid));
     assertThat(md).containsEntry("outcome", "ALLOW").containsEntry("ruleId", "EV-SRC-001")
         .containsEntry("controls", List.of("EU_AI_ACT:ART14")).containsEntry("agentModel", "claude-fable-5-1")
-        .containsEntry("agentSource", "declared").containsEntry("sourceFormat", "cnl");
+        .containsEntry("agentSource", "declared").containsEntry("sourceFormat", "cnl")
+        .doesNotContainKey("profile");
+    assertThat(MAPPER.readTree(resp.asString()).has("profile")).as(resp.asString()).isFalse();
+  }
+
+  @Test
+  void evaluateSource声明档案时响应与链事件带profile() throws Exception {
+    Response resp = evaluateSource(TENANT, GOVERNED_SOURCE, AGENT, false, false);
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("profile")).as(resp.asString()).isEqualTo("governed");
+    String cid = resp.jsonPath().getString("evidence.correlationId");
+
+    Map<String, Object> md = metadataOf(awaitEvent(TENANT, cid));
+    assertThat(md).containsEntry("profile", "governed").containsEntry("ruleId", "EV-SRC-001");
+  }
+
+  @Test
+  void evaluateJson声明档案时响应与链事件带profile() throws Exception {
+    Map<String, Object> body = Map.of("policy", coreIrJsonOf(GOVERNED_SOURCE, "evidence.govjson"),
+        "context", Map.of("amount", 1), "agent", AGENT);
+    Response resp = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
+        .body(body).post("/api/v1/policies/evaluate-json");
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("profile")).as(resp.asString()).isEqualTo("governed");
+    String cid = resp.jsonPath().getString("evidence.correlationId");
+
+    assertThat(metadataOf(awaitEvent(TENANT, cid))).containsEntry("profile", "governed");
   }
 
   /** 成功事件已发布后回放元数据阶段抛错：错误响应仍须带同一个 correlationId（ADR 0041 §2.2）。 */
@@ -198,7 +263,8 @@ class EvaluateEvidenceEventTest {
 
     Map<String, Object> md = metadataOf(awaitEvent(TENANT, cid));
     assertThat(md).containsEntry("outcome", "ALLOW").containsEntry("ruleId", "EV-SRC-001")
-        .containsEntry("agentProvider", "anthropic").containsEntry("sourceFormat", "json");
+        .containsEntry("agentProvider", "anthropic").containsEntry("sourceFormat", "json")
+        .doesNotContainKey("profile");
   }
 
   // ---------------------------------------------------------------- helpers
@@ -218,7 +284,11 @@ class EvaluateEvidenceEventTest {
 
   /** 把 Verdict 源码改名后编译为 Core IR JSON，作为 /evaluate-json 的 policy 载荷。 */
   private static String coreIrJsonOf(String module) throws Exception {
-    String cnl = VERDICT_SOURCE.replace("Module evidence.src.", "Module " + module + ".");
+    return coreIrJsonOf(VERDICT_SOURCE, module);
+  }
+
+  private static String coreIrJsonOf(String source, String module) throws Exception {
+    String cnl = source.replaceFirst("Module [a-z.]+\\.", "Module " + module + ".");
     var parsed = InProcessCnlParser.parse(cnl, null, null);
     CoreModel.Module core = new CoreLowering().lowerModule(parsed.module());
     return ReplayMappers.DEFAULT.writeValueAsString(core);
@@ -232,8 +302,13 @@ class EvaluateEvidenceEventTest {
   /** replayCapture 只对 HMAC 已验证调用方生效，会走到成功事件之后的回放元数据阶段。 */
   private static Response evaluateSource(String tenant, Map<String, Object> agent, boolean simulate,
                                          boolean replayCapture) throws Exception {
+    return evaluateSource(tenant, VERDICT_SOURCE, agent, simulate, replayCapture);
+  }
+
+  private static Response evaluateSource(String tenant, String source, Map<String, Object> agent, boolean simulate,
+                                         boolean replayCapture) throws Exception {
     Map<String, Object> req = new HashMap<>();
-    req.put("source", VERDICT_SOURCE);
+    req.put("source", source);
     req.put("context", Map.of("amount", 1));
     req.put("functionName", "main");
     req.put("locale", "en-US");

@@ -395,6 +395,40 @@ class InternalCallerFilterTest {
         return copy;
     }
 
+    // cloud 金向量（aster-cloud src/__tests__/services/policy-api-internal-signing.test.ts）：
+    // 输入与期望值逐字照抄、由 python hmac 独立算出，两端各自锁定，任一端 canonical 单边漂移即失败。
+    private static final String GOLDEN_KEY = "s2-1a-0-characterization-key-32b!";
+    private static final String GOLDEN_PATH = "/api/v1/policies/compile";
+    private static final String GOLDEN_BODY = "{\"source\":\"Module m.\",\"locale\":\"en-US\"}";
+    private static final String GOLDEN_SIGNATURE =
+        "68713ca7dcdbc9047e0b40759e5cbd7dd620a66ec2e5c4412dcaf1c5e23fb564";
+
+    private static ContainerRequestContext goldenRequest(String body) {
+        return request("POST", GOLDEN_PATH, "", body, Map.of(
+            "X-Internal-Caller", "cloud-bff",
+            "X-Aster-Timestamp", "1760000000",
+            "X-Aster-Nonce", "ab".repeat(16),
+            "X-Tenant-Id", "tenant-1",
+            "X-User-Role", "member",
+            "X-User-Id", "user-1",
+            "X-User-Business-Roles", "CISO,DPO",
+            "X-Internal-Signature", GOLDEN_SIGNATURE));
+    }
+
+    @Test
+    void cloud金向量原样验签通过() {
+        byte[] body = GOLDEN_BODY.getBytes(StandardCharsets.UTF_8);
+        assertTrue(InternalCallerFilter.signatureMatches(goldenRequest(GOLDEN_BODY), GOLDEN_PATH, body, GOLDEN_KEY));
+    }
+
+    @Test
+    void cloud金向量body改一个字节即拒绝() {
+        String tampered = GOLDEN_BODY.replace("Module m.", "Module n.");
+        byte[] body = tampered.getBytes(StandardCharsets.UTF_8);
+        assertEquals(GOLDEN_BODY.length(), tampered.length());
+        assertFalse(InternalCallerFilter.signatureMatches(goldenRequest(tampered), GOLDEN_PATH, body, GOLDEN_KEY));
+    }
+
     @Test
     void v3签名原样通过() {
         assertEquals("ok", run(request("GET", RECEIPTS, "correlationIds=c1", "", receiptHeaders())));

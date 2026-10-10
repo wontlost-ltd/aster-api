@@ -38,9 +38,20 @@ public record CompileDiagnostic(
     @JsonProperty("blocking")
     boolean blocking
 ) {
+    /**
+     * 编译端点内部故障码（ADR 0046 §4）：编译没做成，不是源码错误。core 码表没有通用的
+     * 编译器内部故障码，故由 api 定义；cloud 保存门把它当作「编译不可用」处理。
+     */
+    public static final String INTERNAL_FAILURE_CODE = "COMPILE_INTERNAL_ERROR";
+
     /** 由 1-based 行列构造 error 级诊断（end==start，ANTLR 无终点信息）。 */
     public static CompileDiagnostic error(int line, int column, String message) {
         return new CompileDiagnostic("error", message, line, column, line, column, null, null, false);
+    }
+
+    /** 编译端点内部故障：1:1 error，带 {@link #INTERNAL_FAILURE_CODE}。 */
+    public static CompileDiagnostic internalFailure(String message) {
+        return new CompileDiagnostic("error", message, 1, 1, 1, 1, INTERNAL_FAILURE_CODE, null, false);
     }
 
     /**

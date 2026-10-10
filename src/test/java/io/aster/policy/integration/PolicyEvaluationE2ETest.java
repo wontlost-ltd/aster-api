@@ -88,11 +88,7 @@ class PolicyEvaluationE2ETest {
         // 否则 full-suite 负载下即时查询会早于异步写入完成（time race）。用 REST 端点轮询等待
         // （await 的轮询线程无 CDI 请求上下文/事务，不能直接跑 blocking Panache 查询——照本类
         // line ~215 的范例走 REST），落库后再用 Panache 在测试主线程读取详情断言。
-        await().atMost(Duration.ofSeconds(3)).until(() -> {
-            var response = given().header("X-Tenant-Id", TENANT_A)
-                .get("/api/v1/audit/type/POLICY_EVALUATION");
-            return response.statusCode() == 200 && !response.jsonPath().getList("$").isEmpty();
-        });
+        awaitEvaluationAudit();
 
         List<AuditLog> logs = AuditLog.findByEventType("POLICY_EVALUATION", TENANT_A);
         assertThat(logs).isNotEmpty();
@@ -144,9 +140,22 @@ class PolicyEvaluationE2ETest {
             .body("result.interestRateBps", equalTo(450)) // V99 种子策略固定值
             .body("error", nullValue());
 
-        // 验证审计日志
+        // 验证审计日志（异步落库，先等再查）
+        awaitEvaluationAudit();
         List<AuditLog> logs = AuditLog.findByEventType("POLICY_EVALUATION", TENANT_A);
         assertThat(logs).isNotEmpty();
+    }
+
+    /**
+     * 等评估审计落库：审计经 @ObservesAsync 异步持久化，经 REST 端点轮询
+     * （轮询线程无 CDI 请求上下文，不能直接跑 blocking Panache 查询）。
+     */
+    private static void awaitEvaluationAudit() {
+        await().atMost(Duration.ofSeconds(3)).until(() -> {
+            var response = given().header("X-Tenant-Id", TENANT_A)
+                .get("/api/v1/audit/type/POLICY_EVALUATION");
+            return response.statusCode() == 200 && !response.jsonPath().getList("$").isEmpty();
+        });
     }
 
     /**

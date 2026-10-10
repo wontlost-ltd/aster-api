@@ -100,7 +100,7 @@ class RateLimitFilterTrialBypassTest {
             Map.of(TrialEndpointGuard.TRIAL_GUARD_PASSED_PROP, Boolean.TRUE)
         );
 
-        Response result = filter.filter(ctx);
+        Response result = filter.filter(ctx).await().indefinitely();
 
         assertNull(result, "trial 路径放行：filter 返回 null 不阻断 chain");
         verifyNoInteractions(limiter);
@@ -123,7 +123,7 @@ class RateLimitFilterTrialBypassTest {
             Map.of(TrialEndpointGuard.TRIAL_GUARD_PASSED_PROP, Boolean.TRUE)
         );
 
-        filter.filter(ctx);
+        filter.filter(ctx).await().indefinitely();
 
         verify(limiter, atLeastOnce()).tryAcquire(anyString(), anyInt(), any());
     }
@@ -134,7 +134,7 @@ class RateLimitFilterTrialBypassTest {
         RateLimitFilter filter = newFilter(true);
         ContainerRequestContext ctx = newCtx("/q/health", Map.of());
 
-        Response result = filter.filter(ctx);
+        Response result = filter.filter(ctx).await().indefinitely();
 
         assertNull(result, "/q/* 必须放行（健康检查）");
     }
@@ -145,7 +145,7 @@ class RateLimitFilterTrialBypassTest {
         RateLimitFilter filter = newFilter(false);
         ContainerRequestContext ctx = newCtx("/api/v1/policies/evaluate", Map.of());
 
-        Response result = filter.filter(ctx);
+        Response result = filter.filter(ctx).await().indefinitely();
 
         assertNull(result);
     }

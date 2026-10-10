@@ -253,7 +253,7 @@ public class PolicyEvaluationResource {
             // 让调用方日志与链上事件可一对一关联；/evaluate 本期不写 policyVersionId。
             EvaluationEvidence evidence = EvaluationEvidence.of(
                 outcomeOf(result.getDecision()), result.getRuleId(), result.getControls(), null, agent,
-                roleOf(result.getDecision()), reasonOf(result.getDecision()));
+                roleOf(result.getDecision()), reasonOf(result.getDecision()), result.getProfile());
             publishPolicyEvaluationEvent(
                 tenantId,
                 request,
@@ -268,7 +268,7 @@ public class PolicyEvaluationResource {
             LOG.infof("Policy evaluation completed in %dms: %s.%s", executionTime, request.policyModule(), request.policyFunction());
             recordApiCall("/api/v1/policies/evaluate", "success", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
             return EvaluationResponse.success(result.getResult(), executionTime, null, null,
-                result.getDecision(), result.getRuleId(), result.getControls())
+                result.getDecision(), result.getRuleId(), result.getControls(), result.getProfile())
                 .withEvidence(evidence.correlationId());
         })
         .onFailure().recoverWithItem(throwable -> {
@@ -369,7 +369,7 @@ public class PolicyEvaluationResource {
                 VerdictView decision = VerdictView.from(result.result()).orElse(null);
                 EvaluationEvidence evidence = EvaluationEvidence.of(
                     outcomeOf(decision), result.ruleId(), result.controls(), null, agent,
-                    roleOf(decision), reasonOf(decision));
+                    roleOf(decision), reasonOf(decision), result.profile());
                 publishPolicyEvaluationEvent(
                     tenantId,
                     new EvaluationRequest(policyModule, policyFunction, contextArray, agent),
@@ -384,7 +384,7 @@ public class PolicyEvaluationResource {
                 LOG.infof("JSON policy evaluation completed in %dms: %s.%s", executionTime, policyModule, policyFunction);
                 recordApiCall("/api/v1/policies/evaluate-json", "success", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
                 return EvaluationResponse.success(result.result(), executionTime, null, null,
-                    decision, result.ruleId(), result.controls())
+                    decision, result.ruleId(), result.controls(), result.profile())
                     .withEvidence(evidence.correlationId());
             })
             .onFailure().recoverWithItem(throwable -> {
@@ -642,7 +642,7 @@ public class PolicyEvaluationResource {
                     evidence = EvaluationEvidence.of(
                         outcomeOf(decision),
                         phase.execResult().ruleId(), phase.execResult().controls(), null, agent,
-                        roleOf(decision), reasonOf(decision));
+                        roleOf(decision), reasonOf(decision), phase.execResult().profile());
                     publishPolicyEvaluationEvent(
                         tenantId,
                         new EvaluationRequest(phase.execResult().moduleName(), phase.execResult().functionName(), new Object[]{request.context()}, agent),
@@ -681,7 +681,8 @@ public class PolicyEvaluationResource {
                     phase.execResult().functionName(),
                     decision,
                     phase.execResult().ruleId(),
-                    phase.execResult().controls())
+                    phase.execResult().controls(),
+                    phase.execResult().profile())
                     .withEvidence(evidence == null ? null : evidence.correlationId());
 
                 if (effectiveReplayCapture) {
@@ -924,9 +925,11 @@ public class PolicyEvaluationResource {
             } catch (jakarta.ws.rs.BadRequestException bre) {
                 throw bre; // 400 直接上抛，不吞成编译失败
             } catch (Exception e) {
+                // 编译通道之外的意外故障：带内部故障码的 1:1 error，让只看诊断的调用方（cloud 保存门）
+                // 既不会把「没编译成」读成「没有错误」，也不会读成源码错误。
                 LOG.warnf("Compile failed: %s", e.getMessage());
                 return CompileResponse.fail(
-                    java.util.List.of(),
+                    java.util.List.of(CompileDiagnostic.internalFailure("编译服务内部错误，未能完成编译，请稍后重试")),
                     "编译失败: " + e.getMessage());
             } finally {
                 ANON_PARSE_PERMITS.release();
@@ -941,7 +944,8 @@ public class PolicyEvaluationResource {
             java.util.List<CompileDiagnostic> warnings = result.getDiagnostics().stream()
                 .map(CompileDiagnostic::from)
                 .toList();
-            return CompileResponse.ok(extractModuleInfo(result.getCoreJson()), warnings);
+            com.fasterxml.jackson.databind.JsonNode core = parseCoreJson(result.getCoreJson());
+            return CompileResponse.ok(extractModuleInfo(core), warnings, extractProfile(core));
         }
         // 结构化诊断优先（含 1-based 行列 + W600 code/severity）；无位置信息的失败回退到
         // 行列=1 的兜底诊断，保证前端总能拿到至少一条标记。
@@ -959,33 +963,48 @@ public class PolicyEvaluationResource {
         return CompileResponse.fail(diags, error);
     }
 
-    /** 从 Core IR JSON 提取模块概要 {name, functions[], types[]}（best-effort，失败返回 null）。 */
-    private CompileResponse.ModuleInfo extractModuleInfo(String coreJson) {
+    /** Core IR JSON → 树（best-effort，空串或解析失败返回 MissingNode，下游提取一律得到 null）。 */
+    private com.fasterxml.jackson.databind.JsonNode parseCoreJson(String coreJson) {
         if (coreJson == null || coreJson.isBlank()) {
-            return null;
+            return com.fasterxml.jackson.databind.node.MissingNode.getInstance();
         }
         try {
-            com.fasterxml.jackson.databind.JsonNode root =
-                io.aster.common.JacksonMappers.PRETTY.readTree(coreJson);
-            String name = root.path("name").asText(null);
-            java.util.List<String> functions = new java.util.ArrayList<>();
-            root.path("functions").forEach(f -> {
-                String fn = f.path("name").asText(null);
-                if (fn != null) functions.add(fn);
-            });
-            java.util.List<String> types = new java.util.ArrayList<>();
-            root.path("types").forEach(t -> {
-                String tn = t.path("name").asText(null);
-                if (tn != null) types.add(tn);
-            });
-            if (name == null && functions.isEmpty() && types.isEmpty()) {
-                return null;
-            }
-            return new CompileResponse.ModuleInfo(name, functions, types);
+            return io.aster.common.JacksonMappers.PRETTY.readTree(coreJson);
         } catch (Exception e) {
-            LOG.debugf("模块概要提取失败（不影响编译成功判定）: %s", e.getMessage());
+            LOG.debugf("Core IR 解析失败（不影响编译成功判定）: %s", e.getMessage());
+            return com.fasterxml.jackson.databind.node.MissingNode.getInstance();
+        }
+    }
+
+    /** 从 Core IR 读模块声明的治理档案 id（ADR 0046 §6；未声明返回 null）。 */
+    private static String extractProfile(com.fasterxml.jackson.databind.JsonNode core) {
+        return core.path("profile").asText(null);
+    }
+
+    /**
+     * 从 Core IR 提取模块概要 {name, functions[], types[]}（全空返回 null）。
+     * Core IR 的声明都在 {@code decls} 中，按 {@code kind} 区分：Func 为规则/函数，Data 与 Enum 为类型。
+     */
+    private static CompileResponse.ModuleInfo extractModuleInfo(com.fasterxml.jackson.databind.JsonNode core) {
+        String name = core.path("name").asText(null);
+        com.fasterxml.jackson.databind.JsonNode decls = core.path("decls");
+        java.util.List<String> functions = declNames(decls, java.util.Set.of("Func"));
+        java.util.List<String> types = declNames(decls, java.util.Set.of("Data", "Enum"));
+        if (name == null && functions.isEmpty() && types.isEmpty()) {
             return null;
         }
+        return new CompileResponse.ModuleInfo(name, functions, types);
+    }
+
+    /** decls 中 kind 属于给定集合的声明名（缺 name 的声明跳过，保持源码顺序）。 */
+    private static java.util.List<String> declNames(com.fasterxml.jackson.databind.JsonNode decls,
+                                                    java.util.Set<String> kinds) {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        decls.forEach(d -> {
+            String v = d.path("name").asText(null);
+            if (v != null && kinds.contains(d.path("kind").asText())) names.add(v);
+        });
+        return names;
     }
 
     /** 匿名 compile 端点的 aliasSet 大小上限（防绕过 16KB 源码限制的成本控制）。 */
@@ -1135,7 +1154,8 @@ public class PolicyEvaluationResource {
                         null,
                         attempt.getResult().getDecision(),
                         attempt.getResult().getRuleId(),
-                        attempt.getResult().getControls()
+                        attempt.getResult().getControls(),
+                        attempt.getResult().getProfile()
                     ));
                     recordApiCall("/api/v1/policies/evaluate/batch", "success", execTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
                 }

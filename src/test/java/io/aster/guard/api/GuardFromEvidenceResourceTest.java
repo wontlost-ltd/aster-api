@@ -54,6 +54,7 @@ class GuardFromEvidenceResourceTest {
   private static final String TENANT = "tenant-guard-evidence-" + RUN;
   private static final String OTHER = "tenant-guard-evidence-other-" + RUN;
   private static final String FROM_EVIDENCE = "/api/v1/guard/decisions/from-evidence";
+  private static final String RECEIPTS = "/api/v1/audit/receipts";
   private static final String DPO = "Data Protection Officer";
   private static final String BEARER_KEY = "ak_test_guard_evidence_member";
   private static final String HMAC_KEY = "s2-1a-0-characterization-key-32b!";
@@ -107,7 +108,7 @@ class GuardFromEvidenceResourceTest {
   }
 
   @Test
-  void HMAC从证据开决策_响应收据指向评估事件_重复调用同一决策() {
+  void HMAC从证据开决策_响应收据为新决策行_重复调用同一决策() {
     String cid = newCid();
     AppendedRecord event = appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
 
@@ -120,8 +121,8 @@ class GuardFromEvidenceResourceTest {
     assertThat(r1.jsonPath().getString("ruleId")).isEqualTo("CUST-DEL-001");
     assertThat(r1.jsonPath().getList("controls")).containsExactly("GDPR:ART17");
     assertThat(r1.jsonPath().getString("policyVersion")).isNull();
-    assertThat(r1.jsonPath().getLong("receipt.auditId")).isEqualTo(event.auditId());
-    assertThat(r1.jsonPath().getString("receipt.hash")).isEqualTo(event.currentHash());
+    assertThat(r1.jsonPath().getLong("receipt.auditId")).isGreaterThan(event.auditId());
+    assertThat(r1.jsonPath().getString("receipt.hash")).isNotEqualTo(event.currentHash());
 
     Response r2 = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
     assertThat(r2.statusCode()).isEqualTo(200);
@@ -130,7 +131,34 @@ class GuardFromEvidenceResourceTest {
     // 决策回读对 HMAC 通道开放
     Response get = signedGet("/api/v1/guard/decisions/" + r1.jsonPath().getString("decisionId"), "", TENANT, "u-req");
     assertThat(get.statusCode()).as(get.asString()).isEqualTo(200);
-    assertThat(get.jsonPath().getLong("receipt.auditId")).isEqualTo(event.auditId());
+    assertThat(get.jsonPath().getLong("receipt.auditId")).isEqualTo(r1.jsonPath().getLong("receipt.auditId"));
+  }
+
+  @Test
+  void 从证据开决策写决策收据行_批准后按decisionId取回审批() {
+    String cid = newCid();
+    appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+    Response opened = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(opened.statusCode()).as(opened.asString()).isEqualTo(200);
+    String decisionId = opened.jsonPath().getString("decisionId");
+
+    Response before = signedGet(RECEIPTS, "decisionIds=" + decisionId, TENANT, "u-export");
+    assertThat(before.statusCode()).as(before.asString()).isEqualTo(200);
+    assertThat(before.jsonPath().getString("receipts[0].eventType")).isEqualTo("ACTION_GUARD_DECISION");
+    assertThat(before.jsonPath().getString("receipts[0].metadata.evidenceCorrelationId")).isEqualTo(cid);
+    assertThat(before.jsonPath().getLong("receipts[0].auditId")).isEqualTo(opened.jsonPath().getLong("receipt.auditId"));
+    assertThat(before.jsonPath().getString("receipts[0].currentHash")).isEqualTo(opened.jsonPath().getString("receipt.hash"));
+
+    Response ok = signedPost("/api/v1/guard/approvals/" + opened.jsonPath().getString("approval.id") + "/approve",
+        "{}", TENANT, "u-dpo", List.of(DPO));
+    assertThat(ok.statusCode()).as(ok.asString()).isEqualTo(200);
+
+    Response after = signedGet(RECEIPTS, "decisionIds=" + decisionId, TENANT, "u-export");
+    assertThat(after.statusCode()).as(after.asString()).isEqualTo(200);
+    assertThat(after.jsonPath().getList("approvals.decidedBy")).containsExactly("u-dpo");
+    assertThat(after.jsonPath().getString("approvals[0].decisionReceiptHash"))
+        .isEqualTo(opened.jsonPath().getString("receipt.hash"));
+    assertThat(after.jsonPath().getList("missing")).isNull();
   }
 
   @Test

@@ -109,6 +109,27 @@ class PolicyResultRedisCacheTest {
         assertThat(second.jsonPath().getMap("$")).doesNotContainKey("reasonCode");
     }
 
+    /** 档案（ADR 0046 §6）须随 Redis 缓存值往返：命中缓存的结果仍带 profile。 */
+    @Test
+    void 声明档案的策略命中Redis缓存仍带profile() {
+        tenant = "tenant-redis-cache-profile-" + UUID.randomUUID().toString().substring(0, 8);
+        String source = DeployedMapParamProbeTest.SOURCE
+            .replace("Module guard.probe.", "Module guard.probe.\nProfile \"governed\".");
+        DeployedMapParamProbeTest.deploy(tenant, MODULE, FUNCTION, source);
+        Map<String, Object> req = Map.of(
+            "principal_id", "agent-42", "principal_type", "agent", "principal_roles", List.of("ops-bot"),
+            "action", "read_customer_record", "resource_type", "customer", "resource_id", "C-1001",
+            "context", Map.of("amount", 250000), "agent_model", "claude-fable-5-1");
+
+        PolicyEvaluationResult first = evaluate(tenant, req);
+        PolicyEvaluationResult second = evaluate(tenant, req);
+
+        assertThat(first.getProfile()).isEqualTo("governed");
+        assertThat(second.isFromCache()).isTrue();
+        assertThat(second.getProfile()).isEqualTo("governed");
+        assertThat(second.getRuleId()).isEqualTo("PROBE-001");
+    }
+
     private PolicyEvaluationResult evaluate(String t, Map<String, Object> req) {
         return evaluationService.evaluatePolicy(t, MODULE, FUNCTION, new Object[]{req})
             .await().atMost(Duration.ofSeconds(30));

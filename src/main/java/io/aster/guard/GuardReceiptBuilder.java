@@ -67,6 +67,15 @@ public class GuardReceiptBuilder {
 
   /** 决策事件：success 仅在 outcome 为 ALLOW 时为 true；reason 经追加器脱敏后写入 audit_logs.reason。 */
   public AuditEvent decisionEvent(GuardDecisionDraft draft, UUID decisionId, UUID approvalId, String performedBy) {
+    return decisionEvent(draft, decisionId, approvalId, performedBy, null);
+  }
+
+  /**
+   * 同上，并以 {@code evidenceCorrelationId} 记下锚定的评估事件相关键（ADR 0042 §3.1 from-evidence 决策），
+   * 使锚定关系落在链上；为 null 时不写该键。
+   */
+  public AuditEvent decisionEvent(GuardDecisionDraft draft, UUID decisionId, UUID approvalId, String performedBy,
+                                  String evidenceCorrelationId) {
     Map<String, Object> m = new LinkedHashMap<>();
     put(m, "decisionId", decisionId);
     put(m, "outcome", draft.outcome());
@@ -87,6 +96,7 @@ public class GuardReceiptBuilder {
     put(m, "sourceHash", draft.policyVersion() == null ? null : clip(draft.policyVersion().sourceHash(), MAX_TEXT));
     put(m, "approvalId", approvalId);
     put(m, "idempotencyKey", clip(draft.idempotencyKey(), MAX_TEXT));
+    put(m, "evidenceCorrelationId", evidenceCorrelationId);
     Long version = draft.policyVersion() == null ? null : draft.policyVersion().version();
     return new AuditEvent(EventType.ACTION_GUARD_DECISION, Instant.now(), draft.tenantId(),
         draft.policyModule(), draft.policyFunction(), null, null, version,

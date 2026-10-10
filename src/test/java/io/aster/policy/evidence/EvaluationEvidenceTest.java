@@ -19,6 +19,17 @@ class EvaluationEvidenceTest {
         "agentProvider", "anthropic", "agentModel", "claude", "agentSession", "s-1", "agentSource", "declared"));
   }
 
+  @Test void 声明档案时写profile键() {
+    EvaluationEvidence e = EvaluationEvidence.of("ALLOW", "R-1", List.of(), null, null, null, null, "governed");
+    assertThat(e.toMetadata()).containsEntry("profile", "governed");
+    assertThat(e.profile()).isEqualTo("governed");
+  }
+
+  @Test void 未声明档案时不写profile键() {
+    assertThat(EvaluationEvidence.of("ALLOW", "R-1", List.of(), null, null).toMetadata()).doesNotContainKey("profile");
+    assertThat(new EvaluationEvidence("c-3", "ALLOW", null, List.of(), null, null, null, null).profile()).isNull();
+  }
+
   @Test void 无agent无规则时只剩correlationId() {
     EvaluationEvidence e = new EvaluationEvidence("c-2", null, null, List.of(), null, null, null, null);
     assertThat(e.toMetadata()).containsOnlyKeys("correlationId");

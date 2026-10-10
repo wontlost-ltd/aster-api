@@ -182,10 +182,12 @@ public class InternalCallerFilter {
         // 审计收据查询（ADR 0041 §2.4）：cloud 证据导出走 HMAC，其它调用方走 Bearer API key。
         // 仅当携带内部调用头时才要求 HMAC；否则不归本 filter，交给 ApiKeyAuthFilter。
         boolean isAuditReceipts = normalizedPath.equals("/api/v1/audit/receipts");
+        // 回放逐项查询（ADR 0044 §4）：同收据先例的双通道。
+        boolean isReplayItems = normalizedPath.equals("/api/v1/replay/items");
         // 从证据开决策（ADR 0042 §3.1）：只对 cloud 开放，无 Bearer 通道，恒要求 HMAC。
         if (normalizedPath.equals(GUARD_FROM_EVIDENCE_PATH)) return Classification.REQUIRE_HMAC;
         // guard 审批与决策回读（ADR 0042 §4.2）：cloud 收件箱走 HMAC，SDK 走 Bearer，同收据先例。
-        if (isAuditReceipts || isGuardDualChannel(normalizedPath)) {
+        if (isAuditReceipts || isReplayItems || isGuardDualChannel(normalizedPath)) {
             return hasInternalCaller ? Classification.REQUIRE_HMAC : Classification.NOT_PROTECTED;
         }
         if (!isEvaluateSource && !isAi && !isWhatIfBatch) return Classification.NOT_PROTECTED;
@@ -304,27 +306,11 @@ public class InternalCallerFilter {
         }
         // cls == REQUIRE_HMAC
 
-        String caller = ctx.getHeaderString("X-Internal-Caller");
-        String timestamp = ctx.getHeaderString("X-Aster-Timestamp");
-        String signature = ctx.getHeaderString("X-Internal-Signature");
-        // 红队 P0-C：nonce 必填（绑定进 canonical + 重放去重）。缺 nonce = 缺凭证拒绝。
-        String nonce = ctx.getHeaderString("X-Aster-Nonce");
-
-        if (!"cloud-bff".equals(caller) || timestamp == null || signature == null || nonce == null) {
-            throw forbidden(missingCredentialReason(p), p);
+        String headerError = precheckHeaders(ctx, System.currentTimeMillis() / 1000);
+        if (headerError != null) {
+            throw forbidden(MISSING_CREDENTIALS.equals(headerError) ? missingCredentialReason(p) : headerError, p);
         }
-
-        // 时间戳防重放（5 min 窗口）
-        long ts;
-        try {
-            ts = Long.parseLong(timestamp);
-        } catch (NumberFormatException e) {
-            throw forbidden("invalid_timestamp", p);
-        }
-        long now = System.currentTimeMillis() / 1000;
-        if (Math.abs(now - ts) > 300) {
-            throw forbidden("stale_timestamp", p);
-        }
+        final String nonce = ctx.getHeaderString("X-Aster-Nonce");
 
         if (hmacKey.isEmpty()) {
             // 配置错误：生产必须配 HMAC；如果缺则全部拒绝
@@ -332,45 +318,19 @@ public class InternalCallerFilter {
             throw forbidden("hmac_not_configured", p);
         }
 
-        // canonical v3（ADR 0042 §4.1）：
-        //   method\npath\nquery\nts\nnonce\nbodySha256\ntenant\nrole\nuserId\nbusinessRoles
-        // v2 只绑 body/tenant/role/nonce，query 与用户身份不在签名内：GET 收据查询的
-        // correlationIds 可被改写，X-User-Id / X-User-Business-Roles 可被中间人替换后冒充审批人。
-        // v3 把它们一并签入，验签通过后下游只取签过的身份。
-        //   query：原始查询串（不含 '?'），无则空串；
-        //   userId：X-User-Id 原值，无则空串；
-        //   businessRoles：X-User-Business-Roles 逗号切分、trim、去空、去重、排序后以 ',' 拼接，
-        //     头里的顺序不影响签名（角色名由 cloud 侧保证不含逗号）。
-        // 不保留 v2 回退：两端同步升级，旧签名一律 invalid_signature。
         // body 需在 @ServerRequestFilter 里缓存后重置流（镜像 RequestSignatureFilter），
         // 故改为 Uni + worker 线程执行（避免 event-loop 阻塞读流 + DB nonce 写入）。
         final String method = ctx.getMethod();
-        final String rawQuery = ctx.getUriInfo().getRequestUri().getRawQuery();
-        final String signedQuery = rawQuery == null ? "" : rawQuery;
         final String tenant = headerOrEmpty(ctx, "X-Tenant-Id");
-        final String role = headerOrEmpty(ctx, "X-User-Role");
         final String userId = headerOrEmpty(ctx, "X-User-Id");
         final List<String> roles = parseRoles(ctx.getHeaderString("X-User-Business-Roles"));
         return Uni.createFrom().item(() -> {
             try {
-                // 红队 P0-C（Codex P1）：显式 body 上限。Quarkus 全局 quarkus.http.limits.
-                // max-body-size=1M 已在 HTTP 层拦超大 body，此处再按 Content-Length 快速失败
-                // （防在 readAllBytes 前就明知超限还去缓冲），defense-in-depth。
-                int declaredLen = ctx.getLength();
-                if (declaredLen > MAX_INTERNAL_BODY_BYTES) {
+                byte[] body = bufferBody(ctx);
+                if (body == null) {
                     throw forbidden("body_too_large", p);
                 }
-                byte[] body = ctx.getEntityStream().readAllBytes();
-                if (body.length > MAX_INTERNAL_BODY_BYTES) {
-                    throw forbidden("body_too_large", p);
-                }
-                ctx.setEntityStream(new ByteArrayInputStream(body));
-
-                String bodySha = sha256Hex(body);
-                String canonical = String.join("\n", method, p, signedQuery, Long.toString(ts), nonce,
-                    bodySha, tenant, role, userId, String.join(",", roles));
-                String expected = sign(hmacKey.get(), canonical);
-                if (!constantTimeEquals(expected, signature)) {
+                if (!signatureMatches(ctx, p, body, hmacKey.get())) {
                     throw forbidden("invalid_signature", p);
                 }
 
@@ -403,6 +363,74 @@ public class InternalCallerFilter {
             }
         }).runSubscriptionOn(io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool())
           .replaceWithVoid();
+    }
+
+    /** {@link #precheckHeaders} 的"缺凭证"结果；对外 reason 由调用方按路径换算。 */
+    public static final String MISSING_CREDENTIALS = "missing_credentials";
+
+    /**
+     * 内部调用头预检：caller 为 cloud-bff、时间戳 / 签名 / nonce 齐全（红队 P0-C：nonce 绑定进
+     * canonical 并去重，缺 nonce 即缺凭证），且时间戳在 5 分钟防重放窗口内。
+     * 通过返回 null，否则返回失败原因；不读 body、不消费 nonce，可供限流等前置 filter 复用。
+     */
+    public static String precheckHeaders(ContainerRequestContext ctx, long nowEpochSecond) {
+        String timestamp = ctx.getHeaderString("X-Aster-Timestamp");
+        boolean complete = "cloud-bff".equals(ctx.getHeaderString("X-Internal-Caller"))
+            && timestamp != null
+            && ctx.getHeaderString("X-Internal-Signature") != null
+            && ctx.getHeaderString("X-Aster-Nonce") != null;
+        if (!complete) {
+            return MISSING_CREDENTIALS;
+        }
+        long ts;
+        try {
+            ts = Long.parseLong(timestamp);
+        } catch (NumberFormatException e) {
+            return "invalid_timestamp";
+        }
+        return Math.abs(nowEpochSecond - ts) > 300 ? "stale_timestamp" : null;
+    }
+
+    /**
+     * 缓冲请求 body 并重置实体流，使下游仍可读取。超过内部调用上限返回 null。
+     *
+     * <p>红队 P0-C（Codex P1）：显式 body 上限。Quarkus 全局 quarkus.http.limits.max-body-size=1M
+     * 已在 HTTP 层拦超大 body，此处再按 Content-Length 快速失败，defense-in-depth。须在 worker 线程调用。
+     */
+    public static byte[] bufferBody(ContainerRequestContext ctx) throws java.io.IOException {
+        if (ctx.getLength() > MAX_INTERNAL_BODY_BYTES) {
+            return null;
+        }
+        byte[] body = ctx.getEntityStream().readAllBytes();
+        ctx.setEntityStream(new ByteArrayInputStream(body));
+        return body.length > MAX_INTERNAL_BODY_BYTES ? null : body;
+    }
+
+    /**
+     * canonical v3 签名比对（ADR 0042 §4.1），调用方须已通过 {@link #precheckHeaders}；不消费 nonce。
+     *
+     * <p>canonical：method\npath\nquery\nts\nnonce\nbodySha256\ntenant\nrole\nuserId\nbusinessRoles。
+     * v2 只绑 body/tenant/role/nonce，query 与用户身份不在签名内：GET 收据查询的 correlationIds
+     * 可被改写，X-User-Id / X-User-Business-Roles 可被中间人替换后冒充审批人；v3 把它们一并签入，
+     * 验签通过后下游只取签过的身份。query 取原始查询串（不含 '?'），缺失的头按空串签名；
+     * businessRoles 逗号切分、trim、去空、去重、排序后以 ',' 拼接，头里的顺序不影响签名。
+     * 不保留 v2 回退：两端同步升级，旧签名一律不匹配。
+     */
+    public static boolean signatureMatches(ContainerRequestContext ctx, String normalizedPath,
+                                           byte[] body, String key) {
+        String rawQuery = ctx.getUriInfo().getRequestUri().getRawQuery();
+        String canonical = String.join("\n",
+            ctx.getMethod(),
+            normalizedPath,
+            rawQuery == null ? "" : rawQuery,
+            Long.toString(Long.parseLong(ctx.getHeaderString("X-Aster-Timestamp"))),
+            ctx.getHeaderString("X-Aster-Nonce"),
+            sha256Hex(body),
+            headerOrEmpty(ctx, "X-Tenant-Id"),
+            headerOrEmpty(ctx, "X-User-Role"),
+            headerOrEmpty(ctx, "X-User-Id"),
+            String.join(",", parseRoles(ctx.getHeaderString("X-User-Business-Roles"))));
+        return constantTimeEquals(sign(key, canonical), ctx.getHeaderString("X-Internal-Signature"));
     }
 
     /**

@@ -101,6 +101,14 @@ public class PolicyEvaluationService {
         "aster.finance.personal_lending.evaluatePersonalLoan"
     );
 
+    /** 在途的版本解析（键 tenant:module:function），见 {@link #resolveVersionId}。 */
+    private final io.aster.policy.cache.SingleFlight<String> versionResolutions =
+        new io.aster.policy.cache.SingleFlight<>();
+
+    /** 在途的按版本加载 + 编译（键 tenant:module:function:versionId），见 {@link #compileOnce}。 */
+    private final io.aster.policy.cache.SingleFlight<io.aster.policy.cache.CompiledPolicy> compilations =
+        new io.aster.policy.cache.SingleFlight<>();
+
     /**
      * 评估策略（带缓存，reactive版本，优化了反射性能）
      *
@@ -129,16 +137,50 @@ public class PolicyEvaluationService {
                 return evaluatePolicyWithVersionId(
                     tenantId, policyModule, policyFunction, cached.versionId(), normalizedContext);
             }
-            // 未命中：在 worker pool 的独立事务里解析，结果回填缓存，避免阻塞 IO 线程。
-            return Uni.createFrom().item(() -> QuarkusTransaction.requiringNew()
-                    .call(() -> loadVersionId(tenantId, policyModule, policyFunction)))
-                .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
-                .invoke(versionId -> versionResolutionCache.put(tenantId, policyModule, policyFunction, versionId))
+            return resolveVersionId(tenantId, policyModule, policyFunction)
+                .emitOn(Infrastructure.getDefaultWorkerPool())
                 .chain(versionId -> evaluatePolicyWithVersionId(tenantId, policyModule, policyFunction, versionId, normalizedContext));
         }
 
         // 非动态加载模式，直接使用 null versionId
         return evaluatePolicyWithVersionId(tenantId, policyModule, policyFunction, null, normalizedContext);
+    }
+
+    /**
+     * 版本解析缓存未命中：在 worker pool 的独立事务里解析，结果回填缓存，避免阻塞 IO 线程。
+     * 同一策略的并发未命中合并为一次解析；调用方用 emitOn 把各订阅者分回 worker pool。
+     */
+    private Uni<String> resolveVersionId(String tenantId, String policyModule, String policyFunction) {
+        return versionResolutions.run(resolutionKey(tenantId, policyModule, policyFunction), () -> {
+            // stamp 先于 DB 读取：读取期间若发生失效，写回被丢弃
+            long stamp = versionResolutionCache.stamp(tenantId, policyModule, policyFunction);
+            return Uni.createFrom()
+                .item(() -> QuarkusTransaction.requiringNew()
+                    .call(() -> loadVersionId(tenantId, policyModule, policyFunction)))
+                .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
+                .invoke(versionId -> versionResolutionCache.putIfUnchanged(
+                    tenantId, policyModule, policyFunction, versionId, stamp));
+        });
+    }
+
+    private static String resolutionKey(String tenantId, String policyModule, String policyFunction) {
+        return tenantId + ":" + policyModule + ":" + policyFunction;
+    }
+
+    /**
+     * 策略变更后失效版本解析：先让新请求不再加入在途解析，再推进失效代次并移除缓存条目，
+     * 使读到旧版本的在途解析无法写回。module 与 function 都给定时只失效该策略，否则失效整个租户。
+     */
+    private void invalidateVersionResolution(String tenantId, String policyModule, String policyFunction) {
+        boolean single = policyModule != null && !policyModule.isBlank()
+            && policyFunction != null && !policyFunction.isBlank();
+        if (single) {
+            versionResolutions.forget(resolutionKey(tenantId, policyModule, policyFunction));
+            versionResolutionCache.invalidate(tenantId, policyModule, policyFunction);
+            return;
+        }
+        versionResolutions.forgetIf(key -> key.startsWith(tenantId + ":"));
+        versionResolutionCache.invalidateTenant(tenantId);
     }
 
     /**
@@ -172,39 +214,41 @@ public class PolicyEvaluationService {
      * Internal method with cache key for proper caching
      */
     Uni<PolicyEvaluationResult> evaluatePolicyWithKey(PolicyCacheKey cacheKey) {
+        return Uni.createFrom().item(() -> cachedCompiled(cacheKey))
+            .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
+            .chain(hit -> hit != null ? Uni.createFrom().item(hit) : compileOnce(cacheKey))
+            .map(compiled -> executeCompiled(cacheKey, compiled.getCoreJson(), compiled.getMetadata(),
+                System.nanoTime(), resolveDeterminismContext() != null))
+            .onFailure().transform(e -> new RuntimeException("Policy evaluation failed", e));
+    }
 
-        return Uni.createFrom().item(() -> {
-            try {
-                // 检测是否处于工作流确定性上下文中
-                DeterminismContext context = resolveDeterminismContext();
-                boolean deterministicTiming = context != null;
+    /**
+     * 热路径：用 cacheKey 已带的 versionId 直接探编译缓存，命中即零 DB、不开事务、不占 JDBC 连接
+     * （500 RPS 下每次都进事务会占满连接池，请求排队等连接、延迟爆炸）。探测与执行同在一次
+     * worker 分派内完成，与命中路径只有一跳。未命中或无 versionId 返回 null。
+     */
+    private io.aster.policy.cache.CompiledPolicy cachedCompiled(PolicyCacheKey cacheKey) {
+        String versionId = cacheKey.getVersionId();
+        if (versionId == null) {
+            return null;
+        }
+        return compiledPolicyCache.get(cacheKey.getTenantId(), cacheKey.getPolicyModule(),
+            cacheKey.getPolicyFunction(), versionId).orElse(null);
+    }
 
-                // 始终使用 System.nanoTime() 记录开始时间，确保时间计算准确
-                long startMarker = System.nanoTime();
-
-                // 热路径优化：用 cacheKey 已带的 versionId 直接探编译缓存。命中即纯 Truffle
-                // 执行（coreJson + metadata，零 DB），**不开 requiringNew() 事务、不占 JDBC
-                // 连接**——这是 500 RPS 下 jdbc.max-size 连接池被占满、请求排队等连接导致
-                // 延迟爆炸 + 反压填满 worker 队列的根因。仅编译缓存 MISS 才进 DB 事务编译。
-                String versionId = cacheKey.getVersionId();
-                if (versionId != null) {
-                    java.util.Optional<io.aster.policy.cache.CompiledPolicy> hit =
-                        compiledPolicyCache.get(cacheKey.getTenantId(), cacheKey.getPolicyModule(),
-                            cacheKey.getPolicyFunction(), versionId);
-                    if (hit.isPresent()) {
-                        return executeCompiled(cacheKey, hit.get().getCoreJson(),
-                            hit.get().getMetadata(), startMarker, deterministicTiming);
-                    }
-                }
-
-                // 编译缓存未命中：在独立事务中加载策略源 + 编译 + 执行（含 DB 访问）。
-                LOG.debugf("使用动态执行路径: %s.%s", cacheKey.getPolicyModule(), cacheKey.getPolicyFunction());
-                return QuarkusTransaction.requiringNew()
-                    .call(() -> evaluateDynamic(cacheKey, startMarker, deterministicTiming));
-            } catch (Throwable e) {
-                throw new RuntimeException("Policy evaluation failed", e);
-            }
-        }).runSubscriptionOn(Infrastructure.getDefaultWorkerPool());
+    /**
+     * 编译缓存未命中：在独立事务中加载策略源并编译，同一版本的并发未命中合并为一次
+     * （single-flight）。执行放在事务之外，连接只在加载与编译期间占用；结果在完成编译的线程上
+     * 发出，用 emitOn 把各等待者分回 worker pool。
+     */
+    private Uni<io.aster.policy.cache.CompiledPolicy> compileOnce(PolicyCacheKey cacheKey) {
+        String key = cacheKey.getTenantId() + ":" + cacheKey.getPolicyModule() + ":"
+            + cacheKey.getPolicyFunction() + ":" + cacheKey.getVersionId();
+        LOG.debugf("使用动态执行路径: %s.%s", cacheKey.getPolicyModule(), cacheKey.getPolicyFunction());
+        return compilations.run(key, () -> Uni.createFrom()
+                .item(() -> QuarkusTransaction.requiringNew().call(() -> loadAndCompile(cacheKey)))
+                .runSubscriptionOn(Infrastructure.getDefaultWorkerPool()))
+            .emitOn(Infrastructure.getDefaultWorkerPool());
     }
 
     /**
@@ -222,12 +266,12 @@ public class PolicyEvaluationService {
         }
         long endMarker = System.nanoTime();
         long durationNanos = deterministicTiming ? 0L : Math.max(0, endMarker - startMarker);
-        // 治理字段（ADR 0039）：ruleId / controls 读被执行函数的 Core IR 注解；
+        // 治理字段（ADR 0039/0046）：ruleId / controls 读被执行函数的 Core IR 注解，profile 读模块声明；
         // 解析失败只降级为无元数据，不影响评估结果。
         CoreModel.Module module = parseCoreModule(coreJson);
         RuleMetadata meta = RuleMetadata.of(module, cacheKey.getPolicyFunction());
         return new PolicyEvaluationResult(executionResult.result(), durationNanos / 1_000_000.0, false,
-            VerdictView.from(executionResult.result()).orElse(null), meta.ruleId(), meta.controls());
+            VerdictView.from(executionResult.result()).orElse(null), meta.ruleId(), meta.controls(), meta.profile());
     }
 
     /**
@@ -267,16 +311,16 @@ public class PolicyEvaluationService {
     }
 
     /**
-     * 动态执行路径：从数据库加载策略并执行
+     * 动态路径：从数据库加载策略版本并取得编译结果（编译缓存优先，未命中则编译并回填）。须在事务内调用。
      */
-    private PolicyEvaluationResult evaluateDynamic(PolicyCacheKey cacheKey, long startMarker, boolean deterministicTiming) {
+    private io.aster.policy.cache.CompiledPolicy loadAndCompile(PolicyCacheKey cacheKey) {
         try {
             // 1. 从数据库加载策略版本。
             // 热路径优化：cacheKey 已带 versionId（动态加载模式下 evaluatePolicy 已解析过活跃
             // 版本，见 loadVersionId + versionResolutionCache）时，直接按 id 单查 findVersionById，
             // **跳过 findActiveCatalog + findActiveVersion 的重复解析**（后者=catalog.findByIdOptional
-            // + version.find 两次往返）。此前 evaluateDynamic 无条件重解析，与 evaluatePolicy 里已
-            // 做的版本解析重复。仅 versionId 缺失（非动态加载路径）才回退到按 module/function 解析活跃版本。
+            // + version.find 两次往返），避免与 evaluatePolicy 里已做的版本解析重复。
+            // 仅 versionId 缺失（非动态加载路径）才回退到按 module/function 解析活跃版本。
             java.util.Optional<PolicyVersion> version;
             String preResolvedVersionId = cacheKey.getVersionId();
             Long preResolvedVersionIdLong = null;
@@ -350,47 +394,35 @@ public class PolicyEvaluationService {
                     versionId
                 );
 
-            String coreJson;
-            CompilationMetadata metadata;
-
             if (cachedPolicy.isPresent()) {
-                // 缓存命中，直接使用缓存的编译结果
-                coreJson = cachedPolicy.get().getCoreJson();
-                metadata = cachedPolicy.get().getMetadata();
                 LOG.debugf("使用缓存的编译结果: %s.%s (version=%s)",
                     cacheKey.getPolicyModule(), cacheKey.getPolicyFunction(), versionId);
-            } else {
-                // 缓存未命中，编译策略并缓存
-                CompilationResult compilationResult = policyCompiler.compile(version.get().id);
-                if (!compilationResult.isSuccess()) {
-                    throw new RuntimeException(String.format(
-                        "策略编译失败: %s.%s - %s",
-                        cacheKey.getPolicyModule(),
-                        cacheKey.getPolicyFunction(),
-                        compilationResult.getErrors()
-                    ));
-                }
-
-                coreJson = compilationResult.getCoreJson();
-                metadata = compilationResult.getMetadata();
-
-                // 缓存编译结果
-                io.aster.policy.cache.CompiledPolicy compiledPolicy = new io.aster.policy.cache.CompiledPolicy(
-                    versionId,
-                    version.get().sourceHash,
-                    coreJson,
-                    metadata
-                );
-                compiledPolicyCache.put(
-                    cacheKey.getTenantId(),
-                    cacheKey.getPolicyModule(),
-                    cacheKey.getPolicyFunction(),
-                    compiledPolicy
-                );
+                return cachedPolicy.get();
             }
 
-            // 3-4. 执行策略 + 计时（与编译缓存命中路径共用，零额外 DB）
-            return executeCompiled(cacheKey, coreJson, metadata, startMarker, deterministicTiming);
+            // 缓存未命中，编译策略并缓存
+            CompilationResult compilationResult = policyCompiler.compile(version.get().id);
+            if (!compilationResult.isSuccess()) {
+                throw new RuntimeException(String.format(
+                    "策略编译失败: %s.%s - %s",
+                    cacheKey.getPolicyModule(),
+                    cacheKey.getPolicyFunction(),
+                    compilationResult.getErrors()
+                ));
+            }
+            io.aster.policy.cache.CompiledPolicy compiledPolicy = new io.aster.policy.cache.CompiledPolicy(
+                versionId,
+                version.get().sourceHash,
+                compilationResult.getCoreJson(),
+                compilationResult.getMetadata()
+            );
+            compiledPolicyCache.put(
+                cacheKey.getTenantId(),
+                cacheKey.getPolicyModule(),
+                cacheKey.getPolicyFunction(),
+                compiledPolicy
+            );
+            return compiledPolicy;
 
         } catch (Exception e) {
             throw new RuntimeException(String.format(
@@ -408,7 +440,7 @@ public class PolicyEvaluationService {
         Object[] normalizedContext = normalizeContext(tenantId, context);
         PolicyCacheKey cacheKey = new PolicyCacheKey(tenantId, policyModule, policyFunction, normalizedContext);
         // 策略变更 → 版本解析缓存也要立即失效，避免短 TTL 窗口内继续解析到旧版本。
-        versionResolutionCache.invalidate(tenantId, policyModule, policyFunction);
+        invalidateVersionResolution(tenantId, policyModule, policyFunction);
         return invalidateCacheWithKey(cacheKey);
     }
 
@@ -416,6 +448,8 @@ public class PolicyEvaluationService {
      * 按租户维度批量失效缓存，可选过滤模块与函数
      */
     public Uni<Void> invalidateCache(String tenantId, String policyModule, String policyFunction) {
+        // 版本解析的失效不依赖结果缓存快照：在途解析尚未产生任何结果缓存键
+        invalidateVersionResolution(tenantId, policyModule, policyFunction);
         Set<PolicyCacheKey> keys = policyCacheManager.snapshotTenantCacheKeys(tenantId);
         if (keys.isEmpty()) {
             return Uni.createFrom().voidItem();
@@ -432,15 +466,6 @@ public class PolicyEvaluationService {
         if (targets.isEmpty()) {
             return Uni.createFrom().voidItem();
         }
-
-        // 同步失效版本解析缓存（按 module.function 去重）。
-        targets.stream()
-            .map(k -> k.getTenantId() + ":" + k.getPolicyModule() + ":" + k.getPolicyFunction())
-            .distinct()
-            .forEach(sig -> {
-                String[] parts = sig.split(":", 3);
-                versionResolutionCache.invalidate(parts[0], parts[1], parts[2]);
-            });
 
         java.util.List<Uni<Void>> invalidations = new java.util.ArrayList<>();
         Cache cache = policyCacheManager.getPolicyResultCache();
@@ -497,7 +522,8 @@ public class PolicyEvaluationService {
             fromCache,
             original.getDecision(),
             original.getRuleId(),
-            original.getControls()
+            original.getControls(),
+            original.getProfile()
         );
     }
 
@@ -677,6 +703,9 @@ public class PolicyEvaluationService {
     public Uni<Void> clearAllCache() {
         // 清空策略缓存
         policyCacheManager.clearAllCache();
+        // 与按策略失效同序：先撤下在途解析，再推进代次清空，使读到旧版本的在途解析无法写回
+        versionResolutions.forgetIf(k -> true);
+        versionResolutionCache.clear();
         // 返回completed Uni，缓存清空由注解处理
         return Uni.createFrom().voidItem();
     }

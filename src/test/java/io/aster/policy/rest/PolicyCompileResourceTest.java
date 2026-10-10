@@ -175,4 +175,143 @@ public class PolicyCompileResourceTest {
             .body("success", is(true))
             .body("diagnostics.findAll { it.code == 'W601' }", hasSize(0));
     }
+
+    @Test
+    public void compileUnregisteredControl_returnsW704AndRegistryVersion() {
+        // ADR 0045 §3：未登记控制点只给 W704 warning，编译仍成功，并回带注册表版本
+        String source = String.join("\n",
+            "Module governance.probe.", "",
+            "@id(\"GP-001\")", "@control(\"EU_AI_ACT:ART14\")", "@control(\"ACME:ART1\")",
+            "Rule decide given amount, produce Verdict:",
+            "  If amount at least 100:", "    Return Verdict.require_approval(\"Reviewer\", \"large\").",
+            "  Return Verdict.allow().", "");
+
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body(java.util.Map.of("source", source, "locale", "en-US"))
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200)
+            .body("success", is(true))
+            .body("controlsRegistryVersion", is("1.1.0"))
+            .body("diagnostics.findAll { it.code == 'W704' }", hasSize(1))
+            .body("diagnostics.find { it.code == 'W704' }.severity", is("warning"))
+            .body("diagnostics.find { it.code == 'W704' }.message", containsString("ACME:ART1"))
+            .body("diagnostics.find { it.code == 'W704' }.blocking", is(false));
+    }
+
+    @Test
+    public void compileDuplicateRuleId_returnsE701AsWarning() {
+        // cloud 保存门按 severity==='error' 拒绝：治理诊断在编译通道必须是 warning
+        String source = String.join("\n",
+            "Module governance.dup.", "",
+            "@id(\"R-1\")",
+            "Rule first given amount, produce Verdict:",
+            "  Return Verdict.allow().", "",
+            "@id(\"R-1\")",
+            "Rule second given amount, produce Verdict:",
+            "  Return Verdict.allow().", "");
+        assertGovernanceWarning(source, "E701");
+    }
+
+    @Test
+    public void compileBlankRuleId_returnsE702AsWarning() {
+        String source = String.join("\n",
+            "Module governance.blank.", "",
+            "@id(\"\")",
+            "Rule decide given amount, produce Verdict:",
+            "  Return Verdict.allow().", "");
+        assertGovernanceWarning(source, "E702");
+    }
+
+    @Test
+    public void compileUnknownProfile_returnsE705AsErrorAndProfile() {
+        // ADR 0046 §4：档案违规保留 error，cloud 保存门据此拒绝；编译本身仍成功
+        String source = String.join("\n",
+            "Module governance.nope.",
+            "Profile \"nope\".", "",
+            "@id(\"P-1\")",
+            "Rule decide given amount, produce Verdict:",
+            "  Return Verdict.allow().", "");
+        compile(source)
+            .body("success", is(true))
+            .body("profile", is("nope"))
+            .body("diagnostics.findAll { it.code == 'E705' }", hasSize(1))
+            .body("diagnostics.find { it.code == 'E705' }.severity", is("error"))
+            .body("diagnostics.find { it.code == 'E705' }.blocking", is(false));
+    }
+
+    @Test
+    public void compileGovernedProfileViolation_returnsE706ErrorAndW700Warning() {
+        String source = String.join("\n",
+            "Module governance.gov.",
+            "Profile \"governed\".", "",
+            "Rule decide given amount, produce Verdict:",
+            "  Return Verdict.allow().", "");
+        compile(source)
+            .body("success", is(true))
+            .body("profile", is("governed"))
+            .body("module.name", is("governance.gov"))
+            .body("diagnostics.findAll { it.code == 'E706' }", not(empty()))
+            .body("diagnostics.findAll { it.code == 'E706' }.severity", everyItem(is("error")))
+            .body("diagnostics.findAll { it.code == 'W700' }", not(empty()))
+            .body("diagnostics.findAll { it.code == 'W700' }.severity", everyItem(is("warning")));
+    }
+
+    @Test
+    public void compileWithoutProfile_omitsProfileField() {
+        String source = String.join("\n",
+            "Module governance.plain.", "",
+            "Rule decide given amount, produce Verdict:",
+            "  Return Verdict.allow().", "");
+        compile(source)
+            .body("success", is(true))
+            .body("$", not(hasKey("profile")))
+            .body("diagnostics.findAll { it.severity == 'error' }", hasSize(0));
+    }
+
+    @Test
+    public void compileModuleSummary_listsRulesAndTypesFromCoreIr() {
+        String source = String.join("\n",
+            "Module summary.probe.", "",
+            "Define Applicant has age, income.", "",
+            "Rule decide given applicant, produce Int:",
+            "  Return 1.", "",
+            "Rule score given x as Int, produce Int:",
+            "  Return x times 2.", "");
+        compile(source)
+            .body("success", is(true))
+            .body("module.name", is("summary.probe"))
+            .body("module.functions", containsInAnyOrder("decide", "score"))
+            .body("module.types", contains("Applicant"));
+    }
+
+    private io.restassured.response.ValidatableResponse compile(String source) {
+        return given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body(java.util.Map.of("source", source, "locale", "en-US"))
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200);
+    }
+
+    private void assertGovernanceWarning(String source, String code) {
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body(java.util.Map.of("source", source, "locale", "en-US"))
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200)
+            .body("success", is(true))
+            .body("diagnostics.findAll { it.code == '" + code + "' }", not(empty()))
+            .body("diagnostics.findAll { it.severity == 'error' }", hasSize(0))
+            .body("diagnostics.findAll { it.code == '" + code + "' }.severity", everyItem(is("warning")))
+            .body("diagnostics.findAll { it.code == '" + code + "' }.blocking", everyItem(is(false)));
+    }
 }

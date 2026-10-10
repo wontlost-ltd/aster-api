@@ -3,6 +3,7 @@ package io.aster.policy.compiler;
 import aster.core.ast.Module;
 import aster.core.ir.CoreModel;
 import aster.core.lowering.CoreLowering;
+import aster.core.typecheck.governance.GovernanceChecker;
 import aster.core.lexicon.SemanticTokenKind;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.common.JacksonMappers;
@@ -40,14 +41,24 @@ public class PolicyCompiler {
     private final PolicySourceRepository policySourceRepository;
     private final io.aster.policy.stability.StabilityEnforcement stabilityEnforcement;
     private final io.aster.policy.analysis.RuleConflictDiagnostics ruleConflictDiagnostics;
+    private final GovernanceChecker governanceChecker;
 
     @Inject
     public PolicyCompiler(PolicySourceRepository policySourceRepository,
                           io.aster.policy.stability.StabilityEnforcement stabilityEnforcement,
                           io.aster.policy.analysis.RuleConflictDiagnostics ruleConflictDiagnostics) {
+        this(policySourceRepository, stabilityEnforcement, ruleConflictDiagnostics, new GovernanceChecker());
+    }
+
+    /** 可注入治理检查器（测试用：验证检查器异常时编译不受影响）。 */
+    PolicyCompiler(PolicySourceRepository policySourceRepository,
+                   io.aster.policy.stability.StabilityEnforcement stabilityEnforcement,
+                   io.aster.policy.analysis.RuleConflictDiagnostics ruleConflictDiagnostics,
+                   GovernanceChecker governanceChecker) {
         this.policySourceRepository = policySourceRepository;
         this.stabilityEnforcement = stabilityEnforcement;
         this.ruleConflictDiagnostics = ruleConflictDiagnostics;
+        this.governanceChecker = governanceChecker;
     }
 
     /**
@@ -105,6 +116,10 @@ public class PolicyCompiler {
             //     Core IR 的 Origin 目前不进序列化（见 ADR 0032）。
             var conflicts = ruleConflictDiagnostics.scan(astModule);
 
+            // 3d. 治理检查（ADR 0039/0045/0046）：W700/E701/E702/W704 为 warning，档案码 E705/E706/E707 为 error
+            //     （E707 由 GovernanceDiagnostics 在检查器故障时合成）；恒随诊断返回，不改变成功与否
+            var governance = GovernanceDiagnostics.scan(coreModule, governanceChecker);
+
             // 4. 提取元数据
             CompilationMetadata metadata = new CompilationMetadata(
                 null,
@@ -112,10 +127,11 @@ public class PolicyCompiler {
                 null
             );
 
-            // 两类诊断合流走同一 diagnostics 通道（与 ADR 0031 W600 同构，非平行字段）
+            // 三类诊断合流走同一 diagnostics 通道（与 ADR 0031 W600 同构，非平行字段）
             List<CompilationResult.Diagnostic> allDiagnostics =
                 new java.util.ArrayList<>(stability.diagnostics());
             allDiagnostics.addAll(conflicts);
+            allDiagnostics.addAll(governance);
 
             return CompilationResult.success(coreJson, metadata, allDiagnostics);
 
