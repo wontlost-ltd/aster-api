@@ -92,6 +92,25 @@ class VersionResolutionInvalidationTest {
             .await().indefinitely());
     }
 
+    @Test
+    void 清空全部缓存后新请求解析到新版本() {
+        assertNewRequestSeesNewVersion(t -> service.clearAllCache().await().indefinitely());
+    }
+
+    @Test
+    void 清空全部缓存撤下已缓存的版本解析() {
+        release.countDown();
+        deploy(V1);
+        assertThat(result(evaluate().await().atMost(Duration.ofSeconds(20)))).isEqualTo(3);
+        assertThat(versionResolutionCache.get(tenant, MODULE, FUNCTION).isPresent()).isTrue();
+
+        deploy(V2);
+        service.clearAllCache().await().indefinitely();
+
+        assertThat(versionResolutionCache.get(tenant, MODULE, FUNCTION).isPresent()).isFalse();
+        assertThat(result(evaluate().await().atMost(Duration.ofSeconds(20)))).isEqualTo(6);
+    }
+
     private void assertNewRequestSeesNewVersion(Consumer<String> invalidate) {
         deploy(V1);
         CompletableFuture<PolicyEvaluationResult> stale = evaluate().subscribeAsCompletionStage().toCompletableFuture();

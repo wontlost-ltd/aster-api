@@ -703,6 +703,9 @@ public class PolicyEvaluationService {
     public Uni<Void> clearAllCache() {
         // 清空策略缓存
         policyCacheManager.clearAllCache();
+        // 与按策略失效同序：先撤下在途解析，再推进代次清空，使读到旧版本的在途解析无法写回
+        versionResolutions.forgetIf(k -> true);
+        versionResolutionCache.clear();
         // 返回completed Uni，缓存清空由注解处理
         return Uni.createFrom().voidItem();
     }
