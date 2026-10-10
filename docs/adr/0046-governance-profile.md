@@ -57,10 +57,11 @@ Profile "eu-ai-act-high-risk".
 |---|---|---|
 | E705 | `GOV_PROFILE_UNKNOWN` | 声明的档案不在注册表中（定位在模块起始，即 `Module` 行） |
 | E706 | `GOV_PROFILE_VIOLATION` | `requires.ruleId` 且规则缺 `@id`；`requires.registeredControls` 且规则含未登记或形态非法的 `@control`；`requires.frameworks` 非空且规则没有任何一个属于这些框架的已登记 `@control`。消息参数含档案 id、规则名、被违反的要求 |
+| E707 | `GOV_CHECK_UNAVAILABLE` | 不由检查器报出：检查器自身抛运行时异常、无法完成声明了档案的模块的检查时，由 aster-api 编译通道合成（见下文「检查器失败的取舍」）。消息参数含模块名与档案 id |
 
 - 同一规则同一要求、同一键只报一次：`missing @id` 与框架要求每条规则至多一条，`unregistered control {control}` 按每个不同的控制点键各报一条。W700/W704 照常报出（警告），E706 是档案层面的额外错误。
 - aster-api 编译通道：E705/E706 **保持 error 严重级**（其余治理码仍按 ADR 0045 §9.1 降为 warning）。编译 `success` 仍为 true；aster-cloud 现有保存门按 `severity === 'error'` 拒绝保存，因此声明了档案且不合规的模块无法保存、建版或审批。未声明档案的模块不受影响，所以今天能保存的策略明天仍能保存。
-- 检查器失败的取舍：治理检查器抛运行时异常时，编译 `success` 仍为 true，aster-api 以 error 级别记录该异常。未声明档案的模块沿用 ADR 0045 的降级，结果中不带治理诊断；声明了档案的模块改为得到一条无源码位置（1:1）的 E706 error，消息说明治理检查未能执行、档案无法验证，档案保存门因此拒绝保存（fail-closed）。
+- 检查器失败的取舍：治理检查器抛运行时异常时，编译 `success` 仍为 true，aster-api 以 error 级别记录该异常。未声明档案的模块沿用 ADR 0045 的降级，结果中不带治理诊断；声明了档案的模块改为得到一条无源码位置（1:1）的 E707 `GOV_CHECK_UNAVAILABLE` error（`blocking` 仍为 false），消息取 core 模板，说明治理检查未能对该模块与档案执行，档案保存门因此拒绝保存（fail-closed）。用独立的 E707 而不是 E706，是因为基础设施故障不能被读成策略违规：作者无需也无法改源码，aster-cloud 把 E707 映射为可重试的 503 `compile_unavailable`（与下一条不可达时的处理一致），而不是 400 `compile_error`。
 - 编译检查不可达时的取舍：aster-cloud 保存门调用编译端点遇到超时（408）、5xx 或网络失败时，若源码声明了档案（保守识别：字符串字面量与注释之外出现档案关键字并后接字符串字面量，不要求位置），则与上游限流（429）一样拒绝保存并返回 503 `compile_unavailable` 与 `Retry-After`；未声明档案的源码仍照旧放行。
 
 ## 5. 决策四：When / Otherwise 语法糖
@@ -87,7 +88,7 @@ Rule decide given applicant as Applicant, produce Verdict:
 
   这些词在 Java 侧经 Canonicalizer 规范化为英文后，作为软关键字（`structKeywordName`）出现在语法糖语句中，不新增硬词法记号，因而 `Verdict.allow()` 等成员名不受影响。新 kind 与 PROFILE 在 Java `OPTIONAL_KINDS` 与 TS `CI_OPTIONAL_KINDS` 中保留到发版完成（ADR 0029 先例）。hi 用词为暂定，待母语审校。
 - 降糖在两个前端的解析/AST 构建阶段完成：`When` → `If <cond>: Return Verdict.<op>(…)`；`Otherwise` → `Return Verdict.<op>(…)`。不新增 IR 节点、不改求值器；trace、证据与长写法一致。
-- `Otherwise` 必须是所在块的最后一条语句，否则为**解析错误**（消息 `Otherwise must be the last statement of its block`，无错误码）：两个引擎都没有带码的解析期诊断通道，原设想的 E707 撤销。参数的类型与个数检查沿用降糖后对 `Verdict.*` 的既有检查（E703）。
+- `Otherwise` 必须是所在块的最后一条语句，否则为**解析错误**（消息 `Otherwise must be the last statement of its block`，无错误码）：两个引擎都没有带码的解析期诊断通道，原设想给它的 E707 撤销（E707 后改作 `GOV_CHECK_UNAVAILABLE`，见 §4）。参数的类型与个数检查沿用降糖后对 `Verdict.*` 的既有检查（E703）。
 - 语法糖与长写法的 IR 在去除 origin 后相等（语法糖把 If 与 Return 放在同一行，origin 行号不同）；parity 对比以此为准。
 - TS 格式化器从 AST 打印：保留 `Profile` 行，语法糖按长写法输出（语义不变）——已知限制，见 §10。
 

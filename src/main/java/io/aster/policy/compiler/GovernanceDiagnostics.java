@@ -8,9 +8,11 @@ import org.jboss.logging.Logger;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 /**
- * 治理诊断（W700/E701/E702/W704/E705/E706）→ 编译诊断。
+ * 治理诊断（W700/E701/E702/W704/E705/E706/E707）→ 编译诊断。
  *
  * <p>编译端点此前不跑治理检查；ADR 0045 起与稳定性（W600）、规则冲突（W601）诊断
  * 走同一 diagnostics 通道合流。治理诊断 blocking 恒 false，不改变编译成功与否；
@@ -18,8 +20,9 @@ import java.util.List;
  * 只调用 {@link GovernanceChecker#checkModule}，不跑完整类型检查。
  * 检查器抛出运行时异常时不改变编译成功与否（与 RuleConflictDiagnostics 同构）：
  * 该路径同时服务 /validate 与求值的缓存编译，治理检查绝不能把成功编译变成失败。
- * 未声明档案的模块降级为无治理诊断；声明了档案的模块合成一条 E706 error，
- * 档案无法验证时保存门须 fail-closed，而不是静默放行。
+ * 未声明档案的模块降级为无治理诊断；声明了档案的模块合成一条 E707 error，
+ * 档案无法验证时保存门须 fail-closed，而不是静默放行；用独立码而非 E706，
+ * 使基础设施故障不被读成策略违规（cloud 将 E707 视为可重试的 503）。
  */
 public final class GovernanceDiagnostics {
 
@@ -33,18 +36,18 @@ public final class GovernanceDiagnostics {
             return map(checker.checkModule(core));
         } catch (RuntimeException e) {
             LOG.errorf(e, "治理检查失败（模块 %s，档案 %s；不影响编译）: %s", core.name, core.profile, e.getMessage());
-            return core.profile == null ? List.of() : List.of(checkUnavailable(core.profile));
+            return core.profile == null ? List.of() : List.of(checkUnavailable(core.name, core.profile));
         }
     }
 
-    /** 档案无法验证：E706 error 无源码位置，归一到 1/1，供保存门拒绝。 */
-    private static CompilationResult.Diagnostic checkUnavailable(String profile) {
-        String message = "Governance check could not run; profile '" + profile
-            + "' cannot be verified. Retry later.";
+    /** 档案无法验证：E707 error 无源码位置，归一到 1/1，供保存门拒绝；消息用 core 模板。 */
+    private static CompilationResult.Diagnostic checkUnavailable(String module, String profile) {
+        ErrorCode code = ErrorCode.GOV_CHECK_UNAVAILABLE;
         return new CompilationResult.Diagnostic(
             1, 1, 1, 1,
-            message,
-            ErrorCode.GOV_PROFILE_VIOLATION.code(),
+            // 匿名模块名为 null，Map.of 不接受 null，须先归一
+            code.render(Map.of("module", Objects.requireNonNullElse(module, "<anonymous>"), "profile", profile)),
+            code.code(),
             "error",
             null, null,
             false);
