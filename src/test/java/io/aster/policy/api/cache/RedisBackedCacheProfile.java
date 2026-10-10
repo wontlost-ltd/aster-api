@@ -15,8 +15,12 @@ import java.util.UUID;
  */
 public class RedisBackedCacheProfile implements QuarkusTestProfile {
 
-    /** 每个测试 JVM 一个，同一运行内的 Redis 测试类共享，跨运行互不可见。 */
-    static final String RUN_ID = UUID.randomUUID().toString();
+    /**
+     * 每个测试 JVM 一个，同一运行内的 Redis 测试类共享，跨运行互不可见。存放在系统属性里：
+     * profile 类会被测试与 Quarkus 两个类加载器各加载一次，静态字段各自初始化会得到不同的值。
+     */
+    static final String RUN_ID = (String) System.getProperties()
+        .computeIfAbsent("aster.test.redis-run-id", k -> UUID.randomUUID().toString());
 
     @Override
     public Map<String, String> getConfigOverrides() {
