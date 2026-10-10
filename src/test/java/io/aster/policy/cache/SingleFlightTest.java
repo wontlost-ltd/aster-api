@@ -51,6 +51,20 @@ class SingleFlightTest {
         assertThat(executions.get()).isEqualTo(2);
     }
 
+    @Test
+    void 在途期间的同键调用都收到首个执行的失败() {
+        CompletableFuture<String> gate = new CompletableFuture<>();
+        var a = flight.run("k", () -> pending(gate)).subscribeAsCompletionStage();
+        var b = flight.run("k", () -> pending(gate)).subscribeAsCompletionStage();
+        IllegalStateException boom = new IllegalStateException("boom");
+
+        gate.completeExceptionally(boom);
+
+        assertThatThrownBy(a::join).hasCause(boom);
+        assertThatThrownBy(b::join).hasCause(boom);
+        assertThat(executions.get()).isEqualTo(1);
+    }
+
     private Uni<String> pending(CompletableFuture<String> gate) {
         return Uni.createFrom().completionStage(() -> {
             executions.incrementAndGet();

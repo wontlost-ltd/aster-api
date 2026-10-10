@@ -3,6 +3,7 @@ package io.aster.policy.cache;
 import io.smallrye.mutiny.Uni;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 /**
@@ -19,12 +20,22 @@ public final class SingleFlight<T> {
 
     /** 返回该键在途的执行；无在途执行时以 work 发起一次新的执行。 */
     public Uni<T> run(String key, Supplier<Uni<T>> work) {
-        // 语句块 lambda 选中 eventually(Runnable)：表达式 lambda 会返回被移除的 Uni，
-        // 匹配到 eventually(Supplier<Uni>) 而去等待自身，造成死锁。
-        return inFlight.computeIfAbsent(key, k -> work.get()
+        return inFlight.computeIfAbsent(key, k -> flight(k, work));
+    }
+
+    /**
+     * 结束时只移除自己：在途表里该键若已换成另一次执行，不能把它一并移走。
+     * 语句块 lambda 选中 eventually(Runnable)；表达式 lambda 会返回被移除的 Uni，
+     * 匹配到 eventually(Supplier&lt;Uni&gt;) 而去等待自身，造成死锁。
+     */
+    private Uni<T> flight(String key, Supplier<Uni<T>> work) {
+        AtomicReference<Uni<T>> self = new AtomicReference<>();
+        Uni<T> uni = work.get()
             .eventually(() -> {
-                inFlight.remove(k);
+                inFlight.remove(key, self.get());
             })
-            .memoize().indefinitely());
+            .memoize().indefinitely();
+        self.set(uni);
+        return uni;
     }
 }
