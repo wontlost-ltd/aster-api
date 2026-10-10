@@ -116,4 +116,61 @@ class PolicyVersionResolutionCacheTest {
         assertThat(c.get("u", "m", "f").versionId()).isEqualTo("2");
         assertThat(c.get("u", "m", "g").versionId()).isEqualTo("3");
     }
+    @Test
+    void 清空后失效代次全部回收() {
+        PolicyVersionResolutionCache c = newCache(5000);
+        c.invalidate("t", "m", "f");
+        c.invalidate("u", "m", "g");
+        c.invalidateTenant("t");
+        c.invalidateTenant("v");
+        c.clear();
+        assertThat(c.trackedGenerations()).isZero();
+    }
+
+    @Test
+    void 租户失效回收该租户的键代次() {
+        PolicyVersionResolutionCache c = newCache(5000);
+        c.invalidate("t", "m", "f");
+        c.invalidate("t", "m", "g");
+        c.invalidate("u", "m", "f");
+        c.invalidateTenant("t");
+        // 剩下 u 的键代次与 t 的租户代次
+        assertThat(c.trackedGenerations()).isEqualTo(2);
+    }
+
+    @Test
+    void 回收后旧stamp仍被拒绝() {
+        PolicyVersionResolutionCache c = newCache(5000);
+        long beforeKey = c.stamp("t", "m", "f");
+        c.invalidate("t", "m", "f");
+        long afterKey = c.stamp("t", "m", "f");
+        c.invalidateTenant("t");
+        c.putIfUnchanged("t", "m", "f", "old", beforeKey);
+        c.putIfUnchanged("t", "m", "f", "old", afterKey);
+        assertThat(c.get("t", "m", "f").isPresent()).isFalse();
+
+        long beforeClear = c.stamp("t", "m", "f");
+        c.invalidate("u", "m", "f");
+        long uBeforeClear = c.stamp("u", "m", "f");
+        c.clear();
+        c.putIfUnchanged("t", "m", "f", "old", beforeClear);
+        c.putIfUnchanged("u", "m", "f", "old", uBeforeClear);
+        assertThat(c.get("t", "m", "f").isPresent()).isFalse();
+        assertThat(c.get("u", "m", "f").isPresent()).isFalse();
+
+        // 回收后新取得的 stamp 照常写入
+        c.putIfUnchanged("t", "m", "f", "new", c.stamp("t", "m", "f"));
+        assertThat(c.get("t", "m", "f").versionId()).isEqualTo("new");
+    }
+
+    @Test
+    void 租户失效不回收id以该租户为前缀的其他租户的键代次() {
+        PolicyVersionResolutionCache c = newCache(5000);
+        long before = c.stamp("a:b", "m", "f");
+        c.invalidate("a:b", "m", "f");
+        // 租户 "a" 的键前缀 "a:" 也是 "a:b:m:f" 的前缀；回收不能误删别的租户的代次
+        c.invalidateTenant("a");
+        c.putIfUnchanged("a:b", "m", "f", "old", before);
+        assertThat(c.get("a:b", "m", "f").isPresent()).isFalse();
+    }
 }
