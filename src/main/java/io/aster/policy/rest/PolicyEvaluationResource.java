@@ -979,23 +979,28 @@ public class PolicyEvaluationResource {
         return core.path("profile").asText(null);
     }
 
-    /** 从 Core IR 提取模块概要 {name, functions[], types[]}（全空返回 null）。 */
+    /**
+     * 从 Core IR 提取模块概要 {name, functions[], types[]}（全空返回 null）。
+     * Core IR 的声明都在 {@code decls} 中，按 {@code kind} 区分：Func 为规则/函数，Data 与 Enum 为类型。
+     */
     private static CompileResponse.ModuleInfo extractModuleInfo(com.fasterxml.jackson.databind.JsonNode core) {
         String name = core.path("name").asText(null);
-        java.util.List<String> functions = namesOf(core.path("functions"));
-        java.util.List<String> types = namesOf(core.path("types"));
+        com.fasterxml.jackson.databind.JsonNode decls = core.path("decls");
+        java.util.List<String> functions = declNames(decls, java.util.Set.of("Func"));
+        java.util.List<String> types = declNames(decls, java.util.Set.of("Data", "Enum"));
         if (name == null && functions.isEmpty() && types.isEmpty()) {
             return null;
         }
         return new CompileResponse.ModuleInfo(name, functions, types);
     }
 
-    /** 数组元素的 name 字段列表（缺 name 的元素跳过）。 */
-    private static java.util.List<String> namesOf(com.fasterxml.jackson.databind.JsonNode array) {
+    /** decls 中 kind 属于给定集合的声明名（缺 name 的声明跳过，保持源码顺序）。 */
+    private static java.util.List<String> declNames(com.fasterxml.jackson.databind.JsonNode decls,
+                                                    java.util.Set<String> kinds) {
         java.util.List<String> names = new java.util.ArrayList<>();
-        array.forEach(n -> {
-            String v = n.path("name").asText(null);
-            if (v != null) names.add(v);
+        decls.forEach(d -> {
+            String v = d.path("name").asText(null);
+            if (v != null && kinds.contains(d.path("kind").asText())) names.add(v);
         });
         return names;
     }

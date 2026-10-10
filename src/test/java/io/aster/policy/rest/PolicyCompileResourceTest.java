@@ -272,6 +272,22 @@ public class PolicyCompileResourceTest {
             .body("diagnostics.findAll { it.severity == 'error' }", hasSize(0));
     }
 
+    @Test
+    public void compileModuleSummary_listsRulesAndTypesFromCoreIr() {
+        String source = String.join("\n",
+            "Module summary.probe.", "",
+            "Define Applicant has age, income.", "",
+            "Rule decide given applicant, produce Int:",
+            "  Return 1.", "",
+            "Rule score given x as Int, produce Int:",
+            "  Return x times 2.", "");
+        compile(source)
+            .body("success", is(true))
+            .body("module.name", is("summary.probe"))
+            .body("module.functions", containsInAnyOrder("decide", "score"))
+            .body("module.types", contains("Applicant"));
+    }
+
     private io.restassured.response.ValidatableResponse compile(String source) {
         return given()
             .contentType(ContentType.JSON)
