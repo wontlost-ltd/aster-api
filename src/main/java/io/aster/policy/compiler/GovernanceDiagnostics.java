@@ -16,8 +16,10 @@ import java.util.List;
  * 走同一 diagnostics 通道合流。治理诊断 blocking 恒 false，不改变编译成功与否；
  * 档案违规（E705/E706，ADR 0046 §4）保留 error 严重级，由 cloud 保存门据此拒绝保存。
  * 只调用 {@link GovernanceChecker#checkModule}，不跑完整类型检查。
- * 检查器抛出运行时异常时降级为无治理诊断（与 RuleConflictDiagnostics 同构）：
+ * 检查器抛出运行时异常时不改变编译成功与否（与 RuleConflictDiagnostics 同构）：
  * 该路径同时服务 /validate 与求值的缓存编译，治理检查绝不能把成功编译变成失败。
+ * 未声明档案的模块降级为无治理诊断；声明了档案的模块合成一条 E706 error，
+ * 档案无法验证时保存门须 fail-closed，而不是静默放行。
  */
 public final class GovernanceDiagnostics {
 
@@ -30,10 +32,22 @@ public final class GovernanceDiagnostics {
         try {
             return map(checker.checkModule(core));
         } catch (RuntimeException e) {
-            // 降级会连同阻断性的 E705/E706 一起丢掉，档案保存门因此放行，须以 error 级别记录
-            LOG.errorf(e, "治理检查失败（降级为无治理诊断，E705/E706 一并缺失，不影响编译）: %s", e.getMessage());
-            return List.of();
+            LOG.errorf(e, "治理检查失败（模块 %s，档案 %s；不影响编译）: %s", core.name, core.profile, e.getMessage());
+            return core.profile == null ? List.of() : List.of(checkUnavailable(core.profile));
         }
+    }
+
+    /** 档案无法验证：E706 error 无源码位置，归一到 1/1，供保存门拒绝。 */
+    private static CompilationResult.Diagnostic checkUnavailable(String profile) {
+        String message = "Governance check could not run; profile '" + profile
+            + "' cannot be verified. Retry later.";
+        return new CompilationResult.Diagnostic(
+            1, 1, 1, 1,
+            message,
+            ErrorCode.GOV_PROFILE_VIOLATION.code(),
+            "error",
+            null, null,
+            false);
     }
 
     private static List<CompilationResult.Diagnostic> map(List<Diagnostic> found) {
