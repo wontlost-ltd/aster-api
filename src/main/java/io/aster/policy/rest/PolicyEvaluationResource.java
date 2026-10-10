@@ -942,8 +942,8 @@ public class PolicyEvaluationResource {
             java.util.List<CompileDiagnostic> warnings = result.getDiagnostics().stream()
                 .map(CompileDiagnostic::from)
                 .toList();
-            return CompileResponse.ok(extractModuleInfo(result.getCoreJson()), warnings,
-                extractProfile(result.getCoreJson()));
+            com.fasterxml.jackson.databind.JsonNode core = parseCoreJson(result.getCoreJson());
+            return CompileResponse.ok(extractModuleInfo(core), warnings, extractProfile(core));
         }
         // 结构化诊断优先（含 1-based 行列 + W600 code/severity）；无位置信息的失败回退到
         // 行列=1 的兜底诊断，保证前端总能拿到至少一条标记。
@@ -961,46 +961,43 @@ public class PolicyEvaluationResource {
         return CompileResponse.fail(diags, error);
     }
 
-    /** 从 Core IR JSON 读模块声明的治理档案 id（ADR 0046 §6；best-effort，未声明或失败返回 null）。 */
-    private String extractProfile(String coreJson) {
+    /** Core IR JSON → 树（best-effort，空串或解析失败返回 MissingNode，下游提取一律得到 null）。 */
+    private com.fasterxml.jackson.databind.JsonNode parseCoreJson(String coreJson) {
         if (coreJson == null || coreJson.isBlank()) {
-            return null;
+            return com.fasterxml.jackson.databind.node.MissingNode.getInstance();
         }
         try {
-            return io.aster.common.JacksonMappers.PRETTY.readTree(coreJson).path("profile").asText(null);
+            return io.aster.common.JacksonMappers.PRETTY.readTree(coreJson);
         } catch (Exception e) {
-            LOG.debugf("档案提取失败（不影响编译成功判定）: %s", e.getMessage());
-            return null;
+            LOG.debugf("Core IR 解析失败（不影响编译成功判定）: %s", e.getMessage());
+            return com.fasterxml.jackson.databind.node.MissingNode.getInstance();
         }
     }
 
-    /** 从 Core IR JSON 提取模块概要 {name, functions[], types[]}（best-effort，失败返回 null）。 */
-    private CompileResponse.ModuleInfo extractModuleInfo(String coreJson) {
-        if (coreJson == null || coreJson.isBlank()) {
+    /** 从 Core IR 读模块声明的治理档案 id（ADR 0046 §6；未声明返回 null）。 */
+    private static String extractProfile(com.fasterxml.jackson.databind.JsonNode core) {
+        return core.path("profile").asText(null);
+    }
+
+    /** 从 Core IR 提取模块概要 {name, functions[], types[]}（全空返回 null）。 */
+    private static CompileResponse.ModuleInfo extractModuleInfo(com.fasterxml.jackson.databind.JsonNode core) {
+        String name = core.path("name").asText(null);
+        java.util.List<String> functions = namesOf(core.path("functions"));
+        java.util.List<String> types = namesOf(core.path("types"));
+        if (name == null && functions.isEmpty() && types.isEmpty()) {
             return null;
         }
-        try {
-            com.fasterxml.jackson.databind.JsonNode root =
-                io.aster.common.JacksonMappers.PRETTY.readTree(coreJson);
-            String name = root.path("name").asText(null);
-            java.util.List<String> functions = new java.util.ArrayList<>();
-            root.path("functions").forEach(f -> {
-                String fn = f.path("name").asText(null);
-                if (fn != null) functions.add(fn);
-            });
-            java.util.List<String> types = new java.util.ArrayList<>();
-            root.path("types").forEach(t -> {
-                String tn = t.path("name").asText(null);
-                if (tn != null) types.add(tn);
-            });
-            if (name == null && functions.isEmpty() && types.isEmpty()) {
-                return null;
-            }
-            return new CompileResponse.ModuleInfo(name, functions, types);
-        } catch (Exception e) {
-            LOG.debugf("模块概要提取失败（不影响编译成功判定）: %s", e.getMessage());
-            return null;
-        }
+        return new CompileResponse.ModuleInfo(name, functions, types);
+    }
+
+    /** 数组元素的 name 字段列表（缺 name 的元素跳过）。 */
+    private static java.util.List<String> namesOf(com.fasterxml.jackson.databind.JsonNode array) {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        array.forEach(n -> {
+            String v = n.path("name").asText(null);
+            if (v != null) names.add(v);
+        });
+        return names;
     }
 
     /** 匿名 compile 端点的 aliasSet 大小上限（防绕过 16KB 源码限制的成本控制）。 */

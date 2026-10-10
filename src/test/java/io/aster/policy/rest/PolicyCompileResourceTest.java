@@ -253,6 +253,7 @@ public class PolicyCompileResourceTest {
         compile(source)
             .body("success", is(true))
             .body("profile", is("governed"))
+            .body("module.name", is("governance.gov"))
             .body("diagnostics.findAll { it.code == 'E706' }", not(empty()))
             .body("diagnostics.findAll { it.code == 'E706' }.severity", everyItem(is("error")))
             .body("diagnostics.findAll { it.code == 'W700' }", not(empty()))
