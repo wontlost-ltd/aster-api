@@ -1,6 +1,6 @@
 # ADR 0022：关键词别名（官方同义词扩充）
 
-- 状态：IMPLEMENTED（en-US，双引擎；非英语数据待母语者审核）
+- 状态：IMPLEMENTED（en-US，双引擎；非英语数据待母语者审核）；方案 A 的官方内置别名已回滚，别名机制保留给方案 D（§11），见 §10 末
 - 日期：2026-06-24（提案）/ 2026-06-25（实现）
 - 决策者：用户已拍板（§9 三问：①触碰语义冻结=接受，加法兼容；②先做 corpus 调研=已完成；③运算符纳入=是）
 - 相关：ADR 0014（领域词汇翻译）、ADR 0018（统一语言包）、ADR 0016（IR 字段级 parity）、`keyword-identifier-disambiguation`、`ai-positioning-and-rollback-gap`
@@ -146,6 +146,8 @@ readonly aliases?: Readonly<Partial<Record<SemanticTokenKind, readonly string[]>
 - 非英语 zh/de/hi 别名数据：候选已机检（research 文档），但需**母语者审核地道性**后再入包；export 链已就绪，添加后零引擎改动。
 - 跨引擎 tier1-parity manifest fixture：当前双引擎各自单测已证 alias→同IR；接入 aster-lang-test PR-blocking manifest 需多仓发布编排（core/ts 先发版），属发布阶段工作。
 - 多仓发版与 PR：core/ts 改动在本地分支未推送（grammar/lexicon 改动触发 PR-blocking gate，需按 [[hindi-full-support]] 的发版顺序 core→en/zh/de→truffle→api 协调）。
+
+**方案 A 已回滚**：官方 builtin 词表不内置别名，上面"英文首批别名清单"不再随 en-US 发布。别名机制保留，供方案 D（§11：用户自定义、随版本快照固化的 aliasSet）在编译期注入。此前这条说明只写在 aster-lang-ts `src/config/lexicons/en-US.ts` 的手写注释里（见 9b723aa），该文件由词表生成器产出，重新生成时注释会丢失（d5771e0 即如此），故记录在本 ADR。
 
 **降级记录**：本实现按 CLAUDE.md 路径 B（Claude 生成 → Codex 审查），但 Codex MCP 配额耗尽（恢复 2026-06-25 14:06），改为 Claude 自审 + 双引擎实测替代。配额恢复后应补 Codex 交叉审查再发版。
 
