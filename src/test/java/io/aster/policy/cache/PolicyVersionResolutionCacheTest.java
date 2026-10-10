@@ -16,6 +16,11 @@ class PolicyVersionResolutionCacheTest {
         return c;
     }
 
+    /** 不经过在途解析时的写入：先取当前代次，再按代次写回。 */
+    private static void store(PolicyVersionResolutionCache c, String t, String m, String f, String v) {
+        c.putIfUnchanged(t, m, f, v, c.stamp(t, m, f));
+    }
+
     @Test
     void missWhenEmpty() {
         PolicyVersionResolutionCache c = newCache(5000);
@@ -25,7 +30,7 @@ class PolicyVersionResolutionCacheTest {
     @Test
     void hitAfterPut() {
         PolicyVersionResolutionCache c = newCache(5000);
-        c.put("t", "m", "f", "42");
+        store(c, "t", "m", "f", "42");
         PolicyVersionResolutionCache.Holder h = c.get("t", "m", "f");
         assertThat(h.isPresent()).isTrue();
         assertThat(h.versionId()).isEqualTo("42");
@@ -34,7 +39,7 @@ class PolicyVersionResolutionCacheTest {
     @Test
     void nullSentinelCachesNoActiveVersionWithoutPenetration() {
         PolicyVersionResolutionCache c = newCache(5000);
-        c.put("t", "m", "f", null); // 「无活跃版本」也缓存，避免反复查 DB
+        store(c, "t", "m", "f", null); // 「无活跃版本」也缓存，避免反复查 DB
         PolicyVersionResolutionCache.Holder h = c.get("t", "m", "f");
         assertThat(h.isPresent()).isTrue();   // 命中（无需再查 DB）
         assertThat(h.versionId()).isNull();   // 但值为 null = 无活跃版本
@@ -43,7 +48,7 @@ class PolicyVersionResolutionCacheTest {
     @Test
     void expiresAfterTtl() throws InterruptedException {
         PolicyVersionResolutionCache c = newCache(30); // 30ms TTL
-        c.put("t", "m", "f", "7");
+        store(c, "t", "m", "f", "7");
         assertThat(c.get("t", "m", "f").isPresent()).isTrue();
         Thread.sleep(60);
         assertThat(c.get("t", "m", "f").isPresent()).isFalse(); // 过期 → 未命中
@@ -52,7 +57,7 @@ class PolicyVersionResolutionCacheTest {
     @Test
     void invalidateDropsEntry() {
         PolicyVersionResolutionCache c = newCache(5000);
-        c.put("t", "m", "f", "7");
+        store(c, "t", "m", "f", "7");
         c.invalidate("t", "m", "f");
         assertThat(c.get("t", "m", "f").isPresent()).isFalse();
     }
@@ -60,8 +65,8 @@ class PolicyVersionResolutionCacheTest {
     @Test
     void invalidateIsScopedToKey() {
         PolicyVersionResolutionCache c = newCache(5000);
-        c.put("t", "m", "f1", "1");
-        c.put("t", "m", "f2", "2");
+        store(c, "t", "m", "f1", "1");
+        store(c, "t", "m", "f2", "2");
         c.invalidate("t", "m", "f1");
         assertThat(c.get("t", "m", "f1").isPresent()).isFalse();
         assertThat(c.get("t", "m", "f2").versionId()).isEqualTo("2");
@@ -70,15 +75,15 @@ class PolicyVersionResolutionCacheTest {
     @Test
     void disabledWhenTtlZero() {
         PolicyVersionResolutionCache c = newCache(0);
-        c.put("t", "m", "f", "7");
+        store(c, "t", "m", "f", "7");
         assertThat(c.get("t", "m", "f").isPresent()).isFalse(); // 禁用 → 永不命中
     }
 
     @Test
     void tenantIsolation() {
         PolicyVersionResolutionCache c = newCache(5000);
-        c.put("tenantA", "m", "f", "A");
-        c.put("tenantB", "m", "f", "B");
+        store(c, "tenantA", "m", "f", "A");
+        store(c, "tenantB", "m", "f", "B");
         assertThat(c.get("tenantA", "m", "f").versionId()).isEqualTo("A");
         assertThat(c.get("tenantB", "m", "f").versionId()).isEqualTo("B");
     }
@@ -107,8 +112,8 @@ class PolicyVersionResolutionCacheTest {
     @Test
     void 租户失效只影响该租户() {
         PolicyVersionResolutionCache c = newCache(5000);
-        c.put("t", "m", "f", "1");
-        c.put("u", "m", "f", "2");
+        store(c, "t", "m", "f", "1");
+        store(c, "u", "m", "f", "2");
         long other = c.stamp("u", "m", "g");
         c.invalidateTenant("t");
         c.putIfUnchanged("u", "m", "g", "3", other);
