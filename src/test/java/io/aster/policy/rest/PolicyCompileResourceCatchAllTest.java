@@ -14,7 +14,8 @@ import static org.mockito.Mockito.when;
 
 /**
  * POST /api/v1/policies/compile 的兜底失败分支：编译通道之外抛出的异常也必须带一条
- * error 诊断，否则只看 diagnostics 的 cloud 保存门会把「编译没做成」当成「没有错误」放行。
+ * error 诊断，否则只看 diagnostics 的 cloud 保存门会把「编译没做成」当成「没有错误」放行；
+ * 诊断码固定为 COMPILE_INTERNAL_ERROR，cloud 据此把它当作「编译不可用」而非源码错误。
  */
 @QuarkusTest
 @RedisEnabledTest
@@ -42,7 +43,7 @@ class PolicyCompileResourceCatchAllTest {
             .body("diagnostics[0].severity", is("error"))
             .body("diagnostics[0].startLine", is(1))
             .body("diagnostics[0].startColumn", is(1))
-            .body("diagnostics[0].code", nullValue())
+            .body("diagnostics[0].code", is("COMPILE_INTERNAL_ERROR"))
             .body("diagnostics[0].message", not(emptyOrNullString()));
     }
 }

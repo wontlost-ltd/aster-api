@@ -925,11 +925,11 @@ public class PolicyEvaluationResource {
             } catch (jakarta.ws.rs.BadRequestException bre) {
                 throw bre; // 400 直接上抛，不吞成编译失败
             } catch (Exception e) {
-                // 编译通道之外的意外故障：口径与无位置失败的兜底诊断一致（1:1 error），
-                // 让只看诊断的调用方（cloud 保存门）不会把「没编译成」读成「没有错误」。
+                // 编译通道之外的意外故障：带内部故障码的 1:1 error，让只看诊断的调用方（cloud 保存门）
+                // 既不会把「没编译成」读成「没有错误」，也不会读成源码错误。
                 LOG.warnf("Compile failed: %s", e.getMessage());
                 return CompileResponse.fail(
-                    java.util.List.of(CompileDiagnostic.error(1, 1, "编译服务内部错误，未能完成编译，请稍后重试")),
+                    java.util.List.of(CompileDiagnostic.internalFailure("编译服务内部错误，未能完成编译，请稍后重试")),
                     "编译失败: " + e.getMessage());
             } finally {
                 ANON_PARSE_PERMITS.release();

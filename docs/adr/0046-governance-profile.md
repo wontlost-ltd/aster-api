@@ -62,6 +62,7 @@ Profile "eu-ai-act-high-risk".
 - 同一规则同一要求、同一键只报一次：`missing @id` 与框架要求每条规则至多一条，`unregistered control {control}` 按每个不同的控制点键各报一条。W700/W704 照常报出（警告），E706 是档案层面的额外错误。
 - aster-api 编译通道：E705/E706 **保持 error 严重级**（其余治理码仍按 ADR 0045 §9.1 降为 warning）。编译 `success` 仍为 true；aster-cloud 现有保存门按 `severity === 'error'` 拒绝保存，因此声明了档案且不合规的模块无法保存、建版或审批。未声明档案的模块不受影响，所以今天能保存的策略明天仍能保存。
 - 检查器失败的取舍：治理检查器抛运行时异常时，编译 `success` 仍为 true，aster-api 以 error 级别记录该异常。未声明档案的模块沿用 ADR 0045 的降级，结果中不带治理诊断；声明了档案的模块改为得到一条无源码位置（1:1）的 E707 `GOV_CHECK_UNAVAILABLE` error（`blocking` 仍为 false），消息取 core 模板，说明治理检查未能对该模块与档案执行，档案保存门因此拒绝保存（fail-closed）。用独立的 E707 而不是 E706，是因为基础设施故障不能被读成策略违规：作者无需也无法改源码，aster-cloud 把 E707 映射为可重试的 503 `compile_unavailable`（与下一条不可达时的处理一致），而不是 400 `compile_error`。
+- 编译端点内部故障：`POST /api/v1/policies/compile` 在编译通道之外抛出意外异常时，返回 `success:false` 与一条 1:1 error 诊断，诊断码为 `COMPILE_INTERNAL_ERROR`（api 级常量 `CompileDiagnostic.INTERNAL_FAILURE_CODE`；core 码表没有通用的编译器内部故障码，故不占用 E 段编号）。它表示编译没做成，而不是源码有错：aster-cloud 保存门与 E707 同样把它视为编译不可用，声明了档案的源码返回可重试的 503 `compile_unavailable`，未声明档案的源码沿用不可达时的 fail-open 放行。`success:false` 却没有任何 error 诊断的响应按同一规则处理，作为兜底。
 - 编译检查不可达时的取舍：aster-cloud 保存门调用编译端点遇到超时（408）、5xx 或网络失败时，若源码声明了档案（保守识别：字符串字面量与注释之外出现档案关键字并后接字符串字面量，不要求位置），则与上游限流（429）一样拒绝保存并返回 503 `compile_unavailable` 与 `Retry-After`；未声明档案的源码仍照旧放行。
 
 ## 5. 决策四：When / Otherwise 语法糖
