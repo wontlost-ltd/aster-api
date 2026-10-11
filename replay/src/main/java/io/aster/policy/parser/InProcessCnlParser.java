@@ -156,7 +156,8 @@ public class InProcessCnlParser {
             // R30+ audit P1：ANTLR 默认 lexer 把错误打到 stderr 然后继续，
             // 漏掉的 token 会让 parser 看到一个"看起来合法但语义残缺"的流。
             // 显式挂同一份错误监听器，保证 lexer 错误能传给 CnlParseException。
-            CnlErrorListener errorListener = new CnlErrorListener();
+            // 报错里的关键词回译成作者所写语言（canonicalize 之后 ANTLR 只见英文规范拼写）
+            CnlErrorListener errorListener = new CnlErrorListener(KeywordLocalizer.forTarget(lexicon));
             lexer.removeErrorListeners();
             lexer.addErrorListener(errorListener);
 
