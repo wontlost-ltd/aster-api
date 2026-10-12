@@ -369,6 +369,8 @@ jobs:
           repositories: k3s
           permission-contents: write
           permission-pull-requests: write
+          # 读 k3s 上 verify-image-pin 的结果：脚本等验签通过后才合并（aster-cloud#506）。
+          permission-checks: read
 
       # checkout 本仓以取用共享脚本（image-pin-pr 是独立 job，需自己 checkout）。
       - name: Checkout (for shared script)
