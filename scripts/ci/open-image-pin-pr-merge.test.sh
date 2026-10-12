@@ -30,8 +30,11 @@ check_runs_json() {
 }
 
 # 建一个假的 gh：check-runs 请求依次弹出 $FAKE_DIR/responses 里的行，pr merge 记入 $FAKE_DIR/merges。
+FAKE_DIRS=()
+trap 'rm -rf "${FAKE_DIRS[@]}"' EXIT
 setup_fake_gh() {
   FAKE_DIR="$(mktemp -d)"
+  FAKE_DIRS+=("$FAKE_DIR")
   : > "$FAKE_DIR/merges"
   cat > "$FAKE_DIR/gh" <<'GH'
 #!/usr/bin/env bash
@@ -43,6 +46,7 @@ if [[ "$1" == "api" && "$2" == *"/check-runs"* ]]; then
   line="$(head -n1 "$dir/responses")"
   # 最后一条响应保持不变（模拟此后状态不再变化）。
   [[ "$(wc -l < "$dir/responses")" -gt 1 ]] && sed -i.bak '1d' "$dir/responses"
+  if [[ "$line" == ERR:* ]]; then echo "${line#ERR:}" >&2; exit 1; fi
   printf '%s' "$line" | jq -r "$jq_expr"
   exit 0
 fi
@@ -106,6 +110,24 @@ echo "=== 6. 检查被取消：不合并 ==="
 { check_runs_json "$APP_ID:completed:cancelled"; echo; } > "$tmp/r6"
 run_case "$tmp/r6"
 [[ ! -s "$FAKE_DIR/merges" && "$(cat "$FAKE_DIR/rc")" != 0 ]] && pass "取消视为未通过" || fail "取消时不应合并"
+grep -q "未通过" "$FAKE_DIR/out" && ! grep -q "超时" "$FAKE_DIR/out" && pass "立即判未通过而非等到超时" || fail "取消应立即失败：$(cat "$FAKE_DIR/out")"
+
+echo "=== 7a. 读取检查返回 403（如缺 checks 权限）：立即失败并带出原始错误，不误报超时 ==="
+{ echo "ERR:gh: Resource not accessible by integration (HTTP 403)"; } > "$tmp/r7"
+CASE_TIMEOUT=30 run_case "$tmp/r7"
+[[ "$(cat "$FAKE_DIR/rc")" != 0 && ! -s "$FAKE_DIR/merges" ]] && pass "不合并且失败" || fail "403 时不应合并"
+grep -q "HTTP 403" "$FAKE_DIR/out" && ! grep -q "超时" "$FAKE_DIR/out" && pass "报出 403 原因而非超时" || fail "403 被吞：$(cat "$FAKE_DIR/out")"
+
+echo "=== 7b. 暂时性错误（HTTP 502）后恢复：继续重试并在通过后合并 ==="
+{ echo "ERR:gh: HTTP 502: Bad Gateway"; check_runs_json "$APP_ID:completed:success"; echo; } > "$tmp/r8"
+run_case "$tmp/r8"
+[[ "$(cat "$FAKE_DIR/rc")" == 0 && -s "$FAKE_DIR/merges" ]] && pass "5xx 可重试，恢复后合并" || fail "5xx 不应直接失败：$(cat "$FAKE_DIR/out")"
+
+echo "=== 7c. 持续 5xx：重试至超时，不合并，超时信息带出最后错误 ==="
+{ echo "ERR:gh: HTTP 503: Service Unavailable"; } > "$tmp/r9"
+CASE_TIMEOUT=1 run_case "$tmp/r9"
+[[ "$(cat "$FAKE_DIR/rc")" != 0 && ! -s "$FAKE_DIR/merges" ]] && pass "不合并且失败" || fail "持续 5xx 时不应合并"
+grep -q "超时" "$FAKE_DIR/out" && grep -q "HTTP 503" "$FAKE_DIR/out" && pass "超时信息带出最后错误" || fail "缺少最后错误：$(cat "$FAKE_DIR/out")"
 
 echo "=== 7. 脚本中不再出现 gh pr merge --auto ==="
 if grep -nE '^[^#]*gh pr merge[^#]*--auto' "$TARGET_SCRIPT"; then fail "仍有 --auto 合并"; else pass "无 --auto 合并"; fi

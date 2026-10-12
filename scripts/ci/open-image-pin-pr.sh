@@ -80,11 +80,12 @@ patch_targets() {
 }
 
 # ── 合并门控：等 k3s 的 verify-image-pin 在本 head 上通过，再直接合并 ──
-# ★为什么不用 `gh pr merge --auto`：k3s 是私有仓，规则集需要 GitHub Pro 才生效，传统分支
-#   保护也未开启，所以 main 上**没有任何必需检查**。没有保护规则时 GitHub 拒绝开启自动合并
-#   （GraphQL: Protected branch rules not configured for this branch）；gh 读到 PR 恰好已是
-#   CLEAN 时又会直接合并——于是 pin PR 要么报错挂起（issue #506），要么在 verify-image-pin
-#   跑完之前就被合并（cosign 验签沦为事后检查）。这里由脚本自己等验签通过再合并。
+# ★为什么不用 `gh pr merge --auto`：k3s 是私有仓、组织为免费套餐，规则集与传统分支保护
+#   都需要升级套餐（或公开仓库）才可用（两个 API 均返回 403），所以 main 上**没有任何必需检查**。
+#   没有保护规则时 GitHub 拒绝开启自动合并（GraphQL: Protected branch rules not configured for
+#   this branch）；而 gh 读到 PR 已是 CLEAN / HAS_HOOKS / UNSTABLE 时又会直接合并——于是 pin PR
+#   要么报错挂起（issue #506），要么在 verify-image-pin 跑完之前就被合并（cosign 验签沦为事后
+#   检查）。这里由脚本自己等验签通过再合并。
 # 只认 image-pin App 发出的同名检查（防止其它来源的同名 check 冒充通过）。
 VERIFY_CHECK_NAME="${VERIFY_CHECK_NAME:-verify-image-pin}"
 VERIFY_APP_ID="${VERIFY_APP_ID:-4253193}"
@@ -100,18 +101,33 @@ verify_check_state() {
 }
 
 # 轮询至通过（返回 0）、失败或超时（返回 1，fail-loud）。
+# 读取检查本身出错时：4xx（429 除外，如缺 checks 权限的 403）不可重试，立即失败并带出原始错误；
+# 其它错误（网络、5xx、429）继续重试，超时信息里附上最后一次错误，避免把权限问题误报成超时。
 wait_for_verification() {
-  local sha="$1" state deadline
+  local sha="$1" state deadline err_file last_err=""
   deadline=$(( $(date +%s) + VERIFY_TIMEOUT_SECONDS ))
+  err_file="$(mktemp)"
   while :; do
-    state="$(verify_check_state "$sha" 2>/dev/null)" || state="error -"
+    if state="$(verify_check_state "$sha" 2>"$err_file")"; then
+      last_err=""
+    else
+      state="error -"
+      last_err="$(tr '\n' ' ' < "$err_file")"
+      if grep -qE 'HTTP 4[0-9]{2}' "$err_file" && ! grep -q 'HTTP 429' "$err_file"; then
+        echo "::error::读取 ${VERIFY_CHECK_NAME} 结果失败（不可重试）：${last_err}"
+        rm -f "$err_file"; return 1
+      fi
+    fi
     case "$state" in
-      "completed success") echo "${VERIFY_CHECK_NAME} 在 ${sha} 上通过"; return 0 ;;
-      completed\ *) echo "::error::${VERIFY_CHECK_NAME} 在 ${sha} 上未通过（${state}）→ 不合并"; return 1 ;;
+      "completed success") echo "${VERIFY_CHECK_NAME} 在 ${sha} 上通过"; rm -f "$err_file"; return 0 ;;
+      completed\ *)
+        echo "::error::${VERIFY_CHECK_NAME} 在 ${sha} 上未通过（${state}）→ 不合并"
+        echo "::error::若源仓 main 在等待期间已前进，k3s 的 freshness 校验也会判失败；此时由更新的 run 接手"
+        rm -f "$err_file"; return 1 ;;
     esac
     if (( $(date +%s) >= deadline )); then
-      echo "::error::等待 ${VERIFY_CHECK_NAME} 超时（${VERIFY_TIMEOUT_SECONDS}s，最后状态：${state}）→ 不合并"
-      return 1
+      echo "::error::等待 ${VERIFY_CHECK_NAME} 超时（${VERIFY_TIMEOUT_SECONDS}s，最后状态：${state}${last_err:+；最后错误：${last_err}}）→ 不合并"
+      rm -f "$err_file"; return 1
     fi
     sleep "$VERIFY_POLL_SECONDS"
   done
@@ -219,10 +235,10 @@ else
   DIFF_TARGETS=("$LOCK_PATH" "$KUSTOMIZATION_PATH")
 fi
 if git diff --quiet -- "${DIFF_TARGETS[@]}"; then
-  # 无变更：main 已是本 digest。若恰有 open PR 则确保 auto-merge,否则干净退出（不 create）。
+  # 无变更：main 已是本 digest。若恰有 open PR 则在验签通过后合并，否则干净退出（不 create）。
   pr="$(open_pr_number)"
   if [[ -n "$pr" ]]; then
-    echo "image-lock 已最新,复用 open PR #$pr，等验签通过后合并"
+    echo "image-lock 已最新,复用 open PR #${pr}，等验签通过后合并"
     open_head="$(gh pr view "$pr" -R "$K3S_REPO" --json headRefOid --jq .headRefOid)"
     merge_when_verified "$pr" "$open_head"
     emit wait_required true; emit pr_number "$pr"
@@ -258,7 +274,7 @@ pr_body=$'自动开启（源仓 CI）。\n\nimage: '"${IMAGE}"$'\ndigest: '"${DI
 pr="$(open_pr_number)"
 if [[ -z "$pr" ]]; then
   # ★ 不在 create 时带 --label（label 缺失会让 create 整体失败，实测 could not add label）。
-  #   先建 PR，再单独加 label（非致命：label 是 ruleset auto-merge 门控之一，缺则由人工/后续补）。
+  #   先建 PR，再单独加 label（非致命：缺则由人工/后续补）。
   gh pr create -R "$K3S_REPO" --base main --head "$BRANCH" \
     --title "chore(image-pin): ${IMAGE##*/} digest bump" \
     --body "$pr_body"
@@ -273,16 +289,13 @@ else
 fi
 # 验签未通过或超时必须 fail-loud（PR 开着不合＝发布链断）。
 #
-# ★但要先等 GitHub 侧 PR 的 headRefOid 追上刚 force-push 的 commit：
-#   实测 push 完成(47.38s) → enable auto-merge(48.62s) 仅隔 1.2 秒，
-#   GitHub 尚未刷新 PR head，于是报
-#     Failed to add PR #N: expected head oid does not match the current head oid
-#   （enablePullRequestAutoMerge）。PR 本身已正确开好/更新，纯属复制延迟，
-#   但 job 会因此变红 —— 是**假红**，会掩盖真实的发布链故障。
-#
-#   故轮询等待 headRefOid == 本地 head_sha 再 enable。
-#   ★不去掉 --match-head-commit：它是防「auto-merge 意外合并了别人后推的
-#     commit」的关键防线，去掉换来的"稳定"是拿安全性换的。
+# ★先等 GitHub 侧 PR 的 headRefOid 追上刚 force-push 的 commit：
+#   实测 push 完成到下一次 PR 操作仅隔约 1.2 秒，GitHub 尚未刷新 PR head，
+#   带 --match-head-commit 的合并会报
+#     expected head oid does not match the current head oid
+#   PR 本身已正确开好/更新，纯属复制延迟，但 job 会因此变红——是**假红**。
+#   故轮询等待 headRefOid == 本地 head_sha 再进入验签与合并。
+#   ★不去掉 --match-head-commit：它防止合并别人后推的 commit，去掉换来的"稳定"是拿安全性换的。
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
   remote_oid="$(gh pr view "$pr" -R "$K3S_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
   [[ "$remote_oid" == "$head_sha" ]] && break
@@ -291,7 +304,7 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
 done
 if [[ "$remote_oid" != "$head_sha" ]]; then
   echo "::error::PR #${pr} 的 head 在 30s 内未刷新到 ${head_sha}（远端=${remote_oid:-?}）"
-  echo "::error::  不降级为无 --match-head-commit 的 enable —— 那会放任 auto-merge 合并非本 run 的 commit。"
+  echo "::error::  不降级为无 --match-head-commit 的合并——那会合并非本 run 的 commit。"
   exit 1
 fi
 merge_when_verified "$pr" "$head_sha"

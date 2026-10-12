@@ -302,7 +302,7 @@ jobs:
 
       # ── Phase 3 P3-2a：已移除 `Deploy to K3S`（kubectl rollout restart）发布语义 ──
       # 统一 digest pin 全链上线后，发布真相 = image-pin-pr job 开 PR 改 k3s image-lock +
-      # kustomization digest → verify-image-pin 验签 → auto-merge → ArgoCD by-digest sync →
+      # kustomization digest → verify-image-pin 验签通过后脚本合并 → ArgoCD by-digest sync →
       # 滚动更新。旧的 rollout restart 在 P3-0（kustomize 渲染 @digest）后已**不再是有效发布
       # 通道**（deployment.spec 已是 @digest，restart 只重启当前 digest、不部署新 tag），故删除。
       #
