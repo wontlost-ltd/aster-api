@@ -101,7 +101,7 @@ verify_check_state() {
 }
 
 # 轮询至通过（返回 0）、失败或超时（返回 1，fail-loud）。
-# 读取检查本身出错时：4xx（429 除外，如缺 checks 权限的 403）不可重试，立即失败并带出原始错误；
+# 读取检查本身出错时：4xx（限流除外，如缺 checks 权限的 403）不可重试，立即失败并带出原始错误；
 # 其它错误（网络、5xx、429）继续重试，超时信息里附上最后一次错误，避免把权限问题误报成超时。
 wait_for_verification() {
   local sha="$1" state deadline err_file last_err=""
@@ -113,7 +113,8 @@ wait_for_verification() {
     else
       state="error -"
       last_err="$(tr '\n' ' ' < "$err_file")"
-      if grep -qE 'HTTP 4[0-9]{2}' "$err_file" && ! grep -q 'HTTP 429' "$err_file"; then
+      # GitHub 的主/次级限流常以 403 返回（文案含 rate limit），与 429 一样可重试。
+      if grep -qE 'HTTP 4[0-9]{2}' "$err_file" && ! grep -qiE 'HTTP 429|rate limit' "$err_file"; then
         echo "::error::读取 ${VERIFY_CHECK_NAME} 结果失败（不可重试）：${last_err}"
         rm -f "$err_file"; return 1
       fi

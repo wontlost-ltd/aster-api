@@ -132,10 +132,22 @@ assert_verified_merge
 
 echo "=== C. 无改动、有 open PR：验签 → 合并该 PR ==="
 make_k3s "$NEW_DIGEST" cafe 42
-git --git-dir="$ROOT/k3s.git" update-ref "refs/heads/$BRANCH" "$(git --git-dir="$ROOT/k3s.git" rev-parse main)"
+# open PR 的分支是 main 之上的独立提交（pin 文件与 main 相同）：真实 PR 的 head 永远不是 main，
+# 这样才能区分「查/合并的是 PR head」与「误用了本地 HEAD 或 main」。
+pr_work="$ROOT/prbranch"; rm -rf "$pr_work"
+git clone -q "$ROOT/k3s.git" "$pr_work"
+echo "note" > "$pr_work/NOTE"
+git -C "$pr_work" add NOTE
+git -C "$pr_work" -c user.name=t -c user.email=t@t commit -qm "pr-only commit"
+git -C "$pr_work" push -q origin "HEAD:refs/heads/$BRANCH"
+pr_head="$(git -C "$pr_work" rev-parse HEAD)"; main_sha="$(git --git-dir="$ROOT/k3s.git" rev-parse main)"
 run_script 696 success
 [[ "$(cat "$FAKE_STATE/rc")" == 0 ]] && pass "返回 0" || fail "返回 $(cat "$FAKE_STATE/rc")：$(tail -5 "$FAKE_STATE/stdout")"
 grep -q "复用 open PR #696，等验签通过后合并" "$FAKE_STATE/stdout" && pass "走的是无改动路径" || fail "未走无改动路径：$(tail -3 "$FAKE_STATE/stdout")"
+[[ "$pr_head" != "$main_sha" ]] && grep -q -- "commits/${pr_head}/check-runs" "$FAKE_STATE/calls.log" \
+  && pass "查询的是 PR head（非 main）的检查" || fail "未按 PR head ${pr_head} 查询：$(calls | tr '\n' '|')"
+grep -q -- "^pr merge 696 .*--match-head-commit ${pr_head}" "$FAKE_STATE/calls.log" && pass "合并锁定 PR head" \
+  || fail "合并未锁定 PR head：$(grep '^pr merge' "$FAKE_STATE/calls.log")"
 [[ -z "$(line_of '^pr create')" ]] && pass "未建 PR" || fail "无改动时不应建 PR"
 assert_verified_merge
 
