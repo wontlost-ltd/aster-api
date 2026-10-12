@@ -51,7 +51,7 @@ Permissions 的导入工具）执行。Aster 仍是唯一事实源与证据链�
 若在 Cedar 侧用 `context has k` 守卫后落空到下一分支，后续 permit 可能放行 Aster 拒绝的请求。因此每个条件 c 翻译为两个 Cedar 表达式：
 T(c)「无错求值且为真」与 F(c)「无错求值且为假」；读 context 键的原子比较为 `T = context has k && (比较)`、`F = context has k && !(比较)`，
 复合式按短路展开：`T(a and b)=T(a)&&T(b)`，`F(a and b)=F(a)||(T(a)&&F(b))`，`T(a or b)=T(a)||(F(a)&&T(b))`，`F(a or b)=F(a)&&F(b)`，`T(not a)=F(a)`，`F(not a)=T(a)`。
-`Let` 在其位置加入「已定义」要求 `T(e)||F(e)`。任何一个前序条件会抛错时，所有后续策略的 F(前序) 均不成立 → 无策略适用 → Cedar Deny，与 Aster 一致；且每处键访问都在同一合取中先经 `has` 守卫，满足 Cedar 严格校验。
+`Let` 在其位置加入「已定义」要求：条件取 `T(e)||F(e)`；读 context 键的算术项取全部键的 `has` 加该项的范围守卫 `(-9007199254740991 <= e && e <= 9007199254740991)`，迫使 Cedar 求值该项（Aster 在 Let 处对非数值操作数抛错，键值为文本或布尔时 Cedar 同样报错 → 无策略适用）；裸键只取 `has`（Aster 读裸键不做运算、不会抛错，作数值使用时由比较或算术自带的范围守卫兜底）。任何一个前序条件会抛错时，所有后续策略的 F(前序) 均不成立 → 无策略适用 → Cedar Deny，与 Aster 一致；且每处键访问都在同一合取中先经 `has` 守卫，满足 Cedar 严格校验。
 `agent_model` 可为空：空值等同缺失，`==` 为假、`!=` 为真（与 Aster 的空值比较一致）。角色成员判断写作 `List.contains(req.principal_roles, "…")`（语言无 `in` 运算符）。
 
 ## 4. 规则体翻译
@@ -105,14 +105,18 @@ Aster `allow` ⇔ Cedar `Allow`；其余结论 ⇔ Cedar `Deny` 且决定性策�
 与 Aster 一致；Aster 求值抛错 ⇔ Cedar `Deny` 且无决定性策略。数值域：探针取值限于 ±(2^53−1)；超出该域的输入按 §4.3 由范围守卫判为 Cedar Deny（只会更严），不作为一致性要求。探针在 Cedar 侧**不做请求 schema 校验**（与不校验请求的网关一致）；网关若按 schema 校验请求，schema 外的请求（未提及的 action、非整数数值等）会被 Cedar 拒绝——这是有意的「对外形态收窄」，只会更严、不会更松。任何不一致 → E723。探针数量有上限（初值 512），响应中报告实际条数。另以 Cedar 校验器严格模式校验
 策略与 schema（E724）。
 
+探针是对行为的**抽样，不是证明**：「Cedar 不比 Aster 更松」的保证来自 §3–§4 的翻译构造本身，探针只用来捕获翻译器实现缺陷。已知覆盖缺口：两个已定类型的 context 键互相比较（如 `a > b`）不生成边界探针，只能被其他维度的取值碰巧覆盖；数值域外探针只取 +2^53，没有 −2^53。
+
 ## 6. 接口与证据
 
 - **API**：`POST /api/v1/policies/export/cedar`，入参二选一：`{policyId, versionId}`（已保存版本）或 `{source, locale, aliasSet}`（与编译端点一致）。
-  出参：`{exportable, policies, schema, ruleId, profile, controls, probes:{count, agreed}, diagnostics}`；不可导出时 HTTP 200 + `exportable:false` + 诊断。
+  出参：`{exportable, moduleName, policies, schema, schemaText, ruleId, profile, controls, probes:{count, agreed}, diagnostics, sourceHash}`；不可导出时 HTTP 200 + `exportable:false` + 诊断（`policies` / `schema` / `schemaText` 为 null）。
+  `schemaText` 是经严格校验并计入审计 `schemaHash` 的 schema 原文，`policies` 同理对应 `policiesHash`；调用方原样保存这两个字符串即可按 SHA-256 与审计链对账。`schema` 是同一内容的解析形态，仅为兼容保留，重新序列化后键序与转义可能不同，哈希不再相等。`moduleName` 为编译器给出的模块名（编译失败时为 null），供下载文件命名。
 - **鉴权**：端点要求可验证身份（aster-cloud 的 HMAC 内部调用或 API Key），纳入 `ApiKeyAuthFilter` 与 `InternalCallerFilter` 的双通道保护；不接受匿名或仅凭 `X-Tenant-Id` 的调用。
 - **审计**：每次成功导出都在审计哈希链追加 `POLICY_EXPORTED` 事件：源码 SHA-256、`target:"cedar"`、策略文本与 schema 各自 SHA-256、规则 id、探针条数；入参为已保存版本时附版本 id，调用方另可附自述引用（如 aster-cloud 的策略 id 与版本号，标为 `claimedRef`，未经 aster-api 核验）。哈希键加入审计元数据的身份键白名单，避免被 PII 脱敏误改。
 - **aster-cloud 版本不在 aster-api**：cloud 的策略版本存在 cloud 自己的库里，详情页导出走源码模式（源码、别名集、按内容检测的语言）并附 `claimedRef`。
-- **aster-cloud**：策略详情页在激活版本可导出时提供「导出为 Cedar」，下载 `<module>.cedar` 与 `<module>.cedarschema.json`，诊断在编译诊断同一面板展示；四语文案（hi 用英文）。不读取任何租户凭据。
+- **导出的是可执行版本**：aster-cloud 导出 secure-execute 未指定版本时会执行的版本（`isDefault` 的 APPROVED 版本，否则最新 APPROVED 版本），与执行路径共用同一选择函数；草稿等未批准版本不导出——把未经审批的草稿交给执行端等于绕过审批。没有可执行版本时 cloud 路由返回 409 `{"error":"no executable version"}`，面板提示先批准一个版本。`claimedRef.version` 即所导出的版本号。
+- **aster-cloud**：策略详情页提供「导出为 Cedar」，可导出时原样下载 `policies` 与 `schemaText` 为 `<moduleName>.cedar` 与 `<moduleName>.cedarschema.json`（无 `moduleName` 时用 `policy`），诊断在编译诊断同一面板展示；四语文案（hi 用英文）。不读取任何租户凭据。
 
 ## 7. 测试与发版
 
@@ -137,7 +141,8 @@ Aster `allow` ⇔ Cedar `Allow`；其余结论 ⇔ Cedar `Deny` 且决定性策�
 
 - **运行时镜像改为 glibc（用户决定，2026-10-12）**：`cedar-java` 4.10.0 只随附 glibc 原生库，原 Alpine（musl）JRE 无法加载（强制加载 SIGSEGV）。aster-api `Dockerfile.jvm` 改用 `azul/zulu-openjdk-debian:25-jre`（同厂商 glibc 版），镜像约增大 100 MB；Truffle 运行时与 Cedar 原生库均在新镜像上验证。`runner/Dockerfile`、`Dockerfile.pluggable`、`Dockerfile.e2e` 仍为 Alpine，不加载 Cedar，未改。
 - **导出并发闸（用户批准，2026-10-13）**：导出含逐探针双引擎求值，属重计算；仿 `/evaluate-source` 的信号量模式，同时进行的导出数受 `aster.cedar.export.max-concurrent` 限制（默认 2），占满时立即返回 503 + `Retry-After: 1`，错误码 `cedar_export_busy`；aster-cloud 路由原样透传 503，面板显示服务端提示。限流只计请求数、不限并发工作量，故二者并存。
-- **下载件与审计对账**：面板原样下载策略文本，schema 以紧凑 JSON 下载，两个文件的 SHA-256 分别等于审计 `policiesHash` / `schemaHash`（见 §9.2 修复）。
+- **下载件与审计对账**：面板原样下载响应中的 `policies` 与 `schemaText`，不做任何重新序列化，两个文件的 SHA-256 分别等于审计 `policiesHash` / `schemaHash`。§9.2 中「紧凑 JSON」的修复只在常见名称下成立：JS 会把整数形态的键提前，控制字符转义的大小写也与 Jackson 不同，因此终审后改为原样下载 `schemaText`。
+- **glibc malloc arena（终审 M3，2026-10-13）**：glibc 默认按线程分配 arena（上限 8×核数），原生分配（JIT、Truffle、Cedar FFI）会推高 RSS，`Dockerfile.jvm` 因此设 `MALLOC_ARENA_MAX=2`。压测条件：镜像 linux/arm64，`--memory 512m --cpus 0.5`，`JAVA_OPTS=-Xmx384m -Xms128m`（生产 Pod 规格），连 sdd-pg/sdd-redis；2 个并发线程持续导出 `guard-cedar-sample.aster`（HMAC 内部通道，关闭限流）约 2 分钟。结果：93 次导出全部 200，探针全部一致，没有 503；`podman stats` 峰值 363 MB，cgroup `memory.peak` 377 MB（≈360 MiB），java 进程 VmHWM 354 MiB；`oom_kill` 为 0，没有 OOMKill。对照组为同一镜像在进程内 unset 该变量（容器可见 5 核）：145 秒内 65 次导出全部成功，峰值 352 MB，cgroup 峰值 363 MB。在这一负载下两组差别不大，设该变量是预防性的：线程数更多或核数更多的节点上，arena 增长的风险更高。
 
 ### 9.2 栈验收记录（2026-10-13，本地 podman 全栈）
 
