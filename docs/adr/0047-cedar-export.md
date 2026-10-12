@@ -1,7 +1,7 @@
 # ADR 0047：Cedar 导出目标（AI 治理方向·子项目 6b）
 
-- 状态：**PROPOSED**（2026-10-12）
-- 实施计划：待写（`docs/superpowers/plans/2026-10-12-cedar-export.md`）
+- 状态：**ACCEPTED**（2026-10-13；验收记录见 §9）
+- 实施计划：`docs/superpowers/plans/2026-10-12-cedar-export.md`
 - 决策者：用户已拍板「方向为导出到既有 Cedar 执行端；首版产出通用 Cedar 文件（策略文本 + schema），不直推 AWS；require_approval/escalate 编译为带注解的 forbid；输入映射沿用 Action Guard 请求形状；不可翻译即整体拒绝导出；编译器放在 aster-lang-core（Java），由 aster-api 提供端点」
 - 相关：ADR 0039（§1 行 6）、ADR 0040（Action Guard 请求形状）、ADR 0045（控制注册表）、ADR 0046（档案、语法糖、E705–E707）、ADR 0031（错误码单一来源）、ADR 0041（证据链）
 
@@ -128,3 +128,33 @@ Aster `allow` ⇔ Cedar `Allow`；其余结论 ⇔ Cedar `Deny` 且决定性策�
 - Cedar 导入、guard 内嵌 Cedar 预检。
 - Decimal 支持（需要对齐 Cedar decimal 语义）、跨规则调用的内联、参数注解式映射。
 - 编辑器内实时 Cedar 预览（需 TS 实现或 WASM）。
+
+## 9. 写回与验收
+
+- ADR 0039 §1 行 6 已回写为「6a → ADR 0046；6b → ADR 0047」。
+
+### 9.1 实施中的决定
+
+- **运行时镜像改为 glibc（用户决定，2026-10-12）**：`cedar-java` 4.10.0 只随附 glibc 原生库，原 Alpine（musl）JRE 无法加载（强制加载 SIGSEGV）。aster-api `Dockerfile.jvm` 改用 `azul/zulu-openjdk-debian:25-jre`（同厂商 glibc 版），镜像约增大 100 MB；Truffle 运行时与 Cedar 原生库均在新镜像上验证。`runner/Dockerfile`、`Dockerfile.pluggable`、`Dockerfile.e2e` 仍为 Alpine，不加载 Cedar，未改。
+- **导出并发闸（用户批准，2026-10-13）**：导出含逐探针双引擎求值，属重计算；仿 `/evaluate-source` 的信号量模式，同时进行的导出数受 `aster.cedar.export.max-concurrent` 限制（默认 2），占满时立即返回 503 + `Retry-After: 1`，错误码 `cedar_export_busy`；aster-cloud 路由原样透传 503，面板显示服务端提示。限流只计请求数、不限并发工作量，故二者并存。
+- **下载件与审计对账**：面板原样下载策略文本，schema 以紧凑 JSON 下载，两个文件的 SHA-256 分别等于审计 `policiesHash` / `schemaHash`（见 §9.2 修复）。
+
+### 9.2 栈验收记录（2026-10-13，本地 podman 全栈）
+
+分支 `feat/adr0047-cedar-export`：aster-lang-core bec2ac4、aster-lang-ts efad5a5、aster-api 44ec451（镜像构建点）、aster-cloud d0e55f97（worktree `aster-cloud-adr0047`，含验收中发现的修复，见下）。aster-api 经 composite build 使用本地 core。
+
+| 步骤 | 命令/路径 | 结果 |
+|---|---|---|
+| 重建 api | `./gradlew --offline quarkusBuild -x test` → `podman build -f Dockerfile.jvm -t localhost/aster/policy-api:stack .` → 以原环境变量重建 `aster-api` | 镜像基于 `azul/zulu-openjdk-debian:25-jre`；`/q/health/ready` UP（数据库、Redis、truffle-runtime）；Cedar 原生库在容器内加载并完成导出 |
+| cloud | 独立容器 `cedar-cloud`（:3101，同 `aster-stack` 网络与 `aster_cloud` 库，bind-mount 特性分支 worktree，`.env*` 以空文件覆盖，`E2E_LOCAL_STACK=1`，与 api 共用 `ASTER_PLAN_GATE_HMAC_KEY`）；容器内 `pnpm db:migrate` | 迁移成功；导出经 HMAC 内部通道到达 aster-api |
+| 浏览器 E2E（新用例） | `BASE_CLOUD=http://localhost:3101 pnpm exec playwright test src/__tests__/e2e-browser/local-stack/cedar-export.spec.ts --project=chromium-desktop --workers=1` | 2/2 通过：源码与 `guard-cedar-sample.aster` 逐字一致的策略显示 `Verified against Cedar on <n> probes`（n 即响应 `probes.count`，审计记录为 30），下载 `guard.cedar.sample.cedar` 与 `guard.cedar.sample.cedarschema.json`，前者含 `@aster_rule("GCS-001")`；`Text.length` 策略列出 E721 且无下载、无审计事件 |
+| 审计 | `aster_policy.audit_logs`（只读查询） | `POLICY_EXPORTED`，tenant `t1`、模块 `guard.cedar.sample`、`ruleId GCS-001`、`probeCount 30`、`target cedar`、`claimedRef {"cloudPolicyId":"88b03087-4648-4265-ad8c-81e7b4e59e64","version":"1"}`；`policiesHash 6e04385b…cd629`、`schemaHash 46ed9d43…3975a` 与下载文件 SHA-256 逐一相等（用例内断言） |
+| Cedar CLI 交叉核对 | `cargo install cedar-policy-cli --locked`（4.13.0，约 60 s）；`cedar validate --schema guard.cedar.sample.cedarschema.json --policies guard.cedar.sample.cedar --schema-format json` | `policy set validation passed, no errors or warnings`；另以 `cedar authorize` 抽查 4 个请求：`delete_customer_record` → Deny（GCS-001#1，require_approval）、`refund` amount 20000 → Deny（#3，escalate）、`refund` amount 5 → Allow（#4）、suspended 角色 → Deny（#2，deny），与 Aster 结论一致 |
+| local-stack 全套 | 同上目录，`--workers=1`，带 `E2E_GUARD_API_KEY`（m-free）与 `CP_API_KEY` | 11 个中 5 通过（cedar-export ×2、credit-pilot、team-business-roles、whatif-matrix），3 失败、3 未运行（同文件串行跳过），失败均为环境原因，见下 |
+
+验收中发现并修复（aster-cloud 1b757382，独立提交，附单测）：面板把 schema 以缩进格式写入 `.cedarschema.json`，文件 SHA-256 与审计 `schemaHash`（aster-api 对紧凑 JSON 取哈希）不符，下载件无法按哈希与审计链对账；改为紧凑输出。新浏览器用例同时断言两个下载文件哈希与审计记录一致。
+
+环境记录：
+
+- 栈库 `aster_policy` 在 2026-10-12 被一次 `@QuarkusTest` 运行重建：`flyway_schema_history` 68 条记录的安装时间落在同一秒内，并含仅测试加载的 `db/seed/V99.0.0` 与 `db/migration-test/V9000.0.0`，与测试配置 `quarkus.flyway.clean-at-start=true` 及其 locations 完全吻合；栈 `aster-pg` 占用宿主 55432 端口（`sdd-pg` 已改为 55433），按旧配方以 `localhost:55432` 跑测试即会清空栈库。后果：生产配置下 Flyway 校验因上述两条「本地未解析」的迁移拒绝启动——本次以 `QUARKUS_FLYWAY_VALIDATE_ON_MIGRATE=false` 启动 api（未改动库内数据）；guard 种子策略 `guard.customer` 与原有 guard 决策随之丢失，`approvals-inbox`（补待审批 404 `policy_not_found: guard.customer.decide`）、`evidence-export`（证据包无 guard-approval 审阅人）、`policy-logs-guard-link`（cloud 执行记录指向的决策已不在 api 库）因此失败，与本 ADR 改动无关。恢复需重新播种栈库（`guard.customer` 策略与待审批），本次按约束未触碰栈数据。
+- 首次试跑新用例时 `POST /api/policies` 因未带 `Origin` 被 CSRF 校验拒绝（403 `csrf_forbidden`），属用例问题，已在用例中补同源 `Origin` 头。
