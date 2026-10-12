@@ -23,6 +23,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -103,6 +104,24 @@ public class CedarEngine {
             return toDecision(response, policyIds);
         } catch (AuthException e) {
             return new Decision(false, List.of(), List.of(String.valueOf(e.getMessage())));
+        }
+    }
+
+    /**
+     * 读取策略文本中每条策略的全部注解，按 policyIds 顺序以 id 为键返回；id 校验规则与 {@link #authorize} 相同。
+     * 解析失败时抛 {@link IllegalArgumentException}。
+     */
+    public Map<String, Map<String, String>> annotations(String policiesText, List<String> policyIds) {
+        try {
+            Map<String, Map<String, String>> byId = new HashMap<>();
+            for (Policy p : parse(policiesText, policyIds).policies) {
+                byId.put(p.getID(), Map.copyOf(p.getAnnotations()));
+            }
+            Map<String, Map<String, String>> ordered = new LinkedHashMap<>();
+            policyIds.forEach(id -> ordered.put(id, byId.get(id)));
+            return ordered;
+        } catch (AuthException e) {
+            throw new IllegalArgumentException("策略文本解析失败：" + e.getMessage(), e);
         }
     }
 

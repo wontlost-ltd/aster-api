@@ -31,6 +31,23 @@ class CedarEngineTest {
     }
 
     @Test
+    void annotationsAreReadFromPolicyTextById() {
+        var engine = new CedarEngine();
+        String policies = """
+            @id("r#1")
+            @aster_outcome("deny")
+            @aster_reason("no")
+            forbid (principal, action, resource);
+            @id("r#2")
+            permit (principal, action, resource);
+            """;
+        var annotations = engine.annotations(policies, List.of("r#1", "r#2"));
+        assertThat(annotations.keySet()).containsExactly("r#1", "r#2");
+        assertThat(annotations.get("r#1")).containsEntry("aster_outcome", "deny").containsEntry("aster_reason", "no");
+        assertThat(annotations.get("r#2")).containsOnlyKeys("id");
+    }
+
+    @Test
     void strictValidationRejectsUnguardedOptionalAccess() {
         var engine = new CedarEngine();
         String schema = """

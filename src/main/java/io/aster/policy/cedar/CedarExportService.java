@@ -2,7 +2,6 @@ package io.aster.policy.cedar;
 
 import aster.core.cedar.CedarExport;
 import aster.core.cedar.CedarExporter;
-import aster.core.cedar.EmittedPolicy;
 import aster.core.cedar.GuardShape;
 import aster.core.cedar.Probe;
 import aster.core.cedar.ProbeGenerator;
@@ -30,8 +29,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 /**
  * Cedar 导出服务（ADR 0047 §5）：编译 → 核心导出 → Cedar 严格校验（E724）→ 逐探针比对 Aster 与 Cedar（E723）。
@@ -102,8 +99,8 @@ public class CedarExportService {
             return rejected(exp, moduleName, sourceHash, 0, 0, List.of(e724));
         }
         List<Probe> probes = ProbeGenerator.generate(exp.facts(), exp.functionName(), MAX_PROBES);
-        Map<String, EmittedPolicy> byId = exp.emitted().stream()
-            .collect(Collectors.toMap(EmittedPolicy::id, Function.identity()));
+        // 结论、原因、审批人以实际发布的策略文本注解为准，不信任导出器的中间元数据
+        Map<String, Map<String, String>> byId = cedar.annotations(exp.policies(), exp.policyIds());
         int agreed = 0;
         Mismatch first = null;
         for (Probe probe : probes) {
@@ -124,7 +121,7 @@ public class CedarExportService {
 
     // 越界探针单向比较：Cedar 允许时 Aster 必须允许；Cedar 拒绝时接受任何 Aster 结论
     private static boolean agrees(Probe probe, AsterSide aster, CedarEngine.Decision cedar,
-                                  Map<String, EmittedPolicy> byId) {
+                                  Map<String, Map<String, String>> byId) {
         if (probe.outOfDomain()) {
             return !cedar.allow() || ALLOW.equals(aster.outcome());
         }
@@ -138,11 +135,13 @@ public class CedarExportService {
             && sameVerdict(byId.get(cedar.determiningPolicyIds().get(0)), aster);
     }
 
-    private static boolean sameVerdict(EmittedPolicy policy, AsterSide aster) {
-        return policy != null
-            && policy.outcome().toUpperCase(Locale.ROOT).equals(aster.outcome())
-            && Objects.equals(policy.reason(), aster.reason())
-            && Objects.equals(policy.approver(), aster.role());
+    // 决定性策略的 @aster_outcome（大写比较）、@aster_reason、@aster_approver 须与 Aster 的 Verdict 一致
+    private static boolean sameVerdict(Map<String, String> annotations, AsterSide aster) {
+        String outcome = annotations == null ? null : annotations.get("aster_outcome");
+        return outcome != null
+            && outcome.toUpperCase(Locale.ROOT).equals(aster.outcome())
+            && Objects.equals(annotations.get("aster_reason"), aster.reason())
+            && Objects.equals(annotations.get("aster_approver"), aster.role());
     }
 
     // ---------- 两侧求值 ----------

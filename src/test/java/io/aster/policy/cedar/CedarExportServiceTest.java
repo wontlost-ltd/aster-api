@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
 
 /** ADR 0047 §5：导出服务的严格校验（E724）与逐探针等价性（E723）。 */
@@ -75,6 +76,36 @@ class CedarExportServiceTest {
         var out = service.verify(withSchema(exp, schema), compiled.coreJson(), "h");
         assertThat(out.exportable()).isFalse();
         assertThat(out.diagnostics()).extracting(CompileDiagnostic::code).containsExactly("E724");
+    }
+
+    @Test
+    void swappedReasonAnnotationIsCaughtAsE723() {
+        assertTextOnlyMutationIsE723(text -> text
+            .replace("@aster_reason(\"suspended principal\")", "@aster_reason(\"__swap__\")")
+            .replace("@aster_reason(\"large refund\")", "@aster_reason(\"suspended principal\")")
+            .replace("@aster_reason(\"__swap__\")", "@aster_reason(\"large refund\")"));
+    }
+
+    @Test
+    void changedOutcomeAnnotationIsCaughtAsE723() {
+        assertTextOnlyMutationIsE723(text -> text.replace("@aster_outcome(\"escalate\")", "@aster_outcome(\"deny\")"));
+    }
+
+    @Test
+    void changedApproverAnnotationIsCaughtAsE723() {
+        assertTextOnlyMutationIsE723(text -> text
+            .replace("@aster_approver(\"Data Protection Officer\")", "@aster_approver(\"Legal\")"));
+    }
+
+    // 只改实际发布的策略文本中的注解，emitted() 原样保留：比对必须以文本为准
+    private void assertTextOnlyMutationIsE723(UnaryOperator<String> mutate) {
+        var compiled = compileToModule(read("cedar/guard-cedar-sample.aster"));
+        var exp = CedarExporter.export(compiled.module(), "decide", "h");
+        String policies = mutate.apply(exp.policies());
+        assertThat(policies).isNotEqualTo(exp.policies());
+        var out = service.verify(withPolicies(exp, policies), compiled.coreJson(), "h");
+        assertThat(out.exportable()).isFalse();
+        assertThat(out.diagnostics()).extracting(CompileDiagnostic::code).containsExactly("E723");
     }
 
     @Test
@@ -158,6 +189,11 @@ class CedarExportServiceTest {
             }
         }
         throw new IllegalStateException("样本没有 forbid 策略");
+    }
+
+    private static CedarExport withPolicies(CedarExport e, String policies) {
+        return new CedarExport(e.exportable(), e.ruleId(), e.functionName(), policies, e.policyIds(), e.emitted(),
+            e.schemaJson(), e.profile(), e.controls(), e.facts(), e.diagnostics());
     }
 
     private static CedarExport withSchema(CedarExport e, String schemaJson) {
