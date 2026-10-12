@@ -86,6 +86,16 @@ jobs:
           ./scripts/ci/verify-sibling-ref-pin.sh --self-test
           ./scripts/ci/verify-sibling-ref-pin.sh
 
+      # image-pin PR 合并门控：只在 k3s verify-image-pin 通过后合并（aster-cloud#506）。离线测试，无网络。
+      # 主流程测试需要 git/jq/yq；自建 runner 可能缺 jq，先装上，避免因缺依赖被跳过造成假绿。
+      - name: image-pin merge gate tests
+        working-directory: aster-api
+        run: |
+          command -v jq >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
+          command -v yq >/dev/null || { sudo curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq; }
+          bash scripts/ci/open-image-pin-pr-merge.test.sh
+          bash scripts/ci/open-image-pin-pr-flow.test.sh
+
       # PrismaDatabaseE2ETest 用独立的 aster_test 库（其 profile 指向它）。
       - name: Create aster_test database
         run: |
