@@ -77,7 +77,11 @@ T(c)「无错求值且为真」与 F(c)「无错求值且为假」；读 context
 ### 4.3 可翻译子集
 
 - 支持：Int / Long / Text 上的 `==` `!=` `<` `<=` `>` `>=`（Text 只支持 `==` `!=`）；`List.contains(req.principal_roles, "<文本字面量>")`（唯一放行的库调用）；`and` / `or` / `not`（自 1.0.32 起两引擎短路一致）；Bool 字段；角色成员判断；
-  `Let`（在使用处内联）；Int 上仅含字面量操作数的 `plus` / `minus` / `times`。
+  `Let`（在使用处内联）；Int 上的 `plus` / `minus` / `times`（操作数为 context 键或整数字面量）。
+- 整数数值域：Aster 的数值比较经 double，只有 ±(2^53−1) 内的整数能与 Cedar 的精确 Long 比较一致。因此整数字面量须满足
+  |v| < 2^53（否则 E721 `integer literal outside ±2^53`）；Long 比较中的每个 context 键或算术项在 T 与 F 中都带范围守卫
+  `(-9007199254740991 <= x && x <= 9007199254740991)`，超界时 T、F 皆不成立 → 无策略适用 → Cedar Deny。Cedar 的 Long 运算溢出求值报错，同样落为 Deny。
+  两种情形下 Cedar 都只会比 Aster 更严，不会更松。
 - 不支持（报错）：Decimal / Float 值（Cedar `decimal` 固定 4 位且舍入不同）；调用其他函数或规则；List / Map / Text 库调用；
   `Match`；副作用与 workflow；除法与取模；两个类型未知的 context 键之间的比较；then/else 块可能不以 `Return Verdict.*` 结束（落空）；Verdict 的理由或审批人不是文本字面量。
 
@@ -98,7 +102,7 @@ T(c)「无错求值且为真」与 F(c)「无错求值且为假」；读 context
 编译器按规则内容生成探针请求：规则提到的每个 action、角色、principal 类型各一，外加一个未提及值；每个数值比较取
 字面量及其 ±1；每个 context 键取存在与缺失两态。每个探针同时交给 Aster 引擎与 Cedar 授权器（带生成的 schema）：
 Aster `allow` ⇔ Cedar `Allow`；其余结论 ⇔ Cedar `Deny` 且决定性策略恰为一条 forbid，其 `@aster_outcome` / `@aster_reason`
-与 Aster 一致；Aster 求值抛错 ⇔ Cedar `Deny` 且无决定性策略。探针在 Cedar 侧**不做请求 schema 校验**（与不校验请求的网关一致）；网关若按 schema 校验请求，schema 外的请求（未提及的 action、非整数数值等）会被 Cedar 拒绝——这是有意的「对外形态收窄」，只会更严、不会更松。任何不一致 → E723。探针数量有上限（初值 512），响应中报告实际条数。另以 Cedar 校验器严格模式校验
+与 Aster 一致；Aster 求值抛错 ⇔ Cedar `Deny` 且无决定性策略。数值域：探针取值限于 ±(2^53−1)；超出该域的输入按 §4.3 由范围守卫判为 Cedar Deny（只会更严），不作为一致性要求。探针在 Cedar 侧**不做请求 schema 校验**（与不校验请求的网关一致）；网关若按 schema 校验请求，schema 外的请求（未提及的 action、非整数数值等）会被 Cedar 拒绝——这是有意的「对外形态收窄」，只会更严、不会更松。任何不一致 → E723。探针数量有上限（初值 512），响应中报告实际条数。另以 Cedar 校验器严格模式校验
 策略与 schema（E724）。
 
 ## 6. 接口与证据
