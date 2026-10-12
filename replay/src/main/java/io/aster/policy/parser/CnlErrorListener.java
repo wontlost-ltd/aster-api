@@ -85,7 +85,7 @@ public class CnlErrorListener extends BaseErrorListener {
         // ★只有 ANTLR 词表里的关键词 token 才回译；标识符/字面量即使碰巧与英文关键词同形也不改。
         boolean offendingIsKeyword = isKeywordToken(recognizer, offendingSymbol);
         String friendly = humanize(msg, isBeforeSymbol, localizer, offendingIsKeyword);
-        if (isReturnAfterComma(recognizer, offendingSymbol, offendingIsKeyword)) {
+        if (isInlineIfReturnAfterComma(recognizer, offendingSymbol, offendingIsKeyword)) {
             friendly = friendly + "。" + inlineIfHint(localizer);
         }
         rawErrors.add(String.format("行 %d:%d - %s", line, charPositionInLine, msg));
@@ -321,8 +321,13 @@ public class CnlErrorListener extends BaseErrorListener {
         StringBuilder sb = new StringBuilder();
         int shown = 0;
         for (String p : parts) {
-            // expecting 集合里的带引号项来自 ANTLR 字面量名（关键词/标点），可安全回译
-            String t = friendlyToken(localizer.localize(p.trim().replaceAll("^'|'$", "")));
+            // expecting 集合里的项来自 ANTLR 词表：带引号的是字面量名（关键词/标点），
+            // 不带引号的是符号名（RETURN、ELSE…）。两者都不是用户文本，可安全回译。
+            String raw = p.trim().replaceAll("^'|'$", "");
+            if (localizer.isLocalizing()) {
+                raw = KeywordLocalizer.KeywordTokens.get().symbolicToCanonical.getOrDefault(raw, raw);
+            }
+            String t = friendlyToken(localizer.localize(raw));
             if (sb.indexOf(t) >= 0) {
                 continue; // 去重
             }
@@ -341,42 +346,62 @@ public class CnlErrorListener extends BaseErrorListener {
     }
 
     /**
-     * offendingSymbol 是否为关键词 token。
-     *
-     * <p>AsterLexer 的关键词规则是大小写不敏感写法（{@code RETURN: [Rr][Ee]...}），
-     * 没有字面量名，只有与词同名的符号名。故判据为「符号名 == 文本大写」：
-     * RETURN/'Return' 命中；IDENT/'result'、TYPE_IDENT/'Applicant' 不命中，
-     * 用户的标识符因此永远不会被回译。
+     * offendingSymbol 是否为关键词 token：类型属于 {@link KeywordLocalizer.KeywordTokens}
+     * （以词法器对规范关键词拼写的实际判定为准，覆盖带/不带字面量名的所有关键词规则）。
+     * 用户的标识符与类型名（含与关键词同形的 Given、Profile）不在其中，永远不会被回译。
      */
     private static boolean isKeywordToken(Recognizer<?, ?> recognizer, Object offendingSymbol) {
-        if (!(offendingSymbol instanceof Token tok) || recognizer == null || tok.getText() == null) {
+        if (!(offendingSymbol instanceof Token tok)) {
             return false;
         }
-        Vocabulary vocab = recognizer.getVocabulary();
-        String symbolic = vocab == null ? null : vocab.getSymbolicName(tok.getType());
-        return symbolic != null && symbolic.equals(tok.getText().toUpperCase(java.util.Locale.ROOT));
+        return KeywordLocalizer.KeywordTokens.get().types.contains(tok.getType());
     }
 
     /**
-     * 是否是「条件后用逗号直接接 Return」——zh/de/en 作者都常这样写单行条件，
-     * 但语法要求 then（或换行缩进块）。命中时附带可操作的单行写法提示。
+     * 是否是「If 条件, Return …」——zh/de/en 作者都常这样写单行条件，但语法要求
+     * then（或换行缩进块）。三个条件缺一不可：
+     * ① 出错 token 是 Return 关键词；② 它前一个 token 是逗号；③ 该行第一个 token 是 If。
+     * ③ 防止误伤 {@code Otherwise, Return x.}：那是 else 分支，提示「If … then」是错的。
      */
-    private static boolean isReturnAfterComma(Recognizer<?, ?> recognizer, Object offendingSymbol,
+    private static boolean isInlineIfReturnAfterComma(Recognizer<?, ?> recognizer, Object offendingSymbol,
             boolean offendingIsKeyword) {
         if (!offendingIsKeyword || !(offendingSymbol instanceof Token bad)
-                || !"return".equalsIgnoreCase(bad.getText())
+                || !"RETURN".equals(symbolicName(recognizer, bad))
                 || !(recognizer instanceof Parser parser) || parser.getInputStream() == null) {
             return false;
         }
         TokenStream stream = parser.getInputStream();
-        for (int i = bad.getTokenIndex() - 1; i >= 0; i--) {
-            Token prev = stream.get(i);
-            if (prev.getChannel() != Token.DEFAULT_CHANNEL) {
+        Token prev = previousSignificant(recognizer, stream, bad.getTokenIndex());
+        if (prev == null || !",".equals(prev.getText())) {
+            return false;
+        }
+        Token lineStart = bad;
+        for (Token t = prev; t != null && t.getLine() == bad.getLine();
+                t = previousSignificant(recognizer, stream, t.getTokenIndex())) {
+            lineStart = t;
+        }
+        return "IF".equals(symbolicName(recognizer, lineStart));
+    }
+
+    /** 默认通道上、且不是缩进/换行标记（INDENT/DEDENT/NEWLINE）的前一个 token；没有时返回 null。 */
+    private static Token previousSignificant(Recognizer<?, ?> recognizer, TokenStream stream, int index) {
+        for (int i = index - 1; i >= 0; i--) {
+            Token t = stream.get(i);
+            if (t.getChannel() != Token.DEFAULT_CHANNEL) {
                 continue;
             }
-            return ",".equals(prev.getText());
+            String name = symbolicName(recognizer, t);
+            if ("INDENT".equals(name) || "DEDENT".equals(name) || "NEWLINE".equals(name)) {
+                continue;
+            }
+            return t;
         }
-        return false;
+        return null;
+    }
+
+    private static String symbolicName(Recognizer<?, ?> recognizer, Token tok) {
+        Vocabulary vocab = recognizer == null ? null : recognizer.getVocabulary();
+        return vocab == null ? null : vocab.getSymbolicName(tok.getType());
     }
 
     /** 单行条件的正确写法，关键词用作者 locale 的拼写。 */

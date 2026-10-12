@@ -3,12 +3,20 @@ package io.aster.policy.parser;
 import aster.core.lexicon.Lexicon;
 import aster.core.lexicon.LexiconRegistry;
 import aster.core.lexicon.SemanticTokenKind;
+import aster.core.parser.AsterCustomLexer;
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.Vocabulary;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 把规范（英文）关键词拼写回译成作者所用 locale 的拼写，供语法错误展示。
@@ -56,10 +64,15 @@ final class KeywordLocalizer {
             if (e.getValue() == null || local == null || local.isBlank()) {
                 continue;
             }
-            // 同一规范拼写对应多个语义（如 en 的 with/has 都是同词）时保留第一个，避免互相覆盖
+            // 防御：若两个语义共用同一规范拼写，保留先出现的那个，避免互相覆盖
             map.putIfAbsent(e.getValue().toLowerCase(Locale.ROOT), local);
         }
         return new KeywordLocalizer(Collections.unmodifiableMap(map), target);
+    }
+
+    /** 是否会改写（非英文 locale）。英文为恒等，调用方据此保持英文文案逐字不变。 */
+    boolean isLocalizing() {
+        return !canonicalToLocal.isEmpty();
     }
 
     /** 规范关键词 → locale 拼写；不是已知关键词时原样返回。 */
@@ -78,5 +91,92 @@ final class KeywordLocalizer {
         }
         Optional<String> k = target.getKeyword(kind);
         return k.filter(s -> !s.isBlank()).orElse(fallback);
+    }
+
+    /**
+     * 关键词 token 类型表：把规范 lexicon 里的每个关键词拼写单独过一遍 AsterCustomLexer，
+     * 记下它被识别成的 token 类型。
+     *
+     * <p>为什么不用「符号名 == 文本大写」之类的命名约定：AsterLexer 里既有大小写不敏感、
+     * 无字面量名的规则（{@code RETURN: [Rr][Ee]...}），也有带字面量名的规则
+     * （{@code GIVEN: 'given'}、{@code TO_WORD: 'to'}、{@code MODULE_KW: 'Module'}、
+     * {@code PLUS_WORD} 等），还有符号名与拼写不同的规则（{@code ELSE} 对应 Otherwise、
+     * {@code SECONDS}）。命名约定会漏掉后几类。以词法器自身的判定为准则不会漏。
+     *
+     * <p>被识别成 IDENT / TYPE_IDENT / 字面量的拼写不算关键词（例如内置类型名 Int 是
+     * TYPE_IDENT），这样与关键词同形的用户名字（类型 Given、Profile）永远不会被回译。
+     */
+    static final class KeywordTokens {
+        /** 关键词 token 类型集合。 */
+        final Set<Integer> types;
+        /** token 符号名 → 规范拼写（如 ELSE → Otherwise），用于回译 expecting 集合里的裸符号名。 */
+        final Map<String, String> symbolicToCanonical;
+
+        private KeywordTokens(Set<Integer> types, Map<String, String> symbolicToCanonical) {
+            this.types = types;
+            this.symbolicToCanonical = symbolicToCanonical;
+        }
+
+        private static final class Holder {
+            static final KeywordTokens INSTANCE = build();
+        }
+
+        static KeywordTokens get() {
+            return Holder.INSTANCE;
+        }
+
+        private static KeywordTokens build() {
+            Set<Integer> types = new HashSet<>();
+            Map<String, String> symbolic = new HashMap<>();
+            Lexicon canonical;
+            try {
+                canonical = LexiconRegistry.getInstance().getDefault();
+            } catch (RuntimeException e) {
+                return new KeywordTokens(Set.of(), Map.of());
+            }
+            if (canonical == null) {
+                return new KeywordTokens(Set.of(), Map.of());
+            }
+            for (String spelling : canonical.getKeywords().values()) {
+                if (spelling == null || spelling.isBlank()) {
+                    continue;
+                }
+                Token only = singleToken(spelling);
+                if (only == null || !only.getText().equalsIgnoreCase(spelling)) {
+                    continue;   // 多词拼写（会被拆成多个 token）或被规范化成符号的，不在 token 层面判定
+                }
+                Vocabulary vocab = AsterCustomLexer.VOCABULARY;
+                String name = vocab.getSymbolicName(only.getType());
+                if (name == null || "IDENT".equals(name) || "TYPE_IDENT".equals(name)
+                        || name.endsWith("LITERAL")) {
+                    continue;
+                }
+                types.add(only.getType());
+                symbolic.putIfAbsent(name, spelling);
+            }
+            return new KeywordTokens(Set.copyOf(types), Map.copyOf(symbolic));
+        }
+
+        /** 词法分析一段文本；只产出恰好一个有意义 token 时返回它。 */
+        private static Token singleToken(String text) {
+            try {
+                AsterCustomLexer lexer = new AsterCustomLexer(CharStreams.fromString(text));
+                lexer.removeErrorListeners();
+                List<Token> significant = new ArrayList<>();
+                for (Token t = lexer.nextToken(); t.getType() != Token.EOF; t = lexer.nextToken()) {
+                    if (t.getChannel() != Token.DEFAULT_CHANNEL) {
+                        continue;
+                    }
+                    String name = AsterCustomLexer.VOCABULARY.getSymbolicName(t.getType());
+                    if ("NEWLINE".equals(name) || "INDENT".equals(name) || "DEDENT".equals(name)) {
+                        continue;
+                    }
+                    significant.add(t);
+                }
+                return significant.size() == 1 ? significant.get(0) : null;
+            } catch (RuntimeException e) {
+                return null;
+            }
+        }
     }
 }
