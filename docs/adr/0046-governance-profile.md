@@ -124,7 +124,11 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 ### 9.1 最终用词
 
-六个新 `SemanticTokenKind` 按下表落地（aster-lang-core 内置 en、aster-lang-locales en/zh/de、aster-lang-hi），均列入 Java `OPTIONAL_KINDS` 与 TS `CI_OPTIONAL_KINDS`，发版列车完成后移出：
+六个新 `SemanticTokenKind` 按下表落地（aster-lang-core 内置 en、aster-lang-locales en/zh/de、aster-lang-hi），均列入 Java `OPTIONAL_KINDS` 与 TS `CI_OPTIONAL_KINDS`，发版列车完成后移出。
+
+**转正（2026-10-12）**：1.0.32 发版列车完成（四语 first-party 包均含六词、消费方均 pin 1.0.32）后，六个 kind 已移出 Java `OPTIONAL_KINDS` 与 TS `CI_OPTIONAL_KINDS`，语言包缺词即错误。
+
+用词：
 
 | kind | en | zh | de | hi |
 |---|---|---|---|---|
