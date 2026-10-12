@@ -36,10 +36,42 @@ class CoreIrEntrySelectorTest {
     }
 
     @Test
-    void 未指定目标或目标不存在时原样返回() {
+    void 未指定目标时原样返回() {
         assertThat(CoreIrEntrySelector.withEntry(TWO_FUNCS, null)).isSameAs(TWO_FUNCS);
         assertThat(CoreIrEntrySelector.withEntry(TWO_FUNCS, "")).isSameAs(TWO_FUNCS);
-        assertThat(CoreIrEntrySelector.withEntry(TWO_FUNCS, "missing")).isSameAs(TWO_FUNCS);
+    }
+
+    @Test
+    void 目标不存在时抛出而非原样返回() {
+        assertThatThrownBy(() -> CoreIrEntrySelector.withEntry(TWO_FUNCS, "missing"))
+            .isInstanceOf(EntryFunctionException.class)
+            .hasMessageContaining("'missing'")
+            .hasMessageContaining("add2")
+            .hasMessageContaining("twice");
+        assertThatThrownBy(() -> CoreIrEntrySelector.withEntry("{\"name\":\"m\",\"decls\":[]}", "f"))
+            .isInstanceOf(EntryFunctionException.class);
+    }
+
+    /**
+     * 重排必须逐字节保留每个字面量：重序列化会把 -0.0 变成 0.0（1/x 由 -Infinity 变 +Infinity）、
+     * 改写指数形式、去掉 \u2028 的转义。这里只允许 decls 元素的先后顺序变化。
+     */
+    @Test
+    void 重排逐字节保留字面量() {
+        String json = "{\"name\":\"m\",  \"decls\" : [ "
+            + "{\"kind\":\"Func\",\"name\":\"a\",\"body\":{\"kind\":\"Double\",\"value\":-0.0}} ,\n"
+            + "{\"kind\":\"Data\",\"name\":\"D\",\"note\":\"x\\u2028y\"},"
+            + "{\"kind\":\"Func\",\"name\":\"b\",\"body\":{\"kind\":\"Double\",\"value\":1e5,\"t\":\"\\u2028\"}}"
+            + " ], \"origin\":{\"v\":-0.0}}";
+        String a = "{\"kind\":\"Func\",\"name\":\"a\",\"body\":{\"kind\":\"Double\",\"value\":-0.0}}";
+        String d = "{\"kind\":\"Data\",\"name\":\"D\",\"note\":\"x\\u2028y\"}";
+        String b = "{\"kind\":\"Func\",\"name\":\"b\",\"body\":{\"kind\":\"Double\",\"value\":1e5,\"t\":\"\\u2028\"}}";
+
+        String out = CoreIrEntrySelector.withEntry(json, "b");
+
+        assertThat(out).isEqualTo("{\"name\":\"m\",  \"decls\" : [ " + b + " ,\n" + a + "," + d
+            + " ], \"origin\":{\"v\":-0.0}}");
+        assertThat(out).hasSameSizeAs(json);
     }
 
     @Test
@@ -52,6 +84,18 @@ class CoreIrEntrySelectorTest {
     @Test
     void 重排保留小数原始精度() {
         assertThat(CoreIrEntrySelector.withEntry(TWO_FUNCS, "twice")).contains("0.450");
+    }
+
+    @Test
+    void 被导入模块的mangle后main不触发抢占检查() throws Exception {
+        String json = """
+            {"name":"app","decls":[
+              {"kind":"Func","name":"risk_Scoring__main","params":[]},
+              {"kind":"Func","name":"run","params":[]}
+            ]}""";
+
+        assertThat(declOrder(CoreIrEntrySelector.withEntry(json, "run")))
+            .containsExactly("Func:run", "Func:risk_Scoring__main");
     }
 
     @Test
@@ -76,7 +120,7 @@ class CoreIrEntrySelectorTest {
             ]}""";
 
         assertThatThrownBy(() -> CoreIrEntrySelector.withEntry(json, "helper"))
-            .isInstanceOf(IllegalArgumentException.class)
+            .isInstanceOf(EntryFunctionException.class)
             .hasMessageContaining("'helper'")
             .hasMessageContaining("'main'");
         assertThat(CoreIrEntrySelector.withEntry(json, "main")).isNotNull();

@@ -169,6 +169,44 @@ class ModuleResolverIT {
         assertThat(result.result()).isEqualTo(42);
     }
 
+    /**
+     * link 后被导入模块的函数排在根模块之前（拓扑序），且带 mangle 前缀。此前 Truffle 执行的是
+     * 第一个函数——即被导入的函数；上面那条用例只因 f(40) 恰好等于 run(40) 才是绿的。
+     * 这里让根模块两个 Rule 结果不同，并让被导入模块定义自己的 main：它被 mangle 后
+     * 不应触发「main 抢占入口」的拒绝。
+     */
+    @Test
+    void crossModuleExecutionRunsRequestedRootRuleNotFirstLinkedFunction() {
+        persistLibrary(TENANT, "risk.Scoring", 1L, true, """
+            Module risk.Scoring.
+
+            Rule main given amount as Int, produce Int:
+              Return amount times 100.
+
+            Rule f given amount as Int, produce Int:
+              Return amount plus 2.
+            """);
+        String source = """
+            Module app.Root.
+            Use risk.Scoring version 1 as Score.
+
+            Rule other given amount as Int, produce Int:
+              Return amount.
+
+            Rule run given amount as Int, produce Int:
+              Return Score.f(amount) times 10.
+            """;
+
+        DynamicCnlExecutor.ExecutionResult run = executor.executeWithTenantContext(
+            TENANT, source, Map.of("amount", 40), "run", "en-US", null, false);
+        DynamicCnlExecutor.ExecutionResult other = executor.executeWithTenantContext(
+            TENANT, source, Map.of("amount", 40), "other", "en-US", null, false);
+
+        assertThat(run.result()).isEqualTo(420);
+        assertThat(run.functionName()).isEqualTo("run");
+        assertThat(other.result()).isEqualTo(40);
+    }
+
     @Test
     void staticExecutorKeepsSingleModuleBehaviorWhenModuleFeatureIsNotUsed() {
         DynamicCnlExecutor.ExecutionResult result = DynamicCnlExecutor.executeWithContext(

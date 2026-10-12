@@ -219,7 +219,10 @@ public class PolicyEvaluationService {
             .chain(hit -> hit != null ? Uni.createFrom().item(hit) : compileOnce(cacheKey))
             .map(compiled -> executeCompiled(cacheKey, compiled.getCoreJson(), compiled.getMetadata(),
                 System.nanoTime(), resolveDeterminismContext() != null))
-            .onFailure().transform(e -> new RuntimeException("Policy evaluation failed", e));
+            // EntryFunctionException 的消息只含函数名、且是调用方唯一能自行修正的原因：
+            // 不包装，让 /evaluate 与 /evaluate/batch 把它原样回给调用方。
+            .onFailure(e -> !(e instanceof io.aster.policy.parser.EntryFunctionException))
+            .transform(e -> new RuntimeException("Policy evaluation failed", e));
     }
 
     /**
@@ -258,7 +261,7 @@ public class PolicyEvaluationService {
     private PolicyEvaluationResult executeCompiled(PolicyCacheKey cacheKey, String coreJson,
             CompilationMetadata metadata, long startMarker, boolean deterministicTiming) {
         ExecutionResult executionResult = trufflePolicyRuntime.execute(
-            coreJson, cacheKey.getContext(), metadata, cacheKey.getPolicyFunction());
+            coreJson, cacheKey.getContext(), metadata);
         if (!executionResult.success()) {
             throw new RuntimeException(String.format(
                 "策略执行失败: %s.%s - %s",
@@ -410,10 +413,15 @@ public class PolicyEvaluationService {
                     compilationResult.getErrors()
                 ));
             }
+            // coreJson 是整个模块的 IR，而 Truffle 只会执行 main 或第一个函数。编译期一次性把
+            // 目标函数排到最前并缓存（缓存键已含 function），热路径不再解析 IR；
+            // 目标不存在或被 main 抢占时抛 EntryFunctionException，不静默执行别的函数。
+            String entryCoreJson = io.aster.policy.parser.CoreIrEntrySelector.withEntry(
+                compilationResult.getCoreJson(), cacheKey.getPolicyFunction());
             io.aster.policy.cache.CompiledPolicy compiledPolicy = new io.aster.policy.cache.CompiledPolicy(
                 versionId,
                 version.get().sourceHash,
-                compilationResult.getCoreJson(),
+                entryCoreJson,
                 compilationResult.getMetadata()
             );
             compiledPolicyCache.put(
@@ -424,6 +432,9 @@ public class PolicyEvaluationService {
             );
             return compiledPolicy;
 
+        } catch (io.aster.policy.parser.EntryFunctionException e) {
+            // 原因本身就是给调用方看的（只含函数名），不包装，交由 REST 层原样透出。
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException(String.format(
                 "动态策略执行异常: %s.%s",

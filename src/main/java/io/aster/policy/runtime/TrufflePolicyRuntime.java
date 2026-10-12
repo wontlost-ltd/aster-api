@@ -1,7 +1,6 @@
 package io.aster.policy.runtime;
 
 import io.aster.policy.compiler.CompilationMetadata;
-import io.aster.policy.parser.CoreIrEntrySelector;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -135,10 +134,7 @@ public class TrufflePolicyRuntime {
     }
 
     /**
-     * 执行策略（入口由 Truffle 默认规则决定：main → 第一个函数）。
-     *
-     * <p>仅适用于单函数模块或确实要执行第一个函数的场景；多函数模块请用
-     * {@link #execute(String, Object[], CompilationMetadata, String)} 指明目标函数。
+     * 执行策略
      *
      * @param coreJson Core IR JSON
      * @param contextArgs 上下文参数
@@ -150,32 +146,6 @@ public class TrufflePolicyRuntime {
         Object[] contextArgs,
         CompilationMetadata metadata
     ) {
-        return execute(coreJson, contextArgs, metadata, null);
-    }
-
-    /**
-     * 执行策略中的指定函数。
-     *
-     * <p>coreJson 是整个模块的 IR，而 Truffle 不接收入口函数名；这里先把目标函数排到 IR 最前，
-     * 保证执行的就是 {@code functionName}（详见 {@link CoreIrEntrySelector}）。
-     *
-     * @param coreJson Core IR JSON
-     * @param contextArgs 上下文参数（按目标函数的参数顺序）
-     * @param metadata 编译元数据
-     * @param functionName 目标函数名；null 或空时沿用默认入口
-     * @return 执行结果；模块中按名优先的函数会抢占入口时返回失败
-     */
-    public ExecutionResult execute(
-        String coreJson,
-        Object[] contextArgs,
-        CompilationMetadata metadata,
-        String functionName
-    ) {
-        try {
-            coreJson = CoreIrEntrySelector.withEntry(coreJson, functionName);
-        } catch (IllegalArgumentException e) {
-            return ExecutionResult.failure(e.getMessage());
-        }
         long startTime = System.currentTimeMillis();
         Context ctx = null;
         boolean contextTainted = false;
