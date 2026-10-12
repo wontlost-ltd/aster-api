@@ -44,7 +44,7 @@ import java.util.Set;
  * </ul>
  *
  * <p>语义约定：策略文本整体解析，Cedar 按出现顺序命名为 {@code policy0..N}，再按 {@code policyIds} 同序替换为
- * 调用方的稳定 id；校验使用 cedar-java 默认的严格（strict）模式；授权不传 schema，不做请求校验。
+ * 调用方的稳定 id，且每条策略的 {@code @id} 注解必须与对应 id 相同，否则抛 {@link IllegalArgumentException}；校验使用 cedar-java 默认的严格（strict）模式；授权不传 schema，不做请求校验。
  */
 @ApplicationScoped
 public class CedarEngine {
@@ -113,11 +113,25 @@ public class CedarEngine {
             throw new IllegalArgumentException("策略条数与 policyIds 不一致：解析得 "
                 + parsed.getNumPolicies() + " 条（模板 " + parsed.getNumTemplates() + "），id " + policyIds.size() + " 个");
         }
+        // 解析结果是无序 Set，先按 policyN 还原文本顺序，保证校验与报错确定
+        Policy[] ordered = new Policy[policyIds.size()];
+        parsed.policies.forEach(p -> ordered[parsedIndex(p.getID())] = p);
         Set<Policy> renamed = new HashSet<>();
-        for (Policy p : parsed.policies) {
-            renamed.add(new Policy(p.getSource(), policyIds.get(parsedIndex(p.getID()))));
+        for (int i = 0; i < ordered.length; i++) {
+            renamed.add(new Policy(ordered[i].getSource(), expectedId(i, ordered[i], policyIds)));
         }
         return new PolicySet(renamed);
+    }
+
+    /** 位置映射必须与策略自身的 @id 注解一致，防止调用方传错顺序时静默错配。 */
+    private static String expectedId(int index, Policy policy, List<String> policyIds) throws AuthException {
+        String expected = policyIds.get(index);
+        String annotated = policy.getAnnotation("id");
+        if (!expected.equals(annotated)) {
+            throw new IllegalArgumentException("第 " + index + " 条策略的 @id 与 policyIds 不一致：期望 "
+                + expected + "，实际 " + (annotated == null ? "<缺失>" : annotated));
+        }
+        return expected;
     }
 
     private static int parsedIndex(String parsedId) {
