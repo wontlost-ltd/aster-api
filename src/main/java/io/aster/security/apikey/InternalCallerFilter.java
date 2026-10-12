@@ -184,10 +184,12 @@ public class InternalCallerFilter {
         boolean isAuditReceipts = normalizedPath.equals("/api/v1/audit/receipts");
         // 回放逐项查询（ADR 0044 §4）：同收据先例的双通道。
         boolean isReplayItems = normalizedPath.equals("/api/v1/replay/items");
+        // Cedar 导出（ADR 0047 §6）：cloud 详情页走 HMAC，其它调用方走 Bearer，同收据先例。
+        boolean isCedarExport = normalizedPath.equals(CEDAR_EXPORT_PATH);
         // 从证据开决策（ADR 0042 §3.1）：只对 cloud 开放，无 Bearer 通道，恒要求 HMAC。
         if (normalizedPath.equals(GUARD_FROM_EVIDENCE_PATH)) return Classification.REQUIRE_HMAC;
         // guard 审批与决策回读（ADR 0042 §4.2）：cloud 收件箱走 HMAC，SDK 走 Bearer，同收据先例。
-        if (isAuditReceipts || isReplayItems || isGuardDualChannel(normalizedPath)) {
+        if (isAuditReceipts || isReplayItems || isCedarExport || isGuardDualChannel(normalizedPath)) {
             return hasInternalCaller ? Classification.REQUIRE_HMAC : Classification.NOT_PROTECTED;
         }
         if (!isEvaluateSource && !isAi && !isWhatIfBatch) return Classification.NOT_PROTECTED;
@@ -210,6 +212,7 @@ public class InternalCallerFilter {
     }
 
     static final String GUARD_FROM_EVIDENCE_PATH = "/api/v1/guard/decisions/from-evidence";
+    static final String CEDAR_EXPORT_PATH = "/api/v1/policies/export/cedar";
 
     /** 审批列表、审批批准 / 拒绝、单个决策回读：既接受 HMAC 内部调用，也接受 Bearer API key。 */
     private static boolean isGuardDualChannel(String p) {
