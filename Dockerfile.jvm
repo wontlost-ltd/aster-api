@@ -51,6 +51,10 @@ EXPOSE 8080
 ARG ASTER_RUNTIME_BUILD=dev
 ENV ASTER_RUNTIME_BUILD=${ASTER_RUNTIME_BUILD}
 
+# ★限制 glibc malloc arena 数（ADR 0047 §9.1）：glibc 默认每线程 arena（上限 8×核数），JIT、Truffle 与
+# Cedar FFI 的原生分配会让 RSS 远超堆上限，512Mi 的生产 Pod 有被 OOMKill 的风险；2 个 arena 足够且碎片可控。
+ENV MALLOC_ARENA_MAX=2
+
 # 设置环境变量
 ENV JAVA_OPTS="-Xmx512m -Xms256m"
 ENV QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://localhost:5432/aster_policy
