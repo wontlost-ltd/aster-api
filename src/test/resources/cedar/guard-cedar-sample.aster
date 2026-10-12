@@ -1,0 +1,14 @@
+Module guard.cedar.sample.
+
+Define GuardRequest has principal_id, principal_type, principal_roles, action, resource_type, resource_id, context, agent_model.
+
+@id("GCS-001")
+@control("EU_AI_ACT:ART14")
+Rule decide given req as GuardRequest, produce Verdict:
+  Let large be req.context.amount at least 10000.
+  When req.action equals to "delete_customer_record", require approval by "Data Protection Officer" because "customer record deletion".
+  If List.contains(req.principal_roles, "suspended"):
+    Return Verdict.deny("suspended principal").
+  If large and req.action equals to "refund":
+    Return Verdict.escalate("large refund").
+  Otherwise allow.
