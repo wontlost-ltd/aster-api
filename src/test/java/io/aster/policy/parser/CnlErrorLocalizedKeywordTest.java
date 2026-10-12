@@ -143,4 +143,39 @@ class CnlErrorLocalizedKeywordTest {
             KeywordLocalizer.IDENTITY, false);
         assertThat(msg).isEqualTo("意外的 'x'，此处期望 'given' 或 'produce'");
     }
+
+    @Test
+    void humanize_expectingSet_bareSymbolicNames_resolveThroughLexerTable() {
+        // ELSE 的拼写是 Otherwise、MODULE_KW 是 Module、PLUS_WORD 是 plus：
+        // 都不能靠「符号名小写」碰巧命中，必须经由符号名 → 规范拼写表
+        String msg = CnlErrorListener.humanize(
+            "mismatched input 'x' expecting {ELSE, MODULE_KW, PLUS_WORD}", false, ZH, false);
+        assertThat(msg).isEqualTo("意外的 'x'，此处期望 '否则' 或 '模块' 或 '加上'");
+    }
+
+    @Test
+    void humanize_sharedTokenType_hasDeterministicPreference() {
+        // GREATER_THAN 与 MORE_THAN 等多个语义可能落到同一 token 类型；按枚举声明顺序，先声明者胜出
+        assertThat(KeywordLocalizer.KeywordTokens.get().symbolicToCanonical)
+            .containsEntry("GREATER_THAN_WORD", "greater than");
+        String msg = CnlErrorListener.humanize("mismatched input 'x' expecting GREATER_THAN_WORD", false, ZH, false);
+        assertThat(msg).isEqualTo("意外的 'x'，此处期望 '大于'");
+    }
+
+    @Test
+    void inKindOrder_followsEnumDeclarationOrder() {
+        var entries = KeywordLocalizer.inKindOrder(lexicon("en-us"));
+        assertThat(entries).isNotEmpty();
+        for (int i = 1; i < entries.size(); i++) {
+            assertThat(entries.get(i - 1).getKey().ordinal()).isLessThan(entries.get(i).getKey().ordinal());
+        }
+    }
+
+    @Test
+    void humanize_english_bareSymbolicNames_areUnchanged() {
+        // en-US 不经过符号名表：RETURN 照旧显示为 'RETURN'（不变成 'Return'）
+        String msg = CnlErrorListener.humanize("mismatched input 'x' expecting RETURN", false,
+            KeywordLocalizer.IDENTITY, false);
+        assertThat(msg).isEqualTo("意外的 'x'，此处期望 'RETURN'");
+    }
 }

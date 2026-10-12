@@ -59,7 +59,7 @@ final class KeywordLocalizer {
             return IDENTITY;
         }
         Map<String, String> map = new HashMap<>();
-        for (Map.Entry<SemanticTokenKind, String> e : canonical.getKeywords().entrySet()) {
+        for (Map.Entry<SemanticTokenKind, String> e : inKindOrder(canonical)) {
             String local = target.getKeywords().get(e.getKey());
             if (e.getValue() == null || local == null || local.isBlank()) {
                 continue;
@@ -68,6 +68,19 @@ final class KeywordLocalizer {
             map.putIfAbsent(e.getValue().toLowerCase(Locale.ROOT), local);
         }
         return new KeywordLocalizer(Collections.unmodifiableMap(map), target);
+    }
+
+    /**
+     * 按 {@link SemanticTokenKind} 声明顺序遍历关键词。
+     *
+     * <p>lexicon 的 getKeywords() 不保证迭代顺序，且不同 JVM 进程间会变化；下游用
+     * putIfAbsent 去重时，「谁先出现谁胜出」就随进程漂移（实测 GREATER_THAN_WORD 时而
+     * 回译成「多于」时而「大于」）。固定按枚举声明顺序，先声明的语义胜出，结果可复现。
+     */
+    static List<Map.Entry<SemanticTokenKind, String>> inKindOrder(Lexicon lexicon) {
+        List<Map.Entry<SemanticTokenKind, String>> entries = new ArrayList<>(lexicon.getKeywords().entrySet());
+        entries.sort(Map.Entry.comparingByKey(java.util.Comparator.comparingInt(Enum::ordinal)));
+        return entries;
     }
 
     /** 是否会改写（非英文 locale）。英文为恒等，调用方据此保持英文文案逐字不变。 */
@@ -137,7 +150,8 @@ final class KeywordLocalizer {
             if (canonical == null) {
                 return new KeywordTokens(Set.of(), Map.of());
             }
-            for (String spelling : canonical.getKeywords().values()) {
+            for (Map.Entry<SemanticTokenKind, String> entry : inKindOrder(canonical)) {
+                String spelling = entry.getValue();
                 if (spelling == null || spelling.isBlank()) {
                     continue;
                 }
