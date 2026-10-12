@@ -1018,7 +1018,7 @@ public class PolicyEvaluationResource {
      * 源码有 @Size 16KB，但 aliasSet 是独立字段不受约束——单独限 kind 数/每 kind
      * 别名数/单别名长度/kind key 长度，防负载塞进 aliasSet 绕过成本控制。
      */
-    private static String validateAliasSetBounds(Map<String, java.util.List<String>> aliasSet) {
+    static String validateAliasSetBounds(Map<String, java.util.List<String>> aliasSet) {
         if (aliasSet == null || aliasSet.isEmpty()) {
             return null;
         }

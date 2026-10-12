@@ -48,7 +48,8 @@ public class ApiKeyAuthFilter {
         "/api/v1/audit/receipts",
         "/api/v1/replay/items",
         "/api/v1/guard/decisions/from-evidence",
-        "/api/v1/guard/approvals");
+        "/api/v1/guard/approvals",
+        InternalCallerFilter.CEDAR_EXPORT_PATH);
 
     /** 同上的前缀集合；不含 {@code /api/v1/guard/decisions} 本身——Agent 提交决策只走 Bearer。 */
     static final List<String> HMAC_BYPASS_PREFIXES = List.of(
@@ -207,6 +208,7 @@ public class ApiKeyAuthFilter {
      *   <li>{@code /{policyId}/rollback} —— 突变：R21-Critical-1 起 API key 必填</li>
      *   <li>{@code /{policyId}/versions} —— 历史查询：R21-Critical-1 起 API key 必填</li>
      *   <li>{@code /cache} —— 缓存清理：R21-Critical-1 起 API key 必填</li>
+     *   <li>{@code /export/cedar} —— Cedar 导出（ADR 0047）：API key 或 HMAC 内部调用</li>
      *   <li>{@code /schema}、{@code /validate} —— 元数据查询：保持匿名（无副作用）</li>
      *   <li>{@code /api/v1/workflows/*} —— workflow 审计只读：API key 必填（见下）</li>
      *   <li>{@code /api/v1/guard/*} —— Action Guard（ADR 0040）Agent 直连端点：API key 必填</li>
@@ -257,6 +259,8 @@ public class ApiKeyAuthFilter {
         if (p.equals("/api/v1/policies/evaluate/batch")) return true;
         // R21-Critical-1：cache 清理 (DELETE /cache) —— 突变操作必须鉴权
         if (p.equals("/api/v1/policies/cache")) return true;
+        // Cedar 导出（ADR 0047 §6）：要求可验证身份，HMAC 内部调用者经 HMAC_BYPASS_PATHS 免 Bearer
+        if (p.equals(InternalCallerFilter.CEDAR_EXPORT_PATH)) return true;
         // R21-Critical-1：版本管理 —— rollback / versions 列表必须鉴权
         // path 形如 /api/v1/policies/{policyId}/rollback 或 /{policyId}/versions
         if (p.endsWith("/rollback")) return true;

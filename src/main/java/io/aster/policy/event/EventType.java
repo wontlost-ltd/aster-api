@@ -21,5 +21,8 @@ public enum EventType {
 
     // Action Guard（ADR 0040）：同步入链，决策须在收据落链后才返回
     ACTION_GUARD_DECISION,      // 动作守卫决策（ALLOW / DENY / 待审批）
-    ACTION_GUARD_APPROVAL       // 人工审批结论（批准 / 驳回）/ 过期（EXPIRED）
+    ACTION_GUARD_APPROVAL,      // 人工审批结论（批准 / 驳回）/ 过期（EXPIRED）
+
+    // Cedar 导出（ADR 0047 §6）：成功导出同步入链后才返回
+    POLICY_EXPORTED             // 策略导出为 Cedar（源码、策略文本与 schema 各自哈希）
 }

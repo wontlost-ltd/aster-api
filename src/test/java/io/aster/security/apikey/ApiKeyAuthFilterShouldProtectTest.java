@@ -337,4 +337,13 @@ class ApiKeyAuthFilterShouldProtectTest {
         assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/audit/receiptsX"));
         assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/policies/evaluate"));
     }
+
+    // ADR 0047 §6：Cedar 导出要求可验证身份；HMAC 内部调用者免 Bearer。
+    @Test
+    void cedarExportIsProtectedAndHmacBypassable() throws Exception {
+        assertTrue(call("/api/v1/policies/export/cedar"));
+        assertTrue(call("/api/v1/policies/export;x=1/cedar"));
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/policies/export/cedar"));
+        assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/policies/export/cedarX"));
+    }
 }

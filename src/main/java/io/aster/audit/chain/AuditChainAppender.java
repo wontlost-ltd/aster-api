@@ -47,9 +47,11 @@ public class AuditChainAppender {
     /**
      * metadata 中值为标识符或摘要的键（Action Guard 收据，ADR 0040 §5.2）：它们把链上事件与
      * guard_decisions / guard_approvals 的行、以及前一条收据关联起来，必须逐字入链。
+     * Cedar 导出事件（ADR 0047 §6）的策略文本与 schema 摘要同理。
      */
     private static final Set<String> IDENTITY_METADATA_KEYS = Set.of(
-        "decisionId", "correlationId", "approvalId", "idempotencyKey", "decisionReceiptHash", "contextHash", "sourceHash");
+        "decisionId", "correlationId", "approvalId", "idempotencyKey", "decisionReceiptHash", "contextHash", "sourceHash",
+        "policiesHash", "schemaHash");
     /** 规范 UUID 形态（8-4-4-4-12 十六进制），整串匹配。 */
     private static final Pattern CANONICAL_UUID = Pattern.compile(
         "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");

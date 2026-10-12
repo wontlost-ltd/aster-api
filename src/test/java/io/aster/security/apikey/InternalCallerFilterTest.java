@@ -734,6 +734,17 @@ class InternalCallerFilterTest {
             InternalCallerFilter.classify("/api/v1/audit/receiptsX", false, false, false, false, true));
     }
 
+    // ADR 0047 §6：Cedar 导出双通道，带内部调用头才要求 HMAC，否则交给 ApiKeyAuthFilter。
+    @Test
+    void cedarExportRequiresHmacOnlyWithInternalCallerHeaders() {
+        assertEquals(Classification.REQUIRE_HMAC,
+            InternalCallerFilter.classify("/api/v1/policies/export/cedar", false, false, false, false, true));
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/policies/export/cedar", false, false, false, false, false));
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/policies/export/cedarX", false, false, false, false, true));
+    }
+
     // ADR 0042 §4.2：from-evidence 恒要求 HMAC；审批与决策回读仅在带内部调用头时要求 HMAC。
     @Test
     void guardFromEvidenceAlwaysRequiresHmac() {

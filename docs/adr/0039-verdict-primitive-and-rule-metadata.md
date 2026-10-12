@@ -40,7 +40,7 @@ Aster 要从「业务规则 Policy-as-Code」走向「AI 推理与真实动作�
 | 3 | 证据链补齐 | 执行记录与证据包增加规则 ID / 模型身份 / 复核者 | 1 |
 | 4 | Annex III 信贷试点 | 用信贷演示跑通端到端，产出对照 EU AI Act Article 14 的证据包 → **ADR 0044** | 1、2、3 |
 | 5 | Control 注册表与影响分析 | 挂在 MappingIR / ProofIR 上 → **ADR 0045**（注册表、W704、注册表驱动对照表；影响分析未做） | 1 |
-| 6 | Governance Profile 语法糖 + Cedar 编译目标 | 对外形态收窄、与现有网关互操作；6a → ADR 0046；6b 待定 | 1 |
+| 6 | Governance Profile 语法糖 + Cedar 编译目标 | 对外形态收窄、与现有网关互操作；6a → ADR 0046；6b → ADR 0047 | 1 |
 
 子项目 1 是所有后续项的地基，且是**唯一**需要改语言核心并走 release train 的一项，因此单独成 ADR。
 

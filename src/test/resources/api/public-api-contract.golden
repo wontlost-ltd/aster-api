@@ -56,6 +56,7 @@ POST /api/v1/policies/evaluate
 POST /api/v1/policies/evaluate-json
 POST /api/v1/policies/evaluate-source
 POST /api/v1/policies/evaluate/batch
+POST /api/v1/policies/export/cedar
 POST /api/v1/policies/schema
 POST /api/v1/policies/validate
 POST /api/v1/policies/{policyId}/rollback
