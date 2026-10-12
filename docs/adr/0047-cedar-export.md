@@ -28,7 +28,7 @@ Permissions 的导入工具）执行。Aster 仍是唯一事实源与证据链�
 - **方向**：Aster → Cedar 单向导出。不导入 Cedar，也不在 guard 内嵌 Cedar 预检。
 - **首版目标**：通用 Cedar 文件，下载 / API 获取；**不**存租户 AWS 凭据、不直推 Verified Permissions（可在后续版本叠加，产物格式无需改变）。
 - **编译器位置**：aster-lang-core 新包 `aster.core.cedar`，输入 Core IR，输出策略文本、schema（JSON）与诊断；core 不引入新依赖。
-- **校验与等价性**：在 aster-api，用官方 `com.cedarpolicy:cedar-java`（Maven Central；版本与原生库打包方式在实施计划首个任务中核实）。
+- **校验与等价性**：在 aster-api，用官方 `com.cedarpolicy:cedar-java`（Maven Central）。**风险**：cedar-java 依赖原生库，而 aster-api 生产镜像为 Alpine（musl）/ arm64；实施计划首个任务必须先在该镜像上实测加载，不可用时停下由用户裁决（换 glibc 基础镜像或改用其他运行方式）。
 
 ## 3. 可导出形状与请求映射
 
@@ -43,9 +43,16 @@ Permissions 的导入工具）执行。Aster 仍是唯一事实源与证据链�
 | `action` | `action` = `Aster::Action::"<name>"`；规则里比较过的每个 action 名都进 schema 的 actions |
 | `resource_type` / `resource_id` | `resource` = `Aster::Resource::"<id>"`，属性 `type` |
 | `agent_model` | `context.agent_model` |
-| `context.<key>` | `context.<key>`；类型按用法推断（与数字比较 → Long，与文本比较 → String），schema 中声明为可选，访问处守卫 `context has <key>` |
+| `context.<key>` | `context.<key>`；类型按用法推断（与整数比较或参与整数运算 → Long，与文本比较 → String，单独作条件或与布尔比较 → Bool），schema 中声明为可选；只支持一层键（`req.context.a.b` → E721） |
 
 实体类型统一在 `Aster` 命名空间；principal/resource 的「类型」作为属性而非独立实体类型（guard 中它们是自由文本）。
+
+**缺失键语义（实施前核实后的裁决）**：Aster 读不存在的 context 键会抛错，guard 把求值异常判为 DENY（`EVALUATION_FAILED`），且其后分支不再求值。
+若在 Cedar 侧用 `context has k` 守卫后落空到下一分支，后续 permit 可能放行 Aster 拒绝的请求。因此每个条件 c 翻译为两个 Cedar 表达式：
+T(c)「无错求值且为真」与 F(c)「无错求值且为假」；读 context 键的原子比较为 `T = context has k && (比较)`、`F = context has k && !(比较)`，
+复合式按短路展开：`T(a and b)=T(a)&&T(b)`，`F(a and b)=F(a)||(T(a)&&F(b))`，`T(a or b)=T(a)||(F(a)&&T(b))`，`F(a or b)=F(a)&&F(b)`，`T(not a)=F(a)`，`F(not a)=T(a)`。
+`Let` 在其位置加入「已定义」要求 `T(e)||F(e)`。任何一个前序条件会抛错时，所有后续策略的 F(前序) 均不成立 → 无策略适用 → Cedar Deny，与 Aster 一致；且每处键访问都在同一合取中先经 `has` 守卫，满足 Cedar 严格校验。
+`agent_model` 可为空：空值等同缺失，`==` 为假、`!=` 为真（与 Aster 的空值比较一致）。角色成员判断写作 `List.contains(req.principal_roles, "…")`（语言无 `in` 运算符）。
 
 ## 4. 规则体翻译
 
@@ -69,10 +76,10 @@ Permissions 的导入工具）执行。Aster 仍是唯一事实源与证据链�
 
 ### 4.3 可翻译子集
 
-- 支持：Int / Text 上的 `==` `!=` `<` `<=` `>` `>=`；`and` / `or` / `not`（自 1.0.32 起两引擎短路一致）；Bool 字段；角色成员判断；
+- 支持：Int / Long / Text 上的 `==` `!=` `<` `<=` `>` `>=`（Text 只支持 `==` `!=`）；`List.contains(req.principal_roles, "<文本字面量>")`（唯一放行的库调用）；`and` / `or` / `not`（自 1.0.32 起两引擎短路一致）；Bool 字段；角色成员判断；
   `Let`（在使用处内联）；Int 上仅含字面量操作数的 `plus` / `minus` / `times`。
 - 不支持（报错）：Decimal / Float 值（Cedar `decimal` 固定 4 位且舍入不同）；调用其他函数或规则；List / Map / Text 库调用；
-  `Match`；副作用与 workflow；除法与取模；两个类型未知的 context 键之间的比较。
+  `Match`；副作用与 workflow；除法与取模；两个类型未知的 context 键之间的比较；then/else 块可能不以 `Return Verdict.*` 结束（落空）；Verdict 的理由或审批人不是文本字面量。
 
 ### 4.4 诊断（ADR 0031 单一来源，同步全部副本）
 
@@ -91,14 +98,16 @@ Permissions 的导入工具）执行。Aster 仍是唯一事实源与证据链�
 编译器按规则内容生成探针请求：规则提到的每个 action、角色、principal 类型各一，外加一个未提及值；每个数值比较取
 字面量及其 ±1；每个 context 键取存在与缺失两态。每个探针同时交给 Aster 引擎与 Cedar 授权器（带生成的 schema）：
 Aster `allow` ⇔ Cedar `Allow`；其余结论 ⇔ Cedar `Deny` 且决定性策略恰为一条 forbid，其 `@aster_outcome` / `@aster_reason`
-与 Aster 一致。任何不一致 → E723。探针数量有上限（初值 512），响应中报告实际条数。另以 Cedar 校验器严格模式校验
+与 Aster 一致；Aster 求值抛错 ⇔ Cedar `Deny` 且无决定性策略。探针在 Cedar 侧**不做请求 schema 校验**（与不校验请求的网关一致）；网关若按 schema 校验请求，schema 外的请求（未提及的 action、非整数数值等）会被 Cedar 拒绝——这是有意的「对外形态收窄」，只会更严、不会更松。任何不一致 → E723。探针数量有上限（初值 512），响应中报告实际条数。另以 Cedar 校验器严格模式校验
 策略与 schema（E724）。
 
 ## 6. 接口与证据
 
 - **API**：`POST /api/v1/policies/export/cedar`，入参二选一：`{policyId, versionId}`（已保存版本）或 `{source, locale, aliasSet}`（与编译端点一致）。
   出参：`{exportable, policies, schema, ruleId, profile, controls, probes:{count, agreed}, diagnostics}`；不可导出时 HTTP 200 + `exportable:false` + 诊断。
-- **审计**：已保存版本导出成功时，审计哈希链追加 `POLICY_EXPORTED` 事件：版本 id、`target:"cedar"`、策略文本与 schema 各自 SHA-256、探针条数。临时源码导出不记录。
+- **鉴权**：端点要求可验证身份（aster-cloud 的 HMAC 内部调用或 API Key），纳入 `ApiKeyAuthFilter` 与 `InternalCallerFilter` 的双通道保护；不接受匿名或仅凭 `X-Tenant-Id` 的调用。
+- **审计**：每次成功导出都在审计哈希链追加 `POLICY_EXPORTED` 事件：源码 SHA-256、`target:"cedar"`、策略文本与 schema 各自 SHA-256、规则 id、探针条数；入参为已保存版本时附版本 id，调用方另可附自述引用（如 aster-cloud 的策略 id 与版本号，标为 `claimedRef`，未经 aster-api 核验）。哈希键加入审计元数据的身份键白名单，避免被 PII 脱敏误改。
+- **aster-cloud 版本不在 aster-api**：cloud 的策略版本存在 cloud 自己的库里，详情页导出走源码模式（源码、别名集、按内容检测的语言）并附 `claimedRef`。
 - **aster-cloud**：策略详情页在激活版本可导出时提供「导出为 Cedar」，下载 `<module>.cedar` 与 `<module>.cedarschema.json`，诊断在编译诊断同一面板展示；四语文案（hi 用英文）。不读取任何租户凭据。
 
 ## 7. 测试与发版
