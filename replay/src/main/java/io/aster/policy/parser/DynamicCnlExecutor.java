@@ -689,6 +689,14 @@ public class DynamicCnlExecutor {
      * - 无参函数：直接返回执行结果
      */
     private static Object executeWithPolyglot(String coreJson, String functionName, Object[] context) {
+        // Truffle 不接收入口函数名（固定按 main → 第一个函数选入口），而 context 是按 functionName
+        // 的参数表映射的。必须先把目标函数排到 IR 最前，否则多 Rule 策略会静默执行错函数。
+        String entryJson;
+        try {
+            entryJson = CoreIrEntrySelector.withEntry(coreJson, functionName);
+        } catch (IllegalArgumentException e) {
+            throw new DynamicExecutionException(e.getMessage(), e);
+        }
         // 审计 #98（Low，DEFERRED）：此处构建的 Polyglot Context 无墙钟/CPU 看门狗
         // （context.close(true)）。当前安全，因为 DSL 无循环/迭代构造，执行必然有界。
         // 一旦语言引入循环/迭代，必须在此加执行超时看门狗。本 PR 不改，仅记录 defer（见 #98）。
@@ -745,7 +753,7 @@ public class DynamicCnlExecutor {
             // 删除后由 truffle 唯一负责。
 
             // 评估 Core IR JSON - 返回入口函数的 LambdaValue 或无参函数的执行结果
-            Value evalResult = polyglotContext.eval(sourceFor(coreJson));
+            Value evalResult = polyglotContext.eval(sourceFor(entryJson));
 
             LOG.debugf("Polyglot eval 返回: canExecute=%b, isNull=%b, isHostObject=%b",
                 evalResult.canExecute(), evalResult.isNull(), evalResult.isHostObject());

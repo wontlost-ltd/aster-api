@@ -258,7 +258,7 @@ public class PolicyEvaluationService {
     private PolicyEvaluationResult executeCompiled(PolicyCacheKey cacheKey, String coreJson,
             CompilationMetadata metadata, long startMarker, boolean deterministicTiming) {
         ExecutionResult executionResult = trufflePolicyRuntime.execute(
-            coreJson, cacheKey.getContext(), metadata);
+            coreJson, cacheKey.getContext(), metadata, cacheKey.getPolicyFunction());
         if (!executionResult.success()) {
             throw new RuntimeException(String.format(
                 "策略执行失败: %s.%s - %s",

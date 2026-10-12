@@ -51,6 +51,8 @@ class DynamicCnlExecutorCoreIrJsonTest {
         assertThat(result.functionName()).isEqualTo("main");
     }
 
+    // ★两个 Rule 的结果必须不同：此前两者都返回 driver.age，执行了错的函数也照样绿。
+    //   目标刻意不放在第一个，且模块里不能有 main（Truffle 会按名优先选 main）。
     @Test
     void executesCoreIrJsonWithExplicitFunctionName() throws Exception {
         String coreIr = coreIrJsonOf("""
@@ -58,18 +60,38 @@ class DynamicCnlExecutorCoreIrJsonTest {
 
             Define Driver has age as Int.
 
-            Rule helper given driver as Driver, produce Int:
+            Rule other given driver as Driver, produce Int:
               Return driver.age.
 
-            Rule main given driver as Driver, produce Int:
-              Return driver.age.
+            Rule helper given driver as Driver, produce Int:
+              Return driver.age plus 1.
             """);
 
         ExecutionResult result = DynamicCnlExecutor.executeCoreIrJson(
             coreIr, Map.of("driver", Map.of("age", 7)), "helper");
 
         assertThat(result.functionName()).isEqualTo("helper");
-        assertThat(result.result()).isEqualTo(7);
+        assertThat(result.result()).isEqualTo(8);
+    }
+
+    @Test
+    void explicitNonMainFunctionIsRejectedWhenModuleDefinesMain() throws Exception {
+        String coreIr = coreIrJsonOf("""
+            Module json.multi.
+
+            Define Driver has age as Int.
+
+            Rule helper given driver as Driver, produce Int:
+              Return driver.age plus 1.
+
+            Rule main given driver as Driver, produce Int:
+              Return driver.age.
+            """);
+
+        assertThatThrownBy(() -> DynamicCnlExecutor.executeCoreIrJson(
+            coreIr, Map.of("driver", Map.of("age", 7)), "helper"))
+            .hasMessageContaining("'helper'")
+            .hasMessageContaining("'main'");
     }
 
     @Test
