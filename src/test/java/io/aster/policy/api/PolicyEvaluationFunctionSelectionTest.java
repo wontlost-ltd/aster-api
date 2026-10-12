@@ -2,6 +2,7 @@ package io.aster.policy.api;
 
 import io.aster.policy.api.model.PolicyEvaluationResult;
 import io.aster.policy.cache.CompiledPolicyCache;
+import io.aster.policy.compiler.PolicyCompiler;
 import io.aster.policy.cache.PolicyVersionResolutionCache;
 import io.aster.policy.entity.PolicyArtifact;
 import io.aster.policy.entity.PolicyCatalog;
@@ -10,6 +11,7 @@ import io.aster.policy.entity.VersionStatus;
 import io.aster.policy.parser.EntryFunctionException;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.mockito.InjectSpy;
 import io.restassured.http.ContentType;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -27,6 +29,10 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 /**
  * /evaluate 路径（PolicyEvaluationService → TrufflePolicyRuntime）同样必须执行所请求的函数。
@@ -72,6 +78,7 @@ class PolicyEvaluationFunctionSelectionTest {
     @Inject PolicyEvaluationService evaluationService;
     @Inject CompiledPolicyCache compiledPolicyCache;
     @Inject PolicyVersionResolutionCache versionResolutionCache;
+    @InjectSpy PolicyCompiler policyCompiler;
 
     @BeforeEach @Transactional
     void clean() {
@@ -102,8 +109,12 @@ class PolicyEvaluationFunctionSelectionTest {
     }
 
     private Object evaluate(String function) {
+        return evaluate(function, 7, 5);
+    }
+
+    private Object evaluate(String function, int a, int b) {
         PolicyEvaluationResult result = evaluationService
-            .evaluatePolicy(TENANT, MODULE, function, new Object[]{7, 5}).await().indefinitely();
+            .evaluatePolicy(TENANT, MODULE, function, new Object[]{a, b}).await().indefinitely();
         return result.getResult();
     }
 
@@ -160,6 +171,41 @@ class PolicyEvaluationFunctionSelectionTest {
             .isInstanceOf(EntryFunctionException.class)
             .hasMessageContaining("'helper'")
             .hasMessageContaining("'main'");
+    }
+
+    /**
+     * 编译缓存命中路径：同一模块的两个函数交替执行，参数各不相同（绕开结果缓存），
+     * 从第二次起每个函数都走 CompiledPolicyCache。若缓存里存的不是重排后的 IR，
+     * twice 从第二次起会静默执行 add2（24 3 3 6 6 而非 24 6 3 12 6）。
+     */
+    @Test
+    void 编译缓存命中后仍执行所请求的函数() {
+        deploy("add2", ADD_FIRST, "en-US");
+        deploy("twice", ADD_FIRST, "en-US");
+
+        assertThat(new Object[]{
+            evaluate("twice", 7, 5),
+            evaluate("twice", 1, 2),
+            evaluate("add2", 1, 2),
+            evaluate("twice", 3, 3),
+            evaluate("add2", 2, 4),
+        }).containsExactly(24, 6, 3, 12, 6);
+    }
+
+    /** 入口选择失败对同一版本是确定的：缓存失败，不在每个请求上重新走编译。 */
+    @Test
+    void 入口选择失败按版本缓存不重复编译() {
+        deploy("nosuch", ADD_FIRST, "en-US");
+        clearInvocations(policyCompiler);
+
+        for (int i = 0; i < 3; i++) {
+            int a = i;
+            assertThatThrownBy(() -> evaluate("nosuch", a, 1))
+                .isInstanceOf(EntryFunctionException.class)
+                .hasMessageContaining("'nosuch'");
+        }
+
+        verify(policyCompiler, times(1)).compile(anyLong());
     }
 
     @Test

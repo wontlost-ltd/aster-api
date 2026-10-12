@@ -114,21 +114,33 @@ public final class CoreIrEntrySelector {
         return out.toString();
     }
 
-    /** 只扫描顶层 "decls" 数组，记录每个元素的原文区间与 kind/name；不构建整棵树。 */
+    /**
+     * 扫描顶层 "decls" 数组，记录每个元素的原文区间与 kind/name；不构建整棵树。
+     *
+     * <p>必须走完整个顶层对象：若有重复的顶层 decls 键，本类只会重排第一个，而 Truffle 的
+     * Jackson 反序列化保留最后一个——结果是静默执行错函数。故重复时直接拒绝。
+     */
     private static List<DeclSpan> scanDecls(String json) {
         try (JsonParser parser = FACTORY.createParser(json)) {
             if (parser.nextToken() != JsonToken.START_OBJECT) {
                 throw new IllegalArgumentException("Core IR JSON 顶层不是对象");
             }
+            List<DeclSpan> decls = null;
             while (parser.nextToken() == JsonToken.FIELD_NAME) {
                 String field = parser.currentName();
                 JsonToken value = parser.nextToken();
-                if ("decls".equals(field) && value == JsonToken.START_ARRAY) {
-                    return readDeclArray(parser);
+                if (!"decls".equals(field)) {
+                    parser.skipChildren();
+                } else if (decls != null) {
+                    throw new IllegalArgumentException("Core IR JSON 含重复的顶层 decls 键");
+                } else if (value == JsonToken.START_ARRAY) {
+                    decls = readDeclArray(parser);
+                } else {
+                    parser.skipChildren();
+                    decls = List.of();
                 }
-                parser.skipChildren();
             }
-            return List.of();
+            return decls == null ? List.of() : decls;
         } catch (IOException e) {
             throw new IllegalArgumentException("Core IR JSON 无法解析", e);
         }

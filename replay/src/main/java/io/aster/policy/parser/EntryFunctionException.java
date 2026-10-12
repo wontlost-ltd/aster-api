@@ -16,6 +16,11 @@ public final class EntryFunctionException extends IllegalArgumentException {
         super(message);
     }
 
+    /** 由缓存的确定性失败重建（每次抛新实例，避免跨线程共享同一个异常对象）。 */
+    public static EntryFunctionException cached(String message) {
+        return new EntryFunctionException(message);
+    }
+
     static EntryFunctionException missing(String requested, List<String> available) {
         return new EntryFunctionException(
             "未找到函数 '" + requested + "'，模块中可用的函数: " + available);

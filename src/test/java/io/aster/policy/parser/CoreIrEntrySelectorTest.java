@@ -86,6 +86,19 @@ class CoreIrEntrySelectorTest {
         assertThat(CoreIrEntrySelector.withEntry(TWO_FUNCS, "twice")).contains("0.450");
     }
 
+    /** 重复的顶层 decls：本类只会重排第一个，Jackson 却保留最后一个——必须拒绝而不是执行错函数。 */
+    @Test
+    void 重复的顶层decls键被拒绝() {
+        String json = """
+            {"name":"m",
+             "decls":[{"kind":"Func","name":"a","params":[]},{"kind":"Func","name":"b","params":[]}],
+             "decls":[{"kind":"Func","name":"a","params":[]},{"kind":"Func","name":"b","params":[]}]}""";
+
+        assertThatThrownBy(() -> CoreIrEntrySelector.withEntry(json, "b"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("decls");
+    }
+
     @Test
     void 被导入模块的mangle后main不触发抢占检查() throws Exception {
         String json = """

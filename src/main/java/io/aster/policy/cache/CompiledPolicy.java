@@ -16,6 +16,8 @@ public class CompiledPolicy {
     private final String coreJson;
     private final CompilationMetadata metadata;
     private final Instant compiledAt;
+    /** 非空表示该版本无法执行所请求的函数（确定性失败），coreJson 为 null。 */
+    private final String entryFailure;
 
     public CompiledPolicy(
         String versionId,
@@ -23,11 +25,35 @@ public class CompiledPolicy {
         String coreJson,
         CompilationMetadata metadata
     ) {
+        this(versionId, sourceHash, coreJson, metadata, null);
+    }
+
+    private CompiledPolicy(
+        String versionId,
+        String sourceHash,
+        String coreJson,
+        CompilationMetadata metadata,
+        String entryFailure
+    ) {
         this.versionId = versionId;
         this.sourceHash = sourceHash;
         this.coreJson = coreJson;
         this.metadata = metadata;
         this.compiledAt = Instant.now();
+        this.entryFailure = entryFailure;
+    }
+
+    /**
+     * 该版本的入口函数选择失败（函数不存在 / 被 main 抢占）。对同一 versionId 结果是确定的，
+     * 缓存下来避免配置错误的部署在每个请求上都重新加载并编译。
+     */
+    public static CompiledPolicy entryFailure(String versionId, String sourceHash, String message) {
+        return new CompiledPolicy(versionId, sourceHash, null, null, message);
+    }
+
+    /** 入口选择失败的原因；成功编译时为 null。 */
+    public String getEntryFailure() {
+        return entryFailure;
     }
 
     public String getVersionId() {
