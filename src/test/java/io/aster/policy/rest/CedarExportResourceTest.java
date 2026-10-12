@@ -50,13 +50,14 @@ import static org.mockito.Mockito.doThrow;
 @TestProfile(CedarExportResourceTest.AuthProfile.class)
 class CedarExportResourceTest {
 
-  /** HMAC 密钥与 API key 鉴权同时打开，签名关闭以贴近生产；匿名请求才会被过滤器拒绝。 */
+  /** HMAC 密钥、API key 鉴权与 RBAC 同时打开，签名关闭以贴近生产；匿名请求才会被过滤器拒绝。 */
   public static class AuthProfile implements QuarkusTestProfile {
     @Override
     public Map<String, String> getConfigOverrides() {
       return Map.of(
           "aster.plan-gate.hmac-key", HMAC_KEY,
           "aster.security.apikey.enabled", "true",
+          "aster.security.rbac.enabled", "true",
           "aster.security.signature.enabled", "false",
           "aster.security.evaluate-source.public", "false",
           "aster.security.evaluate-source.trial.enabled", "false");
@@ -132,6 +133,39 @@ class CedarExportResourceTest {
     assertThat(meta).doesNotContainKey("versionId");
     assertThat(row.policyModule).isEqualTo("guard.cedar.sample");
     assertThat(row.performedBy).isEqualTo("u-1");
+  }
+
+  @Test
+  void responseCarriesModuleNameAndVerbatimSchemaMatchingAuditHashes() throws Exception {
+    String tenant = "tenant-cedar-verbatim-" + RUN;
+    var resp = signedAs(tenant, json(Map.of("source", SAMPLE))).post(PATH);
+    resp.then().statusCode(200).body("exportable", equalTo(true)).body("moduleName", equalTo("guard.cedar.sample"));
+    String schemaText = resp.jsonPath().getString("schemaText");
+    String policies = resp.jsonPath().getString("policies");
+    // 下载件即这两个原样字符串，其 SHA-256 须与审计哈希逐一相等
+    Map<String, Object> meta = metadataOf(awaitExportEvent(tenant));
+    assertThat(sha256(schemaText)).isEqualTo(meta.get("schemaHash"));
+    assertThat(sha256(policies)).isEqualTo(meta.get("policiesHash"));
+    assertThat(MAPPER.readTree(schemaText)).isEqualTo(MAPPER.readTree(resp.body().asString()).path("schema"));
+  }
+
+  @Test
+  void notExportableStillNamesModuleWithoutSchemaText() throws Exception {
+    String src = GUARD_MODULE + "@id(\"R-Y\")\nRule decide given req as GuardRequest, produce Verdict:\n"
+        + "  If Text.length(req.action) at least 1:\n    Return Verdict.deny(\"x\").\n  Return Verdict.allow().\n";
+    signed(json(Map.of("source", src, "locale", "en-US"))).post(PATH).then().statusCode(200)
+        .body("exportable", equalTo(false))
+        .body("moduleName", equalTo("guard.cedar.bad"))
+        .body("schemaText", nullValue());
+  }
+
+  @Test
+  void hmacViewerRoleIsForbidden() throws Exception {
+    String tenant = "tenant-cedar-viewer-" + RUN;
+    String body = json(Map.of("source", SAMPLE));
+    given().headers(InternalCallerSigning.headers(HMAC_KEY, "POST", PATH, "", body, tenant, "VIEWER", "u-1", List.of()))
+        .contentType(ContentType.JSON).body(body).post(PATH).then().statusCode(403);
+    assertThat(exportEventCount(tenant)).isZero();
   }
 
   @Test
@@ -245,6 +279,11 @@ class CedarExportResourceTest {
     return given()
         .headers(InternalCallerSigning.headers(HMAC_KEY, "POST", PATH, "", body, tenant, "MEMBER", "u-1", List.of()))
         .contentType(ContentType.JSON).body(body);
+  }
+
+  static String sha256(String text) throws Exception {
+    byte[] d = java.security.MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8));
+    return java.util.HexFormat.of().formatHex(d);
   }
 
   static String json(Object value) throws Exception {

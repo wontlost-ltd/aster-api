@@ -193,7 +193,8 @@ public class CedarExportResource {
     private static CedarExportResponse toResponse(CedarExportOutcome o) {
         JsonNode schema = o.schemaJson() == null ? null : readJson(o.schemaJson());
         return new CedarExportResponse(o.exportable(), o.policies(), schema, o.ruleId(), o.profile(), o.controls(),
-            new CedarExportResponse.Probes(o.probeCount(), o.probesAgreed()), o.diagnostics(), o.sourceHash());
+            new CedarExportResponse.Probes(o.probeCount(), o.probesAgreed()), o.diagnostics(), o.sourceHash(),
+            o.moduleName(), o.schemaJson());
     }
 
     /** 同步入链；失败即整次请求失败（500），导出结果不返回给调用方。 */
