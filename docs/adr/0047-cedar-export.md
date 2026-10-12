@@ -79,7 +79,7 @@ T(c)「无错求值且为真」与 F(c)「无错求值且为假」；读 context
 - 支持：Int / Long / Text 上的 `==` `!=` `<` `<=` `>` `>=`（Text 只支持 `==` `!=`）；`List.contains(req.principal_roles, "<文本字面量>")`（唯一放行的库调用）；`and` / `or` / `not`（自 1.0.32 起两引擎短路一致）；Bool 字段；角色成员判断；
   `Let`（在使用处内联）；Int 上的 `plus` / `minus` / `times`（操作数为 context 键或整数字面量）。
 - 整数数值域：Aster 的数值比较经 double，只有 ±(2^53−1) 内的整数能与 Cedar 的精确 Long 比较一致。因此整数字面量须满足
-  |v| < 2^53（否则 E721 `integer literal outside ±2^53`）；Long 比较中的每个 context 键或算术项在 T 与 F 中都带范围守卫
+  |v| < 2^53（否则 E721 `integer literal outside ±2^53`）；Long 比较中的每个 context 键与每个算术项（包括只由字面量组成的算术项）在 T 与 F 中都带范围守卫
   `(-9007199254740991 <= x && x <= 9007199254740991)`，超界时 T、F 皆不成立 → 无策略适用 → Cedar Deny。Cedar 的 Long 运算溢出求值报错，同样落为 Deny。
   两种情形下 Cedar 都只会比 Aster 更严，不会更松。
 - 不支持（报错）：Decimal / Float 值（Cedar `decimal` 固定 4 位且舍入不同）；调用其他函数或规则；List / Map / Text 库调用；
