@@ -83,6 +83,7 @@ class CedarExportResourceTest {
 
   /** 只在「入链失败」用例里打桩，其余用例走真实追加器。 */
   @InjectSpy AuditChainAppender appender;
+  @Inject CedarExportGate gate;
 
   @BeforeEach
   void setUp() {
@@ -171,6 +172,38 @@ class CedarExportResourceTest {
     signed(both).post(PATH).then().statusCode(400).body("error", equalTo("exactly one of source or versionId"));
     String neither = json(Map.of("locale", "en-US"));
     signed(neither).post(PATH).then().statusCode(400).body("error", equalTo("exactly one of source or versionId"));
+  }
+
+  @Test
+  void claimedRefRejectsControlAndOddCharacters() throws Exception {
+    signed(json(Map.of("source", SAMPLE, "claimedRef", Map.of("version", "3\u0001")))).post(PATH)
+        .then().statusCode(400).body("error", equalTo("claimedRef invalid"));
+    signed(json(Map.of("source", SAMPLE, "claimedRef", Map.of("cloud policy", "pol-1")))).post(PATH)
+        .then().statusCode(400).body("error", equalTo("claimedRef invalid"));
+    signed(json(Map.of("source", SAMPLE, "claimedRef", Map.of("version", "")))).post(PATH)
+        .then().statusCode(400).body("error", equalTo("claimedRef invalid"));
+  }
+
+  @Test
+  void saturatedGateReturnsBusy() throws Exception {
+    String tenant = "tenant-cedar-busy-" + RUN;
+    int held = 0;
+    while (gate.tryAcquire()) {
+      held++;
+    }
+    try {
+      assertThat(held).isEqualTo(2);
+      signedAs(tenant, json(Map.of("source", SAMPLE))).post(PATH).then().statusCode(503)
+          .header("Retry-After", "1")
+          .body("error", equalTo("cedar_export_busy"))
+          .body("concurrencyLimit", equalTo(2));
+    } finally {
+      for (int i = 0; i < held; i++) {
+        gate.release();
+      }
+    }
+    assertThat(exportEventCount(tenant)).isZero();
+    signedAs(tenant, json(Map.of("source", SAMPLE))).post(PATH).then().statusCode(200);
   }
 
   @Test

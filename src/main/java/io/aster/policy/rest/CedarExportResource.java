@@ -13,6 +13,7 @@ import io.aster.policy.rest.model.CedarExportResponse;
 import io.aster.policy.rest.model.CnlSourceLimits;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
+import io.aster.security.apikey.InternalCallerFilter;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.smallrye.common.annotation.Blocking;
 import jakarta.inject.Inject;
@@ -20,6 +21,9 @@ import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.container.ContainerRequestContext;
+import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
@@ -31,6 +35,7 @@ import java.time.Instant;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Cedar 导出端点（ADR 0047 §6）：把一条 Aster 规则翻译为 Cedar 策略与 schema，经严格校验与逐探针等价性
@@ -53,6 +58,10 @@ public class CedarExportResource {
     static final int MAX_CLAIMED_REF_ENTRIES = 4;
     static final int MAX_CLAIMED_REF_TEXT = 128;
     private static final String DEFAULT_LOCALE = "en-US";
+    /** claimedRef 键值只允许标识符字符：控制字符经转义会膨胀，可能把审计元数据挤过追加器上限而被截断。 */
+    private static final Pattern CLAIMED_REF_TEXT = Pattern.compile("[A-Za-z0-9._:/-]{1,128}");
+    /** ApiKeyAuthFilter 验证 key 后写入的已验证租户属性。 */
+    private static final String API_KEY_TENANT_PROP = "aster.apikey.tenantId";
 
     /** 一次导出的编译输入：源码模式取自请求，版本模式取自已保存版本。 */
     private record ExportInput(String source, String locale, String aliasSetJson, String functionName, Long versionId) {
@@ -61,10 +70,15 @@ public class CedarExportResource {
     @Inject CedarExportService exportService;
     @Inject AuditChainAppender appender;
     @Inject RequestIdentityResolver identityResolver;
+    @Inject CedarExportGate gate;
 
     @POST
     @Blocking
-    public Response export(CedarExportRequest request) {
+    public Response export(CedarExportRequest request, @Context ContainerRequestContext ctx) {
+        // 过滤器可被配置关闭（apikey.enabled=false），端点自身仍要求已验证身份，不退回自述的 X-Tenant-Id
+        if (!hasVerifiedIdentity(ctx)) {
+            return error(Response.Status.UNAUTHORIZED, "unauthenticated");
+        }
         String inputError = validate(request);
         if (inputError != null) {
             return error(Response.Status.BAD_REQUEST, inputError);
@@ -74,6 +88,18 @@ public class CedarExportResource {
             return Response.status(Response.Status.BAD_REQUEST)
                 .entity(Map.of("error", "alias_set_too_large", "message", aliasError)).build();
         }
+        if (!gate.tryAcquire()) {
+            LOG.warnf("Cedar 导出拒绝：并发达到上限 %d，返回 503", gate.limit());
+            throw busy(gate.limit());
+        }
+        try {
+            return exportWithPermit(request);
+        } finally {
+            gate.release();
+        }
+    }
+
+    private Response exportWithPermit(CedarExportRequest request) {
         String tenantId = identityResolver.tenantId();
         ExportInput input = request.versionId() == null ? fromSource(request) : fromVersion(request.versionId(), tenantId);
         if (input == null) {
@@ -88,6 +114,26 @@ public class CedarExportResource {
         return Response.ok(body).build();
     }
 
+    /** HMAC 内部调用已验签，或 API key 已验证并写入租户属性。 */
+    static boolean hasVerifiedIdentity(ContainerRequestContext ctx) {
+        if (InternalCallerFilter.isHmacVerified(ctx)) {
+            return true;
+        }
+        return ctx != null && ctx.getProperty(API_KEY_TENANT_PROP) instanceof String tenant && !tenant.isBlank();
+    }
+
+    /** 与 /evaluate-source 占满时同一形态：503 + Retry-After，body 带错误码、说明与并发上限。 */
+    private static WebApplicationException busy(int limit) {
+        return new WebApplicationException(Response.status(503)
+            .header("Retry-After", "1")
+            .entity(Map.of(
+                "error", "cedar_export_busy",
+                "message", "Too many concurrent Cedar export requests. Retry in a moment.",
+                "concurrencyLimit", limit))
+            .type(MediaType.APPLICATION_JSON)
+            .build());
+    }
+
     /** 入参约束：source 与 versionId 恰给其一、源码长度与匿名编译同上限、claimedRef 有界。返回错误文本或 null。 */
     static String validate(CedarExportRequest request) {
         boolean hasSource = request != null && request.source() != null && !request.source().isBlank();
@@ -98,7 +144,19 @@ public class CedarExportResource {
         if (hasSource && request.source().length() > CnlSourceLimits.MAX_ANON_SOURCE_LENGTH) {
             return "source too large";
         }
-        return claimedRefFits(request.claimedRef()) ? null : "claimedRef too large";
+        if (!claimedRefFits(request.claimedRef())) {
+            return "claimedRef too large";
+        }
+        return claimedRefWellFormed(request.claimedRef()) ? null : "claimedRef invalid";
+    }
+
+    private static boolean claimedRefWellFormed(Map<String, String> claimedRef) {
+        return claimedRef == null || claimedRef.entrySet().stream()
+            .allMatch(e -> identifierText(e.getKey()) && identifierText(e.getValue()));
+    }
+
+    private static boolean identifierText(String text) {
+        return text != null && CLAIMED_REF_TEXT.matcher(text).matches();
     }
 
     private static boolean claimedRefFits(Map<String, String> claimedRef) {
