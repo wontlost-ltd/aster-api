@@ -8,7 +8,9 @@
 
 # ★--platform=$TARGETPLATFORM 显式绑定 base 到构建目标平台（默认语义即如此，写明更利诊断）。
 # 集群节点是 ARM64（OCI Ampere），必须产出真 arm64 镜像。
-FROM --platform=$TARGETPLATFORM azul/zulu-openjdk-alpine:25-jre
+# ★基础镜像必须是 glibc 发行版（ADR 0047 §2）：cedar-java 的原生库 libcedar_java_ffi.so 链接 glibc，
+# 官方不提供 musl 构建；在 Alpine（musl）上 JNE 找不到库、强制加载则 JVM SIGSEGV。勿改回 alpine 变体。
+FROM --platform=$TARGETPLATFORM azul/zulu-openjdk-debian:25-jre
 
 LABEL maintainer="Aster Lang Project"
 LABEL description="Quarkus Policy API - GraphQL Backend"
