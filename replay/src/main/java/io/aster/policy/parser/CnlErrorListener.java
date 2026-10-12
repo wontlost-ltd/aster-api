@@ -6,6 +6,8 @@ import org.antlr.v4.runtime.Parser;
 import org.antlr.v4.runtime.Recognizer;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.TokenStream;
+import org.antlr.v4.runtime.Vocabulary;
+import aster.core.lexicon.SemanticTokenKind;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -53,6 +55,19 @@ public class CnlErrorListener extends BaseErrorListener {
      */
     private int diagnosableIndex = -1;
 
+    /** 规范关键词 → 作者 locale 拼写的回译器（英文为恒等）。 */
+    private final KeywordLocalizer localizer;
+
+    /** 不回译（英文 / 未知 locale）。 */
+    public CnlErrorListener() {
+        this(KeywordLocalizer.IDENTITY);
+    }
+
+    /** 报错中的关键词按 {@code localizer} 回译成作者所写语言的拼写。 */
+    CnlErrorListener(KeywordLocalizer localizer) {
+        this.localizer = localizer == null ? KeywordLocalizer.IDENTITY : localizer;
+    }
+
     @Override
     public void syntaxError(
         Recognizer<?, ?> recognizer,
@@ -67,7 +82,12 @@ public class CnlErrorListener extends BaseErrorListener {
         //   拼出的 `xis<18` 在正则眼里毫无区别——实测 `analysis <= 3` 会被
         //   报成「`is` 后面不能直接跟符号」，把用户引向一个根本不存在的问题。
         boolean isBeforeSymbol = precededByIsKeyword(recognizer, offendingSymbol);
-        String friendly = humanize(msg, isBeforeSymbol);
+        // ★只有 ANTLR 词表里的关键词 token 才回译；标识符/字面量即使碰巧与英文关键词同形也不改。
+        boolean offendingIsKeyword = isKeywordToken(recognizer, offendingSymbol);
+        String friendly = humanize(msg, isBeforeSymbol, localizer, offendingIsKeyword);
+        if (isInlineIfReturnAfterComma(recognizer, offendingSymbol, offendingIsKeyword)) {
+            friendly = friendly + "。" + inlineIfHint(localizer);
+        }
         rawErrors.add(String.format("行 %d:%d - %s", line, charPositionInLine, msg));
         if (isBeforeSymbol && diagnosableIndex < 0) {
             diagnosableIndex = friendlyErrors.size();
@@ -175,6 +195,11 @@ public class CnlErrorListener extends BaseErrorListener {
     }
 
     static String humanize(String msg, boolean isBeforeSymbol) {
+        return humanize(msg, isBeforeSymbol, KeywordLocalizer.IDENTITY, false);
+    }
+
+    static String humanize(String msg, boolean isBeforeSymbol, KeywordLocalizer localizer,
+            boolean offendingIsKeyword) {
         if (msg == null) {
             return "语法错误";
         }
@@ -192,14 +217,19 @@ public class CnlErrorListener extends BaseErrorListener {
         }
 
         if ((m = MISMATCHED.matcher(msg)).find()) {
-            String got = friendlyToken(m.group(1));
-            String expecting = friendlyExpecting(m.group(2));
+            String got = offendingIsKeyword
+                ? friendlyToken(localizer.localize(m.group(1)))
+                : friendlyToken(m.group(1));
+            String expecting = friendlyExpecting(m.group(2), localizer);
             return "意外的 " + got + (expecting.isEmpty() ? "" : "，此处期望 " + expecting);
         }
 
         if ((m = MISSING.matcher(msg)).find()) {
-            String want = friendlyToken(m.group(1));
-            String at = friendlyToken(m.group(2));
+            // missing 'X' 的 X 来自 ANTLR 字面量名，必是关键词/标点；at 是实际 token，按类型判定
+            String want = friendlyToken(localizer.localize(m.group(1)));
+            String at = offendingIsKeyword
+                ? friendlyToken(localizer.localize(m.group(2)))
+                : friendlyToken(m.group(2));
             return "缺少 " + want + "（在 " + at + " 之前）";
         }
 
@@ -208,7 +238,7 @@ public class CnlErrorListener extends BaseErrorListener {
             if (extra.contains("INDENT")) {
                 return "缩进层级不正确（多了一级缩进或缩进不一致，请用 2 空格对齐）";
             }
-            return "多余的 " + friendlyToken(extra);
+            return "多余的 " + friendlyToken(offendingIsKeyword ? localizer.localize(extra) : extra);
         }
 
         if ((m = NO_VIABLE.matcher(msg)).find()) {
@@ -283,7 +313,7 @@ public class CnlErrorListener extends BaseErrorListener {
     }
 
     /** 简化 expecting 集合（ANTLR 常列十几个 token），只取前几个友好项。 */
-    private static String friendlyExpecting(String set) {
+    private static String friendlyExpecting(String set, KeywordLocalizer localizer) {
         if (set == null || set.isBlank()) {
             return "";
         }
@@ -291,7 +321,13 @@ public class CnlErrorListener extends BaseErrorListener {
         StringBuilder sb = new StringBuilder();
         int shown = 0;
         for (String p : parts) {
-            String t = friendlyToken(p.trim().replaceAll("^'|'$", ""));
+            // expecting 集合里的项来自 ANTLR 词表：带引号的是字面量名（关键词/标点），
+            // 不带引号的是符号名（RETURN、ELSE…）。两者都不是用户文本，可安全回译。
+            String raw = p.trim().replaceAll("^'|'$", "");
+            if (localizer.isLocalizing()) {
+                raw = KeywordLocalizer.KeywordTokens.get().symbolicToCanonical.getOrDefault(raw, raw);
+            }
+            String t = friendlyToken(localizer.localize(raw));
             if (sb.indexOf(t) >= 0) {
                 continue; // 去重
             }
@@ -307,5 +343,73 @@ public class CnlErrorListener extends BaseErrorListener {
             sb.append(" 等");
         }
         return sb.toString();
+    }
+
+    /**
+     * offendingSymbol 是否为关键词 token：类型属于 {@link KeywordLocalizer.KeywordTokens}
+     * （以词法器对规范关键词拼写的实际判定为准，覆盖带/不带字面量名的所有关键词规则）。
+     * 用户的标识符与类型名（含与关键词同形的 Given、Profile）不在其中，永远不会被回译。
+     */
+    private static boolean isKeywordToken(Recognizer<?, ?> recognizer, Object offendingSymbol) {
+        if (!(offendingSymbol instanceof Token tok)) {
+            return false;
+        }
+        return KeywordLocalizer.KeywordTokens.get().types.contains(tok.getType());
+    }
+
+    /**
+     * 是否是「If 条件, Return …」——zh/de/en 作者都常这样写单行条件，但语法要求
+     * then（或换行缩进块）。三个条件缺一不可：
+     * ① 出错 token 是 Return 关键词；② 它前一个 token 是逗号；③ 该行第一个 token 是 If。
+     * ③ 防止误伤 {@code Otherwise, Return x.}：那是 else 分支，提示「If … then」是错的。
+     */
+    private static boolean isInlineIfReturnAfterComma(Recognizer<?, ?> recognizer, Object offendingSymbol,
+            boolean offendingIsKeyword) {
+        if (!offendingIsKeyword || !(offendingSymbol instanceof Token bad)
+                || !"RETURN".equals(symbolicName(recognizer, bad))
+                || !(recognizer instanceof Parser parser) || parser.getInputStream() == null) {
+            return false;
+        }
+        TokenStream stream = parser.getInputStream();
+        Token prev = previousSignificant(recognizer, stream, bad.getTokenIndex());
+        if (prev == null || !",".equals(prev.getText())) {
+            return false;
+        }
+        Token lineStart = bad;
+        for (Token t = prev; t != null && t.getLine() == bad.getLine();
+                t = previousSignificant(recognizer, stream, t.getTokenIndex())) {
+            lineStart = t;
+        }
+        return "IF".equals(symbolicName(recognizer, lineStart));
+    }
+
+    /** 默认通道上、且不是缩进/换行标记（INDENT/DEDENT/NEWLINE）的前一个 token；没有时返回 null。 */
+    private static Token previousSignificant(Recognizer<?, ?> recognizer, TokenStream stream, int index) {
+        for (int i = index - 1; i >= 0; i--) {
+            Token t = stream.get(i);
+            if (t.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;
+            }
+            String name = symbolicName(recognizer, t);
+            if ("INDENT".equals(name) || "DEDENT".equals(name) || "NEWLINE".equals(name)) {
+                continue;
+            }
+            return t;
+        }
+        return null;
+    }
+
+    private static String symbolicName(Recognizer<?, ?> recognizer, Token tok) {
+        Vocabulary vocab = recognizer == null ? null : recognizer.getVocabulary();
+        return vocab == null ? null : vocab.getSymbolicName(tok.getType());
+    }
+
+    /** 单行条件的正确写法，关键词用作者 locale 的拼写。 */
+    private static String inlineIfHint(KeywordLocalizer localizer) {
+        String ifWord = localizer.keyword(SemanticTokenKind.IF, "If");
+        String thenWord = localizer.keyword(SemanticTokenKind.THEN, "then");
+        String returnWord = localizer.keyword(SemanticTokenKind.RETURN, "Return");
+        return "单行条件请写成「" + ifWord + " 条件 " + thenWord + " " + returnWord + " …」，"
+            + "或把「" + returnWord + " …」换行缩进写在条件下方";
     }
 }
