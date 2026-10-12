@@ -217,9 +217,17 @@ public class PolicyEvaluationService {
         return Uni.createFrom().item(() -> cachedCompiled(cacheKey))
             .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
             .chain(hit -> hit != null ? Uni.createFrom().item(hit) : compileOnce(cacheKey))
-            .map(compiled -> executeCompiled(cacheKey, compiled.getCoreJson(), compiled.getMetadata(),
-                System.nanoTime(), resolveDeterminismContext() != null))
-            .onFailure().transform(e -> new RuntimeException("Policy evaluation failed", e));
+            .map(compiled -> {
+                if (compiled.getEntryFailure() != null) {
+                    throw io.aster.policy.parser.EntryFunctionException.cached(compiled.getEntryFailure());
+                }
+                return executeCompiled(cacheKey, compiled.getCoreJson(), compiled.getMetadata(),
+                    System.nanoTime(), resolveDeterminismContext() != null);
+            })
+            // EntryFunctionException 的消息只含函数名、且是调用方唯一能自行修正的原因：
+            // 不包装，让 /evaluate 与 /evaluate/batch 把它原样回给调用方。
+            .onFailure(e -> !(e instanceof io.aster.policy.parser.EntryFunctionException))
+            .transform(e -> new RuntimeException("Policy evaluation failed", e));
     }
 
     /**
@@ -410,12 +418,24 @@ public class PolicyEvaluationService {
                     compilationResult.getErrors()
                 ));
             }
-            io.aster.policy.cache.CompiledPolicy compiledPolicy = new io.aster.policy.cache.CompiledPolicy(
-                versionId,
-                version.get().sourceHash,
-                compilationResult.getCoreJson(),
-                compilationResult.getMetadata()
-            );
+            // coreJson 是整个模块的 IR，而 Truffle 只会执行 main 或第一个函数。编译期一次性把
+            // 目标函数排到最前并缓存（缓存键已含 function），热路径不再解析 IR；
+            // 目标不存在或被 main 抢占时抛 EntryFunctionException，不静默执行别的函数。
+            // 选择失败对同一版本是确定的：作为失败条目缓存，否则配置错误的部署每个请求都会重新编译。
+            io.aster.policy.cache.CompiledPolicy compiledPolicy;
+            try {
+                String entryCoreJson = io.aster.policy.parser.CoreIrEntrySelector.withEntry(
+                    compilationResult.getCoreJson(), cacheKey.getPolicyFunction());
+                compiledPolicy = new io.aster.policy.cache.CompiledPolicy(
+                    versionId,
+                    version.get().sourceHash,
+                    entryCoreJson,
+                    compilationResult.getMetadata()
+                );
+            } catch (io.aster.policy.parser.EntryFunctionException e) {
+                compiledPolicy = io.aster.policy.cache.CompiledPolicy.entryFailure(
+                    versionId, version.get().sourceHash, e.getMessage());
+            }
             compiledPolicyCache.put(
                 cacheKey.getTenantId(),
                 cacheKey.getPolicyModule(),
