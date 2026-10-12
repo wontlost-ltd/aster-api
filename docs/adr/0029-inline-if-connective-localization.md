@@ -3,6 +3,7 @@
 **状态**: IMPLEMENTED（引擎四仓完成，未发版）。Claude 起草 → Codex 设计审 019f319e 通过 82（修表述）→ 用户批准实现 → 双引擎实现（TS+Java）+ 四语补词（en/zh/de/hi = then/那么/dann/तो）+ per-engine 四语等价测试全绿 → Codex 实现交叉审 019f31ce 通过 86（补 Java 参数名软关键字测试、测试文件须 tracked）。
 **实现范围**：仅 `then`（新增 `SemanticTokenKind.THEN`）；`else` 复用现有 OTHERWISE（四语 Otherwise/否则/sonst/अन्यथा 早齐，零引擎改动）。改动四仓：aster-lang-ts（THEN kind+四语词+test）、aster-lang-core（THEN kind+en-US builtin+OPTIONAL_KINDS 迁移项+test）、aster-lang-locales（en/zh/de 补词）、aster-lang-hi（hi 补词）。**未发版**——sherlock demo 换 then→那么 依赖 ts 发新版 + aster-dev 升级依赖（已用本地构建实证全中文源码编译运行正确）。
 **发版顺序（Codex 审定，ADR 0023 release train）**：platform（bump catalog）→ core → locales(en/zh/de)+hi（同层）→ truffle 等下游 → ts(npm) → 消费方（aster-api pin + aster-dev 升级后换 demo）。**OPTIONAL_KINDS 的 THEN 保留到发版完成**（发布非原子，新 core 可能先遇旧 SPI 包，过早移除=加载 error），完整 release train 发完 + 消费者 pin 新 catalog 后，下次清理型 release 移除。
+**THEN 转正（2026-10-12）**：1.0.32 发版列车完成后，THEN（连同 IMPORT_VERSION、APPLY）已移出 Java `OPTIONAL_KINDS` 与 TS `CI_OPTIONAL_KINDS`。
 **已知遗留（非本 ADR 引入，Codex 标记）**：core `build.gradle.kts:242` 的 exportLexicons langPacks 只含 en/zh/de 无 hi + TS verify-lexicon-sync 只校验 en/zh/de → TS 的 `@generated hi-IN.ts` 实际不在生成/校验闭环（本次 तो 手改 TS+hi 包 JSON 双写、值一致，但未来会漂）。待办：把 asterLibs.hi 纳入 exportLexicons + verify 闭环。
 **日期**: 2026-07-05
 **起因**: 《斑点带子案》demo 把 CNL 关键词都中文化了（`若`/`且`/`凶手即`），但 inline-if 的连接词 `then`/`else` 仍是英文，读起来夹生。用户要求 **`then`/`else` 都要有其它语种的对应词**（如 then→那么、else→否则），四语（en/zh/de/hi）齐全。
