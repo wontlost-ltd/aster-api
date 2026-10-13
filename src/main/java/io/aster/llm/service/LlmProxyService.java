@@ -123,6 +123,9 @@ public class LlmProxyService {
                     if (event.type() == LlmStreamEvent.Type.USAGE && event.usage() != null) {
                         // attempt 内取 max（不转发前端）。
                         attemptUsage.updateAndGet(u -> u.max(event.usage()));
+                    } else if (event.type() == LlmStreamEvent.Type.REACHED) {
+                        // 每个 attempt 各发一次；cloud 只按首个记一笔（cloud#470）。
+                        emitter.emit(toJson(GeneratePolicyEvent.upstreamReached()));
                     } else if (event.type() == LlmStreamEvent.Type.DELTA && event.delta() != null) {
                         fullSource.append(event.delta());
                         emitter.emit(toJson(GeneratePolicyEvent.delta(event.delta())));
@@ -223,13 +226,13 @@ public class LlmProxyService {
             })
             .onCompletion().invoke(() ->
                 usageReporter.reportUsage(tenantId, "suggest", model, usageAcc.get(), usedByok, requestId))
-            .filter(event -> event.type() == LlmStreamEvent.Type.DELTA && event.delta() != null)
             // 与 generate 对齐：发 JSON delta（{"type":"delta","data":"..."}）而非裸
             // 文本。裸文本经 SSE TEXT_PLAIN 逐帧传输时，token 前导空格与内部换行
             // 会被 data: 行首空格规则 / 多行拆分吞掉 → 前端拼出的代码丢空格
             // （"Return resource" → "Returnresource"）。JSON 把内容包成字符串值，
             // 前端 JSON.parse 后原样还原，空格/换行全保留。
-            .map(event -> toJson(GeneratePolicyEvent.delta(event.delta())));
+            .filter(LlmProxyService::isForwardedToCloud)
+            .map(LlmProxyService::toCloudFrame);
     }
 
     /**
@@ -264,9 +267,9 @@ public class LlmProxyService {
             })
             .onCompletion().invoke(() ->
                 usageReporter.reportUsage(tenantId, "assistant", model, usageAcc.get(), usedByok, requestId))
-            .filter(event -> event.type() == LlmStreamEvent.Type.DELTA && event.delta() != null)
             // 同 suggest：发 JSON delta 而非裸文本，避免 SSE 逐帧传输吞掉空格/换行。
-            .map(event -> toJson(GeneratePolicyEvent.delta(event.delta())));
+            .filter(LlmProxyService::isForwardedToCloud)
+            .map(LlmProxyService::toCloudFrame);
     }
 
     /**
@@ -306,13 +309,29 @@ public class LlmProxyService {
             });
     }
 
+    /**
+     * suggest / assistant 转发给 cloud 的事件：内容增量，以及「已到达 provider」标记。
+     * 后者让 cloud 对已连上 provider 的调用计费，即便随后没有任何内容（cloud#470）。
+     */
+    static boolean isForwardedToCloud(LlmStreamEvent event) {
+        return event.type() == LlmStreamEvent.Type.REACHED
+            || (event.type() == LlmStreamEvent.Type.DELTA && event.delta() != null);
+    }
+
+    /** 把 {@link #isForwardedToCloud} 放行的事件编码为 SSE data 帧。 */
+    static String toCloudFrame(LlmStreamEvent event) {
+        return event.type() == LlmStreamEvent.Type.REACHED
+            ? toJson(GeneratePolicyEvent.upstreamReached())
+            : toJson(GeneratePolicyEvent.delta(event.delta()));
+    }
+
     /** #185：把一次流式请求累计的 token 回填给 cloud（generate/suggest 终态调用）。 */
     private void reportStreamUsage(UsageReportCtx rc) {
         usageReporter.reportUsage(rc.tenantId(), rc.callKind(), rc.model(),
             rc.usageAcc().get(), rc.usedByok(), rc.requestId());
     }
 
-    private String toJson(Object obj) {
+    private static String toJson(Object obj) {
         try {
             return MAPPER.writeValueAsString(obj);
         } catch (Exception e) {
