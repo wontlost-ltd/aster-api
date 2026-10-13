@@ -71,8 +71,10 @@ public class VertxLlmClient implements LlmClient {
                 int port = resolvePort(baseUri);
                 boolean ssl = "https".equals(baseUri.getScheme());
 
+                // 记实际发出的模型（Anthropic 会被兜底替换），而非请求里的原值——
+                // 否则日志与 provider 收到的不一致，排障时会被误导（aster-api#360）。
                 LOG.infof("LLM 流式请求: provider=%s, model=%s, url=%s:%d%s, source=%s",
-                    provider, request.model(), baseUri.getHost(), port, chatPath, options.source());
+                    provider, body.getString("model"), baseUri.getHost(), port, chatPath, options.source());
 
                 // 使用底层 HttpClient 获取 response stream，避免 WebClient.sendJsonObject 缓冲整个响应体
                 //
@@ -315,9 +317,6 @@ public class VertxLlmClient implements LlmClient {
         return body;
     }
 
-    /** BYOK Anthropic 默认模型：当请求模型非 claude 系（如平台默认 gpt-4o-mini）时替换，避免打错模型。 */
-    private static final String ANTHROPIC_DEFAULT_MODEL = "claude-3-5-sonnet-20241022";
-
     /**
      * 构造 Anthropic Messages API 请求体（Phase 2 BYOK）。
      *
@@ -328,10 +327,11 @@ public class VertxLlmClient implements LlmClient {
      */
     // package-private for unit testing（Anthropic Messages API 结构是纯逻辑，值得锁定）
     JsonObject buildAnthropicBody(LlmRequest request) {
-        // 模型兜底：Anthropic 不认 OpenAI 模型名（如平台默认 gpt-4o-mini），非 claude 系一律用默认。
+        // 模型兜底：Anthropic 不认 OpenAI 模型名（如平台默认 gpt-4o-mini），非 claude 系一律用
+        // 配置的 Anthropic 默认模型（见 LlmConfig.anthropicDefaultModel）。
         String model = request.model();
         if (model == null || !model.toLowerCase(java.util.Locale.ROOT).startsWith("claude")) {
-            model = ANTHROPIC_DEFAULT_MODEL;
+            model = config.anthropicDefaultModel();
         }
         StringBuilder system = new StringBuilder();
         JsonArray messages = new JsonArray();

@@ -7,6 +7,9 @@ import java.time.Duration;
 /** VertxLlmClient 测试共用：不经 CDI 手工组装 client。 */
 final class LlmClientTestSupport {
 
+    /** 测试用的 Anthropic 默认模型；断言兜底取的是配置值而非写死的常量。 */
+    static final String ANTHROPIC_DEFAULT_MODEL = "claude-test-default";
+
     private LlmClientTestSupport() {
     }
 
@@ -51,6 +54,11 @@ final class LlmClientTestSupport {
         @Override
         public String model() {
             return "m";
+        }
+
+        @Override
+        public String anthropicDefaultModel() {
+            return ANTHROPIC_DEFAULT_MODEL;
         }
 
         @Override
