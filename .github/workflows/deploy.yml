@@ -316,8 +316,10 @@ jobs:
   # ⚠️ 暂态（如实标注）：image-lock PR 合并后 ArgoCD 按 digest sync 一次 + 上面 rollout 一次
   # ＝同一 digest 可能多一次滚动更新，结果一致（幂等），非安全冲突。
   #
-  # 前置（人工，见 k3s SETUP.md）：本仓需配 vars.IMAGE_PIN_APP_ID +
-  # secrets.IMAGE_PIN_APP_PRIVATE_KEY（image-pin App id 4253193 的私钥）。未配置则本 job skip。
+  # 前置（人工，见 k3s SETUP.md）：本仓需配 vars.IMAGE_PIN_APP_CLIENT_ID +
+  # secrets.IMAGE_PIN_APP_PRIVATE_KEY（image-pin App id 4253193 的私钥）。未配置则本 job skip，
+  # 而该 pin 时 pin-closure-guard 会因此失败。门控与 mint token 用同一个变量（#343），
+  # 与 aster-replay-runner-deploy / aster-runner-launcher-deploy 一致。
   # ★「该 pin」的判定（与下面 pin-closure-guard 共用同一套语义，改一处必改两处）：
   #   push 到 main            → 该 pin（原有行为）
   #   带 trainId 的 dispatch  → 该 pin（发版列车，platform#82 前它被静默跳过）
@@ -325,14 +327,19 @@ jobs:
   #
   #   另两个条件是**真实的不该 pin**，非缺陷：
   #   - stale == 'true'：github.sha 已不是 origin/main tip，开 PR 会 pin 旧 digest
-  #   - IMAGE_PIN_APP_ID == ''：未配 App 凭据（见 k3s SETUP.md），开不出 PR
+  #   - IMAGE_PIN_APP_CLIENT_ID == ''：未配 App 凭据（见 k3s SETUP.md），开不出 PR
   image-pin-pr:
     needs: deploy
     # ★两侧显式加括号：GitHub 表达式里 && 确实比 || 紧，但靠优先级读代码容易被后人误改。
     if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main')
              || (github.event_name == 'workflow_dispatch' && inputs.trainId != ''))
-            && needs.deploy.outputs.stale != 'true' && vars.IMAGE_PIN_APP_ID != '' }}
+            && needs.deploy.outputs.stale != 'true' && vars.IMAGE_PIN_APP_CLIENT_ID != '' }}
     runs-on: ubuntu-latest
+    # ★步骤可以被 if: 静默跳过而 job 仍是 success（Final stale gate 判过时即如此），
+    #   所以把「PR 是否真的开出」作为输出交给 pin-closure-guard，而不是让它只看 job 结论（#341）。
+    outputs:
+      pinned: ${{ steps.openpr.outcome == 'success' }}
+      final_stale: ${{ steps.stalegate.outputs.skip }}
     concurrency:
       group: image-pin-pr-aster-api        # per-image：不与 aster-cloud 的 job 互相取消
       cancel-in-progress: true
@@ -378,6 +385,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Open/update image-pin PR to k3s
+        id: openpr
         if: ${{ steps.stalegate.outputs.skip != 'true' }}
         env:
           GH_TOKEN: ${{ steps.k3stoken.outputs.token }}
@@ -406,54 +414,19 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      # 判定逻辑在脚本里，有表驱动测试（scripts/ci/pin-closure-guard.test.sh，ci-build 里跑）
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/ci
       - name: 断言「该 pin 则已 pin」
         env:
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           TRAIN_ID: ${{ inputs.trainId }}
           STALE: ${{ needs.deploy.outputs.stale }}
-          APP_ID: ${{ vars.IMAGE_PIN_APP_ID }}
+          CLIENT_ID: ${{ vars.IMAGE_PIN_APP_CLIENT_ID }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           PIN_RESULT: ${{ needs.image-pin-pr.result }}
-        run: |
-          set -euo pipefail
-          echo "event=$EVENT ref=$REF trainId='${TRAIN_ID:-}' stale=$STALE"
-          echo "deploy=$DEPLOY_RESULT image-pin-pr=$PIN_RESULT"
-
-          # deploy 自己没成功时不归本 job 管（它已经红了，别叠加噪音）
-          if [ "$DEPLOY_RESULT" != "success" ]; then
-            echo "deploy 未成功（${DEPLOY_RESULT}）——闭环判定不适用，跳过"; exit 0
-          fi
-
-          # ── 本次是否「该 pin」──────────────────────────────────────
-          due=false
-          if [ "$EVENT" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
-            due=true; why="push 到 main"
-          elif [ "$EVENT" = "workflow_dispatch" ] && [ -n "${TRAIN_ID:-}" ]; then
-            due=true; why="发布列车 dispatch (trainId=$TRAIN_ID)"
-          fi
-
-          # 真实的「不该 pin」：过时提交 / 未配 App 凭据。二者都**明确说明**，
-          # 不静默放过——这两种情况下集群同样不会换版本，只是原因正当。
-          if [ "$STALE" = "true" ]; then
-            echo "::warning::本次 github.sha 已非 origin/main tip（stale），按设计不开 pin PR。集群不会换到本次镜像，由更新的 commit 的 deploy 接手。"
-            exit 0
-          fi
-          if [ -z "${APP_ID:-}" ]; then
-            echo "::warning::未配置 vars.IMAGE_PIN_APP_ID，无法开 pin PR（见 k3s SETUP.md）。集群不会换版本。"
-            exit 0
-          fi
-
-          if [ "$due" != "true" ]; then
-            echo "本次不该 pin（手工无参 dispatch）——集群不换版本属预期"; exit 0
-          fi
-
-          # ── 该 pin：要求 image-pin-pr 真的成功 ────────────────────
-          if [ "$PIN_RESULT" = "success" ]; then
-            echo "✓ 闭环成立：$why → image-pin PR 已开出"; exit 0
-          fi
-
-          echo "::error::部署闭环断裂：本次该 pin（${why}），但 image-pin-pr=${PIN_RESULT}。"
-          echo "::error::镜像已构建并推送，但 k3s image-lock **未更新** —— 集群仍跑旧版本。"
-          echo "::error::若 PIN_RESULT=skipped，说明 image-pin-pr 的 if: 条件与本 job 的判定不一致（改一处必改两处）。"
-          exit 1
+          PINNED: ${{ needs.image-pin-pr.outputs.pinned }}
+          FINAL_STALE: ${{ needs.image-pin-pr.outputs.final_stale }}
+        run: bash scripts/ci/pin-closure-guard.sh
