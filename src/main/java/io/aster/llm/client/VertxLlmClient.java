@@ -256,7 +256,9 @@ public class VertxLlmClient implements LlmClient {
 
             httpRequest.sendJsonObject(body, ar -> {
                 if (ar.failed()) {
-                    emitter.fail(ar.cause());
+                    boolean reached = !LlmCallFailedException.isConnectFailure(ar.cause());
+                    emitter.fail(new LlmCallFailedException(
+                        reached ? "LLM 响应读取失败" : "LLM 连接失败", reached, ar.cause()));
                     return;
                 }
 
@@ -265,8 +267,8 @@ public class VertxLlmClient implements LlmClient {
                     // 不回显 provider 原始错误体（红队：BYOK 下可能含 key 前缀/鉴权诊断）。
                     LOG.errorf("LLM API 错误: status=%d, provider=%s, source=%s (错误体已脱敏)",
                         response.statusCode(), provider, options.source());
-                    emitter.fail(new RuntimeException(
-                        "LLM API 错误 (" + response.statusCode() + ")"));
+                    emitter.fail(new LlmCallFailedException(
+                        "LLM API 错误 (" + response.statusCode() + ")", true, null));
                     return;
                 }
 
@@ -277,7 +279,7 @@ public class VertxLlmClient implements LlmClient {
                     recordTokenUsage(usage, request.model());
                     emitter.complete(new LlmChatResult(content, usage));
                 } catch (Exception e) {
-                    emitter.fail(new RuntimeException("LLM 响应解析失败", e));
+                    emitter.fail(new LlmCallFailedException("LLM 响应解析失败", true, e));
                 }
             });
         });
