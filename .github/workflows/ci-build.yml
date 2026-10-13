@@ -95,6 +95,7 @@ jobs:
           command -v yq >/dev/null || { sudo curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq; }
           bash scripts/ci/open-image-pin-pr-merge.test.sh
           bash scripts/ci/open-image-pin-pr-flow.test.sh
+          bash scripts/ci/pin-closure-guard.test.sh
 
       # PrismaDatabaseE2ETest 用独立的 aster_test 库（其 profile 指向它）。
       - name: Create aster_test database

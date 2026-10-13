@@ -173,6 +173,11 @@ tasks.withType(JavaCompile).configureEach {
     options.compilerArgs.addAll(['-parameters', '-Xlint:all,-classfile'])
 }
 
+/** Testcontainers ryuk 开关：外层环境变量优先，未设置时默认禁用（本地 Podman 不支持 ryuk）。 */
+def ryukDisabled() {
+    return System.getenv('TESTCONTAINERS_RYUK_DISABLED') ?: 'true'
+}
+
 tasks.withType(Test) {
     systemProperty 'java.util.logging.manager', 'org.jboss.logmanager.LogManager'
     systemProperty 'quarkus.test.flat-class-path', 'true'
@@ -187,7 +192,10 @@ tasks.withType(Test) {
     // Testcontainers 配置
     // DOCKER_HOST: 本地开发通过 ~/.testcontainers.properties 配置 Podman socket
     // CI 环境使用默认 Docker socket，不覆盖 DOCKER_HOST
-    environment 'TESTCONTAINERS_RYUK_DISABLED', 'true'
+    // RYUK：默认禁用（本地 Podman 跑不起 ryuk）；外层设了 TESTCONTAINERS_RYUK_DISABLED 时以外层为准。
+    // ★Test.environment 会覆盖继承来的同名变量，写死 'true' 会让外层设置失效
+    //   （nightly fresh-it 显式设的 "false" 曾因此从未生效，#342）。
+    environment 'TESTCONTAINERS_RYUK_DISABLED', ryukDisabled()
 
     // 跳过需要完整 Aster 语言运行时的测试
     systemProperty 'aster.truffle.tests.skip', 'true'
@@ -388,7 +396,8 @@ tasks.register('integrationTestFresh', Test) {
     systemProperty 'java.util.logging.manager', 'org.jboss.logmanager.LogManager'
     systemProperty 'quarkus.test.flat-class-path', 'true'
     systemProperty 'aster.truffle.tests.skip', 'true'
-    // 关键：禁用 testcontainers reuse + ryuk 接管清理
+    // 关键：禁用 testcontainers reuse；ryuk 是否接管清理取决于外层 TESTCONTAINERS_RYUK_DISABLED
+    // （nightly fresh-it 设为 "false" 启用 ryuk，见 ryukDisabled()）
     systemProperty 'testcontainers.reuse.enable', 'false'
     environment 'TESTCONTAINERS_REUSE_ENABLE', 'false'
     jvmArgs '--add-opens', 'java.base/java.lang=ALL-UNNAMED'
@@ -417,7 +426,7 @@ tasks.register('testChaos', Test) {
     systemProperty 'java.util.logging.manager', 'org.jboss.logmanager.LogManager'
     systemProperty 'quarkus.test.flat-class-path', 'true'
     jvmArgs '--add-opens', 'java.base/java.lang=ALL-UNNAMED'
-    environment 'TESTCONTAINERS_RYUK_DISABLED', 'true'
+    environment 'TESTCONTAINERS_RYUK_DISABLED', ryukDisabled()
     systemProperty 'aster.truffle.tests.skip', 'true'
     shouldRunAfter 'test'
     retry {

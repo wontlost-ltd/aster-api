@@ -213,6 +213,9 @@ public class VertxLlmClient implements LlmClient {
                         });
                     });
 
+                    // 已连上 provider：从这里起请求算「到达第三方」，计入配额（cloud#470）。
+                    // 放在发送之前而非写完回调里，保证它先于任何响应事件到达下游。
+                    emitter.emit(LlmStreamEvent.reached());
                     clientRequest.end(io.vertx.core.buffer.Buffer.buffer(body.encode()));
                 });
 
