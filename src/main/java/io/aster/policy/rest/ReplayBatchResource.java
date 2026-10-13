@@ -250,13 +250,17 @@ public class ReplayBatchResource {
         //   但 userId 不是 tenantId，且它来自 RequestIdentityResolver.performedBy()，
         //   该函数在无 JAX-RS property 时**回退读客户端的 X-User-Id 头**，其自身文档
         //   （RequestIdentityResolver:113）明写「授权判断一律不得依赖它」。
-        //   而 ApiKeyAuthFilter.shouldProtect() 是严格 allowlist，本路径不在其中，
-        //   故 filter 的权威覆盖不会执行，攻击者传入的 X-User-Id 原样进入谓词。
         //   同文件 :115-116 已因「按 userId 而非 tenantId」栽过一次（额度可被绕过），
         //   读路径此前仍在重复同一错误。
         //
-        //   现改为按 tenantId（有 filter 权威覆盖）为主谓词，并加入 policyId
-        //   （此前完全未参与查询，可跨策略读取）。userId 保留为纵深防御。
+        //   现改为按 tenantId 为主谓词，并加入 policyId（此前完全未参与查询，可跨策略
+        //   读取）。userId 保留为纵深防御。
+        //
+        //   谓词输入的可信来源是 InternalCallerFilter，**不是** ApiKeyAuthFilter：
+        //   本路径不在 ApiKeyAuthFilter.shouldProtect() 的 allowlist 里（也不能加——
+        //   BFF 不带 Bearer key，加了 UI 的 What-If 全部 401）。InternalCallerFilter
+        //   对本路径恒要求 HMAC（REQUIRE_HMAC，无 public/trial 旁路），canonical 串含
+        //   X-Tenant-Id 与 X-User-Id，故两者被篡改即 invalid_signature（403）。
         //   不属于本租户的批次一律 404（不是 403）——403 会泄露「这个批次存在」，
         //   让端点变成存在性探针。
         ReplayBatchEntity batch = ReplayBatchEntity
