@@ -148,6 +148,7 @@ class LlmRuntimeOptionsResolverTest {
         @Override public String provider() { return "rightcode"; }
         @Override public String baseUrl() { return "https://right.codes/codex/v1"; }
         @Override public String model() { return "m"; }
+        @Override public String anthropicDefaultModel() { return "claude-m"; }
         @Override public double temperature() { return 0.2; }
         @Override public int maxTokens() { return 100; }
         @Override public Duration timeout() { return Duration.ofSeconds(30); }

@@ -310,19 +310,29 @@ public class LlmProxyService {
     }
 
     /**
-     * suggest / assistant 转发给 cloud 的事件：内容增量，以及「已到达 provider」标记。
-     * 后者让 cloud 对已连上 provider 的调用计费，即便随后没有任何内容（cloud#470）。
+     * suggest / assistant 转发给 cloud 的事件：内容增量、「已到达 provider」标记与错误。
+     *
+     * <ul>
+     *   <li>upstream_reached 让 cloud 对已连上 provider 的调用计费，即便随后没有内容（cloud#470）；</li>
+     *   <li>错误必须转发：此前被过滤掉，provider 拒绝时用户只看到空白结果、无从得知失败
+     *       （aster-api#360）。错误文案由 VertxLlmClient 统一泛化，不含 provider 原始错误体。</li>
+     * </ul>
      */
     static boolean isForwardedToCloud(LlmStreamEvent event) {
-        return event.type() == LlmStreamEvent.Type.REACHED
-            || (event.type() == LlmStreamEvent.Type.DELTA && event.delta() != null);
+        return switch (event.type()) {
+            case REACHED, ERROR -> true;
+            case DELTA -> event.delta() != null;
+            case DONE, USAGE -> false;
+        };
     }
 
     /** 把 {@link #isForwardedToCloud} 放行的事件编码为 SSE data 帧。 */
     static String toCloudFrame(LlmStreamEvent event) {
-        return event.type() == LlmStreamEvent.Type.REACHED
-            ? toJson(GeneratePolicyEvent.upstreamReached())
-            : toJson(GeneratePolicyEvent.delta(event.delta()));
+        return switch (event.type()) {
+            case REACHED -> toJson(GeneratePolicyEvent.upstreamReached());
+            case ERROR -> toJson(GeneratePolicyEvent.error(event.error()));
+            default -> toJson(GeneratePolicyEvent.delta(event.delta()));
+        };
     }
 
     /** #185：把一次流式请求累计的 token 回填给 cloud（generate/suggest 终态调用）。 */
