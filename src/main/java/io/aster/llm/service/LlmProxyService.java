@@ -290,7 +290,8 @@ public class LlmProxyService {
                     .build());
         }
         if (options.apiKey() == null || options.apiKey().isBlank()) {
-            return Uni.createFrom().item(new CompleteResponse("", config.model()));
+            // 未配置 key：根本不调 provider，不计费（cloud#518）。
+            return Uni.createFrom().item(new CompleteResponse("", config.model(), false));
         }
 
         PromptContext ctx = promptComposer.buildCompleteContext(tenantId, req);
@@ -301,11 +302,11 @@ public class LlmProxyService {
             .map(result -> {
                 // issue #185：把 provider 真实 token 回填给 cloud（关联 requestId）。
                 usageReporter.reportUsage(tenantId, "complete", model, result.usage(), usedByok, requestId);
-                return new CompleteResponse(result.content(), model);
+                return new CompleteResponse(result.content(), model, true);
             })
             .onFailure().recoverWithItem(throwable -> {
                 LOG.errorf(throwable, "代码补全失败");
-                return new CompleteResponse("", model);
+                return new CompleteResponse("", model, reachedProvider(throwable));
             });
     }
 
@@ -333,6 +334,14 @@ public class LlmProxyService {
             case ERROR -> toJson(GeneratePolicyEvent.error(event.error()));
             default -> toJson(GeneratePolicyEvent.delta(event.delta()));
         };
+    }
+
+    /**
+     * 补全失败时请求是否已到达 provider（cloud#518）。只有 client 明确标注的失败才可能算到达；
+     * 其它异常发生在发出请求之前，按没到达处理、不计费。
+     */
+    static boolean reachedProvider(Throwable failure) {
+        return failure instanceof io.aster.llm.client.LlmCallFailedException e && e.reachedProvider();
     }
 
     /** #185：把一次流式请求累计的 token 回填给 cloud（generate/suggest 终态调用）。 */
