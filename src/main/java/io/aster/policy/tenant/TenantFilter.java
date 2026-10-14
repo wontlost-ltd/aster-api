@@ -112,9 +112,17 @@ public class TenantFilter implements ContainerRequestFilter {
         // /api/v1/messages/{locale} 界面文案：与 lexicons 同源，前端匿名 fetch（无 X-Tenant-Id），
         // 单段 locale 精确匹配（见 MessagesPathMatcher，拒多段/路径穿越）
         // 用 slash-boundary 匹配防止误匹配兄弟路径（如 /api/v1/lexicons-admin）
+        // AI 端点：cloud BFF 经 HMAC 签名调用时，X-Tenant-Id 在签名 canonical 里（InternalCallerFilter
+        // 已验签，且本 filter 排在它之后），是已验证的真实租户，必须按它走——否则所有用户的 AI 调用
+        // 都归到 "default"：token 回填 userId 错、按租户的守门免扣计数全员共享、拦截事件归不到人
+        // （aster-api#360）。未验签的 AI 调用（public / trial 旁路）header 不可信，仍用默认租户。
+        boolean signedAiCall = isAiPath(path)
+            && io.aster.security.apikey.InternalCallerFilter.isHmacVerified(requestContext)
+            && requestContext.getHeaderString(TENANT_HEADER) != null
+            && !requestContext.getHeaderString(TENANT_HEADER).isBlank();
         if (path.startsWith("/q/") || path.startsWith("q/")
                 || path.equals("/graphql/schema.graphql") || path.equals("graphql/schema.graphql")
-                || path.startsWith("/api/v1/ai/") || path.startsWith("api/v1/ai/")
+                || (isAiPath(path) && !signedAiCall)
                 || matchesLexiconPath(path)
                 || matchesMessagesPath(path)
                 || path.startsWith("/api/v1/admin/lexicons/") || path.startsWith("api/v1/admin/lexicons/")
@@ -221,6 +229,10 @@ public class TenantFilter implements ContainerRequestFilter {
         // 截断过长的输入，移除控制字符
         String sanitized = input.length() > 100 ? input.substring(0, 100) + "..." : input;
         return sanitized.replaceAll("[\\r\\n\\t]", "_");
+    }
+
+    private static boolean isAiPath(String path) {
+        return path.startsWith("/api/v1/ai/") || path.startsWith("api/v1/ai/");
     }
 
     /**

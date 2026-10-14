@@ -77,9 +77,28 @@ class LlmProxyServiceUpstreamReachedTest {
     }
 
     @Test
-    @DisplayName("★suggest：provider 只返回错误也要转发 upstream_reached（错误本身照旧不转发）")
-    void suggestForwardsReachedWithoutContent() {
-        providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.error("流式响应异常"));
+    @DisplayName("★suggest：provider 报错——转发 upstream_reached 与 error（aster-api#360：此前错误被吞，用户只见空白）")
+    void suggestForwardsReachedAndError() {
+        providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.error("LLM API 错误 (400)"));
+
+        assertThat(collect(service.streamSuggest("t", new SuggestRequest("s", null, null, null), null, "r")))
+            .containsExactly(REACHED, "{\"type\":\"error\",\"error\":\"LLM API 错误 (400)\"}");
+    }
+
+    @Test
+    @DisplayName("★assistant：provider 报错同样转发 error")
+    void assistantForwardsError() {
+        providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.error("LLM API 错误 (400)"));
+
+        assertThat(collect(service.streamAssistant("t", mock(AssistantRequest.class), null, "r")))
+            .containsExactly(REACHED, "{\"type\":\"error\",\"error\":\"LLM API 错误 (400)\"}");
+    }
+
+    @Test
+    @DisplayName("suggest：USAGE / DONE 不转发")
+    void suggestDropsUsageAndDone() {
+        providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.usage(new io.aster.llm.model.LlmUsage(1, 2)),
+            LlmStreamEvent.done());
 
         assertThat(collect(service.streamSuggest("t", new SuggestRequest("s", null, null, null), null, "r")))
             .containsExactly(REACHED);

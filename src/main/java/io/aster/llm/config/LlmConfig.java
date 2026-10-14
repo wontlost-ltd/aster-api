@@ -28,6 +28,15 @@ public interface LlmConfig {
     @WithDefault("gpt-4o-mini")
     String model();
 
+    /**
+     * BYOK 走 Anthropic 时、请求模型又非 claude 系（如上面的平台默认 OpenAI 模型）时改用的模型。
+     *
+     * <p>Anthropic 会下线旧模型：此前写死的 claude-3-5-sonnet-20241022 下线后，所有 Anthropic BYOK
+     * 调用都被 provider 以 400 拒绝（aster-api#360）。故做成配置，下线时改环境变量即可。
+     */
+    @WithDefault("claude-sonnet-5-5")
+    String anthropicDefaultModel();
+
     @WithDefault("0.2")
     double temperature();
 

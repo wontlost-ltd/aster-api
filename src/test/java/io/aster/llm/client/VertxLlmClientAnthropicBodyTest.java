@@ -16,7 +16,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class VertxLlmClientAnthropicBodyTest {
 
-    private final VertxLlmClient client = new VertxLlmClient();
+    private final VertxLlmClient client = newClient();
+
+    private static VertxLlmClient newClient() {
+        VertxLlmClient c = new VertxLlmClient();
+        c.config = new LlmClientTestSupport.StubConfig(java.time.Duration.ofSeconds(1), java.time.Duration.ofSeconds(1));
+        return c;
+    }
 
     @Test
     @DisplayName("system/developer 消息合并到 top-level system，不进 messages")
@@ -80,7 +86,17 @@ class VertxLlmClientAnthropicBodyTest {
         LlmRequest req = new LlmRequest("gpt-4o-mini", List.of(
             new LlmRequest.Message("user", "hi")
         ), 0.0, 500, false);
-        assertThat(client.buildAnthropicBody(req).getString("model")).startsWith("claude");
+        assertThat(client.buildAnthropicBody(req).getString("model"))
+            .as("★兜底取配置的 Anthropic 默认模型（aster-api#360：写死的旧模型下线后全部 400）")
+            .isEqualTo(LlmClientTestSupport.ANTHROPIC_DEFAULT_MODEL);
+    }
+
+    @Test
+    @DisplayName("请求未指定模型（null）→ 同样兜底为配置的 Anthropic 默认模型")
+    void nullModelFallsBackToAnthropicDefault() {
+        LlmRequest req = new LlmRequest(null, List.of(new LlmRequest.Message("user", "hi")), 0.0, 500, false);
+        assertThat(client.buildAnthropicBody(req).getString("model"))
+            .isEqualTo(LlmClientTestSupport.ANTHROPIC_DEFAULT_MODEL);
     }
 
     // ==================== #185: stream_options.include_usage 条件 ====================
