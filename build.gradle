@@ -99,6 +99,10 @@ dependencies {
     // Aster 验证模块 - 独立项目
     implementation asterLibs.validation
 
+    // ADR 0047 §2：官方 Cedar Java 绑定，用于导出产物的严格校验与等价性判定。
+    // 按官方 README 使用 uber classifier（内含 CedarJavaFFI 原生库：linux/macos x86_64+aarch64、windows x86_64）。
+    implementation 'com.cedarpolicy:cedar-java:4.10.0:uber'
+
     // GraalVM Polyglot SDK (用于动态 CNL 执行)
     //
     // ★版本由 aster-lang-platform 版本目录统一（asterLibs.graalvm.*，issue #193）。

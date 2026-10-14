@@ -55,9 +55,9 @@ public class DeployedMapParamProbeTest {
     versionResolutionCache.clear();
   }
 
-  /** 在独立事务中部署目录 + 活跃版本；同时供 {@code io.aster.guard.api} 的 REST 测试复用。 */
-  public static void deploy(String tenant, String module, String function, String source) {
-    QuarkusTransaction.requiringNew().run(() -> {
+  /** 在独立事务中部署目录 + 活跃版本并返回版本 id；同时供 {@code io.aster.guard.api} 的 REST 测试复用。 */
+  public static Long deploy(String tenant, String module, String function, String source) {
+    return QuarkusTransaction.requiringNew().call(() -> {
       PolicyCatalog catalog = new PolicyCatalog();
       catalog.id = UUID.randomUUID(); catalog.tenantId = tenant; catalog.moduleName = module;
       catalog.functionName = function; catalog.domain = "guard"; catalog.tags = "{}";
@@ -70,6 +70,7 @@ public class DeployedMapParamProbeTest {
       version.tenantId = tenant; version.createdAt = Instant.now(); version.createdBy = "probe";
       version.persist();
       catalog.defaultVersionId = version.id; catalog.persist();
+      return version.id;
     });
   }
 
