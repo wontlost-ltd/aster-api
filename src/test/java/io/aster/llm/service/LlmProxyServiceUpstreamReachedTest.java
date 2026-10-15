@@ -37,6 +37,8 @@ import static org.mockito.Mockito.when;
 class LlmProxyServiceUpstreamReachedTest {
 
     private static final String REACHED = "{\"type\":\"upstream_reached\"}";
+    /** ADR 0048：流首帧固定为 meta（实际发出的 model）。 */
+    private static final String META = "{\"type\":\"meta\",\"data\":\"m\"}";
 
     private LlmProxyService service;
     private LlmClient client;
@@ -55,7 +57,9 @@ class LlmProxyServiceUpstreamReachedTest {
         service.optionsResolver = mock(LlmRuntimeOptionsResolver.class);
         when(service.optionsResolver.resolve(anyString(), any()))
             .thenReturn(new LlmRuntimeOptions("k", "openai", "http://127.0.0.1", LlmRuntimeOptions.Source.PLATFORM));
-        when(service.promptComposer.buildGenerateContext(anyString(), any())).thenReturn(mock(PromptContext.class));
+        when(service.promptComposer.buildGenerateContext(anyString(), any())).thenAnswer(inv -> new PromptContext().model("m"));
+        when(service.promptComposer.buildSuggestContext(anyString(), any())).thenAnswer(inv -> new PromptContext().model("m"));
+        when(service.promptComposer.buildAssistantContext(anyString(), any())).thenAnswer(inv -> new PromptContext().model("m"));
     }
 
     private void providerEmits(LlmStreamEvent... events) {
@@ -73,7 +77,7 @@ class LlmProxyServiceUpstreamReachedTest {
 
         List<String> frames = collect(service.streamGenerate("t", new GeneratePolicyRequest("g", null, null, null, null), null, "r"));
 
-        assertThat(frames).containsExactly(REACHED, "{\"type\":\"error\",\"error\":\"LLM API 错误 (500)\"}");
+        assertThat(frames).containsExactly(META, REACHED, "{\"type\":\"error\",\"error\":\"LLM API 错误 (500)\"}");
     }
 
     @Test
@@ -82,7 +86,7 @@ class LlmProxyServiceUpstreamReachedTest {
         providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.error("LLM API 错误 (400)"));
 
         assertThat(collect(service.streamSuggest("t", new SuggestRequest("s", null, null, null), null, "r")))
-            .containsExactly(REACHED, "{\"type\":\"error\",\"error\":\"LLM API 错误 (400)\"}");
+            .containsExactly(META, REACHED, "{\"type\":\"error\",\"error\":\"LLM API 错误 (400)\"}");
     }
 
     @Test
@@ -91,7 +95,7 @@ class LlmProxyServiceUpstreamReachedTest {
         providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.error("LLM API 错误 (400)"));
 
         assertThat(collect(service.streamAssistant("t", mock(AssistantRequest.class), null, "r")))
-            .containsExactly(REACHED, "{\"type\":\"error\",\"error\":\"LLM API 错误 (400)\"}");
+            .containsExactly(META, REACHED, "{\"type\":\"error\",\"error\":\"LLM API 错误 (400)\"}");
     }
 
     @Test
@@ -101,7 +105,7 @@ class LlmProxyServiceUpstreamReachedTest {
             LlmStreamEvent.done());
 
         assertThat(collect(service.streamSuggest("t", new SuggestRequest("s", null, null, null), null, "r")))
-            .containsExactly(REACHED);
+            .containsExactly(META, REACHED);
     }
 
     @Test
@@ -110,7 +114,7 @@ class LlmProxyServiceUpstreamReachedTest {
         providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.delta("x"), LlmStreamEvent.done());
 
         assertThat(collect(service.streamSuggest("t", new SuggestRequest("s", null, null, null), null, "r")))
-            .containsExactly(REACHED, "{\"type\":\"delta\",\"data\":\"x\"}");
+            .containsExactly(META, REACHED, "{\"type\":\"delta\",\"data\":\"x\"}");
     }
 
     @Test
@@ -119,7 +123,7 @@ class LlmProxyServiceUpstreamReachedTest {
         providerEmits(LlmStreamEvent.reached());
 
         AssistantRequest req = mock(AssistantRequest.class);
-        assertThat(collect(service.streamAssistant("t", req, null, "r"))).containsExactly(REACHED);
+        assertThat(collect(service.streamAssistant("t", req, null, "r"))).containsExactly(META, REACHED);
     }
 
     @Test
@@ -128,7 +132,7 @@ class LlmProxyServiceUpstreamReachedTest {
         providerEmits(LlmStreamEvent.error("LLM 连接失败"));
 
         assertThat(collect(service.streamGenerate("t", new GeneratePolicyRequest("g", null, null, null, null), null, "r")))
-            .containsExactly("{\"type\":\"error\",\"error\":\"LLM 连接失败\"}");
+            .containsExactly(META, "{\"type\":\"error\",\"error\":\"LLM 连接失败\"}");
     }
 
     @Test

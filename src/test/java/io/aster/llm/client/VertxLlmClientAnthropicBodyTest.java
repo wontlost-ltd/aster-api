@@ -1,6 +1,7 @@
 package io.aster.llm.client;
 
 import io.aster.llm.model.LlmRequest;
+import io.aster.llm.model.LlmRuntimeOptions;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import org.junit.jupiter.api.DisplayName;
@@ -128,5 +129,14 @@ class VertxLlmClientAnthropicBodyTest {
         LlmRequest req = new LlmRequest("gpt-4o", List.of(new LlmRequest.Message("user", "hi")), 0.0, 100, false);
         var body = client.buildRequestBody(req, opts("openai", "https://api.openai.com"));
         assertThat(body.containsKey("stream_options")).isFalse();
+    }
+
+    @Test
+    @DisplayName("★BYOK 指定 model → Anthropic body 原样发出（不兜底）")
+    void byokModelKeptInAnthropicBody() {
+        LlmRequest req = new LlmRequest("gpt-4o-mini", List.of(new LlmRequest.Message("user", "hi")), 0.0, 500, false);
+        LlmRuntimeOptions opts = new LlmRuntimeOptions("k", "anthropic", "https://api.anthropic.com",
+            LlmRuntimeOptions.Source.BYOK, LlmRuntimeOptions.WireFormat.ANTHROPIC_NATIVE, false, "my-alias");
+        assertThat(client.buildAnthropicBody(req, opts).getString("model")).isEqualTo("my-alias");
     }
 }

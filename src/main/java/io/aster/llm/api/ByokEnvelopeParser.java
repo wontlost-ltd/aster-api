@@ -60,12 +60,34 @@ public class ByokEnvelopeParser {
             return null; // absent → 平台路径
         }
         // present：已验签 body 明确带 BYOK 意图，无效则 fail-closed（不回退平台）
+        Object rawModel = env.getValue("model");
+        if (rawModel != null && !(rawModel instanceof String)) {
+            throw new IllegalArgumentException("_byok.model 必须是字符串");
+        }
         ByokOverride override = new ByokOverride(env.getString("provider"), env.getString("apiKey"),
-            env.getString("baseUrl"));
+            env.getString("baseUrl"), normalizeModel((String) rawModel));
         if (!override.isValid()) {
             throw new IllegalArgumentException("_byok envelope 字段无效（provider/apiKey 缺失）");
         }
         return override;
+    }
+
+    /** 允许的模型 id 形状（与 cloud 保存时校验一致）：1–128 字符，字母数字与 . _ : / -。 */
+    private static final java.util.regex.Pattern MODEL_ID = java.util.regex.Pattern.compile("^[A-Za-z0-9._:/-]{1,128}$");
+
+    /** 空白 → null（未指定）；非法形状 → 抛错，不把垃圾塞进 provider 请求。 */
+    static String normalizeModel(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String trimmed = raw.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (!MODEL_ID.matcher(trimmed).matches()) {
+            throw new IllegalArgumentException("_byok.model 非法（长度 1–128，仅 A-Z a-z 0-9 . _ : / -）");
+        }
+        return trimmed;
     }
 
     /**

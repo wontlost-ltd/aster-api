@@ -3,6 +3,7 @@ package io.aster.llm.client;
 import io.aster.llm.config.LlmConfig;
 import io.aster.llm.metrics.LlmMetrics;
 import io.aster.llm.model.LlmChatResult;
+import io.aster.llm.model.LlmModelPolicy;
 import io.aster.llm.model.LlmRequest;
 import io.aster.llm.model.LlmRuntimeOptions;
 import io.aster.llm.model.LlmStreamEvent;
@@ -22,6 +23,7 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
 import java.net.URI;
+import java.util.List;
 
 /**
  * Vert.x WebClient 实现的 LLM 客户端
@@ -154,7 +156,11 @@ public class VertxLlmClient implements LlmClient {
                             clientResponse.bodyHandler(errBuf -> {
                                 LOG.errorf("LLM API 错误: status=%d, provider=%s, source=%s (错误体已脱敏)",
                                     statusCode, provider, options.source());
-                                emitter.emit(LlmStreamEvent.error("LLM API 错误 (" + statusCode + ")"));
+                                // BYOK 指定了 model 且 provider 400：按结构化错误码上报，service/cloud 不必解析文案（ADR 0048 §6）
+                                boolean rejectedModel = statusCode == 400 && options.hasModel();
+                                emitter.emit(LlmStreamEvent.error(rejectedModel
+                                    ? "provider_rejected_model"
+                                    : "LLM API 错误 (" + statusCode + ")"));
                                 emitter.complete();
                                 httpClient.close();
                             });
@@ -230,6 +236,75 @@ public class VertxLlmClient implements LlmClient {
     }
 
     @Override
+    public Uni<List<String>> listModels(LlmRuntimeOptions options) {
+        String apiKey = options.apiKey();
+        String provider = options.provider();
+        validateCustomEndpoint(options);
+        URI baseUri = URI.create(options.baseUrl());
+        String path = resolveModelsPath(baseUri);
+        int port = resolvePort(baseUri);
+
+        return Uni.createFrom().emitter(emitter -> {
+            HttpRequest<Buffer> httpRequest = getClient()
+                .request(HttpMethod.GET, port, baseUri.getHost(), path)
+                .ssl("https".equals(baseUri.getScheme()))
+                .followRedirects(false)
+                .timeout(config.timeout().toMillis());
+            addAuthHeaders(httpRequest, apiKey, provider);
+
+            httpRequest.send(ar -> {
+                if (ar.failed()) {
+                    boolean reached = !LlmCallFailedException.isConnectFailure(ar.cause());
+                    emitter.fail(new LlmCallFailedException(
+                        reached ? "模型列表读取失败" : "LLM 连接失败", reached, ar.cause(), 0));
+                    return;
+                }
+                HttpResponse<Buffer> response = ar.result();
+                if (response.statusCode() != 200) {
+                    // 不回显 provider 错误体（可能含鉴权诊断）
+                    emitter.fail(new LlmCallFailedException(
+                        "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode()));
+                    return;
+                }
+                // 响应体上界：Vert.x WebClient 已把 body 完整缓冲到内存后才到这里，本检查只是「拒绝超限响应、不继续解析入库」，
+                // 不是接收期间的内存硬上限（硬上限需 BodyCodec 流式读取，本 ADR 不做；出站只打 allowlist 内网关）。
+                if (response.body() != null && response.body().length() > MAX_MODELS_BODY_BYTES) {
+                    emitter.fail(new LlmCallFailedException("模型列表响应过大", true, null, 200));
+                    return;
+                }
+                try {
+                    emitter.complete(extractModelIds(response.bodyAsJsonObject()));
+                } catch (Exception e) {
+                    emitter.fail(new LlmCallFailedException("模型列表解析失败", true, e, 200));
+                }
+            });
+        });
+    }
+
+    private static final int MAX_MODELS_BODY_BYTES = 1 << 20;
+
+    /** OpenAI 与 Anthropic 的 /v1/models 都是 {"data":[{"id":...}]}；缺 id 的项跳过（形状/条数限制在 service 层统一做）。 */
+    private static List<String> extractModelIds(JsonObject body) {
+        JsonArray data = body.getJsonArray("data", new JsonArray());
+        List<String> ids = new java.util.ArrayList<>(data.size());
+        for (int i = 0; i < data.size(); i++) {
+            String id = data.getJsonObject(i).getString("id");
+            if (id != null && !id.isBlank()) {
+                ids.add(id);
+            }
+        }
+        return ids;
+    }
+
+    /** 与 resolveChatPath 同一规则：base 带路径则追加 /models，否则 /v1/models。 */
+    private String resolveModelsPath(URI baseUri) {
+        String basePath = baseUri.getPath();
+        if (basePath == null) basePath = "";
+        if (basePath.endsWith("/")) basePath = basePath.substring(0, basePath.length() - 1);
+        return basePath.isEmpty() ? "/v1/models" : basePath + "/models";
+    }
+
+    @Override
     public Uni<LlmChatResult> chat(LlmRequest request, LlmRuntimeOptions options) {
         String apiKey = options.apiKey();
         String provider = options.provider();
@@ -268,7 +343,7 @@ public class VertxLlmClient implements LlmClient {
                     LOG.errorf("LLM API 错误: status=%d, provider=%s, source=%s (错误体已脱敏)",
                         response.statusCode(), provider, options.source());
                     emitter.fail(new LlmCallFailedException(
-                        "LLM API 错误 (" + response.statusCode() + ")", true, null));
+                        "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode()));
                     return;
                 }
 
@@ -276,7 +351,7 @@ public class VertxLlmClient implements LlmClient {
                     JsonObject responseJson = response.bodyAsJsonObject();
                     String content = extractContent(responseJson, provider);
                     LlmUsage usage = extractUsage(responseJson, provider);
-                    recordTokenUsage(usage, request.model());
+                    recordTokenUsage(usage, LlmModelPolicy.wireModel(request.model(), options, config));
                     emitter.complete(new LlmChatResult(content, usage));
                 } catch (Exception e) {
                     emitter.fail(new LlmCallFailedException("LLM 响应解析失败", true, e));
@@ -289,7 +364,7 @@ public class VertxLlmClient implements LlmClient {
     JsonObject buildRequestBody(LlmRequest request, LlmRuntimeOptions options) {
         String provider = options.provider();
         if ("anthropic".equals(provider)) {
-            return buildAnthropicBody(request);
+            return buildAnthropicBody(request, options);
         }
         boolean isNativeOpenAi = options.wireFormat() == LlmRuntimeOptions.WireFormat.OPENAI_NATIVE;
         JsonArray messages = new JsonArray();
@@ -305,7 +380,7 @@ public class VertxLlmClient implements LlmClient {
         }
 
         JsonObject body = new JsonObject()
-            .put("model", request.model())
+            .put("model", LlmModelPolicy.wireModel(request.model(), options, config))
             .put("messages", messages)
             .put("temperature", request.temperature())
             .put("max_tokens", request.maxTokens())
@@ -327,14 +402,17 @@ public class VertxLlmClient implements LlmClient {
      * 且 {@code messages} 只允许 user/assistant 交替角色。这里把所有 system/developer 消息合并到
      * top-level system，其余按 user/assistant 放入 messages。
      */
-    // package-private for unit testing（Anthropic Messages API 结构是纯逻辑，值得锁定）
+    // 既有单测以 1 参调用：等价于平台凭证（无 BYOK 指定 model）。
     JsonObject buildAnthropicBody(LlmRequest request) {
-        // 模型兜底：Anthropic 不认 OpenAI 模型名（如平台默认 gpt-4o-mini），非 claude 系一律用
-        // 配置的 Anthropic 默认模型（见 LlmConfig.anthropicDefaultModel）。
-        String model = request.model();
-        if (model == null || !model.toLowerCase(java.util.Locale.ROOT).startsWith("claude")) {
-            model = config.anthropicDefaultModel();
-        }
+        return buildAnthropicBody(request, null);
+    }
+
+    // package-private for unit testing（Anthropic Messages API 结构是纯逻辑，值得锁定）
+    JsonObject buildAnthropicBody(LlmRequest request, LlmRuntimeOptions options) {
+        // 模型选择统一走 LlmModelPolicy：平台/未指定 → 非 claude 系兜底；BYOK 指定 → 原样。
+        LlmRuntimeOptions effective = options != null ? options
+            : new LlmRuntimeOptions(null, "anthropic", null, LlmRuntimeOptions.Source.PLATFORM);
+        String model = LlmModelPolicy.wireModel(request.model(), effective, config);
         StringBuilder system = new StringBuilder();
         JsonArray messages = new JsonArray();
         for (var msg : request.messages()) {
