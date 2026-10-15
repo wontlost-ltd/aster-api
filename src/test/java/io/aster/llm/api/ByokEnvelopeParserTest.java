@@ -112,4 +112,12 @@ class ByokEnvelopeParserTest {
             "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\",\"model\":\"gpt 4o\\n\"}}")))
             .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("model");
     }
+
+    @Test
+    @DisplayName("_byok.model 为非字符串（数字）→ IllegalArgumentException 而非 ClassCastException")
+    void rejectsNonStringModel() {
+        assertThatThrownBy(() -> parser.parse(ctx(true,
+            "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\",\"model\":123}}")))
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("model");
+    }
 }

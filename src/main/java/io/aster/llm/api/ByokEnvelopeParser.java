@@ -60,8 +60,12 @@ public class ByokEnvelopeParser {
             return null; // absent → 平台路径
         }
         // present：已验签 body 明确带 BYOK 意图，无效则 fail-closed（不回退平台）
+        Object rawModel = env.getValue("model");
+        if (rawModel != null && !(rawModel instanceof String)) {
+            throw new IllegalArgumentException("_byok.model 必须是字符串");
+        }
         ByokOverride override = new ByokOverride(env.getString("provider"), env.getString("apiKey"),
-            env.getString("baseUrl"), normalizeModel(env.getString("model")));
+            env.getString("baseUrl"), normalizeModel((String) rawModel));
         if (!override.isValid()) {
             throw new IllegalArgumentException("_byok envelope 字段无效（provider/apiKey 缺失）");
         }
