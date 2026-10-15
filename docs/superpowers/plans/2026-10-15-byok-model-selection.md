@@ -972,7 +972,7 @@ class VertxLlmClientListModelsTest {
     }
 
     @Test
-    @DisplayName("openai：GET /v1/models，Bearer 鉴权，解析 data[].id（缺 id 的项跳过；响应体 > 1 MiB 视为失败）")
+    @DisplayName("openai：GET /v1/models，Bearer 鉴权，解析 data[].id（缺 id 的项跳过；响应体 > 1 MiB 拒绝解析、按失败处理）")
     void parsesOpenAiList() throws Exception {
         int port = listen(ok(LIST_BODY));
         List<String> ids = client().listModels(opts("openai", "http://127.0.0.1:" + port)).await().atMost(Duration.ofSeconds(10));
@@ -1021,9 +1021,18 @@ class VertxLlmClientListModelsTest {
 }
 ```
 
-资源级测试：在 `src/test/java/io/aster/llm/api/` 新建 `AiAssistantResourceModelsTest.java`——不起 Quarkus，手工 `new AiAssistantResource()` 注入 `byokParser = new ByokEnvelopeParser()`、`llmProxyService = mock(LlmProxyService.class)`、`identityResolver = mock(RequestIdentityResolver.class)`（`tenantId()` 返回 "t"）、`llmConfig`（enabled=true 的 Proxy 桩，同 `PromptComposerAssistantTest.stubConfig`），`requestContext` 用 `ByokEnvelopeParserTest.ctx(verified, body)` 同款 Proxy：
+资源级测试：在 `src/test/java/io/aster/llm/api/` 新建 `AiAssistantResourceModelsTest.java`——不起 Quarkus，手工 `new AiAssistantResource()` 注入 `byokParser = new ByokEnvelopeParser()`、`llmProxyService = mock(LlmProxyService.class)`、`identityResolver = mock(RequestIdentityResolver.class)`（`tenantId()` 返回 "t"）、`llmConfig`（enabled=true 的 Proxy 桩，同 `PromptComposerAssistantTest.stubConfig`），`requestContext` 用本测试自己的 Proxy helper（`ByokEnvelopeParserTest.ctx` 是 private，不能复用）：
 
 ```java
+    private static ContainerRequestContext ctx(boolean verified, String bodyJson) {
+        Map<String, Object> props = Map.of(
+            InternalCallerFilter.HMAC_VERIFIED_PROP, verified ? Boolean.TRUE : Boolean.FALSE,
+            InternalCallerFilter.VERIFIED_BODY_PROP, bodyJson == null ? new byte[0] : bodyJson.getBytes(StandardCharsets.UTF_8));
+        return (ContainerRequestContext) Proxy.newProxyInstance(ContainerRequestContext.class.getClassLoader(),
+            new Class<?>[]{ContainerRequestContext.class},
+            (proxy, method, args) -> "getProperty".equals(method.getName()) ? props.get((String) args[0]) : null);
+    }
+
     @Test
     @DisplayName("已验签 body 带 _byok → 解析后交给 service.listModels；tenant 来自 identityResolver")
     void parsesEnvelopeFromVerifiedBody() {
@@ -1035,11 +1044,27 @@ class VertxLlmClientListModelsTest {
     }
 
     @Test
-    @DisplayName("★未验签请求（公网/浏览器）→ _byok 被忽略 → 400 invalid_byok（service 契约），不读未验签 body")
+    @DisplayName("★未验签请求（公网/浏览器）→ _byok 被忽略，service 收到 null（由其回 400 invalid_byok）")
     void unverifiedBodyIsIgnored() {
         resource.requestContext = ctx(false, "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\"}}");
-        when(resource.llmProxyService.listModels(eq("t"), isNull())).thenThrow(new WebApplicationException(400));
-        assertThatThrownBy(() -> resource.models("{}")).isInstanceOf(WebApplicationException.class);
+        when(resource.llmProxyService.listModels(eq("t"), isNull())).thenReturn(Uni.createFrom().item(
+            new ModelsResponse("openai", null, "gpt-4o-mini", "now")));
+        resource.models("{}").await().atMost(Duration.ofSeconds(1));
+        verify(resource.llmProxyService).listModels(eq("t"), isNull());
+    }
+
+    @Test
+    @DisplayName("★已验签但 envelope 非法（缺 apiKey）→ 资源层 400 invalid_byok，不调 service")
+    void invalidVerifiedEnvelopeIs400() {
+        resource.requestContext = ctx(true, "{\"_byok\":{\"provider\":\"openai\"}}");
+        assertThatThrownBy(() -> resource.models("{}"))
+            .isInstanceOf(WebApplicationException.class)
+            .satisfies(e -> {
+                WebApplicationException wae = (WebApplicationException) e;
+                assertThat(wae.getResponse().getStatus()).isEqualTo(400);
+                assertThat(((Map<?, ?>) wae.getResponse().getEntity()).get("error")).isEqualTo("invalid_byok");
+            });
+        verify(resource.llmProxyService, never()).listModels(any(), any());
     }
 ```
 
@@ -1096,7 +1121,8 @@ Expected: 编译失败（`listModels` / `ModelsResponse` 不存在）。
                         "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode()));
                     return;
                 }
-                // 响应体上界（红队：异常网关可回超大 JSON）；超出按失败处理
+                // 响应体上界：Vert.x WebClient 已把 body 完整缓冲到内存后才到这里，本检查只是「拒绝超限响应、不继续解析入库」，
+                // 不是接收期间的内存硬上限（硬上限需 BodyCodec 流式读取，本 ADR 不做；出站只打 allowlist 内网关）。
                 if (response.body() != null && response.body().length() > MAX_MODELS_BODY_BYTES) {
                     emitter.fail(new LlmCallFailedException("模型列表响应过大", true, null, 200));
                     return;
@@ -1957,14 +1983,16 @@ git commit -m "feat(ai-keys): 保存/编辑可指定 model，保存时经 provid
 `src/__tests__/lib/ai-quota.test.ts` 新增（沿用该文件对 `db.insert(...).onConflictDoUpdate` 的 mock 方式）：
 
 ```ts
-  it('★占位记录带真实 model，回填（带 token）不会把 model 改回 unknown；旧版 api 回填无 model 时保留占位值', async () => {
+  it('★占位记录带真实 model：占位（无 token）不覆盖已有 model；带 token 的回填以回填值为准', async () => {
+    // 占位：values.model 是真实 model，set.model 必须是「保留已有列」的 SQL 表达式（非字符串字面量）
     await recordAiUsage({ userId: 'u', callKind: 'complete', model: 'gpt-4o', promptTokens: 0, completionTokens: 0, usedByok: true, requestId: 'r1', status: 'success' });
-    const placeholder = capturedUpsert(); // { values, set }
+    const placeholder = capturedUpsert(); // { values, set }：最近一次 .values() / .onConflictDoUpdate({ set })
     expect(placeholder.values.model).toBe('gpt-4o');
-    // 占位（无 token）时 set.model 必须是「保留已有」表达式，而不是 'unknown'/EXCLUDED
-    expect(String(placeholder.set.model)).not.toContain('excluded');
-    await recordAiUsage({ userId: 'u', callKind: 'complete', model: 'gpt-4o', promptTokens: 10, completionTokens: 5, usedByok: true, requestId: 'r1', status: 'success' });
-    expect(capturedUpsert().set.model).toBe('gpt-4o');
+    expect(typeof placeholder.set.model).not.toBe('string');
+    // 回填（带 token）：model 以回填值为准——新版 api 回填的是实际发出 model（与占位一致）；
+    // 旧版 api 回填的是其请求/平台默认 model，这是既有 #185 契约（token 为权威），本用例把该规则锁定
+    await recordAiUsage({ userId: 'u', callKind: 'complete', model: 'gpt-4o-mini', promptTokens: 10, completionTokens: 5, usedByok: true, requestId: 'r1', status: 'success' });
+    expect(capturedUpsert().set.model).toBe('gpt-4o-mini');
   });
 ```
 
@@ -2033,7 +2061,7 @@ git commit -m "feat(ai-usage): 用量记录改用 aster-api 回传的实际 mode
 
 **Interfaces:**
 - Consumes: `fetchByokModels`、`updateBYOKAvailableModels`。
-- Produces: 健康 ping 成功后，对 openai/anthropic 且 `modelsCheckedAt` 为空或早于 24h 的 binding 调 `fetchByokModels`（超时 5 s），`ok` 则写 `availableModels`/`modelsCheckedAt`；失败只记日志，不改 `lastError`；每次 cron 最多刷新 `MODELS_REFRESH_PER_RUN = 50` 条（其余留到下次），给整轮 job 一个线性上界（50 × 5 s）。
+- Produces: 健康 ping 成功后，对 openai/anthropic 且 `modelsCheckedAt` 为空或早于 24h 的 binding 调 `fetchByokModels`（超时 5 s），`ok` 则写 `availableModels`/`modelsCheckedAt`；失败只记日志，不改 `lastError`；每次 cron 最多**尝试** `MODELS_REFRESH_PER_RUN = 50` 次查询（成功与失败都计入，其余留到下次）。这只限制本功能给 healthcheck 新增的耗时（≤ 50 × 5 s），原有的逐 binding ping 不变。
 
 - [ ] **Step 1: 失败测试**
 
@@ -2121,18 +2149,19 @@ Expected: FAIL（未调用 `fetchByokModels`）。
 
 ```ts
       // ADR 0048：顺带刷新可用模型列表（仅校验/提示用）。失败不影响健康状态，也不动 lastError。
-      // 预算：只刷 24h 未查过的，每轮 ≤ MODELS_REFRESH_PER_RUN 条，单次 5 s 超时 → job 增量有线性上界。
-      if (refreshed < MODELS_REFRESH_PER_RUN && await refreshAvailableModels(b, apiKey)) refreshed += 1;
+      // 预算：只刷 24h 未查过的，每轮最多尝试 MODELS_REFRESH_PER_RUN 次（成败都算），单次 5 s 超时，
+      // 新增耗时 ≤ 50 × 5 s；原有逐 binding ping 不受影响。
+      if (refreshAttempts < MODELS_REFRESH_PER_RUN && await refreshAvailableModels(b, apiKey)) refreshAttempts += 1;
 ```
 
-在 `checkAllBYOKKeys` 的 `for` 之前加 `let refreshed = 0;`；新增常量与私有函数：
+在 `checkAllBYOKKeys` 的 `for` 之前加 `let refreshAttempts = 0;`；新增常量与私有函数：
 
 ```ts
 const MODELS_REFRESH_PER_RUN = 50;
 const MODELS_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const MODELS_FETCH_TIMEOUT_MS = 5_000;
 
-/** 经 aster-api 查询并写入 availableModels；返回是否真的发起了查询（供预算计数）。vertex、24h 内已查、查询失败都不计入成功写入。 */
+/** 经 aster-api 查询并写入 availableModels。返回「是否真的发起了查询」供预算计数：vertex 与 24h 内已查返回 false（不计），查询失败也返回 true（计入尝试，避免故障时反复打 api）。 */
 async function refreshAvailableModels(
   b: { id: string; userId: string; provider: string; providerUrl: string | null; modelsCheckedAt: Date | null },
   apiKey: string,
