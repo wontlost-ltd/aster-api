@@ -76,7 +76,8 @@ public class LlmRuntimeOptionsResolver {
             return new LlmRuntimeOptions(byok.apiKey(), provider, officialBaseUrl,
                 LlmRuntimeOptions.Source.BYOK,
                 LlmRuntimeOptions.inferWireFormat(provider, officialBaseUrl),
-                false);
+                false,
+                byok.hasModel() ? byok.model() : null);
         }
 
         ValidatedEndpoint endpoint = endpointPolicy.validateByokEndpoint(provider, byok.baseUrl());
@@ -87,6 +88,7 @@ public class LlmRuntimeOptionsResolver {
         LOG.infof("使用 BYOK 自定义 allowlist 端点: tenant=%s, provider=%s, host=%s",
             tenantId, provider, endpoint.canonicalHost());
         return new LlmRuntimeOptions(byok.apiKey(), provider, baseUrl,
-            LlmRuntimeOptions.Source.BYOK, wireFormat, true);
+            LlmRuntimeOptions.Source.BYOK, wireFormat, true,
+            byok.hasModel() ? byok.model() : null);
     }
 }

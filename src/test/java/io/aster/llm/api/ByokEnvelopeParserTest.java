@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * ByokEnvelopeParser 单测（Phase 2 BYOK）：只对 HMAC 验签请求解析 _byok，未验签一律忽略。
@@ -84,5 +85,31 @@ class ByokEnvelopeParserTest {
     void nullWhenNoContextOrBody() {
         assertThat(parser.parse(null)).isNull();
         assertThat(parser.parse(ctx(true, null))).isNull();
+    }
+
+    @Test
+    @DisplayName("_byok.model 解析并 trim；空白视为未指定")
+    void parsesModel() {
+        assertThat(parser.parse(ctx(true, "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\",\"model\":\" gpt-4o \"}}")).model())
+            .isEqualTo("gpt-4o");
+        assertThat(parser.parse(ctx(true, "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\",\"model\":\"   \"}}")).model())
+            .isNull();
+        assertThat(parser.parse(ctx(true, "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\"}}")).model())
+            .isNull();
+        // 长度边界：128 可用，129 拒绝
+        assertThat(parser.parse(ctx(true, "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\",\"model\":\"" + "a".repeat(128) + "\"}}")).model())
+            .hasSize(128);
+    }
+
+    @Test
+    @DisplayName("★_byok.model 非法（超长/非法字符）→ IllegalArgumentException（fail-closed，不回退平台）")
+    void parserTrimsAndRejectsBadModel() {
+        String tooLong = "a".repeat(129);
+        assertThatThrownBy(() -> parser.parse(ctx(true,
+            "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\",\"model\":\"" + tooLong + "\"}}")))
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("model");
+        assertThatThrownBy(() -> parser.parse(ctx(true,
+            "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\",\"model\":\"gpt 4o\\n\"}}")))
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("model");
     }
 }
