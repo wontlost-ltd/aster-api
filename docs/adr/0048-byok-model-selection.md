@@ -168,7 +168,7 @@ key 重复录入，`keyHint` 相同），顺序即优先级。这样「这次到
 
 ### 9.1 aster-api 实施决定
 
-- 实际发出的 model 只有一套算法：`io.aster.llm.model.LlmModelPolicy.wireModel`，`PromptComposer` 与
+- 实际发出的 model 只有一套算法：`io.aster.llm.model.LlmModelPolicy.wireModel`，`LlmProxyService`（`applyModel`、`listModels`）与
   `VertxLlmClient` 均调用它，不各自判断。
 - 每条流的首帧为 `{"type":"meta","data":"<model>"}`；早期错误流（BYOK 非法 / 无 key）只发 error 帧，不带 `meta`。
 - `complete` 仅在指定了 BYOK model 且 provider 返回 400 时回 400 `provider_rejected_model`；流式在同一情形发 error
