@@ -48,7 +48,7 @@ provider 和 model 就是本次请求用的**；不引入第二套 model 优先�
 
 - cloud：`AiKeyBinding.model`（可空）；设置页可选下拉/输入；`_byok` envelope 增加 `model`；用量记录真实 model。
 - aster-api：`ByokOverride.model`（可空）；`LlmRuntimeOptionsResolver` 透传；model 为空才补 provider 默认，不替换
-  用户指定值；新增 `GET /api/v1/llm/models` 代理 provider 的模型列表（经 BYOK envelope，复用 allowlist + SSRF 边界）。
+  用户指定值；新增 `POST /api/v1/ai/models` 代理 provider 的模型列表（经 BYOK envelope，复用 allowlist + SSRF 边界）。
 - 校验：保存与 healthcheck 时查询 `/v1/models`，结果存 binding（`availableModels`、`modelsCheckedAt`），仅用于校验
   与提示。
 
@@ -81,21 +81,25 @@ provider 和 model 就是本次请求用的**；不引入第二套 model 优先�
 - `PromptComposer`：`model = runtime.model ?? req.model ?? config.model`（BYOK 指定 > 服务端请求 > 平台默认）。
 - `VertxLlmClient` anthropic 分支：仅当 model 为空时用 `anthropicDefaultModel`；非空原样发出。平台凭证（无 BYOK）
   路径保持现有替换逻辑（平台 key 只对应平台默认模型，避免 aster-api#360 的 400 回潮）。
-- 新端点 `GET /api/v1/llm/models`：须带合法 `_byok` envelope（与 `/api/v1/llm/complete` 同一鉴权与签名），按
-  provider 调 `GET {baseUrl}/v1/models`，返回 `{ provider, models: [id…], fetchedAt }`；上游失败返回 502
-  `models_unavailable`。走 `LlmEndpointPolicy`（allowlist + SsrfGuard），不新增出站边界。
+- 新端点 `POST /api/v1/ai/models`：body 只含 `_byok`，与其它 `/api/v1/ai/*`（含 `/api/v1/ai/complete`）同一 HMAC
+  规则；按 provider 调 `GET {baseUrl}/v1/models`，返回 `ModelsResponse(provider, models, defaultModel, fetchedAt)`，
+  无 `supported` 字段：`models=null` 即网关不提供列表（上游 404/405）；上游失败返回 502 `models_unavailable`。
+  走 `io.aster.llm.security.LlmEndpointPolicy`（allowlist + SsrfGuard），不新增出站边界。
+- 上界：模型 id 形状 `^[A-Za-z0-9._:/-]{1,128}$`，去重、排序、至多 200 条（`LlmProxyService.boundModelIds`）；
+  客户端缓冲后响应体超过 1 MiB 直接拒绝。
 
 ### 3.4 cloud 用户端点
 
 - `POST /api/user/ai-keys`：新增可选 `model`（trim 后 1–128 字符，`^[A-Za-z0-9._:/-]+$`）。保存前调
-  `GET /api/v1/llm/models`：
+  `POST /api/v1/ai/models`：
   - 查询成功且 `model` 非空但不在列表 → 400 `model_not_available`，列出可用项；
   - 查询成功 → 写入 `availableModels` / `modelsCheckedAt`；
   - 查询失败（上游 5xx/超时）→ **仍允许保存**（不把 provider 抖动变成用户不能存 key），`lastError` 记原因，UI 提示
     「未能校验模型，将在调用时按所填使用」。
 - `GET /api/user/ai-keys`：返回 `model`、`availableModels`、`modelsCheckedAt`、以及平台该 provider 的默认 model
   （供 UI 显示「将使用默认 X」）。
-- `PATCH`（reorder 已有）新增 `action: "setModel"`，允许改 model 而不重录 key。
+- `PATCH` 的 `update` 动作可携带 `model`（null/空白=清空），非空时与 POST 同样经列表校验，允许改 model 而不重录 key。
+- `byok-healthcheck` 顺带刷新模型列表，带预算：仅处理 24 h 内未校验过的 binding，每轮至多 50 条，单次 5 s 超时。
 
 ### 3.5 设置页
 
@@ -121,7 +125,7 @@ key 重复录入，`keyHint` 相同），顺序即优先级。这样「这次到
 
 - `recordAiUsage` 的 `model` 改为真实 model：BYOK 取 envelope 的 model，否则取 aster-api 响应头 `X-Aster-Llm-Model`
   （新增，aster-api 在 2xx 响应上回传实际发出的 model；流式响应放在首个 SSE 事件 `meta` 里）。
-- 审计事件 `byok.key.created` / `byok.key.updated` 增加 `model`（不含 key 明文，规则同现有 keyHint）。
+- 审计动作 `ai-key.create` / `ai-key.update` 的 metadata 增加 `model`（不含 key 明文，规则同现有 keyHint）。
 - 配额语义不变：BYOK 跳过平台月配额，`tokenQuota` 仍按用户总量；model 不改变计费口径（token 数由 provider 回传）。
 
 ---
@@ -139,10 +143,10 @@ key 重复录入，`keyHint` 相同），顺序即优先级。这样「这次到
 
 ## 7. 测试与发版
 
-- cloud：`ai-keys` 路由单测（model 校验、`/models` 失败仍可保存、setModel）；`byok-envelope` 单测（envelope 含
+- cloud：`ai-keys` 路由单测（model 校验、`/models` 失败仍可保存、update 携带 model）；`byok-envelope` 单测（envelope 含
   model、无 model 不注入字段）；`llm/complete` 用量记录真实 model；设置页组件测试；i18n 四语言键一致性。
 - aster-api：`LlmRuntimeOptionsResolverTest`（model 透传）、`PromptComposerTest`（优先级 BYOK > req > config）、
-  `VertxLlmClient` anthropic 分支（空补默认、非空原样）、`/api/v1/llm/models` 资源测试（allowlist / SSRF / 502）。
+  `VertxLlmClient` anthropic 分支（空补默认、非空原样）、`/api/v1/ai/models` 资源测试（allowlist / SSRF / 502）。
 - 本地栈验收：录入 openai key 指定 `gpt-4o-mini`、anthropic key 不指定；分别置顶后调补全，核对 aster-api 日志与
   `aiUsageRecords.model`；录入不存在的 model 得 400。
 - 发版顺序：aster-api 先（envelope 多字段向后兼容：旧 cloud 不带 model，api 按空处理），cloud 后（migration 0055
@@ -161,4 +165,11 @@ key 重复录入，`keyHint` 相同），顺序即优先级。这样「这次到
 
 ## 9. 写回与验收
 
-（定稿与实施后回填：实施中的决定、栈验收记录。）
+### 9.1 aster-api 实施决定
+
+- 实际发出的 model 只有一套算法：`io.aster.llm.model.LlmModelPolicy.wireModel`，`PromptComposer` 与
+  `VertxLlmClient` 均调用它，不各自判断。
+- 每条流的首帧为 `{"type":"meta","data":"<model>"}`；早期错误流（BYOK 非法 / 无 key）只发 error 帧，不带 `meta`。
+- `complete` 仅在指定了 BYOK model 且 provider 返回 400 时回 400 `provider_rejected_model`；流式在同一情形发 error
+  `provider_rejected_model`。
+- 端点路径取 `/api/v1/ai/*` 而非 `/api/v1/llm/*`，沿用现有 HMAC 与路由前缀。
