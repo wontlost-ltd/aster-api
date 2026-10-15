@@ -3,6 +3,7 @@ package io.aster.llm.client;
 import io.aster.llm.config.LlmConfig;
 import io.aster.llm.metrics.LlmMetrics;
 import io.aster.llm.model.LlmChatResult;
+import io.aster.llm.model.LlmModelPolicy;
 import io.aster.llm.model.LlmRequest;
 import io.aster.llm.model.LlmRuntimeOptions;
 import io.aster.llm.model.LlmStreamEvent;
@@ -268,7 +269,7 @@ public class VertxLlmClient implements LlmClient {
                     LOG.errorf("LLM API 错误: status=%d, provider=%s, source=%s (错误体已脱敏)",
                         response.statusCode(), provider, options.source());
                     emitter.fail(new LlmCallFailedException(
-                        "LLM API 错误 (" + response.statusCode() + ")", true, null));
+                        "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode()));
                     return;
                 }
 
@@ -289,7 +290,7 @@ public class VertxLlmClient implements LlmClient {
     JsonObject buildRequestBody(LlmRequest request, LlmRuntimeOptions options) {
         String provider = options.provider();
         if ("anthropic".equals(provider)) {
-            return buildAnthropicBody(request);
+            return buildAnthropicBody(request, options);
         }
         boolean isNativeOpenAi = options.wireFormat() == LlmRuntimeOptions.WireFormat.OPENAI_NATIVE;
         JsonArray messages = new JsonArray();
@@ -305,7 +306,7 @@ public class VertxLlmClient implements LlmClient {
         }
 
         JsonObject body = new JsonObject()
-            .put("model", request.model())
+            .put("model", LlmModelPolicy.wireModel(request.model(), options, config))
             .put("messages", messages)
             .put("temperature", request.temperature())
             .put("max_tokens", request.maxTokens())
@@ -327,14 +328,17 @@ public class VertxLlmClient implements LlmClient {
      * 且 {@code messages} 只允许 user/assistant 交替角色。这里把所有 system/developer 消息合并到
      * top-level system，其余按 user/assistant 放入 messages。
      */
-    // package-private for unit testing（Anthropic Messages API 结构是纯逻辑，值得锁定）
+    // 既有单测以 1 参调用：等价于平台凭证（无 BYOK 指定 model）。
     JsonObject buildAnthropicBody(LlmRequest request) {
-        // 模型兜底：Anthropic 不认 OpenAI 模型名（如平台默认 gpt-4o-mini），非 claude 系一律用
-        // 配置的 Anthropic 默认模型（见 LlmConfig.anthropicDefaultModel）。
-        String model = request.model();
-        if (model == null || !model.toLowerCase(java.util.Locale.ROOT).startsWith("claude")) {
-            model = config.anthropicDefaultModel();
-        }
+        return buildAnthropicBody(request, null);
+    }
+
+    // package-private for unit testing（Anthropic Messages API 结构是纯逻辑，值得锁定）
+    JsonObject buildAnthropicBody(LlmRequest request, LlmRuntimeOptions options) {
+        // 模型选择统一走 LlmModelPolicy：平台/未指定 → 非 claude 系兜底；BYOK 指定 → 原样。
+        LlmRuntimeOptions effective = options != null ? options
+            : new LlmRuntimeOptions(null, "anthropic", null, LlmRuntimeOptions.Source.PLATFORM);
+        String model = LlmModelPolicy.wireModel(request.model(), effective, config);
         StringBuilder system = new StringBuilder();
         JsonArray messages = new JsonArray();
         for (var msg : request.messages()) {

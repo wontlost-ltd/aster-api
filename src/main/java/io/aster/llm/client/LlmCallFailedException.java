@@ -12,10 +12,21 @@ public class LlmCallFailedException extends RuntimeException {
     private static final long serialVersionUID = 1L;
 
     private final boolean reachedProvider;
+    private final int statusCode;
 
     public LlmCallFailedException(String message, boolean reachedProvider, Throwable cause) {
+        this(message, reachedProvider, cause, 0);
+    }
+
+    /** statusCode：provider 的 HTTP 状态（0 = 无响应/连接失败）；供 service 区分「模型被拒」等情形。 */
+    public LlmCallFailedException(String message, boolean reachedProvider, Throwable cause, int statusCode) {
         super(message, cause);
         this.reachedProvider = reachedProvider;
+        this.statusCode = statusCode;
+    }
+
+    public int statusCode() {
+        return statusCode;
     }
 
     /** 请求是否已到达 provider。 */
