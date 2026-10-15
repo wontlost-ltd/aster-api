@@ -11,6 +11,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * - repair_start: 开始修复尝试，data 为 "attempt/maxAttempts"
  * - final: 生成完成，包含最终完整代码（validated=true 表示编译通过）
  * - error: 服务端错误
+ * - meta: 流首帧，data 为本次实际发出的 model（ADR 0048）
  * - upstream_reached: 已连上 provider，本次调用计入 AI 配额（cloud#470）；无 data，前端忽略
  *
  * @param type      事件类型
@@ -43,6 +44,11 @@ public record GeneratePolicyEvent(
 
     public static GeneratePolicyEvent upstreamReached() {
         return new GeneratePolicyEvent("upstream_reached", null, null, null);
+    }
+
+    /** 首帧：本次实际发往 provider 的 model（ADR 0048 §5），cloud 据此记账。 */
+    public static GeneratePolicyEvent meta(String model) {
+        return new GeneratePolicyEvent("meta", model, null, null);
     }
 
     public static GeneratePolicyEvent error(String message) {

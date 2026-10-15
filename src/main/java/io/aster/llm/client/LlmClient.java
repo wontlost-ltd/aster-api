@@ -7,6 +7,8 @@ import io.aster.llm.model.LlmStreamEvent;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 
+import java.util.List;
+
 /**
  * LLM API 客户端接口
  *
@@ -36,4 +38,10 @@ public interface LlmClient {
      * @return 完整响应文本 + 真实 token 用量（issue #185）
      */
     Uni<LlmChatResult> chat(LlmRequest request, LlmRuntimeOptions options);
+
+    /**
+     * 列出 provider 的可用模型 id（GET {base}/v1/models；ADR 0048 §3.3）。
+     * 非 200 → 失败 {@link LlmCallFailedException}（带 statusCode，404/405 由上层判为「不支持列表」）。
+     */
+    Uni<List<String>> listModels(LlmRuntimeOptions options);
 }

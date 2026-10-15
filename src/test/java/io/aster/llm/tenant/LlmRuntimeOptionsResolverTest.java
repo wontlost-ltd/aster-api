@@ -132,6 +132,31 @@ class LlmRuntimeOptionsResolverTest {
             .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    @DisplayName("BYOK 指定 model → 透传到 LlmRuntimeOptions.model")
+    void resolverPassesByokModel() {
+        LlmRuntimeOptions opts = resolver.resolve("tenant-1",
+            new ByokOverride("openai", "sk-user", null, "gpt-4o"));
+        assertThat(opts.model()).isEqualTo("gpt-4o");
+        assertThat(opts.usedByok()).isTrue();
+    }
+
+    @Test
+    @DisplayName("★旧 cloud 不带 model → model=null，平台/BYOK 行为与今天一致")
+    void resolverKeepsNullModel() {
+        assertThat(resolver.resolve("tenant-1", new ByokOverride("openai", "sk-user")).model()).isNull();
+        assertThat(resolver.resolve("tenant-1", null).model()).isNull();
+    }
+
+    @Test
+    @DisplayName("BYOK 自定义端点 + 指定 model → 两者同时保留")
+    void customEndpointKeepsModel() {
+        LlmRuntimeOptions opts = resolver.resolve("tenant-1",
+            new ByokOverride("openai", "sk-user", "https://llm-gateway.example.com/v1", "gw-alias-1"));
+        assertThat(opts.customEndpoint()).isTrue();
+        assertThat(opts.model()).isEqualTo("gw-alias-1");
+    }
+
     private static class FakeEndpointPolicy extends LlmEndpointPolicy {
         @Override
         public ValidatedEndpoint validateByokEndpoint(String provider, String baseUrl) {

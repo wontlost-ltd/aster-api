@@ -45,6 +45,7 @@ POST /api/v1/admin/lexicons/{id}/enable
 POST /api/v1/ai/assistant
 POST /api/v1/ai/complete
 POST /api/v1/ai/generate
+POST /api/v1/ai/models
 POST /api/v1/ai/suggest
 POST /api/v1/audit/anomalies/{id}/actions/verify
 POST /api/v1/guard/approvals/{id}/approve

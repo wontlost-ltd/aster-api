@@ -22,11 +22,22 @@ public record LlmRuntimeOptions(
     String baseUrl,
     Source source,
     WireFormat wireFormat,
-    boolean customEndpoint
+    boolean customEndpoint,
+    /** BYOK 指定的模型；null = 平台该 provider 默认（含 Anthropic 兜底规则，见 LlmModelPolicy）。 */
+    String model
 ) {
 
     public LlmRuntimeOptions(String apiKey, String provider, String baseUrl, Source source) {
-        this(apiKey, provider, baseUrl, source, inferWireFormat(provider, baseUrl), false);
+        this(apiKey, provider, baseUrl, source, inferWireFormat(provider, baseUrl), false, null);
+    }
+
+    public LlmRuntimeOptions(String apiKey, String provider, String baseUrl, Source source,
+                             WireFormat wireFormat, boolean customEndpoint) {
+        this(apiKey, provider, baseUrl, source, wireFormat, customEndpoint, null);
+    }
+
+    public boolean hasModel() {
+        return model != null && !model.isBlank();
     }
 
     /** 凭证来源：平台 key 还是用户自带 BYOK key。 */
@@ -77,6 +88,7 @@ public record LlmRuntimeOptions(
             + ", source=" + source
             + ", wireFormat=" + wireFormat
             + ", customEndpoint=" + customEndpoint
+            + ", model=" + (hasModel() ? model : "<default>")
             + ", apiKey=***}";
     }
 }
