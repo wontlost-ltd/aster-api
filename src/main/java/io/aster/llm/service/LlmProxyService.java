@@ -6,9 +6,11 @@ import io.aster.llm.api.dto.CompleteResponse;
 import io.aster.llm.api.dto.GeneratePolicyEvent;
 import io.aster.llm.api.dto.GeneratePolicyRequest;
 import io.aster.llm.api.dto.SuggestRequest;
+import io.aster.llm.client.LlmCallFailedException;
 import io.aster.llm.client.LlmClient;
 import io.aster.llm.config.LlmConfig;
 import io.aster.llm.model.ByokOverride;
+import io.aster.llm.model.LlmModelPolicy;
 import io.aster.llm.model.LlmRuntimeOptions;
 import io.aster.llm.model.LlmStreamEvent;
 import io.aster.llm.model.LlmUsage;
@@ -82,14 +84,15 @@ public class LlmProxyService {
 
         return Multi.createFrom().emitter(emitter -> {
             PromptContext ctx = promptComposer.buildGenerateContext(tenantId, req);
+            String model = applyModel(ctx, options);
             int maxAttempts = config.validation().maxAttempts();
             AtomicInteger attempt = new AtomicInteger(1);
             AtomicReference<PromptContext> currentCtx = new AtomicReference<>(ctx);
             // issue #185：跨 repair 重试累加 token（同一 requestId 回填一笔）。
             AtomicReference<LlmUsage> usageAcc = new AtomicReference<>(LlmUsage.ZERO);
-            UsageReportCtx rc = new UsageReportCtx(tenantId, "generate",
-                req.model() != null ? req.model() : config.model(), options.usedByok(), requestId, usageAcc);
+            UsageReportCtx rc = new UsageReportCtx(tenantId, "generate", model, options.usedByok(), requestId, usageAcc);
 
+            emitter.emit(toJson(GeneratePolicyEvent.meta(model)));
             executeGenerateAttempt(currentCtx.get(), options, req.getLocaleOrDefault(),
                 attempt, maxAttempts, currentCtx, emitter, rc);
         });
@@ -212,12 +215,12 @@ public class LlmProxyService {
         }
 
         PromptContext ctx = promptComposer.buildSuggestContext(tenantId, req);
-        String model = req.model() != null ? req.model() : config.model();
+        String model = applyModel(ctx, options);
         boolean usedByok = options.usedByok();
         // issue #185：累加 USAGE 事件，流结束回填。
         AtomicReference<LlmUsage> usageAcc = new AtomicReference<>(LlmUsage.ZERO);
 
-        return llmClient.streamChat(ctx.toLlmRequest(), options)
+        Multi<String> body = llmClient.streamChat(ctx.toLlmRequest(), options)
             .onItem().invoke(event -> {
                 if (event.type() == LlmStreamEvent.Type.USAGE && event.usage() != null) {
                     // suggest 单 attempt：attempt 内 max（Anthropic 累计 output 取 latest）。
@@ -233,6 +236,7 @@ public class LlmProxyService {
             // 前端 JSON.parse 后原样还原，空格/换行全保留。
             .filter(LlmProxyService::isForwardedToCloud)
             .map(LlmProxyService::toCloudFrame);
+        return withMetaFrame(model, body);
     }
 
     /**
@@ -255,11 +259,11 @@ public class LlmProxyService {
         }
 
         PromptContext ctx = promptComposer.buildAssistantContext(tenantId, req);
-        String model = req.model() != null ? req.model() : config.model();
+        String model = applyModel(ctx, options);
         boolean usedByok = options.usedByok();
         AtomicReference<LlmUsage> usageAcc = new AtomicReference<>(LlmUsage.ZERO);
 
-        return llmClient.streamChat(ctx.toLlmRequest(), options)
+        Multi<String> body = llmClient.streamChat(ctx.toLlmRequest(), options)
             .onItem().invoke(event -> {
                 if (event.type() == LlmStreamEvent.Type.USAGE && event.usage() != null) {
                     usageAcc.updateAndGet(u -> u.max(event.usage()));
@@ -270,6 +274,7 @@ public class LlmProxyService {
             // 同 suggest：发 JSON delta 而非裸文本，避免 SSE 逐帧传输吞掉空格/换行。
             .filter(LlmProxyService::isForwardedToCloud)
             .map(LlmProxyService::toCloudFrame);
+        return withMetaFrame(model, body);
     }
 
     /**
@@ -295,7 +300,7 @@ public class LlmProxyService {
         }
 
         PromptContext ctx = promptComposer.buildCompleteContext(tenantId, req);
-        String model = req.model() != null ? req.model() : config.model();
+        String model = applyModel(ctx, options);
         boolean usedByok = options.usedByok();
 
         return llmClient.chat(ctx.toLlmRequest(), options)
@@ -304,10 +309,35 @@ public class LlmProxyService {
                 usageReporter.reportUsage(tenantId, "complete", model, result.usage(), usedByok, requestId);
                 return new CompleteResponse(result.content(), model, true);
             })
-            .onFailure().recoverWithItem(throwable -> {
+            .onFailure(t -> isRejectedModel(options, t)).transform(t ->
+                new jakarta.ws.rs.WebApplicationException(
+                    jakarta.ws.rs.core.Response.status(400)
+                        .entity(java.util.Map.of("error", "provider_rejected_model",
+                            "message", "provider 拒绝了所选模型: " + model))
+                        .type(jakarta.ws.rs.core.MediaType.APPLICATION_JSON)
+                        .build()))
+            .onFailure(t -> !(t instanceof jakarta.ws.rs.WebApplicationException)).recoverWithItem(throwable -> {
                 LOG.errorf(throwable, "代码补全失败");
                 return new CompleteResponse("", model, reachedProvider(throwable));
             });
+    }
+
+    /** 把 BYOK 指定的 model 下推到提示上下文，并返回本次实际发出的 model（与 client 拼 body 同一算法）。 */
+    private String applyModel(PromptContext ctx, LlmRuntimeOptions options) {
+        String model = LlmModelPolicy.wireModel(ctx.toLlmRequest().model(), options, config);
+        ctx.model(model);
+        return model;
+    }
+
+    /** BYOK 指定了 model 且 provider 以 400 拒绝 → 不回退默认 model、不伪装成功。 */
+    private static boolean isRejectedModel(LlmRuntimeOptions options, Throwable t) {
+        return options.hasModel() && t instanceof LlmCallFailedException e && e.statusCode() == 400;
+    }
+
+    /** 流首帧固定为 meta，告知 cloud 本次实际发出的 model。 */
+    private static Multi<String> withMetaFrame(String model, Multi<String> body) {
+        return Multi.createBy().concatenating().streams(
+            Multi.createFrom().item(toJson(GeneratePolicyEvent.meta(model))), body);
     }
 
     /**

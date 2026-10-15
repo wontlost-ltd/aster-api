@@ -155,7 +155,11 @@ public class VertxLlmClient implements LlmClient {
                             clientResponse.bodyHandler(errBuf -> {
                                 LOG.errorf("LLM API 错误: status=%d, provider=%s, source=%s (错误体已脱敏)",
                                     statusCode, provider, options.source());
-                                emitter.emit(LlmStreamEvent.error("LLM API 错误 (" + statusCode + ")"));
+                                // BYOK 指定了 model 且 provider 400：按结构化错误码上报，service/cloud 不必解析文案（ADR 0048 §6）
+                                boolean rejectedModel = statusCode == 400 && options.hasModel();
+                                emitter.emit(LlmStreamEvent.error(rejectedModel
+                                    ? "provider_rejected_model"
+                                    : "LLM API 错误 (" + statusCode + ")"));
                                 emitter.complete();
                                 httpClient.close();
                             });
@@ -277,7 +281,7 @@ public class VertxLlmClient implements LlmClient {
                     JsonObject responseJson = response.bodyAsJsonObject();
                     String content = extractContent(responseJson, provider);
                     LlmUsage usage = extractUsage(responseJson, provider);
-                    recordTokenUsage(usage, request.model());
+                    recordTokenUsage(usage, LlmModelPolicy.wireModel(request.model(), options, config));
                     emitter.complete(new LlmChatResult(content, usage));
                 } catch (Exception e) {
                     emitter.fail(new LlmCallFailedException("LLM 响应解析失败", true, e));
