@@ -96,4 +96,37 @@ class LlmProxyServiceModelsTest {
         when(client.listModels(any())).thenReturn(Uni.createFrom().item(many));
         assertThat(call().models()).hasSize(200);
     }
+
+    @Test
+    @DisplayName("405 同 404 → models=null")
+    void status405IsUnsupported() {
+        when(client.listModels(any())).thenReturn(Uni.createFrom().failure(
+            new LlmCallFailedException("LLM API 错误 (405)", true, null, 405)));
+        assertThat(call().models()).isNull();
+    }
+
+    @Test
+    @DisplayName("上游 500 → 502 models_unavailable")
+    void status500Is502() {
+        when(client.listModels(any())).thenReturn(Uni.createFrom().failure(
+            new LlmCallFailedException("LLM API 错误 (500)", true, null, 500)));
+        assertThatThrownBy(this::call).isInstanceOf(WebApplicationException.class)
+            .satisfies(e -> {
+                var r = ((WebApplicationException) e).getResponse();
+                assertThat(r.getStatus()).isEqualTo(502);
+                assertThat(((java.util.Map<?, ?>) r.getEntity()).get("error")).isEqualTo("models_unavailable");
+            });
+    }
+
+    @Test
+    @DisplayName("client 同步抛 IllegalArgumentException（端点校验）→ 400 invalid_byok")
+    void syncEndpointRejectionIs400() {
+        when(client.listModels(any())).thenThrow(new IllegalArgumentException("ssrf"));
+        assertThatThrownBy(this::call).isInstanceOf(WebApplicationException.class)
+            .satisfies(e -> {
+                var r = ((WebApplicationException) e).getResponse();
+                assertThat(r.getStatus()).isEqualTo(400);
+                assertThat(((java.util.Map<?, ?>) r.getEntity()).get("error")).isEqualTo("invalid_byok");
+            });
+    }
 }

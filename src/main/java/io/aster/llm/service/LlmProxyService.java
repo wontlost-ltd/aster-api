@@ -292,10 +292,17 @@ public class LlmProxyService {
         }
         String defaultModel = LlmModelPolicy.wireModel(null, options, config);
         String fetchedAt = java.time.Instant.now().toString();
-        return llmClient.listModels(options)
+        Uni<List<String>> upstream;
+        try {
+            upstream = llmClient.listModels(options);
+        } catch (IllegalArgumentException e) {
+            // 自定义端点校验（SSRF 等）同步抛出，与 resolver 拒绝同语义 → 400
+            throw jsonError(400, "invalid_byok", e.getMessage());
+        }
+        return upstream
             .map(ids -> new ModelsResponse(options.provider(), boundModelIds(ids), defaultModel, fetchedAt))
             .onFailure(LlmCallFailedException.class).recoverWithUni(t -> {
-                int status = ((LlmCallFailedException) t).statusCode();
+                int status = t.statusCode();
                 if (status == 404 || status == 405) {
                     return Uni.createFrom().item(new ModelsResponse(options.provider(), null, defaultModel, fetchedAt));
                 }

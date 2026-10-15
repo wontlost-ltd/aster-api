@@ -4,7 +4,6 @@ import io.aster.llm.model.LlmRuntimeOptions;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.net.NetServer;
-import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.client.WebClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -125,5 +124,15 @@ class VertxLlmClientListModelsTest {
         assertThat(t).isInstanceOf(LlmCallFailedException.class);
         assertThat(((LlmCallFailedException) t).reachedProvider()).isFalse();
         assertThat(((LlmCallFailedException) t).statusCode()).isZero();
+    }
+
+    @Test
+    @DisplayName("响应体 > 1 MiB → 拒绝解析，LlmCallFailedException reachedProvider=true")
+    void rejectsOversizedBody() throws Exception {
+        String pad = "x".repeat((1 << 20) + 16);
+        int port = listen(ok("{\"data\":[{\"id\":\"" + pad + "\"}]}"));
+        Throwable t = catchThrowable(() -> client().listModels(opts("openai", "http://127.0.0.1:" + port)).await().atMost(Duration.ofSeconds(10)));
+        assertThat(t).isInstanceOf(LlmCallFailedException.class);
+        assertThat(((LlmCallFailedException) t).reachedProvider()).isTrue();
     }
 }
