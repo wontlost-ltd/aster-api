@@ -174,3 +174,56 @@ key 重复录入，`keyHint` 相同），顺序即优先级。这样「这次到
 - `complete` 仅在指定了 BYOK model 且 provider 返回 400 时回 400 `provider_rejected_model`；流式在同一情形发 error
   `provider_rejected_model`。
 - 端点路径取 `/api/v1/ai/*` 而非 `/api/v1/llm/*`，沿用现有 HMAC 与路由前缀。
+
+### 9.2 栈验收记录（2026-10-15，本地 podman 全栈）
+
+被测：aster-cloud `feat/adr0048-byok-model` @ `9c52e3de`（生产构建 `build:next` + standalone，容器 `e2e-cloud`），
+aster-api `feat/adr0048-byok-model` @ `723fd83`（镜像 `localhost/aster/policy-api:adr0048`，原 `:stack` 镜像保留未动）。
+产物：`~/.aster-stack/e2e1015b/`（日志、截图 `byok-*.png`、探针脚本 `byok/byok-probe.mjs`、桩 `stub/`）；完整报告
+`~/.aster-stack/e2e-20261015b-report.md`。
+
+**门禁（cloud worktree，Node 24）**：`pnpm exec tsc --noEmit -p tsconfig.json && pnpm exec eslint . && pnpm run check:message-keys && pnpm test:run`
+→ tsc 0 错；eslint 0 error / 3 warning（均为分支外既有文件）；message-keys 缺失 0（基线 0）；vitest 696 文件全过，
+7835 passed / 13 skipped（= 基线 skipped）。
+
+**镜像与迁移**：`./gradlew --offline quarkusBuild -x test`（BUILD SUCCESSFUL）→ `podman build -f Dockerfile.jvm -t localhost/aster/policy-api:adr0048 .`；
+替换 `aster-api` 容器后 `/q/health/ready` 200，Flyway `Successfully validated 66 migrations`、schema 6.30.0 无需迁移。
+`e2e-cloud` 启动脚本的 `pnpm db:migrate` 把 migration 0055 应用到栈的 `aster_cloud`（`AiKeyBinding` 新增
+`model` / `availableModels` / `modelsCheckedAt`）。sdd-pg 的 `aster_cloud` 未在本次应用。
+
+**回归**（每套间隔 ≥65 s，api 60 req/min）：Playwright local-stack（chromium-desktop，`--workers=1`）冷 12/12（26.6 s）、
+热 12/12（24.9 s）；API 冒烟 `smoke.sh` 11/11；aster-guard `e2e-local.mjs` 4/4；信贷试点 `run-credit-pilot.ts` exit 0
+（九款 Art. 14 状态全部符合）；控制台/水合探针 11 页均 200、0 pageerror、0 React #418/#423/#425（69 条 console error
+均为既有的 lexicons CORS / ERR_FAILED / shares 404 噪声）。
+
+**BYOK model 验收方式**：本机无真实 provider key（`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 均未设置），改用本地 OpenAI
+兼容 HTTPS 桩 `https://llm-stub.example/v1`（`GET /v1/models` → `stub-4o`、`stub-mini`；key 含 `nolist` 时 404；
+`POST /v1/chat/completions` 回显 model，`nope-*` 回 400）。为让桩通过本 ADR 的出站边界而**不改代码**，仅对本次运行：
+桩放在独立 podman 网络 `11.200.0.0/24`（非 `SsrfGuard` 拒绝段），`aster-api` 以 `--add-host llm-stub.example:11.200.0.10`
+解析；`api.env` 的副本追加 `ASTER_LLM_BYOK_ENDPOINT_ALLOWLIST=llm-stub.example` 与指向含桩 CA 的 truststore 的
+`JAVA_OPTS`；cloud 环境副本追加 `AI_KEY_ENCRYPTION_SECRET`（栈原本缺失，首次保存因 `ENCRYPTION_SECRET_MISSING` 500）。
+验收后 `aster-api` 已用原 `api.env` 重建（仍为 adr0048 镜像），桩容器与网络已删除，测试 key 已删除。
+`SsrfGuard` 本身没有私网放行开关，验证了 allowlist + DNS/IP deny 都在真实路径上生效。
+
+| 检查 | 结果 |
+|---|---|
+| m-free 在 `/en/settings/ai-keys` 录入 openai key，model `stub-mini` | 200，`modelsChecked:true`，`availableModels:["stub-4o","stub-mini"]`，模型列显示 `stub-mini` |
+| 录入 model `nope-9` | 400 `{"error":"model_not_available","available":["stub-4o","stub-mini"]}`，页面提示 "This model is not available for your key. Available: stub-4o, stub-mini"，未落库 |
+| anthropic key 不指定 model（经桩，非真实 Anthropic） | 200，模型列 "Platform default (claude-sonnet-5-5)"；置顶后 `LLM 流式请求: provider=anthropic, model=claude-sonnet-5-5`，meta 帧同值；桩无 `/v1/messages` → 404，故 Anthropic 真实推理未验证 |
+| openai key 不指定 model | 模型列 "Platform default (gpt-4o-mini)"；置顶后补全与生成均发 `gpt-4o-mini`，`AiUsageRecord.model = gpt-4o-mini` |
+| 行内只改额度 | PATCH body `{"id":…,"action":"update","tokenQuota":500000}`，不含 `model` |
+| `stub-mini` key 置顶，`/api/llm/complete` 与 `/api/llm/generate` | 补全响应 `model:"stub-mini"`；aster-api `LLM 流式请求: provider=openai, model=stub-mini, url=llm-stub.example:443/v1/chat/completions, source=BYOK`；桩收到 `model=stub-mini`；`AiUsageRecord.model` complete/generate 均为 `stub-mini` |
+| 网关无模型列表（`nolist` key，model `nope-1`） | 保存 200，`availableModels:null`（ADR §3.4 跳过存在性校验）；置顶后补全 400 `provider_rejected_model`，生成流 error 帧 `provider_rejected_model`（meta 帧 `nope-1`） |
+| `POST /api/v1/ai/models` 已签名、无 envelope | 400 `invalid_byok`；未签名 403 `ai_internal_only` |
+| `/api/user/ai-keys` model `bad model!` / 129 字符 | 均 400 `Invalid model`，未落库 |
+| 旧 api 无 `model` 字段的兼容 | 单测覆盖：`complete-quota-gate.test.ts`「响应无 model 字段（旧版）→ model 为 unknown」、`sse-proxy-quota-gate.test.ts`「旧版 api 只有 upstream_reached（无 meta）」、`sse-frame-billable-watcher.test.ts`「旧版 api 无 meta 帧」 |
+
+**未执行 / 局限**：没有真实 OpenAI/Anthropic key，真实 provider 的模型列表形状与拒绝报文未验证；Anthropic 推理只验证到
+发出的 model（桩不实现 `/v1/messages`）；编辑器补全由已登录页面内 `fetch('/api/llm/complete')`（与 Monaco 内联补全同一路由与
+body）触发，未模拟 Monaco 按键；桩把 usage 放在带 `finish_reason` 的块里（非 OpenAI `include_usage` 的空 choices 尾帧），
+所以流式 token 回填为 0，属桩所致。
+
+**观察（非本 ADR 引入）**：`AiAssistantResource.refusalStream` 自带 `event:`/`data:` 前缀后又被 SSE 封装成
+`data:event: error`，cloud 计费观察器把安全拒答当成内容帧，记一笔 0 token 的 `generate` success（本次 model 为
+`unknown`）；跨 provider 的 key 选择按 priority 后 createdAt 排序，组内置顶不一定胜过更早创建的另一 provider 的 key；
+`provider_rejected_model` 时 cloud 不切换到下一把 key。
