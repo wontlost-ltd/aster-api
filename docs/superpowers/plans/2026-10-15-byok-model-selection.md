@@ -118,6 +118,9 @@
             .isNull();
         assertThat(parser.parse(ctx(true, "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\"}}")).model())
             .isNull();
+        // 长度边界：128 可用，129 拒绝
+        assertThat(parser.parse(ctx(true, "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\",\"model\":\"" + "a".repeat(128) + "\"}}")).model())
+            .hasSize(128);
     }
 
     @Test
@@ -682,9 +685,49 @@ Expected: FAIL（无 meta 帧、model 仍为请求值、400 被吞成空补全�
             .onCompletion().continueWith(() -> null) // 占位，见下
 ```
 
-——用更直接的写法：把原返回值记为 `Multi<String> body = llmClient.streamChat(...)...map(LlmProxyService::toCloudFrame);`，然后 `return Multi.createBy().concatenating().streams(Multi.createFrom().item(toJson(GeneratePolicyEvent.meta(model))), body);`。`reportUsage` 的 model 参数改用 `model`。`streamAssistant` 同样处理（258 行改为 `String model = applyModel(ctx, options);`，返回前拼 meta 帧）。错误帧：`toCloudFrame` 的 `ERROR` 分支保持，但在 `streamChat(...)` 之后加 `.map(ev -> ev.type() == LlmStreamEvent.Type.ERROR && options.hasModel() && ev.error() != null && ev.error().contains("(400)") ? LlmStreamEvent.error("provider_rejected_model") : ev)`。
+——用更直接的写法：把原返回值记为 `Multi<String> body = llmClient.streamChat(...)...map(LlmProxyService::toCloudFrame);`，然后 `return Multi.createBy().concatenating().streams(Multi.createFrom().item(toJson(GeneratePolicyEvent.meta(model))), body);`。`reportUsage` 的 model 参数改用 `model`。`streamAssistant` 同样处理（258 行改为 `String model = applyModel(ctx, options);`，返回前拼 meta 帧）。流式的「模型被拒」不在 service 里猜文案：由 client 在拿到 provider 状态码的地方判定（见本 Task 第 5 小节），service 只透传 error 帧。
 
-4. `complete`（297–310 行）：
+4a. `VertxLlmClient.streamChat` 非 200 分支（第 157 行附近）改为：
+
+```java
+                    // BYOK 指定了 model 且 provider 400：按结构化错误码上报，service/cloud 不必解析文案（ADR 0048 §6）
+                    boolean rejectedModel = statusCode == 400 && options.hasModel();
+                    emitter.emit(LlmStreamEvent.error(rejectedModel
+                        ? "provider_rejected_model"
+                        : "LLM API 错误 (" + statusCode + ")"));
+```
+
+对应测试新建 `src/test/java/io/aster/llm/client/VertxLlmClientRejectedModelTest.java`（复用 `VertxLlmClientChatReachedTest` 的 `listen(...)` 原始 socket 桩与 `LlmClientTestSupport.newClient`，对 `streamChat` 收集事件）：
+
+```java
+    @Test
+    @DisplayName("★流式：BYOK 指定 model + provider 400 → error 帧为 provider_rejected_model")
+    void streamRejectedModel() throws Exception {
+        int port = listen(sock -> sock.write(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"));
+        LlmRuntimeOptions opts = new LlmRuntimeOptions("k", "openai", "http://127.0.0.1:" + port,
+            LlmRuntimeOptions.Source.BYOK, LlmRuntimeOptions.WireFormat.OPENAI_NATIVE, false, "nope-1");
+        List<LlmStreamEvent> events = client().streamChat(request(), opts).collect().asList().await().atMost(Duration.ofSeconds(10));
+        assertThat(events).anySatisfy(ev -> {
+            assertThat(ev.type()).isEqualTo(LlmStreamEvent.Type.ERROR);
+            assertThat(ev.error()).isEqualTo("provider_rejected_model");
+        });
+    }
+
+    @Test
+    @DisplayName("流式：未指定 model 的 400 → 保持原文案 LLM API 错误 (400)")
+    void streamPlain400() throws Exception {
+        int port = listen(sock -> sock.write(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"));
+        LlmRuntimeOptions opts = new LlmRuntimeOptions("k", "openai", "http://127.0.0.1:" + port, LlmRuntimeOptions.Source.BYOK);
+        List<LlmStreamEvent> events = client().streamChat(request(), opts).collect().asList().await().atMost(Duration.ofSeconds(10));
+        assertThat(events).anySatisfy(ev -> assertThat(ev.error()).isEqualTo("LLM API 错误 (400)"));
+    }
+```
+
+（`request()` = `new LlmRequest("m", List.of(new LlmRequest.Message("user", "hi")), 0.2, 16, true)`；`client()` 与 `VertxLlmClientChatReachedTest.chatFailure` 中的组装方式相同。）
+
+4b. `complete`（297–310 行）：
 
 ```java
         PromptContext ctx = promptComposer.buildCompleteContext(tenantId, req);
@@ -713,13 +756,13 @@ Expected: FAIL（无 meta 帧、model 仍为请求值、400 被吞成空补全�
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `./gradlew --offline test --tests 'io.aster.llm.service.*'`
+Run: `./gradlew --offline test --tests 'io.aster.llm.service.*' --tests 'io.aster.llm.client.VertxLlmClientRejectedModelTest'`
 Expected: PASS（含 `LlmProxyServiceCompleteBillingTest`、`LlmProxyServiceUpstreamReachedTest`——若它们断言首帧为 `upstream_reached`，改为跳过首个 meta 帧后断言）。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/main/java/io/aster/llm/api/dto/GeneratePolicyEvent.java src/main/java/io/aster/llm/service/LlmProxyService.java src/test/java/io/aster/llm/service/
+git add src/main/java/io/aster/llm/api/dto/GeneratePolicyEvent.java src/main/java/io/aster/llm/service/LlmProxyService.java src/main/java/io/aster/llm/client/VertxLlmClient.java src/test/java/io/aster/llm/service/ src/test/java/io/aster/llm/client/VertxLlmClientRejectedModelTest.java
 git commit -m "feat(llm): service 下推 BYOK model、首帧 meta 回传实际 model、按实际 model 记账、模型被拒返回 provider_rejected_model" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
@@ -734,7 +777,7 @@ git commit -m "feat(llm): service 下推 BYOK model、首帧 meta 回传实际 m
 - Test: `src/test/java/io/aster/llm/client/VertxLlmClientListModelsTest.java`（新，沿用 `VertxLlmClientChatReachedTest` 的本地 HTTP 桩方式）, `src/test/java/io/aster/llm/service/LlmProxyServiceModelsTest.java`（新）
 
 **Interfaces:**
-- Produces: `LlmClient.listModels(LlmRuntimeOptions options): Uni<List<String>>`（404/405 → 失败 `LlmCallFailedException(statusCode)`）；`ModelsResponse(String provider, boolean supported, List<String> models, String defaultModel, String fetchedAt)`；`LlmProxyService.listModels(String tenantId, ByokOverride byok): Uni<ModelsResponse>`；HTTP：`POST /api/v1/ai/models`，body `{"_byok":{...}}`（与其它 `/api/v1/ai/*` 同一 HMAC 规则），200 `ModelsResponse`；`_byok` 缺失/非法 → 400 `invalid_byok`；上游 5xx/超时/连接失败 → 502 `models_unavailable`；404/405 → 200 `supported=false, models=null`。
+- Produces: `LlmClient.listModels(LlmRuntimeOptions options): Uni<List<String>>`（404/405 → 失败 `LlmCallFailedException(statusCode)`）；`ModelsResponse(String provider, List<String> models, String defaultModel, String fetchedAt)`（`models == null` 即「网关不提供列表」）；`LlmProxyService.listModels(String tenantId, ByokOverride byok): Uni<ModelsResponse>`；HTTP：`POST /api/v1/ai/models`，body `{"_byok":{...}}`（与其它 `/api/v1/ai/*` 同一 HMAC 规则），200 `ModelsResponse`；`_byok` 缺失/非法 → 400 `invalid_byok`；上游 5xx/超时/连接失败 → 502 `models_unavailable`；404/405 → 200 `models=null`。
 
 - [ ] **Step 1: 失败测试（service 层）**
 
@@ -791,24 +834,28 @@ class LlmProxyServiceModelsTest {
     }
 
     @Test
-    @DisplayName("上游返回列表 → supported=true，models 排序去重，defaultModel=平台该 provider 默认")
+    @DisplayName("上游返回列表 → models 排序去重，defaultModel=平台该 provider 默认")
     void returnsModels() {
         when(client.listModels(any())).thenReturn(Uni.createFrom().item(List.of("gpt-4o", "gpt-4o-mini", "gpt-4o")));
         ModelsResponse res = call();
-        assertThat(res.supported()).isTrue();
         assertThat(res.models()).containsExactly("gpt-4o", "gpt-4o-mini");
         assertThat(res.defaultModel()).isEqualTo("gpt-4o-mini");
         assertThat(res.fetchedAt()).isNotBlank();
     }
 
     @Test
-    @DisplayName("★网关不提供 /models（404/405）→ 200 supported=false，不是错误")
+    @DisplayName("★网关不提供 /models（404/405）→ 200 models=null，不是错误")
     void unsupportedListIsNotAnError() {
         when(client.listModels(any())).thenReturn(Uni.createFrom().failure(
             new LlmCallFailedException("LLM API 错误 (404)", true, null, 404)));
-        ModelsResponse res = call();
-        assertThat(res.supported()).isFalse();
-        assertThat(res.models()).isNull();
+        assertThat(call().models()).isNull();
+    }
+
+    @Test
+    @DisplayName("★大小边界：超过 128 字符或形状非法的 id 丢弃，最多 200 条（jsonb 上界 ≤ 200×128）")
+    void boundsIds() {
+        when(client.listModels(any())).thenReturn(Uni.createFrom().item(List.of("ok-1", "a".repeat(129), "bad id", "ok-2")));
+        assertThat(call().models()).containsExactly("ok-1", "ok-2");
     }
 
     @Test
@@ -925,7 +972,7 @@ class VertxLlmClientListModelsTest {
     }
 
     @Test
-    @DisplayName("openai：GET /v1/models，Bearer 鉴权，解析 data[].id（缺 id 的项跳过）")
+    @DisplayName("openai：GET /v1/models，Bearer 鉴权，解析 data[].id（缺 id 的项跳过；响应体 > 1 MiB 视为失败）")
     void parsesOpenAiList() throws Exception {
         int port = listen(ok(LIST_BODY));
         List<String> ids = client().listModels(opts("openai", "http://127.0.0.1:" + port)).await().atMost(Duration.ofSeconds(10));
@@ -974,9 +1021,33 @@ class VertxLlmClientListModelsTest {
 }
 ```
 
+资源级测试：在 `src/test/java/io/aster/llm/api/` 新建 `AiAssistantResourceModelsTest.java`——不起 Quarkus，手工 `new AiAssistantResource()` 注入 `byokParser = new ByokEnvelopeParser()`、`llmProxyService = mock(LlmProxyService.class)`、`identityResolver = mock(RequestIdentityResolver.class)`（`tenantId()` 返回 "t"）、`llmConfig`（enabled=true 的 Proxy 桩，同 `PromptComposerAssistantTest.stubConfig`），`requestContext` 用 `ByokEnvelopeParserTest.ctx(verified, body)` 同款 Proxy：
+
+```java
+    @Test
+    @DisplayName("已验签 body 带 _byok → 解析后交给 service.listModels；tenant 来自 identityResolver")
+    void parsesEnvelopeFromVerifiedBody() {
+        resource.requestContext = ctx(true, "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\"}}");
+        when(resource.llmProxyService.listModels(eq("t"), any())).thenReturn(Uni.createFrom().item(
+            new ModelsResponse("openai", List.of("gpt-4o"), "gpt-4o-mini", "now")));
+        resource.models("{}").await().atMost(Duration.ofSeconds(1));
+        verify(resource.llmProxyService).listModels(eq("t"), argThat(b -> "openai".equals(b.provider())));
+    }
+
+    @Test
+    @DisplayName("★未验签请求（公网/浏览器）→ _byok 被忽略 → 400 invalid_byok（service 契约），不读未验签 body")
+    void unverifiedBodyIsIgnored() {
+        resource.requestContext = ctx(false, "{\"_byok\":{\"provider\":\"openai\",\"apiKey\":\"k\"}}");
+        when(resource.llmProxyService.listModels(eq("t"), isNull())).thenThrow(new WebApplicationException(400));
+        assertThatThrownBy(() -> resource.models("{}")).isInstanceOf(WebApplicationException.class);
+    }
+```
+
+（body 缓冲由 `InternalCallerFilter.bufferBody` 对所有 `/api/v1/ai/*` 请求统一完成——`/complete` 今天就靠它读 `_byok`，本端点同路径，不另起机制。）
+
 - [ ] **Step 3: 跑测试确认失败**
 
-Run: `./gradlew --offline test --tests 'io.aster.llm.service.LlmProxyServiceModelsTest' --tests 'io.aster.llm.client.VertxLlmClientListModelsTest'`
+Run: `./gradlew --offline test --tests 'io.aster.llm.service.LlmProxyServiceModelsTest' --tests 'io.aster.llm.client.VertxLlmClientListModelsTest' --tests 'io.aster.llm.api.AiAssistantResourceModelsTest'`
 Expected: 编译失败（`listModels` / `ModelsResponse` 不存在）。
 
 - [ ] **Step 4: 实现**
@@ -1025,6 +1096,11 @@ Expected: 编译失败（`listModels` / `ModelsResponse` 不存在）。
                         "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode()));
                     return;
                 }
+                // 响应体上界（红队：异常网关可回超大 JSON）；超出按失败处理
+                if (response.body() != null && response.body().length() > MAX_MODELS_BODY_BYTES) {
+                    emitter.fail(new LlmCallFailedException("模型列表响应过大", true, null, 200));
+                    return;
+                }
                 try {
                     emitter.complete(extractModelIds(response.bodyAsJsonObject()));
                 } catch (Exception e) {
@@ -1034,7 +1110,9 @@ Expected: 编译失败（`listModels` / `ModelsResponse` 不存在）。
         });
     }
 
-    /** OpenAI 与 Anthropic 的 /v1/models 都是 {"data":[{"id":...}]}；缺 id 的项跳过。 */
+    private static final int MAX_MODELS_BODY_BYTES = 1 << 20;
+
+    /** OpenAI 与 Anthropic 的 /v1/models 都是 {"data":[{"id":...}]}；缺 id 的项跳过（形状/条数限制在 service 层统一做）。 */
     private static List<String> extractModelIds(JsonObject body) {
         JsonArray data = body.getJsonArray("data", new JsonArray());
         List<String> ids = new java.util.ArrayList<>(data.size());
@@ -1065,10 +1143,9 @@ import java.util.List;
 
 /**
  * {@code POST /api/v1/ai/models} 响应（ADR 0048 §3.3）。
- * supported=false 表示 provider/网关不提供模型列表（404/405），此时 models 为 null、不算错误。
+ * models=null 表示 provider/网关不提供模型列表（404/405），不算错误；非空时已按形状过滤、去重、排序、≤200 条。
  */
-public record ModelsResponse(String provider, boolean supported, List<String> models,
-                             String defaultModel, String fetchedAt) {
+public record ModelsResponse(String provider, List<String> models, String defaultModel, String fetchedAt) {
 }
 ```
 
@@ -1089,16 +1166,22 @@ public record ModelsResponse(String provider, boolean supported, List<String> mo
         String defaultModel = LlmModelPolicy.wireModel(null, options, config);
         String fetchedAt = java.time.Instant.now().toString();
         return llmClient.listModels(options)
-            .map(ids -> new ModelsResponse(options.provider(), true,
-                ids.stream().distinct().sorted().limit(200).toList(), defaultModel, fetchedAt))
+            .map(ids -> new ModelsResponse(options.provider(), boundModelIds(ids), defaultModel, fetchedAt))
             .onFailure(LlmCallFailedException.class).recoverWithUni(t -> {
                 int status = ((LlmCallFailedException) t).statusCode();
                 if (status == 404 || status == 405) {
-                    return Uni.createFrom().item(new ModelsResponse(options.provider(), false, null, defaultModel, fetchedAt));
+                    return Uni.createFrom().item(new ModelsResponse(options.provider(), null, defaultModel, fetchedAt));
                 }
                 LOG.warnf("模型列表查询失败: tenant=%s provider=%s status=%d", tenantId, options.provider(), status);
                 return Uni.createFrom().failure(jsonError(502, "models_unavailable", "无法从 provider 读取模型列表，请稍后重试"));
             });
+    }
+
+    /** 与 ByokEnvelopeParser.normalizeModel 同一形状；去重、排序、≤200 条 → jsonb 上界 ≤ 200×128 字符。 */
+    private static final java.util.regex.Pattern MODEL_ID = java.util.regex.Pattern.compile("^[A-Za-z0-9._:/-]{1,128}$");
+
+    private static List<String> boundModelIds(List<String> ids) {
+        return ids.stream().filter(id -> MODEL_ID.matcher(id).matches()).distinct().sorted().limit(200).toList();
     }
 
     private static jakarta.ws.rs.WebApplicationException jsonError(int status, String code, String message) {
@@ -1137,7 +1220,7 @@ Expected: PASS。
 - [ ] **Step 6: 提交**
 
 ```bash
-git add src/main/java/io/aster/llm/client/LlmClient.java src/main/java/io/aster/llm/client/VertxLlmClient.java src/main/java/io/aster/llm/api/dto/ModelsResponse.java src/main/java/io/aster/llm/service/LlmProxyService.java src/main/java/io/aster/llm/api/AiAssistantResource.java src/test/java/io/aster/llm/client/VertxLlmClientListModelsTest.java src/test/java/io/aster/llm/service/LlmProxyServiceModelsTest.java
+git add src/main/java/io/aster/llm/client/LlmClient.java src/main/java/io/aster/llm/client/VertxLlmClient.java src/main/java/io/aster/llm/api/dto/ModelsResponse.java src/main/java/io/aster/llm/service/LlmProxyService.java src/main/java/io/aster/llm/api/AiAssistantResource.java src/test/java/io/aster/llm/client/VertxLlmClientListModelsTest.java src/test/java/io/aster/llm/service/LlmProxyServiceModelsTest.java src/test/java/io/aster/llm/api/AiAssistantResourceModelsTest.java
 git commit -m "feat(ai): POST /api/v1/ai/models 经 BYOK 凭证代理 provider 模型列表（ADR 0048 §3.3）" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
@@ -1150,7 +1233,7 @@ Expected: 仅已知基线失败（`PrismaDatabaseE2ETest`）。
 
 - [ ] **Step 2: ADR 写回**
 
-在 `docs/adr/0048-byok-model-selection.md` §3.3 把 `GET /api/v1/llm/models` 改为 `POST /api/v1/ai/models`（body 只含 `_byok`，与其它 `/api/v1/ai/*` 同一 HMAC 规则），`/api/v1/llm/complete` → `/api/v1/ai/complete`，`io.aster.llm.tenant.LlmEndpointPolicy` → `io.aster.llm.security`；§3.4 `action: "setModel"` 改为「`update` 动作可携带 `model`（null=清空）」；§5 审计动作改为 `ai-key.create` / `ai-key.update` 的 metadata 增加 `model`；§9.1 记录「实际发出 model 的唯一算法在 `LlmModelPolicy`；SSE 首帧 `meta`」。
+在 `docs/adr/0048-byok-model-selection.md` §3.3 把 `GET /api/v1/llm/models` 改为 `POST /api/v1/ai/models`（body 只含 `_byok`，与其它 `/api/v1/ai/*` 同一 HMAC 规则），`/api/v1/llm/complete` → `/api/v1/ai/complete`，`io.aster.llm.tenant.LlmEndpointPolicy` → `io.aster.llm.security`；§3.4 `action: "setModel"` 改为「`update` 动作可携带 `model`（null/空白=清空），非空时与新建同样经列表校验」；§3.3 响应去掉 `supported`（`models=null` 即不支持），模型 id 形状/条数/响应体大小上界写入；§3.4 healthcheck 刷新预算（24h、每轮 50 条、5 s 超时）；§5 审计动作改为 `ai-key.create` / `ai-key.update` 的 metadata 增加 `model`；§9.1 记录「实际发出 model 的唯一算法在 `LlmModelPolicy`；SSE 首帧 `meta`」。
 
 ```bash
 git add docs/adr/0048-byok-model-selection.md
@@ -1235,11 +1318,14 @@ describe('ai-key-vault：model 列（ADR 0048）', () => {
     expect(setMock.mock.calls[2][0]).toMatchObject({ model: 'gpt-4o' });
   });
 
-  it('updateBYOKAvailableModels 写 availableModels + modelsCheckedAt', async () => {
+  it('updateBYOKAvailableModels 写 availableModels + modelsCheckedAt，并再次收敛大小（形状过滤、≤200 条）', async () => {
     whereMock.mockResolvedValue(undefined);
-    await updateBYOKAvailableModels('b', { models: ['a', 'b'], defaultModel: 'a' });
+    await updateBYOKAvailableModels('b', { models: ['a', 'b', 'x'.repeat(129), 'bad id'], defaultModel: 'a' });
     expect(setMock.mock.calls[0][0]).toMatchObject({ availableModels: { models: ['a', 'b'], defaultModel: 'a' } });
     expect(setMock.mock.calls[0][0].modelsCheckedAt).toBeInstanceOf(Date);
+    const many = Array.from({ length: 250 }, (_, i) => `m-${i}`);
+    await updateBYOKAvailableModels('b', { models: many, defaultModel: 'a' });
+    expect(setMock.mock.calls[1][0].availableModels.models).toHaveLength(200);
   });
 
   it('getBYOKCandidatesForInference 返回 model（缺省 null）', async () => {
@@ -1309,14 +1395,21 @@ ALTER TABLE "AiKeyBinding" ADD COLUMN IF NOT EXISTS "modelsCheckedAt" timestamp;
 - 新增：
 
 ```ts
+/** 与 aster-api / byok-models.ts 同一形状；入库前再收敛一次，jsonb 上界 ≤ 200×128 字符。 */
+const MODEL_ID_RE = /^[A-Za-z0-9._:/-]{1,128}$/;
+const MAX_AVAILABLE_MODELS = 200;
+
 /** 写入最近一次模型列表查询结果（healthcheck / 保存时）。失败路径不调用本函数，旧列表保留。 */
 export async function updateBYOKAvailableModels(
   bindingId: string,
   result: { models: string[] | null; defaultModel: string },
 ): Promise<void> {
+  const models = result.models
+    ? result.models.filter((m) => MODEL_ID_RE.test(m)).slice(0, MAX_AVAILABLE_MODELS)
+    : null;
   await db
     .update(aiKeyBindings)
-    .set({ availableModels: result, modelsCheckedAt: new Date(), updatedAt: new Date() })
+    .set({ availableModels: { models, defaultModel: result.defaultModel }, modelsCheckedAt: new Date(), updatedAt: new Date() })
     .where(eq(aiKeyBindings.id, bindingId));
 }
 ```
@@ -1341,7 +1434,7 @@ git commit -m "feat(byok): AiKeyBinding 增加 model / availableModels / modelsC
 - Test: `src/__tests__/lib/byok-envelope.test.ts`, `src/__tests__/lib/byok-models.test.ts`（新）
 
 **Interfaces:**
-- Produces: `ByokEnvelope.model: string | null`；`injectByokEnvelope` 在 `model` 非空时写 `_byok.model`；`fetchByokModels(userId, { provider, apiKey, baseUrl }): Promise<ByokModelsResult>`，`type ByokModelsResult = { ok: true; supported: boolean; models: string[] | null; defaultModel: string } | { ok: false; error: string }`；`MODEL_ID_RE = /^[A-Za-z0-9._:/-]{1,128}$/`（导出，供路由复用）。
+- Produces: `ByokEnvelope.model: string | null`；`injectByokEnvelope` 在 `model` 非空时写 `_byok.model`；`fetchByokModels(userId, { provider, apiKey, baseUrl }, opts?: { timeoutMs?: number }): Promise<ByokModelsResult>`，`type ByokModelsResult = { ok: true; models: string[] | null; defaultModel: string } | { ok: false; error: string }`（`models === null` = 网关不提供列表）；`MODEL_ID_RE = /^[A-Za-z0-9._:/-]{1,128}$/`（导出，供路由复用）。
 
 - [ ] **Step 1: 失败测试**
 
@@ -1387,9 +1480,9 @@ beforeEach(() => {
 
 describe('fetchByokModels（经 aster-api POST /api/v1/ai/models）', () => {
   it('签名覆盖含 _byok 的 body，并以 userId 作 tenant', async () => {
-    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ provider: 'openai', supported: true, models: ['gpt-4o'], defaultModel: 'gpt-4o-mini', fetchedAt: 'now' }), { status: 200 }));
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ provider: 'openai', models: ['gpt-4o'], defaultModel: 'gpt-4o-mini', fetchedAt: 'now' }), { status: 200 }));
     const res = await fetchByokModels('u1', creds);
-    expect(res).toEqual({ ok: true, supported: true, models: ['gpt-4o'], defaultModel: 'gpt-4o-mini' });
+    expect(res).toEqual({ ok: true, models: ['gpt-4o'], defaultModel: 'gpt-4o-mini' });
     const [, path, body, tenant] = vi.mocked(signInternalCallerHeaders).mock.calls[0];
     expect(path).toBe('/api/v1/ai/models');
     expect(JSON.parse(body as string)._byok).toEqual({ provider: 'openai', apiKey: 'sk-x' });
@@ -1397,14 +1490,14 @@ describe('fetchByokModels（经 aster-api POST /api/v1/ai/models）', () => {
   });
 
   it('baseUrl 非空时注入 _byok.baseUrl', async () => {
-    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ supported: false, models: null, defaultModel: 'x' }), { status: 200 }));
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ models: null, defaultModel: 'x' }), { status: 200 }));
     await fetchByokModels('u1', { ...creds, baseUrl: 'https://gw.example.com/v1' });
     expect(JSON.parse(vi.mocked(signInternalCallerHeaders).mock.calls[0][2] as string)._byok.baseUrl).toBe('https://gw.example.com/v1');
   });
 
-  it('★网关不支持列表 → ok:true supported:false（不是错误）', async () => {
-    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ supported: false, models: null, defaultModel: 'x' }), { status: 200 }));
-    expect(await fetchByokModels('u1', creds)).toEqual({ ok: true, supported: false, models: null, defaultModel: 'x' });
+  it('★网关不支持列表 → ok:true models:null（不是错误）', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ models: null, defaultModel: 'x' }), { status: 200 }));
+    expect(await fetchByokModels('u1', creds)).toEqual({ ok: true, models: null, defaultModel: 'x' });
   });
 
   it('上游 502 / 网络异常 → ok:false', async () => {
@@ -1468,13 +1561,15 @@ const MODELS_PATH = '/api/v1/ai/models';
 /** 与 aster-api ByokEnvelopeParser.normalizeModel 同一形状。 */
 export const MODEL_ID_RE = /^[A-Za-z0-9._:/-]{1,128}$/;
 
+/** models === null：网关不提供列表（不算错误，保存时跳过存在性校验）。 */
 export type ByokModelsResult =
-  | { ok: true; supported: boolean; models: string[] | null; defaultModel: string }
+  | { ok: true; models: string[] | null; defaultModel: string }
   | { ok: false; error: string };
 
 export async function fetchByokModels(
   userId: string,
   creds: { provider: string; apiKey: string; baseUrl: string | null },
+  opts?: { timeoutMs?: number },
 ): Promise<ByokModelsResult> {
   const byok: Record<string, string> = { provider: creds.provider, apiKey: creds.apiKey };
   if (creds.baseUrl) byok.baseUrl = creds.baseUrl;
@@ -1493,14 +1588,14 @@ export async function fetchByokModels(
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Tenant-Id': userId, ...headers },
       body,
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(opts?.timeoutMs ?? 10_000),
     });
     if (!res.ok) {
       const err = (await res.json().catch(() => null)) as { error?: string } | null;
       return { ok: false, error: err?.error ?? `http_${res.status}` };
     }
-    const data = (await res.json()) as { supported: boolean; models: string[] | null; defaultModel: string };
-    return { ok: true, supported: data.supported, models: data.models ?? null, defaultModel: data.defaultModel };
+    const data = (await res.json()) as { models: string[] | null; defaultModel: string };
+    return { ok: true, models: data.models ?? null, defaultModel: data.defaultModel };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'fetch_failed' };
   }
@@ -1527,8 +1622,8 @@ git commit -m "feat(byok): envelope 注入 _byok.model；经 aster-api 查询 pr
 - Test: `src/__tests__/api/ai-keys-route.test.ts`
 
 **Interfaces:**
-- Consumes: `fetchByokModels`、`MODEL_ID_RE`、`saveBYOKKey.model`、`updateBYOKKeyMeta.model`、`updateBYOKAvailableModels`。
-- Produces: POST body 可带 `model?: string | null`；响应 `{ ok, id, modelsChecked: boolean, availableModels?: string[] | null }`；400 `{ error: 'model_not_available', available: string[] }`；400 `{ error: 'Invalid model' }`；PATCH `update` 可带 `model?: string | null`（同样校验）；GET 每条 binding 多返回 `model`、`availableModels`、`modelsCheckedAt`。
+- Consumes: `fetchByokModels`、`MODEL_ID_RE`、`saveBYOKKey.model`、`updateBYOKKeyMeta.model`、`updateBYOKAvailableModels`、`getDecryptedBYOKKeyById`（PATCH 重校验）。
+- Produces: POST body 可带 `model?: string | null`；响应 `{ ok, id, modelsChecked: boolean, availableModels?: string[] | null }`；400 `{ error: 'model_not_available', available: string[] }`；400 `{ error: 'Invalid model' }`；PATCH `update` 可带 `model?: string | null`——非空时**同样经列表校验**（解密该 binding 的 key 后调 `fetchByokModels`，查询失败放行，响应带 `modelsChecked`）；GET 每条 binding 多返回 `model`、`availableModels`、`modelsCheckedAt`。空白字符串在两处都等价于 null（清空）。
 
 - [ ] **Step 1: 失败测试**
 
@@ -1541,11 +1636,11 @@ vi.mock('@/lib/byok-models', () => ({
 }));
 ```
 
-`vi.mock('@/lib/ai-key-vault', ...)` 加 `updateBYOKAvailableModels: vi.fn()`；import 行加 `fetchByokModels` 与 `updateBYOKAvailableModels`。在 `describe('POST ...')` 内新增（沿用 `goodKey`）：
+`vi.mock('@/lib/ai-key-vault', ...)` 加 `updateBYOKAvailableModels: vi.fn()`、`getDecryptedBYOKKeyById: vi.fn()`、`findBindingForUser: vi.fn()`；import 行加 `fetchByokModels`、`updateBYOKAvailableModels`、`getDecryptedBYOKKeyById`、`findBindingForUser`。在 `describe('POST ...')` 内新增（沿用 `goodKey`）：
 
 ```ts
   it('model 指定且在列表中 → 保存并写 availableModels，返回 modelsChecked=true', async () => {
-    vi.mocked(fetchByokModels).mockResolvedValue({ ok: true, supported: true, models: ['gpt-4o', 'gpt-4o-mini'], defaultModel: 'gpt-4o-mini' });
+    vi.mocked(fetchByokModels).mockResolvedValue({ ok: true, models: ['gpt-4o', 'gpt-4o-mini'], defaultModel: 'gpt-4o-mini' });
     vi.mocked(saveBYOKKey).mockResolvedValue({ id: 'new-1' });
     const r = await POST(postReq({ provider: 'openai', apiKey: goodKey, model: 'gpt-4o' }));
     expect(r.status).toBe(200);
@@ -1556,7 +1651,7 @@ vi.mock('@/lib/byok-models', () => ({
   });
 
   it('★model 不在列表 → 400 model_not_available，附可用列表，不保存', async () => {
-    vi.mocked(fetchByokModels).mockResolvedValue({ ok: true, supported: true, models: ['gpt-4o-mini'], defaultModel: 'gpt-4o-mini' });
+    vi.mocked(fetchByokModels).mockResolvedValue({ ok: true, models: ['gpt-4o-mini'], defaultModel: 'gpt-4o-mini' });
     const r = await POST(postReq({ provider: 'openai', apiKey: goodKey, model: 'gpt-9' }));
     expect(r.status).toBe(400);
     expect(await r.json()).toMatchObject({ error: 'model_not_available', available: ['gpt-4o-mini'] });
@@ -1572,8 +1667,8 @@ vi.mock('@/lib/byok-models', () => ({
     expect(updateBYOKAvailableModels).not.toHaveBeenCalled();
   });
 
-  it('网关不支持列表（supported=false）→ 保存，不校验 model', async () => {
-    vi.mocked(fetchByokModels).mockResolvedValue({ ok: true, supported: false, models: null, defaultModel: 'x' });
+  it('网关不支持列表（models=null）→ 保存，不校验 model', async () => {
+    vi.mocked(fetchByokModels).mockResolvedValue({ ok: true, models: null, defaultModel: 'x' });
     vi.mocked(saveBYOKKey).mockResolvedValue({ id: 'new-3' });
     const r = await POST(postReq({ provider: 'openai', apiKey: goodKey, model: 'gw-alias' }));
     expect(r.status).toBe(200);
@@ -1584,6 +1679,14 @@ vi.mock('@/lib/byok-models', () => ({
     const r = await POST(postReq({ provider: 'openai', apiKey: goodKey, model: 'bad model!' }));
     expect(r.status).toBe(400);
     expect(fetchByokModels).not.toHaveBeenCalled();
+  });
+
+  it('★model 纯空白 → 视为未指定（null），与 aster-api normalizeModel 一致', async () => {
+    vi.mocked(fetchByokModels).mockResolvedValue({ ok: true, models: ['gpt-4o-mini'], defaultModel: 'gpt-4o-mini' });
+    vi.mocked(saveBYOKKey).mockResolvedValue({ id: 'new-5' });
+    const r = await POST(postReq({ provider: 'openai', apiKey: goodKey, model: '   ' }));
+    expect(r.status).toBe(200);
+    expect(vi.mocked(saveBYOKKey).mock.calls[0][0]).toMatchObject({ model: null });
   });
 
   it('vertex 不查询列表（Phase 2 不支持 BYOK 推理），model 原样入库', async () => {
@@ -1597,12 +1700,44 @@ vi.mock('@/lib/byok-models', () => ({
 在 `describe('PATCH ... 编辑')` 内新增：
 
 ```ts
-  it('update 携带 model → 校验后写入，审计 metadata 含 model', async () => {
+  it('update 携带 model → 解密该 key 经列表校验后写入，审计 metadata 含 model', async () => {
+    vi.mocked(findBindingForUser).mockResolvedValue({ id: 'b1', provider: 'openai', providerUrl: null });
+    vi.mocked(getDecryptedBYOKKeyById).mockResolvedValue('sk-'.padEnd(24, 'x'));
+    vi.mocked(fetchByokModels).mockResolvedValue({ ok: true, models: ['gpt-4o'], defaultModel: 'gpt-4o-mini' });
     vi.mocked(updateBYOKKeyMeta).mockResolvedValue({ provider: 'openai', keyHint: 'xxxx' });
     const r = await PATCH(patchReq({ id: 'b1', action: 'update', model: 'gpt-4o' }));
     expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ ok: true, modelsChecked: true });
+    expect(getDecryptedBYOKKeyById).toHaveBeenCalledWith('user-1', 'b1');
     expect(vi.mocked(updateBYOKKeyMeta).mock.calls[0][0]).toMatchObject({ model: 'gpt-4o' });
+    expect(updateBYOKAvailableModels).toHaveBeenCalledWith('b1', { models: ['gpt-4o'], defaultModel: 'gpt-4o-mini' });
     expect(vi.mocked(logAuditEvent).mock.calls[0][0].metadata).toMatchObject({ model: 'gpt-4o' });
+  });
+
+  it('★update model 不在列表 → 400 model_not_available，不写入', async () => {
+    vi.mocked(findBindingForUser).mockResolvedValue({ id: 'b1', provider: 'openai', providerUrl: null });
+    vi.mocked(getDecryptedBYOKKeyById).mockResolvedValue('sk-'.padEnd(24, 'x'));
+    vi.mocked(fetchByokModels).mockResolvedValue({ ok: true, models: ['gpt-4o-mini'], defaultModel: 'gpt-4o-mini' });
+    const r = await PATCH(patchReq({ id: 'b1', action: 'update', model: 'gpt-9' }));
+    expect(r.status).toBe(400);
+    expect(updateBYOKKeyMeta).not.toHaveBeenCalled();
+  });
+
+  it('update model：列表查询失败 → 仍写入，modelsChecked=false', async () => {
+    vi.mocked(findBindingForUser).mockResolvedValue({ id: 'b1', provider: 'openai', providerUrl: null });
+    vi.mocked(getDecryptedBYOKKeyById).mockResolvedValue('sk-'.padEnd(24, 'x'));
+    vi.mocked(fetchByokModels).mockResolvedValue({ ok: false, error: 'models_unavailable' });
+    vi.mocked(updateBYOKKeyMeta).mockResolvedValue({ provider: 'openai', keyHint: 'xxxx' });
+    const r = await PATCH(patchReq({ id: 'b1', action: 'update', model: 'gpt-4o' }));
+    expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ ok: true, modelsChecked: false });
+  });
+
+  it('update：binding 不属于本人 → 404，不解密', async () => {
+    vi.mocked(findBindingForUser).mockResolvedValue(null);
+    const r = await PATCH(patchReq({ id: 'b-other', action: 'update', model: 'gpt-4o' }));
+    expect(r.status).toBe(404);
+    expect(getDecryptedBYOKKeyById).not.toHaveBeenCalled();
   });
 
   it('update model=null → 清空（回到平台默认）', async () => {
@@ -1619,7 +1754,7 @@ vi.mock('@/lib/byok-models', () => ({
   });
 ```
 
-（PATCH update 不重新查列表：改 model 时无法解密 key 而不触及 vault 解密路径；校验只做形状。保存时的列表校验已覆盖主路径——在 ADR §9.1 记录此决定。）
+测试文件的 `vi.mock('@/lib/ai-key-vault', ...)` 再加 `getDecryptedBYOKKeyById: vi.fn()` 与 `findBindingForUser: vi.fn()`，并相应 import。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -1633,13 +1768,34 @@ Expected: FAIL。
 - 新增顶层助手：
 
 ```ts
-/** model 字段规范化：undefined=未提供；null/空串=清空；否则 trim 后须符合 MODEL_ID_RE，非法返回 false。 */
-function parseModelField(raw: unknown): string | null | undefined | false {
-  if (raw === undefined) return undefined;
-  if (raw === null || raw === '') return null;
-  if (typeof raw !== 'string') return false;
+/**
+ * model 字段规范化（与 aster-api ByokEnvelopeParser.normalizeModel 同语义）：
+ * undefined=未提供（PATCH 不改）；null / 空串 / 纯空白 = 清空（平台默认）；
+ * 否则 trim 后须符合 MODEL_ID_RE。返回 { ok: false } 表示形状非法。
+ */
+function parseModelField(raw: unknown): { ok: true; model: string | null | undefined } | { ok: false } {
+  if (raw === undefined) return { ok: true, model: undefined };
+  if (raw === null) return { ok: true, model: null };
+  if (typeof raw !== 'string') return { ok: false };
   const m = raw.trim();
-  return MODEL_ID_RE.test(m) ? m : false;
+  if (m === '') return { ok: true, model: null };
+  return MODEL_ID_RE.test(m) ? { ok: true, model: m } : { ok: false };
+}
+
+/**
+ * 填了 model 时经 aster-api 查 provider 列表（ADR 0048 §3.4）：列表存在且不含该 model → 拒绝；
+ * 查询失败（provider 抖动）或网关不提供列表 → 放行。返回 null 表示拒绝（调用方回 400）。
+ */
+async function checkModelAgainstProvider(
+  userId: string,
+  creds: { provider: string; apiKey: string; baseUrl: string | null },
+  model: string | null,
+): Promise<{ result: Awaited<ReturnType<typeof fetchByokModels>> } | { rejected: string[] }> {
+  const result = await fetchByokModels(userId, creds);
+  if (result.ok && result.models && model && !result.models.includes(model)) {
+    return { rejected: result.models };
+  }
+  return { result };
 }
 ```
 
@@ -1647,23 +1803,26 @@ function parseModelField(raw: unknown): string | null | undefined | false {
 - POST：body 类型加 `model?: string | null;`；在 expiresAt 校验之后：
 
 ```ts
-    const model = parseModelField(body.model);
-    if (model === false) {
+    const parsedModel = parseModelField(body.model);
+    if (!parsedModel.ok) {
       return NextResponse.json({ error: 'Invalid model' }, { status: 400 });
     }
+    const model = parsedModel.model ?? null;
 
     // 保存前经 aster-api 查一次 provider 模型列表（ADR 0048 §3.4）：填了 model 就校验存在；
     // 查询失败不阻断保存（provider 抖动不该让用户存不了 key），只是不写 availableModels。
     let models: Awaited<ReturnType<typeof fetchByokModels>> | null = null;
     if (body.provider !== 'vertex') {
-      models = await fetchByokModels(session.user.id, { provider: body.provider, apiKey: body.apiKey, baseUrl: providerUrl });
-      if (models.ok && models.supported && model && models.models && !models.models.includes(model)) {
-        return NextResponse.json({ error: 'model_not_available', available: models.models }, { status: 400 });
+      const check = await checkModelAgainstProvider(session.user.id,
+        { provider: body.provider, apiKey: body.apiKey, baseUrl: providerUrl }, model);
+      if ('rejected' in check) {
+        return NextResponse.json({ error: 'model_not_available', available: check.rejected }, { status: 400 });
       }
+      models = check.result;
     }
 ```
 
-`saveBYOKKey({...})` 加 `model: model ?? null`；保存后：
+`saveBYOKKey({...})` 加 `model`；保存后：
 
 ```ts
     const modelsChecked = models?.ok === true;
@@ -1677,17 +1836,59 @@ function parseModelField(raw: unknown): string | null | undefined | false {
 - PATCH update：body 类型加 `model?: string | null;`；在 expiresAt 解析后：
 
 ```ts
-    const model = parseModelField(body.model);
-    if (model === false) {
+    const parsedModel = parseModelField(body.model);
+    if (!parsedModel.ok) {
       return NextResponse.json({ error: 'Invalid model' }, { status: 400 });
     }
+    const model = parsedModel.model;
     if (tokenQuota === undefined && expiresAt === undefined && model === undefined) {
       return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
+    }
+
+    // 改 model 与新建同一校验路径：解密**本人**这条 key（归属不符 → 404，不解密），经 aster-api 查列表。
+    let modelsChecked: boolean | undefined;
+    if (typeof model === 'string') {
+      const binding = await findBindingForUser(userId, body.id);
+      if (!binding) {
+        return NextResponse.json({ error: 'AI key not found' }, { status: 404 });
+      }
+      if (binding.provider !== 'vertex') {
+        const apiKey = await getDecryptedBYOKKeyById(userId, body.id);
+        if (!apiKey) {
+          return NextResponse.json({ error: 'AI key not found' }, { status: 404 });
+        }
+        const check = await checkModelAgainstProvider(userId,
+          { provider: binding.provider, apiKey, baseUrl: binding.providerUrl }, model);
+        if ('rejected' in check) {
+          return NextResponse.json({ error: 'model_not_available', available: check.rejected }, { status: 400 });
+        }
+        modelsChecked = check.result.ok;
+        if (check.result.ok) {
+          await updateBYOKAvailableModels(body.id, { models: check.result.models, defaultModel: check.result.defaultModel });
+        }
+      }
     }
     const updated = await updateBYOKKeyMeta({ userId, bindingId: body.id, tokenQuota, expiresAt, model });
 ```
 
-审计 metadata 加 `...(model !== undefined ? { model } : {})`。
+审计 metadata 加 `...(model !== undefined ? { model } : {})`；成功响应 `NextResponse.json({ ok: true, ...(modelsChecked !== undefined ? { modelsChecked } : {}) })`。
+
+`src/lib/ai-key-vault.ts` 新增（Task 6 的 vault 提交里一并落地）：
+
+```ts
+/** 按 (id, userId) 取 binding 的 provider / providerUrl（不解密），归属不符返回 null。 */
+export async function findBindingForUser(
+  userId: string,
+  bindingId: string,
+): Promise<{ id: string; provider: string; providerUrl: string | null } | null> {
+  const rows = await db
+    .select({ id: aiKeyBindings.id, provider: aiKeyBindings.provider, providerUrl: aiKeyBindings.providerUrl })
+    .from(aiKeyBindings)
+    .where(and(eq(aiKeyBindings.id, bindingId), eq(aiKeyBindings.userId, userId)))
+    .limit(1);
+  return rows[0] ? { ...rows[0], providerUrl: rows[0].providerUrl ?? null } : null;
+}
+```
 
 `page.tsx`：`columns` 加三列；`initialBindings` map 加 `model: b.model ?? null, availableModels: b.availableModels ?? null, modelsCheckedAt: b.modelsCheckedAt?.toISOString() ?? null`。
 
@@ -1728,16 +1929,46 @@ git commit -m "feat(ai-keys): 保存/编辑可指定 model，保存时经 provid
     expect(w.model()).toBe('gpt-4o');
   });
 
-  it('无 meta 帧 → model() 为 null（旧版 api）', () => {
+  it('★旧版 api 无 meta 帧 → model() 为 null，计费判定与今天一致', () => {
     const w = createSseBillableWatcher();
-    w.push(new TextEncoder().encode('data: {"type":"upstream_reached"}\n\n'));
+    expect(w.push(new TextEncoder().encode('data: {"type":"upstream_reached"}\n\n'))).toBe(true);
     expect(w.model()).toBeNull();
+  });
+
+  it('meta 与 upstream_reached 在同一 chunk → 两者都识别', () => {
+    const w = createSseBillableWatcher();
+    expect(w.push(new TextEncoder().encode('data: {"type":"meta","data":"gpt-4o"}\n\ndata: {"type":"upstream_reached"}\n\n'))).toBe(true);
+    expect(w.model()).toBe('gpt-4o');
+  });
+
+  it('meta 帧被 chunk 边界切开 → 拼接后仍识别', () => {
+    const w = createSseBillableWatcher();
+    const enc = new TextEncoder();
+    expect(w.push(enc.encode('data: {"type":"me'))).toBe(false);
+    expect(w.push(enc.encode('ta","data":"gpt-4o"}\n\n'))).toBe(false);
+    expect(w.model()).toBe('gpt-4o');
   });
 ```
 
 `complete-quota-gate.test.ts` 的 BYOK 用例（L172–192）把 fetch 桩响应改为 `'{"completion":"x","model":"gpt-4o","upstreamReached":true}'`，并断言 `mockRecordAiUsage.mock.calls[0][0]` `toMatchObject({ usedByok: true, model: 'gpt-4o' })`；再加一例响应无 `model` 字段时 `model: 'unknown'`。
 
-`sse-proxy-quota-gate.test.ts`（若其桩流可改）：桩上游流为 `meta` + `upstream_reached` 两帧，断言 `recordAiUsage` 的 `model` 为 meta 值。
+`sse-proxy-quota-gate.test.ts`：桩上游流为 `meta` + `upstream_reached` 两帧，断言 `recordAiUsage` 的 `model` 为 meta 值；再加一例桩流只有 `upstream_reached`（旧版 api），断言仍记账且 `model: 'unknown'`。
+
+`src/__tests__/lib/ai-quota.test.ts` 新增（沿用该文件对 `db.insert(...).onConflictDoUpdate` 的 mock 方式）：
+
+```ts
+  it('★占位记录带真实 model，回填（带 token）不会把 model 改回 unknown；旧版 api 回填无 model 时保留占位值', async () => {
+    await recordAiUsage({ userId: 'u', callKind: 'complete', model: 'gpt-4o', promptTokens: 0, completionTokens: 0, usedByok: true, requestId: 'r1', status: 'success' });
+    const placeholder = capturedUpsert(); // { values, set }
+    expect(placeholder.values.model).toBe('gpt-4o');
+    // 占位（无 token）时 set.model 必须是「保留已有」表达式，而不是 'unknown'/EXCLUDED
+    expect(String(placeholder.set.model)).not.toContain('excluded');
+    await recordAiUsage({ userId: 'u', callKind: 'complete', model: 'gpt-4o', promptTokens: 10, completionTokens: 5, usedByok: true, requestId: 'r1', status: 'success' });
+    expect(capturedUpsert().set.model).toBe('gpt-4o');
+  });
+```
+
+（`capturedUpsert()` 读取 mock 的最近一次 `.values()` 与 `.onConflictDoUpdate({ set })` 参数；按该测试文件已有的 db 链式 mock 实现。）
 
 `useSSEStream.test.ts` 加一例：收到 `{"type":"meta","data":"gpt-4o"}` 帧不产生内容、不报错（断言 hook 输出文本为空且无 error）。
 
@@ -1784,13 +2015,13 @@ function responseModel(responseText: string): string {
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `pnpm exec vitest run src/__tests__/lib/sse-frame-billable-watcher.test.ts src/__tests__/app/api/llm src/__tests__/hooks/useSSEStream.test.ts src/__tests__/api/llm-assistant-route.test.ts`
+Run: `pnpm exec vitest run src/__tests__/lib/sse-frame-billable-watcher.test.ts src/__tests__/app/api/llm src/__tests__/hooks/useSSEStream.test.ts src/__tests__/api/llm-assistant-route.test.ts src/__tests__/lib/ai-quota.test.ts`
 Expected: PASS。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/lib/sse-frame.ts src/lib/llm-sse-proxy.ts src/app/api/llm/complete/route.ts src/__tests__/lib/sse-frame-billable-watcher.test.ts src/__tests__/app/api/llm src/__tests__/hooks/useSSEStream.test.ts
+git add src/lib/sse-frame.ts src/lib/llm-sse-proxy.ts src/app/api/llm/complete/route.ts src/__tests__/lib/sse-frame-billable-watcher.test.ts src/__tests__/app/api/llm src/__tests__/hooks/useSSEStream.test.ts src/__tests__/lib/ai-quota.test.ts
 git commit -m "feat(ai-usage): 用量记录改用 aster-api 回传的实际 model（SSE meta 帧 / complete.model）" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
@@ -1802,7 +2033,7 @@ git commit -m "feat(ai-usage): 用量记录改用 aster-api 回传的实际 mode
 
 **Interfaces:**
 - Consumes: `fetchByokModels`、`updateBYOKAvailableModels`。
-- Produces: 健康 ping 成功后，对 openai/anthropic binding 调 `fetchByokModels`，`ok` 则写 `availableModels`/`modelsCheckedAt`；失败只记日志，不改 `lastError`（lastError 语义仍是 key 健康）。
+- Produces: 健康 ping 成功后，对 openai/anthropic 且 `modelsCheckedAt` 为空或早于 24h 的 binding 调 `fetchByokModels`（超时 5 s），`ok` 则写 `availableModels`/`modelsCheckedAt`；失败只记日志，不改 `lastError`；每次 cron 最多刷新 `MODELS_REFRESH_PER_RUN = 50` 条（其余留到下次），给整轮 job 一个线性上界（50 × 5 s）。
 
 - [ ] **Step 1: 失败测试**
 
@@ -1843,11 +2074,24 @@ beforeEach(() => {
 describe('BYOK healthcheck：刷新 availableModels（ADR 0048）', () => {
   it('健康 ping 后查询模型列表并写入', async () => {
     findMany.mockResolvedValue([{ id: 'b1', userId: 'u', provider: 'openai', providerUrl: null, lastErrorAt: null }]);
-    fetchModels.mockResolvedValue({ ok: true, supported: true, models: ['gpt-4o'], defaultModel: 'gpt-4o-mini' });
+    fetchModels.mockResolvedValue({ ok: true, models: ['gpt-4o'], defaultModel: 'gpt-4o-mini' });
     const res = await checkAllBYOKKeys(vi.fn());
     expect(res[0].status).toBe('healthy');
-    expect(fetchModels).toHaveBeenCalledWith('u', { provider: 'openai', apiKey: expect.any(String), baseUrl: null });
+    expect(fetchModels).toHaveBeenCalledWith('u', { provider: 'openai', apiKey: expect.any(String), baseUrl: null }, { timeoutMs: 5000 });
     expect(updateAvail).toHaveBeenCalledWith('b1', { models: ['gpt-4o'], defaultModel: 'gpt-4o-mini' });
+  });
+
+  it('24h 内查过的 binding 不再查询', async () => {
+    findMany.mockResolvedValue([{ id: 'b1', userId: 'u', provider: 'openai', providerUrl: null, lastErrorAt: null, modelsCheckedAt: new Date(Date.now() - 60_000) }]);
+    await checkAllBYOKKeys(vi.fn());
+    expect(fetchModels).not.toHaveBeenCalled();
+  });
+
+  it('★每轮最多刷新 50 条（预算上界）', async () => {
+    findMany.mockResolvedValue(Array.from({ length: 60 }, (_, i) => ({ id: `b${i}`, userId: 'u', provider: 'openai', providerUrl: null, lastErrorAt: null, modelsCheckedAt: null })));
+    fetchModels.mockResolvedValue({ ok: true, models: ['m'], defaultModel: 'm' });
+    await checkAllBYOKKeys(vi.fn());
+    expect(fetchModels).toHaveBeenCalledTimes(50);
   });
 
   it('★列表查询失败 → 不写 availableModels，binding 仍 healthy', async () => {
@@ -1877,24 +2121,32 @@ Expected: FAIL（未调用 `fetchByokModels`）。
 
 ```ts
       // ADR 0048：顺带刷新可用模型列表（仅校验/提示用）。失败不影响健康状态，也不动 lastError。
-      await refreshAvailableModels(b, apiKey);
+      // 预算：只刷 24h 未查过的，每轮 ≤ MODELS_REFRESH_PER_RUN 条，单次 5 s 超时 → job 增量有线性上界。
+      if (refreshed < MODELS_REFRESH_PER_RUN && await refreshAvailableModels(b, apiKey)) refreshed += 1;
 ```
 
-新增私有函数：
+在 `checkAllBYOKKeys` 的 `for` 之前加 `let refreshed = 0;`；新增常量与私有函数：
 
 ```ts
-/** 经 aster-api 查询并写入 availableModels；vertex 与查询失败都静默跳过。 */
+const MODELS_REFRESH_PER_RUN = 50;
+const MODELS_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const MODELS_FETCH_TIMEOUT_MS = 5_000;
+
+/** 经 aster-api 查询并写入 availableModels；返回是否真的发起了查询（供预算计数）。vertex、24h 内已查、查询失败都不计入成功写入。 */
 async function refreshAvailableModels(
-  b: { id: string; userId: string; provider: string; providerUrl: string | null },
+  b: { id: string; userId: string; provider: string; providerUrl: string | null; modelsCheckedAt: Date | null },
   apiKey: string,
-): Promise<void> {
-  if (b.provider !== 'openai' && b.provider !== 'anthropic') return;
-  const res = await fetchByokModels(b.userId, { provider: b.provider, apiKey, baseUrl: b.providerUrl ?? null });
+): Promise<boolean> {
+  if (b.provider !== 'openai' && b.provider !== 'anthropic') return false;
+  if (b.modelsCheckedAt && Date.now() - b.modelsCheckedAt.getTime() < MODELS_REFRESH_INTERVAL_MS) return false;
+  const res = await fetchByokModels(b.userId, { provider: b.provider, apiKey, baseUrl: b.providerUrl ?? null },
+    { timeoutMs: MODELS_FETCH_TIMEOUT_MS });
   if (!res.ok) {
     console.warn('[byok-healthcheck] models refresh failed for binding=%s: %s', b.id, res.error);
-    return;
+    return true;
   }
   await updateBYOKAvailableModels(b.id, { models: res.models, defaultModel: res.defaultModel });
+  return true;
 }
 ```
 
@@ -1952,6 +2204,17 @@ git commit -m "feat(byok): healthcheck 顺带刷新 availableModels" -m "Co-Auth
     expect(await screen.findByText(/not available.*gpt-4o-mini/)).toBeDefined();
   });
 
+  it('保存成功但 modelsChecked=false → 显示「未校验」提示，且下次提交时清除', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, id: 'b1', modelsChecked: false }), { status: 200 })));
+    render(<AiKeysContent initialBindings={[]} locale="en" />, { wrapper });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-'.padEnd(24, 'x') } });
+    fireEvent.click(screen.getByText('Save key'));
+    expect(await screen.findByRole('status')).toHaveTextContent(/could not be verified/);
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-'.padEnd(24, 'y') } });
+    fireEvent.click(screen.getByText('Save key'));
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  });
+
   it('已绑定列表显示 model 列：指定值或「Platform default」', () => {
     render(<AiKeysContent locale="en" initialBindings={[
       { id: 'a', provider: 'openai', keyHint: '1234', active: true, providerUrl: null, tokenQuota: null, expiresAt: null, priority: 0, usedTokensThisMonth: 0, lastUsedAt: null, lastErrorAt: null, lastError: null, createdAt: '2026-01-01T00:00:00Z', model: 'gpt-4o', availableModels: null, modelsCheckedAt: null },
@@ -1991,7 +2254,7 @@ de：`model: 'Modell (optional)'`、`modelHint: 'Leer lassen, um den Plattform-S
 
 `ai-keys-content.tsx`：
 - `BYOKBinding` 加 `model: string | null; availableModels: { models: string[] | null; defaultModel: string } | null; modelsCheckedAt: string | null;`。
-- 状态：`const [model, setModel] = useState('');`、`const [notice, setNotice] = useState<string | null>(null);`（保存成功但未校验时的提示）。
+- 状态：`const [model, setModel] = useState('');`、`const [notice, setNotice] = useState<string | null>(null);`（保存成功但未校验时的提示；每次提交开始时与 error 一起清空）。
 - 表单在 provider `<Select>` 块之后插入：
 
 ```tsx
@@ -2002,31 +2265,14 @@ de：`model: 'Modell (optional)'`、`modelHint: 'Leer lassen, um den Plattform-S
               value={model}
               onChange={(e) => setModel(e.target.value)}
               placeholder={t('modelPlaceholder')}
-              list="ai-keys-model-options"
             />
-            {/* 已有同 provider 绑定查到过列表时，提供可选项（仍允许手输） */}
-            <datalist id="ai-keys-model-options">
-              {knownModels(bindings, provider).map((m) => <option key={m} value={m} />)}
-            </datalist>
             <p className="text-xs text-fg-muted">{t('modelHint')}</p>
           </div>
 ```
 
-顶层助手：
+（不做跨 binding 的「已知模型」下拉：其它 key 查到的列表不能证明当前 key 可用；保存时的 400 会把该 key 的真实可用列表回显。）
 
-```tsx
-// 同 provider 已有绑定最近查到的模型列表（去重），作为输入提示；不限制手输。
-function knownModels(bindings: BYOKBinding[], provider: string): string[] {
-  const set = new Set<string>();
-  for (const b of bindings) {
-    if (b.provider !== provider) continue;
-    for (const m of b.availableModels?.models ?? []) set.add(m);
-  }
-  return [...set].sort();
-}
-```
-
-- `handleSubmit`：本地校验 `if (model.trim() && !/^[A-Za-z0-9._:/-]{1,128}$/.test(model.trim())) { setError(t('modelInvalid')); return; }`；POST body 加 `model: model.trim() || null`；失败分支：若 `data.error === 'model_not_available'` → `setError(t('modelNotAvailable', { available: (data.available as string[]).join(', ') }))`；成功后 `const data = await r.json(); setModel(''); if (data.modelsChecked === false) setNotice(t('modelUnverified'));`，并在表单下方渲染 `{notice && <p className="text-sm text-amber-700" role="status">{notice}</p>}`。
+- `handleSubmit`：开头 `setNotice(null)`；本地校验 `if (model.trim() && !/^[A-Za-z0-9._:/-]{1,128}$/.test(model.trim())) { setError(t('modelInvalid')); return; }`；POST body 加 `model: model.trim() || null`；失败分支：若 `data.error === 'model_not_available'` → `setError(t('modelNotAvailable', { available: (data.available as string[]).join(', ') }))`；成功后 `const data = await r.json(); setModel(''); if (data.modelsChecked === false) setNotice(t('modelUnverified'));`，并在表单下方渲染 `{notice && <p className="text-sm text-amber-700" role="status">{notice}</p>}`。
 - 表头在 `thKeyHint` 之后加 `<th className="pb-2 text-left">{t('thModel')}</th>`；行内对应单元格：
 
 ```tsx
@@ -2084,4 +2330,5 @@ git -C /Users/rpang/IdeaProjects/aster-api commit -m "docs(adr): ADR 0048 §9.2 
 
 - 覆盖：ADR §3.1（Task 6）、§3.2（Task 1/7）、§3.3（Task 1–4）、§3.4（Task 8）、§3.5（Task 11）、§4 优先级不变（Task 7 只透传 model，不改选择）、§5（Task 3/9/8 审计）、§6（Task 3/4/8）、§7（各 Task 测试 + Task 5/12）。
 - 名称一致性：`LlmModelPolicy.wireModel`、`ByokOverride.hasModel`、`LlmRuntimeOptions.hasModel/model`、`fetchByokModels`、`MODEL_ID_RE`、`updateBYOKAvailableModels`、`createSseBillableWatcher().model()` 在各 Task 中拼写一致。
-- 与 ADR 的偏差（Task 5 写回）：端点为 `POST /api/v1/ai/models`；PATCH `update` 携带 `model` 替代 `setModel`；审计沿用 `ai-key.*`；PATCH 改 model 不重新查列表。
+- 与 ADR 的偏差（Task 5 写回）：端点为 `POST /api/v1/ai/models`；PATCH `update` 携带 `model` 替代 `setModel`（同样经列表校验）；审计沿用 `ai-key.*`；`ModelsResponse` 无 `supported`。
+- Codex 计划审查（76 分退回）的修订：流式 400 改由 client 按 options 直接发 `provider_rejected_model`（Task 3 §4a）；模型 id 形状 + 条数 + 响应体三重上界（Task 4/6）；跨版本兼容与占位/回填测试（Task 9）；PATCH 重校验 + 空白语义统一（Task 8）；healthcheck 预算（Task 10）；资源级 `/models` 测试（Task 4）；砍掉 `supported`、`knownModels`，`notice` 提交时清空（Task 4/11）。
