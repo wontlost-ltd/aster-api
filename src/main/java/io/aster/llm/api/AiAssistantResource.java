@@ -4,6 +4,7 @@ import io.aster.llm.api.dto.AssistantRequest;
 import io.aster.llm.api.dto.CompleteRequest;
 import io.aster.llm.api.dto.CompleteResponse;
 import io.aster.llm.api.dto.GeneratePolicyRequest;
+import io.aster.llm.api.dto.ModelsResponse;
 import io.aster.llm.api.dto.SuggestRequest;
 import io.aster.llm.config.LlmConfig;
 import io.aster.llm.safety.PromptBlockCounter;
@@ -190,6 +191,19 @@ public class AiAssistantResource {
         }
         return llmProxyService.complete(tenantId, request, parseByok(),
             byokParser.parseRequestId(requestContext));
+    }
+
+    /**
+     * 经 BYOK 凭证查询 provider 可用模型（ADR 0048）。POST 而非 GET：{@code _byok} envelope 只能从
+     * 已 HMAC 验签的 body 读取。body 只含 envelope，无用户提示，故不过安全 guard。
+     */
+    @POST
+    @Path("/models")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Uni<ModelsResponse> models(String ignoredBody) {
+        checkEnabled();
+        return llmProxyService.listModels(tenantId(), parseByok());
     }
 
     private void checkEnabled() {

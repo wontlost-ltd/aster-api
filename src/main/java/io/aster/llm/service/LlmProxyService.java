@@ -5,6 +5,7 @@ import io.aster.llm.api.dto.CompleteRequest;
 import io.aster.llm.api.dto.CompleteResponse;
 import io.aster.llm.api.dto.GeneratePolicyEvent;
 import io.aster.llm.api.dto.GeneratePolicyRequest;
+import io.aster.llm.api.dto.ModelsResponse;
 import io.aster.llm.api.dto.SuggestRequest;
 import io.aster.llm.client.LlmCallFailedException;
 import io.aster.llm.client.LlmClient;
@@ -26,6 +27,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -275,6 +277,46 @@ public class LlmProxyService {
             .filter(LlmProxyService::isForwardedToCloud)
             .map(LlmProxyService::toCloudFrame);
         return withMetaFrame(model, body);
+    }
+
+    /** 经 BYOK 凭证查询 provider 模型列表；仅服务 BYOK（无 envelope → 400），上游失败 → 502。 */
+    public Uni<ModelsResponse> listModels(String tenantId, ByokOverride byok) {
+        if (byok == null || !byok.isValid()) {
+            throw jsonError(400, "invalid_byok", "模型列表查询需要 BYOK 凭证");
+        }
+        LlmRuntimeOptions options;
+        try {
+            options = optionsResolver.resolve(tenantId, byok);
+        } catch (IllegalArgumentException e) {
+            throw jsonError(400, "invalid_byok", e.getMessage());
+        }
+        String defaultModel = LlmModelPolicy.wireModel(null, options, config);
+        String fetchedAt = java.time.Instant.now().toString();
+        return llmClient.listModels(options)
+            .map(ids -> new ModelsResponse(options.provider(), boundModelIds(ids), defaultModel, fetchedAt))
+            .onFailure(LlmCallFailedException.class).recoverWithUni(t -> {
+                int status = ((LlmCallFailedException) t).statusCode();
+                if (status == 404 || status == 405) {
+                    return Uni.createFrom().item(new ModelsResponse(options.provider(), null, defaultModel, fetchedAt));
+                }
+                LOG.warnf("模型列表查询失败: tenant=%s provider=%s status=%d", tenantId, options.provider(), status);
+                return Uni.createFrom().failure(jsonError(502, "models_unavailable", "无法从 provider 读取模型列表，请稍后重试"));
+            });
+    }
+
+    /** 与 ByokEnvelopeParser.normalizeModel 同一形状；去重、排序、≤200 条 → jsonb 上界 ≤ 200×128 字符。 */
+    private static final java.util.regex.Pattern MODEL_ID = java.util.regex.Pattern.compile("^[A-Za-z0-9._:/-]{1,128}$");
+
+    private static List<String> boundModelIds(List<String> ids) {
+        return ids.stream().filter(id -> MODEL_ID.matcher(id).matches()).distinct().sorted().limit(200).toList();
+    }
+
+    private static jakarta.ws.rs.WebApplicationException jsonError(int status, String code, String message) {
+        return new jakarta.ws.rs.WebApplicationException(
+            jakarta.ws.rs.core.Response.status(status)
+                .entity(java.util.Map.of("error", code, "message", message))
+                .type(jakarta.ws.rs.core.MediaType.APPLICATION_JSON)
+                .build());
     }
 
     /**

@@ -23,6 +23,7 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
 import java.net.URI;
+import java.util.List;
 
 /**
  * Vert.x WebClient 实现的 LLM 客户端
@@ -232,6 +233,75 @@ public class VertxLlmClient implements LlmClient {
                 emitter.complete();
             }
         });
+    }
+
+    @Override
+    public Uni<List<String>> listModels(LlmRuntimeOptions options) {
+        String apiKey = options.apiKey();
+        String provider = options.provider();
+        validateCustomEndpoint(options);
+        URI baseUri = URI.create(options.baseUrl());
+        String path = resolveModelsPath(baseUri);
+        int port = resolvePort(baseUri);
+
+        return Uni.createFrom().emitter(emitter -> {
+            HttpRequest<Buffer> httpRequest = getClient()
+                .request(HttpMethod.GET, port, baseUri.getHost(), path)
+                .ssl("https".equals(baseUri.getScheme()))
+                .followRedirects(false)
+                .timeout(config.timeout().toMillis());
+            addAuthHeaders(httpRequest, apiKey, provider);
+
+            httpRequest.send(ar -> {
+                if (ar.failed()) {
+                    boolean reached = !LlmCallFailedException.isConnectFailure(ar.cause());
+                    emitter.fail(new LlmCallFailedException(
+                        reached ? "模型列表读取失败" : "LLM 连接失败", reached, ar.cause(), 0));
+                    return;
+                }
+                HttpResponse<Buffer> response = ar.result();
+                if (response.statusCode() != 200) {
+                    // 不回显 provider 错误体（可能含鉴权诊断）
+                    emitter.fail(new LlmCallFailedException(
+                        "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode()));
+                    return;
+                }
+                // 响应体上界：Vert.x WebClient 已把 body 完整缓冲到内存后才到这里，本检查只是「拒绝超限响应、不继续解析入库」，
+                // 不是接收期间的内存硬上限（硬上限需 BodyCodec 流式读取，本 ADR 不做；出站只打 allowlist 内网关）。
+                if (response.body() != null && response.body().length() > MAX_MODELS_BODY_BYTES) {
+                    emitter.fail(new LlmCallFailedException("模型列表响应过大", true, null, 200));
+                    return;
+                }
+                try {
+                    emitter.complete(extractModelIds(response.bodyAsJsonObject()));
+                } catch (Exception e) {
+                    emitter.fail(new LlmCallFailedException("模型列表解析失败", true, e, 200));
+                }
+            });
+        });
+    }
+
+    private static final int MAX_MODELS_BODY_BYTES = 1 << 20;
+
+    /** OpenAI 与 Anthropic 的 /v1/models 都是 {"data":[{"id":...}]}；缺 id 的项跳过（形状/条数限制在 service 层统一做）。 */
+    private static List<String> extractModelIds(JsonObject body) {
+        JsonArray data = body.getJsonArray("data", new JsonArray());
+        List<String> ids = new java.util.ArrayList<>(data.size());
+        for (int i = 0; i < data.size(); i++) {
+            String id = data.getJsonObject(i).getString("id");
+            if (id != null && !id.isBlank()) {
+                ids.add(id);
+            }
+        }
+        return ids;
+    }
+
+    /** 与 resolveChatPath 同一规则：base 带路径则追加 /models，否则 /v1/models。 */
+    private String resolveModelsPath(URI baseUri) {
+        String basePath = baseUri.getPath();
+        if (basePath == null) basePath = "";
+        if (basePath.endsWith("/")) basePath = basePath.substring(0, basePath.length() - 1);
+        return basePath.isEmpty() ? "/v1/models" : basePath + "/models";
     }
 
     @Override
