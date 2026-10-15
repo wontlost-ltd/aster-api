@@ -123,8 +123,9 @@ key 重复录入，`keyHint` 相同），顺序即优先级。这样「这次到
 
 ## 5. 用量、审计与配额
 
-- `recordAiUsage` 的 `model` 改为真实 model：BYOK 取 envelope 的 model，否则取 aster-api 响应头 `X-Aster-Llm-Model`
-  （新增，aster-api 在 2xx 响应上回传实际发出的 model；流式响应放在首个 SSE 事件 `meta` 里）。
+- `recordAiUsage` 的 `model` 改为真实 model：BYOK 取 envelope 的 model，否则取 aster-api 回传的实际发出 model：
+  非流式 `complete` 在 `CompleteResponse.model` 字段；流式在首帧 `{"type":"meta","data":"<model>"}`；早期错误流
+  （BYOK 非法 / 无 key）只有 error 帧，不带 `meta`。
 - 审计动作 `ai-key.create` / `ai-key.update` 的 metadata 增加 `model`（不含 key 明文，规则同现有 keyHint）。
 - 配额语义不变：BYOK 跳过平台月配额，`tokenQuota` 仍按用户总量；model 不改变计费口径（token 数由 provider 回传）。
 
