@@ -278,20 +278,27 @@ public class AiAssistantResource {
         return src != null && "api".equalsIgnoreCase(src.trim());
     }
 
-    /**
-     * 把 SafetyVerdict 序列化为单条 SSE error 事件 + 立即结束流
-     */
-    private Multi<String> refusalStream(SafetyVerdict v) {
-        String json = String.format(
-            "{\"error\":\"out_of_scope\",\"message\":\"%s\",\"rule_id\":\"%s\"}",
-            escapeJson(v.message()),
-            escapeJson(v.ruleId())
-        );
-        return Multi.createFrom().item("event: error\ndata: " + json + "\n\n");
-    }
+    private static final com.fasterxml.jackson.databind.ObjectMapper REFUSAL_MAPPER =
+        new com.fasterxml.jackson.databind.ObjectMapper();
 
-    private static String escapeJson(String s) {
-        if (s == null) return "";
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    /**
+     * 把 SafetyVerdict 序列化为单条裸 JSON data 项 + 立即结束流。
+     *
+     * 端点由 RESTEasy 按 SSE 封装每个元素，这里绝不能自带 "event:/data:" 前缀，
+     * 否则会被二次封装成 "data: event: error..."，cloud 首帧识别不到 error 而误计费。
+     * type=error 让 cloud 的 parseSSEFrame 判为 error；error/message/rule_id 保持
+     * 原拒答载荷字段（cloud 以 message 作为用户文案）。
+     */
+    Multi<String> refusalStream(SafetyVerdict v) {
+        java.util.Map<String, String> frame = new java.util.LinkedHashMap<>();
+        frame.put("type", "error");
+        frame.put("error", "out_of_scope");
+        frame.put("message", v.message() == null ? "" : v.message());
+        frame.put("rule_id", v.ruleId() == null ? "" : v.ruleId());
+        try {
+            return Multi.createFrom().item(REFUSAL_MAPPER.writeValueAsString(frame));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException("拒答帧序列化失败", e);
+        }
     }
 }
