@@ -329,18 +329,19 @@ public class LlmProxyService {
     private static jakarta.ws.rs.WebApplicationException providerKeyRejected(ProviderErrorClassifier.Classified c) {
         return new jakarta.ws.rs.WebApplicationException(
             jakarta.ws.rs.core.Response.status(422)
-                .entity(errorBody("provider_key_rejected", c, "provider 拒绝了该 API key", c.code()))
+                .entity(errorBody("provider_key_rejected", c, "provider 拒绝了该 API key", c.code(), true))
                 .type(jakarta.ws.rs.core.MediaType.APPLICATION_JSON)
                 .build());
     }
 
-    /** 错误响应体：message 缺省回落到中文兜底；reason / providerErrorType 为空则不输出（字段顺序固定）。 */
+    /** 错误响应体：exposeMessage=false 时省略 message；message 缺省回落到中文兜底；reason / providerErrorType 为空则不输出（字段顺序固定）。 */
     private static java.util.Map<String, Object> errorBody(
-        String error, ProviderErrorClassifier.Classified c, String fallback, String reason) {
+        String error, ProviderErrorClassifier.Classified c, String fallback, String reason, boolean exposeMessage) {
         java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
         body.put("error", error);
         if (reason != null) body.put("reason", reason);
-        body.put("message", c.providerMessage() != null ? c.providerMessage() : fallback);
+        // 平台 key 失败：不透出 provider 说明（可能涉及我方账户），连兜底文案也省略，只留错误码
+        if (exposeMessage) body.put("message", c.providerMessage() != null ? c.providerMessage() : fallback);
         if (c.providerErrorType() != null) body.put("providerErrorType", c.providerErrorType());
         return body;
     }
@@ -392,7 +393,7 @@ public class LlmProxyService {
                     : "provider 拒绝了本次请求";
                 return new jakarta.ws.rs.WebApplicationException(
                     jakarta.ws.rs.core.Response.status(400)
-                        .entity(errorBody(c.code(), c, fallback, null))
+                        .entity(errorBody(c.code(), c, fallback, null, options.usedByok()))
                         .type(jakarta.ws.rs.core.MediaType.APPLICATION_JSON)
                         .build());
             })

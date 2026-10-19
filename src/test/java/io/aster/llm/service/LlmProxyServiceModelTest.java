@@ -131,6 +131,23 @@ class LlmProxyServiceModelTest {
     }
 
     @Test
+    @DisplayName("★I1 complete：平台 key 失败 → 400 保留 error 与 providerErrorType，省略 message")
+    void completePlatformSourceOmitsMessage() {
+        when(service.optionsResolver.resolve(anyString(), any())).thenReturn(
+            new LlmRuntimeOptions("k", "anthropic", "https://x", LlmRuntimeOptions.Source.PLATFORM));
+        when(client.chat(any(), any())).thenReturn(Uni.createFrom().failure(providerFailure(400,
+            io.aster.llm.client.ProviderErrorClassifierTest.INCIDENT_BODY, false)));
+        assertThatThrownBy(() -> service.complete("t", new CompleteRequest("Rule r", null, null), null, "r")
+            .await().atMost(Duration.ofSeconds(5)))
+            .satisfies(e -> {
+                assertThat(((WebApplicationException) e).getResponse().getStatus()).isEqualTo(400);
+                assertThat(entityOf(e)).containsEntry("error", "provider_bad_request")
+                    .containsEntry("providerErrorType", "invalid_request_error")
+                    .doesNotContainKey("message");
+            });
+    }
+
+    @Test
     @DisplayName("complete：401 无可解析 body → 400 provider_auth_failed + 中文兜底 message，无 providerErrorType")
     void completeAuthFailedFallbackMessage() {
         options("openai", null);

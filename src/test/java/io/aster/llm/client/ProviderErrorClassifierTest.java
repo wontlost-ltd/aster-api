@@ -93,7 +93,7 @@ public class ProviderErrorClassifierTest {
     @Test
     @DisplayName("非 JSON / 空 / null / 缺 error 对象的 body → 无 message 与 type，仍按状态分类")
     void unparsableBodies() {
-        for (String body : new String[] {"not json", "", null, "[]", "{\"error\":\"plain string\"}", "{\"foo\":1}"}) {
+        for (String body : new String[] {"not json", "", null, "[]", "{\"foo\":1}"}) {
             Classified c = ProviderErrorClassifier.classify(400, body, true);
             assertThat(c.code()).isEqualTo("provider_bad_request");
             assertThat(c.providerMessage()).isNull();
@@ -138,5 +138,48 @@ public class ProviderErrorClassifierTest {
     void blankMessageIsNull() {
         assertThat(ProviderErrorClassifier.classify(400, anthropic("invalid_request_error", "   "), true)
             .providerMessage()).isNull();
+    }
+
+    @Test
+    @DisplayName("★脱敏扩展：gsk_ / xai- / AIza 与 32+ 字符含字母数字的长令牌")
+    void redactsOtherKeyShapes() {
+        String msg = "keys gsk_abcdefghij0123456789 xai-abcdefghij0123456789 AIzaSyA1234567890abcdefghij_-xyz "
+            + "tok A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6 end";
+        Classified c = ProviderErrorClassifier.classify(401, anthropic("authentication_error", msg), true);
+        assertThat(c.providerMessage()).isEqualTo("keys [redacted] [redacted] [redacted] tok [redacted] end");
+    }
+
+    @Test
+    @DisplayName("长令牌脱敏不误伤：纯字母长词、纯数字串、短词")
+    void longTokenRedactionSparesWords() {
+        String word = "internationalizationandlocalizationconfiguration";
+        String digits = "12345678901234567890123456789012345";
+        Classified c = ProviderErrorClassifier.classify(400,
+            anthropic("invalid_request_error", word + " " + digits + " normal text"), true);
+        assertThat(c.providerMessage()).isEqualTo(word + " " + digits + " normal text");
+    }
+
+    @Test
+    @DisplayName("★网关形状：{\"error\":\"text\"} 与顶层 {\"message\":\"text\"} 都保留 message")
+    void gatewayShapes() {
+        Classified a = ProviderErrorClassifier.classify(400, "{\"error\":\"upstream said no\"}", true);
+        assertThat(a.providerMessage()).isEqualTo("upstream said no");
+        assertThat(a.providerErrorType()).isNull();
+        Classified b = ProviderErrorClassifier.classify(502, "{\"message\":\"bad gateway\"}", false);
+        assertThat(b.providerMessage()).isEqualTo("bad gateway");
+        assertThat(b.code()).isEqualTo("provider_unavailable");
+    }
+
+    @Test
+    @DisplayName("★OpenAI 429 insufficient_quota → provider_bad_request（保留 message）；普通 429 不变")
+    void insufficientQuotaIsBadRequest() {
+        String body = "{\"error\":{\"message\":\"You exceeded your current quota\","
+            + "\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\"}}";
+        Classified c = ProviderErrorClassifier.classify(429, body, true);
+        assertThat(c.code()).isEqualTo("provider_bad_request");
+        assertThat(c.providerMessage()).isEqualTo("You exceeded your current quota");
+        assertThat(c.providerErrorType()).isEqualTo("insufficient_quota");
+        assertThat(ProviderErrorClassifier.classify(429, "{\"error\":{\"type\":\"requests\",\"code\":\"rate_limit_exceeded\"}}", true).code())
+            .isEqualTo("provider_rate_limited");
     }
 }

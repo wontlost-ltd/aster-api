@@ -12,7 +12,7 @@ import java.util.regex.Pattern;
  * <ol>
  *   <li>401/403 或 error.type ∈ {authentication_error, permission_error} → provider_auth_failed；</li>
  *   <li>404 或 not_found_error 或 error.code == model_not_found → provider_rejected_model（仅当请求带了显式 model，否则 provider_bad_request）；</li>
- *   <li>429 或 rate_limit_error → provider_rate_limited；</li>
+ *   <li>429 或 rate_limit_error（insufficient_quota 属额度问题，归 provider_bad_request） → provider_rate_limited；</li>
  *   <li>≥500、529、overloaded_error/api_error → provider_unavailable；</li>
  *   <li>其余 4xx → provider_bad_request。</li>
  * </ol>
@@ -28,6 +28,10 @@ public final class ProviderErrorClassifier {
     static final int MAX_MESSAGE_CHARS = 300;
 
     private static final Pattern API_KEY = Pattern.compile("sk-[A-Za-z0-9_-]{8,}");
+    private static final Pattern OTHER_KEYS = Pattern.compile(
+        "gsk_[A-Za-z0-9]{16,}|xai-[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_-]{20,}");
+    /** 32+ 字符的 key 形长令牌；要求同时含字母与数字，避免误伤普通长单词。 */
+    private static final Pattern LONG_TOKEN = Pattern.compile("(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{32,}(?![A-Za-z0-9_-])");
     private static final Pattern BEARER = Pattern.compile("Bearer\\s+\\S+");
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
@@ -78,6 +82,10 @@ public final class ProviderErrorClassifier {
         if (status == 404 || "not_found_error".equals(type) || "model_not_found".equals(code)) {
             return explicitModel ? REJECTED_MODEL : BAD_REQUEST;
         }
+        // OpenAI 的 insufficient_quota 也是 429，但属账单/额度问题，重试无益 → 按请求不可用上报
+        if ("insufficient_quota".equals(code) || "insufficient_quota".equals(type)) {
+            return BAD_REQUEST;
+        }
         if (status == 429 || "rate_limit_error".equals(type)) {
             return RATE_LIMITED;
         }
@@ -87,11 +95,18 @@ public final class ProviderErrorClassifier {
         return BAD_REQUEST;
     }
 
-    /** Anthropic 与 OpenAI 兼容都把详情放在顶层 "error" 对象内；解析失败一律视为无详情。 */
+    /**
+     * 归一化三种常见形状为 {type, code, message} 对象：
+     * Anthropic/OpenAI 的 {"error":{...}}；网关的 {"error":"text"}；顶层 {"message":"text"}。解析失败视为无详情。
+     */
     private static JsonObject parseError(String body) {
         if (body == null || body.isBlank()) return null;
         try {
-            return new JsonObject(body).getJsonObject("error");
+            JsonObject root = new JsonObject(body);
+            Object error = root.getValue("error");
+            if (error instanceof JsonObject obj) return obj;
+            if (error instanceof String text) return new JsonObject().put("message", text);
+            return root.getValue("message") instanceof String ? root : null;
         } catch (RuntimeException e) {
             return null;
         }
@@ -108,6 +123,12 @@ public final class ProviderErrorClassifier {
         if (message == null) return null;
         String s = API_KEY.matcher(message).replaceAll("[redacted]");
         s = BEARER.matcher(s).replaceAll("[redacted]");
+        s = OTHER_KEYS.matcher(s).replaceAll("[redacted]");
+        s = LONG_TOKEN.matcher(s).replaceAll(m -> {
+            String t = m.group();
+            boolean mixed = t.chars().anyMatch(Character::isDigit) && t.chars().anyMatch(Character::isLetter);
+            return mixed ? "[redacted]" : java.util.regex.Matcher.quoteReplacement(t);
+        });
         s = WHITESPACE.matcher(s).replaceAll(" ").strip();
         if (s.isEmpty()) return null;
         return s.length() > MAX_MESSAGE_CHARS ? s.substring(0, MAX_MESSAGE_CHARS) + "…" : s;

@@ -156,7 +156,9 @@ public class VertxLlmClient implements LlmClient {
                             clientResponse.bodyHandler(errBuf -> {
                                 ProviderErrorClassifier.Classified c = classifyAndLog(
                                     statusCode, errBuf.toString(), options, provider);
-                                emitter.emit(LlmStreamEvent.error(c.code(), c.providerMessage(), c.providerErrorType()));
+                                // 平台 key 的 provider 说明可能涉及我方账户（额度、组织信息），不向用户透出
+                                String exposed = options.usedByok() ? c.providerMessage() : null;
+                                emitter.emit(LlmStreamEvent.error(c.code(), exposed, c.providerErrorType()));
                                 emitter.complete();
                                 httpClient.close();
                             });

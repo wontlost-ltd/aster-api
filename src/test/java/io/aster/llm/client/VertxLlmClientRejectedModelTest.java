@@ -65,6 +65,18 @@ class VertxLlmClientRejectedModelTest {
     }
 
     @Test
+    @DisplayName("★I1 流式：平台 key（PLATFORM）失败 → 保留 code 与 providerErrorType，省略 message")
+    void streamPlatformSourceOmitsMessage() throws Exception {
+        int port = listen(sock -> sock.write(http(400, "Bad Request", ProviderErrorClassifierTest.INCIDENT_BODY)));
+        LlmRuntimeOptions platform = new LlmRuntimeOptions("k", "anthropic", "http://127.0.0.1:" + port,
+            LlmRuntimeOptions.Source.PLATFORM);
+        LlmStreamEvent ev = firstError(platform);
+        assertThat(ev.error()).isEqualTo("provider_bad_request");
+        assertThat(ev.providerErrorType()).isEqualTo("invalid_request_error");
+        assertThat(ev.message()).isNull();
+    }
+
+    @Test
     @DisplayName("流式：404 not_found_error + 显式 model → provider_rejected_model")
     void streamNotFoundIsRejectedModel() throws Exception {
         int port = listen(sock -> sock.write(http(404, "Not Found",
