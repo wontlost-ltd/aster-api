@@ -118,6 +118,51 @@ class LlmProxyServiceModelsTest {
             });
     }
 
+    private static LlmCallFailedException failure(int status, String body) {
+        return new LlmCallFailedException("LLM API 错误 (" + status + ")", true, null, status,
+            io.aster.llm.client.ProviderErrorClassifier.classify(status, body, false));
+    }
+
+    private void assertRejected422(String reason, String providerMessage, String providerErrorType) {
+        assertThatThrownBy(this::call).isInstanceOf(WebApplicationException.class)
+            .satisfies(e -> {
+                var r = ((WebApplicationException) e).getResponse();
+                assertThat(r.getStatus()).isEqualTo(422);
+                var entity = (java.util.Map<?, ?>) r.getEntity();
+                assertThat(entity.get("error")).isEqualTo("provider_key_rejected");
+                assertThat(entity.get("reason")).isEqualTo(reason);
+                assertThat(entity.get("message")).isEqualTo(providerMessage);
+                assertThat(entity.get("providerErrorType")).isEqualTo(providerErrorType);
+            });
+    }
+
+    @Test
+    @DisplayName("★事故：workspace 未绑定的 400 → 422 provider_key_rejected(reason=provider_bad_request) + 原文")
+    void workspaceScope400Is422() {
+        when(client.listModels(any())).thenReturn(Uni.createFrom().failure(
+            failure(400, io.aster.llm.client.ProviderErrorClassifierTest.INCIDENT_BODY)));
+        assertRejected422("provider_bad_request",
+            io.aster.llm.client.ProviderErrorClassifierTest.WORKSPACE_MESSAGE, "invalid_request_error");
+    }
+
+    @Test
+    @DisplayName("401 → 422 provider_key_rejected(reason=provider_auth_failed)")
+    void unauthorizedIs422() {
+        when(client.listModels(any())).thenReturn(Uni.createFrom().failure(failure(401,
+            "{\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}")));
+        assertRejected422("provider_auth_failed", "invalid x-api-key", "authentication_error");
+    }
+
+    @Test
+    @DisplayName("429 / 529 → 仍是 502 models_unavailable（限流不代表 key 坏）")
+    void rateLimitedStays502() {
+        for (int status : new int[] {429, 529}) {
+            when(client.listModels(any())).thenReturn(Uni.createFrom().failure(failure(status, "{}")));
+            assertThatThrownBy(this::call).satisfies(e ->
+                assertThat(((WebApplicationException) e).getResponse().getStatus()).isEqualTo(502));
+        }
+    }
+
     @Test
     @DisplayName("client 同步抛 IllegalArgumentException（端点校验）→ 400 invalid_byok")
     void syncEndpointRejectionIs400() {

@@ -18,40 +18,49 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * @param data      内容数据
  * @param error     错误信息（仅 error/validation_error 类型）
  * @param validated 编译是否通过（仅 final 类型）
+ * @param message   provider 说明（仅 error 类型，脱敏截断，可空）
+ * @param providerErrorType provider 的 error.type（仅 error 类型，可空）
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record GeneratePolicyEvent(
     String type,
     String data,
     String error,
-    Boolean validated
+    Boolean validated,
+    String message,
+    String providerErrorType
 ) {
     public static GeneratePolicyEvent delta(String content) {
-        return new GeneratePolicyEvent("delta", content, null, null);
+        return new GeneratePolicyEvent("delta", content, null, null, null, null);
     }
 
     public static GeneratePolicyEvent validationError(String errorDetails) {
-        return new GeneratePolicyEvent("validation_error", null, errorDetails, null);
+        return new GeneratePolicyEvent("validation_error", null, errorDetails, null, null, null);
     }
 
     public static GeneratePolicyEvent repairStart(int attempt, int maxAttempts) {
-        return new GeneratePolicyEvent("repair_start", attempt + "/" + maxAttempts, null, null);
+        return new GeneratePolicyEvent("repair_start", attempt + "/" + maxAttempts, null, null, null, null);
     }
 
     public static GeneratePolicyEvent finalResult(String source, boolean validated) {
-        return new GeneratePolicyEvent("final", source, null, validated);
+        return new GeneratePolicyEvent("final", source, null, validated, null, null);
     }
 
     public static GeneratePolicyEvent upstreamReached() {
-        return new GeneratePolicyEvent("upstream_reached", null, null, null);
+        return new GeneratePolicyEvent("upstream_reached", null, null, null, null, null);
     }
 
     /** 首帧：本次实际发往 provider 的 model（ADR 0048 §5），cloud 据此记账。 */
     public static GeneratePolicyEvent meta(String model) {
-        return new GeneratePolicyEvent("meta", model, null, null);
+        return new GeneratePolicyEvent("meta", model, null, null, null, null);
     }
 
     public static GeneratePolicyEvent error(String message) {
-        return new GeneratePolicyEvent("error", null, message, null);
+        return new GeneratePolicyEvent("error", null, message, null, null, null);
+    }
+
+    /** provider 失败：error 为分类码，message/providerErrorType 为 provider 给出的说明（可空，空则不输出）。 */
+    public static GeneratePolicyEvent error(String code, String message, String providerErrorType) {
+        return new GeneratePolicyEvent("error", null, code, null, message, providerErrorType);
     }
 }

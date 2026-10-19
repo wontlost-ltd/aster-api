@@ -72,7 +72,7 @@ class VertxLlmClientReachedTest {
 
         assertThat(events).extracting(LlmStreamEvent::type)
             .containsExactly(LlmStreamEvent.Type.REACHED, LlmStreamEvent.Type.ERROR);
-        assertThat(events.get(1).error()).isEqualTo("LLM API 错误 (500)");
+        assertThat(events.get(1).error()).isEqualTo("provider_unavailable");
     }
 
     @Test

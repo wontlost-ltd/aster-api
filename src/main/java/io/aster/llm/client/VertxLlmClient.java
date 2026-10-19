@@ -148,19 +148,15 @@ public class VertxLlmClient implements LlmClient {
                         int statusCode = clientResponse.statusCode();
 
                         if (statusCode != 200) {
-                            // 非 200：不回显 provider 原始错误体（红队：BYOK 下 provider 错误体可能
-                            // 含 key 前缀/鉴权诊断/请求片段）。只记 status+provider，前端给泛化错误。
+                            // 非 200：统一交给 ProviderErrorClassifier 分类（Anthropic/OpenAI 错误体）。
+                            // 只透出脱敏、截断后的 error.message 与 error.type，原始错误体不落日志、不回显。
                             // SSRF 硬化：底层 HttpClient.request() 默认【不】跟随重定向，且此处把 3xx
                             // 一并当错误终止——自定义端点若返回 302 到内网也不会被跟随（与非流式路径
                             // WebClient.followRedirects(false) 语义一致）。
                             clientResponse.bodyHandler(errBuf -> {
-                                LOG.errorf("LLM API 错误: status=%d, provider=%s, source=%s (错误体已脱敏)",
-                                    statusCode, provider, options.source());
-                                // BYOK 指定了 model 且 provider 400：按结构化错误码上报，service/cloud 不必解析文案（ADR 0048 §6）
-                                boolean rejectedModel = statusCode == 400 && options.hasModel();
-                                emitter.emit(LlmStreamEvent.error(rejectedModel
-                                    ? "provider_rejected_model"
-                                    : "LLM API 错误 (" + statusCode + ")"));
+                                ProviderErrorClassifier.Classified c = classifyAndLog(
+                                    statusCode, errBuf.toString(), options, provider);
+                                emitter.emit(LlmStreamEvent.error(c.code(), c.providerMessage(), c.providerErrorType()));
                                 emitter.complete();
                                 httpClient.close();
                             });
@@ -261,9 +257,11 @@ public class VertxLlmClient implements LlmClient {
                 }
                 HttpResponse<Buffer> response = ar.result();
                 if (response.statusCode() != 200) {
-                    // 不回显 provider 错误体（可能含鉴权诊断）
+                    // 模型列表请求不带 model，404 不会被当成「模型被拒」
+                    ProviderErrorClassifier.Classified c = classifyAndLog(
+                        response.statusCode(), bodyText(response), options, provider);
                     emitter.fail(new LlmCallFailedException(
-                        "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode()));
+                        "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode(), c));
                     return;
                 }
                 // 响应体上界：Vert.x WebClient 已把 body 完整缓冲到内存后才到这里，本检查只是「拒绝超限响应、不继续解析入库」，
@@ -279,6 +277,23 @@ public class VertxLlmClient implements LlmClient {
                 }
             });
         });
+    }
+
+    /**
+     * 分类 provider 失败并记一行 WARN。日志只含状态、错误码、error.type 与脱敏后的 message，
+     * 绝不记录原始错误体（BYOK 下可能含 key 前缀/鉴权诊断/请求片段）。
+     */
+    private static ProviderErrorClassifier.Classified classifyAndLog(
+        int status, String body, LlmRuntimeOptions options, String provider) {
+        ProviderErrorClassifier.Classified c = ProviderErrorClassifier.classify(status, body, options.hasModel());
+        LOG.warnf("LLM API 错误: provider=%s status=%d code=%s providerErrorType=%s providerMessage=%s source=%s",
+            provider, status, c.code(), c.providerErrorType(), c.providerMessage(), options.source());
+        return c;
+    }
+
+    private static String bodyText(HttpResponse<Buffer> response) {
+        Buffer b = response.body();
+        return b == null ? null : b.toString();
     }
 
     private static final int MAX_MODELS_BODY_BYTES = 1 << 20;
@@ -339,11 +354,10 @@ public class VertxLlmClient implements LlmClient {
 
                 HttpResponse<Buffer> response = ar.result();
                 if (response.statusCode() != 200) {
-                    // 不回显 provider 原始错误体（红队：BYOK 下可能含 key 前缀/鉴权诊断）。
-                    LOG.errorf("LLM API 错误: status=%d, provider=%s, source=%s (错误体已脱敏)",
-                        response.statusCode(), provider, options.source());
+                    ProviderErrorClassifier.Classified c = classifyAndLog(
+                        response.statusCode(), bodyText(response), options, provider);
                     emitter.fail(new LlmCallFailedException(
-                        "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode()));
+                        "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode(), c));
                     return;
                 }
 

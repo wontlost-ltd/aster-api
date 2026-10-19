@@ -99,6 +99,31 @@ class LlmProxyServiceUpstreamReachedTest {
     }
 
     @Test
+    @DisplayName("★错误帧：携带 message 与 providerErrorType，缺省字段省略，旧 {type,error} 形状兼容")
+    void errorFrameCarriesProviderDetail() {
+        providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.error("provider_bad_request",
+            "This API key is not scoped to a workspace", "invalid_request_error"));
+        assertThat(collect(service.streamSuggest("t", new SuggestRequest("s", null, null, null), null, "r")))
+            .containsExactly(META, REACHED,
+                "{\"type\":\"error\",\"error\":\"provider_bad_request\","
+                    + "\"message\":\"This API key is not scoped to a workspace\","
+                    + "\"providerErrorType\":\"invalid_request_error\"}");
+
+        providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.error("provider_unavailable", null, null));
+        assertThat(collect(service.streamSuggest("t", new SuggestRequest("s", null, null, null), null, "r")))
+            .containsExactly(META, REACHED, "{\"type\":\"error\",\"error\":\"provider_unavailable\"}");
+    }
+
+    @Test
+    @DisplayName("★generate：错误帧同样携带 provider 说明")
+    void generateErrorFrameCarriesProviderDetail() {
+        providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.error("provider_auth_failed", "bad key", "authentication_error"));
+        assertThat(collect(service.streamGenerate("t", new GeneratePolicyRequest("g", null, null, null, null), null, "r")))
+            .anySatisfy(f -> assertThat(f).contains("\"error\":\"provider_auth_failed\"")
+                .contains("\"message\":\"bad key\"").contains("\"providerErrorType\":\"authentication_error\""));
+    }
+
+    @Test
     @DisplayName("suggest：USAGE / DONE 不转发")
     void suggestDropsUsageAndDone() {
         providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.usage(new io.aster.llm.model.LlmUsage(1, 2)),
