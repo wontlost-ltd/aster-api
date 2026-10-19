@@ -31,10 +31,33 @@ class ProviderErrorClassifierTemperatureTest {
     }
 
     @Test
-    @DisplayName("仅 param=temperature、message 不含关键词 → true")
-    void paramOnly() {
-        String body = "{\"error\":{\"message\":\"Invalid value\",\"type\":\"invalid_request_error\",\"param\":\"temperature\"}}";
+    @DisplayName("param=temperature + code=unsupported_value（message 无关键词）→ true")
+    void paramWithUnsupportedCode() {
+        String body = "{\"error\":{\"message\":\"Invalid value\",\"type\":\"invalid_request_error\","
+            + "\"param\":\"temperature\",\"code\":\"unsupported_value\"}}";
         assertThat(ProviderErrorClassifier.isTemperatureUnsupported(400, body, true)).isTrue();
+    }
+
+    @Test
+    @DisplayName("★param=temperature + code=decimal_above_max_value（取值越界）→ false，不掩盖真实错误")
+    void paramWithRangeErrorIsNotUnsupported() {
+        String body = "{\"error\":{\"message\":\"Invalid 'temperature': decimal above maximum value.\","
+            + "\"type\":\"invalid_request_error\",\"param\":\"temperature\",\"code\":\"decimal_above_max_value\"}}";
+        assertThat(ProviderErrorClassifier.isTemperatureUnsupported(400, body, true)).isFalse();
+    }
+
+    @Test
+    @DisplayName("仅 param=temperature、无 code 无拒绝措辞 → false")
+    void paramOnlyIsNotEnough() {
+        String body = "{\"error\":{\"message\":\"Invalid value\",\"type\":\"invalid_request_error\",\"param\":\"temperature\"}}";
+        assertThat(ProviderErrorClassifier.isTemperatureUnsupported(400, body, true)).isFalse();
+    }
+
+    @Test
+    @DisplayName("网关常用的 422 同样识别；其他状态仍不识别")
+    void status422() {
+        assertThat(ProviderErrorClassifier.isTemperatureUnsupported(422, ANTHROPIC_INCIDENT_BODY, true)).isTrue();
+        assertThat(ProviderErrorClassifier.isTemperatureUnsupported(404, ANTHROPIC_INCIDENT_BODY, true)).isFalse();
     }
 
     @Test
@@ -70,7 +93,6 @@ class ProviderErrorClassifierTemperatureTest {
     @Test
     @DisplayName("非 400 状态 → false；空/非 JSON body → false")
     void otherStatusAndBadBodies() {
-        assertThat(ProviderErrorClassifier.isTemperatureUnsupported(422, ANTHROPIC_INCIDENT_BODY, true)).isFalse();
         assertThat(ProviderErrorClassifier.isTemperatureUnsupported(500, ANTHROPIC_INCIDENT_BODY, true)).isFalse();
         assertThat(ProviderErrorClassifier.isTemperatureUnsupported(400, null, true)).isFalse();
         assertThat(ProviderErrorClassifier.isTemperatureUnsupported(400, "", true)).isFalse();

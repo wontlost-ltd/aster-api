@@ -36,6 +36,9 @@ public final class ProviderErrorClassifier {
     /** 「弃用/不支持」类措辞；与 temperature 同现于 message 即视为该模型拒绝此参数。 */
     private static final Pattern REJECTION_WORDING = Pattern.compile(
         "deprecated|unsupported|not\\s+supported|not\\s+allowed", Pattern.CASE_INSENSITIVE);
+    /** OpenAI 表示「参数/取值不被该模型支持」的 error.code。 */
+    private static final java.util.Set<String> UNSUPPORTED_CODES =
+        java.util.Set.of("unsupported_parameter", "unsupported_value");
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     private ProviderErrorClassifier() {
@@ -80,20 +83,26 @@ public final class ProviderErrorClassifier {
     /**
      * provider 是否因「模型不接受 temperature」而拒绝了请求（调用方据此去掉该字段重试一次）。
      *
-     * <p>成立条件：请求体确实带了 temperature，状态为 400，且错误体满足其一：
-     * OpenAI 的 {@code error.param == "temperature"}；或 message 同时提到 temperature 与
-     * deprecated / unsupported / not supported / not allowed（大小写不敏感）。
+     * <p>成立条件：请求体确实带了 temperature，状态为 400（网关可能给 422），且错误体满足其一：
+     * <ul>
+     *   <li>message 同时提到 temperature 与 deprecated / unsupported / not supported / not allowed（大小写不敏感）；</li>
+     *   <li>OpenAI 的 {@code error.param == "temperature"}，并且 {@code code} ∈ {unsupported_parameter, unsupported_value}
+     *       或 message 含上述拒绝措辞。仅凭 param 不够：取值越界（如 decimal_above_max_value）同样指向 temperature，
+     *       但去掉该字段会掩盖真实错误，还会错误地记住该模型。</li>
+     * </ul>
      * 解析复用 {@link #parseError}，使用未脱敏截断的原始 message，避免关键词被 300 字符截断吞掉。
      */
     public static boolean isTemperatureUnsupported(int status, String body, boolean requestHadTemperature) {
-        if (!requestHadTemperature || status != 400) return false;
+        if (!requestHadTemperature || (status != 400 && status != 422)) return false;
         JsonObject error = parseError(body);
         if (error == null) return false;
-        if ("temperature".equalsIgnoreCase(str(error, "param"))) return true;
         String message = str(error, "message");
-        return message != null
-            && message.toLowerCase(java.util.Locale.ROOT).contains("temperature")
-            && REJECTION_WORDING.matcher(message).find();
+        boolean rejectionWording = message != null && REJECTION_WORDING.matcher(message).find();
+        if ("temperature".equalsIgnoreCase(str(error, "param"))) {
+            String code = str(error, "code");
+            return rejectionWording || (code != null && UNSUPPORTED_CODES.contains(code));
+        }
+        return rejectionWording && message.toLowerCase(java.util.Locale.ROOT).contains("temperature");
     }
 
     private static String resolveCode(int status, String type, String code, boolean explicitModel) {

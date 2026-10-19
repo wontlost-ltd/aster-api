@@ -272,7 +272,10 @@ public class VertxLlmClient implements LlmClient {
         LlmRuntimeOptions options = call.options();
         httpClient.close();
         if (shouldRetryWithoutTemperature(firstAttempt, statusCode, errBody, body, options, call.baseUri())) {
-            startStreamAttempt(call, withoutTemperature(body), false);
+            // 下游已断开（取消）就不必再发请求：否则新请求会在已终止的 emitter 上建连失败并记误导性错误日志
+            if (!emitter.isCancelled()) {
+                startStreamAttempt(call, withoutTemperature(body), false);
+            }
             return;
         }
         ProviderErrorClassifier.Classified c = classifyAndLog(statusCode, errBody, options, call.provider());

@@ -203,6 +203,25 @@ class VertxLlmClientAdaptiveTemperatureTest {
     }
 
     @Test
+    @DisplayName("下游在收到 REACHED 后取消 → 温度 400 到达时不再发起重试（best-effort：取消会关闭连接，竞态下也不应有第二次请求）")
+    void cancelledDownstreamDoesNotRetry() throws Exception {
+        int port = listen(n -> json(400, ProviderErrorClassifierTemperatureTest.ANTHROPIC_INCIDENT_BODY));
+        java.util.concurrent.atomic.AtomicReference<io.smallrye.mutiny.subscription.Cancellable> sub =
+            new java.util.concurrent.atomic.AtomicReference<>();
+        CountDownLatch reached = new CountDownLatch(1);
+        sub.set(client().streamChat(request(true), options(port, "openai", "gpt-x")).subscribe().with(e -> {
+            if (e.type() == LlmStreamEvent.Type.REACHED) {
+                while (sub.get() == null) Thread.onSpinWait();
+                sub.get().cancel();
+                reached.countDown();
+            }
+        }));
+        assertThat(reached.await(10, TimeUnit.SECONDS)).isTrue();
+        Thread.sleep(500);
+        assertThat(received.size()).isLessThanOrEqualTo(1);
+    }
+
+    @Test
     @DisplayName("★非流式 chat：首次 400 温度被拒 → 无 temperature 重试成功，返回内容与 usage")
     void chatRetriesWithoutTemperature() throws Exception {
         int port = listen(n -> n == 1 ? json(400, ProviderErrorClassifierTemperatureTest.ANTHROPIC_INCIDENT_BODY) : json(200, SUCCESS_CHAT));
