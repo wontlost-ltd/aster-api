@@ -13,6 +13,7 @@ public class LlmCallFailedException extends RuntimeException {
 
     private final boolean reachedProvider;
     private final int statusCode;
+    private final ProviderErrorClassifier.Classified providerError;
 
     public LlmCallFailedException(String message, boolean reachedProvider, Throwable cause) {
         this(message, reachedProvider, cause, 0);
@@ -20,9 +21,20 @@ public class LlmCallFailedException extends RuntimeException {
 
     /** statusCode：provider 的 HTTP 状态（0 = 无响应/连接失败）；供 service 区分「模型被拒」等情形。 */
     public LlmCallFailedException(String message, boolean reachedProvider, Throwable cause, int statusCode) {
+        this(message, reachedProvider, cause, statusCode, null);
+    }
+
+    /** providerError：provider 非 2xx 时由 {@link ProviderErrorClassifier} 得出的分类；其它失败为 null。 */
+    public LlmCallFailedException(String message, boolean reachedProvider, Throwable cause, int statusCode,
+                                  ProviderErrorClassifier.Classified providerError) {
         super(message, cause);
         this.reachedProvider = reachedProvider;
         this.statusCode = statusCode;
+        this.providerError = providerError;
+    }
+
+    public ProviderErrorClassifier.Classified providerError() {
+        return providerError;
     }
 
     public int statusCode() {

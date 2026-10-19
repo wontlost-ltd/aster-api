@@ -87,28 +87,92 @@ class LlmProxyServiceModelTest {
         assertThat(res.model()).isEqualTo("claude-default");
     }
 
-    @Test
-    @DisplayName("★complete：BYOK 指定 model 且 provider 400 → 400 provider_rejected_model，不伪装为空补全")
-    void completeRejectedModelIs400() {
-        options("openai", "nope-1");
-        when(client.chat(any(), any())).thenReturn(Uni.createFrom().failure(
-            new LlmCallFailedException("LLM API 错误 (400)", true, null, 400)));
-        assertThatThrownBy(() -> service.complete("t", new CompleteRequest("Rule r", null, null), null, "r")
-            .await().atMost(Duration.ofSeconds(5)))
-            .isInstanceOf(WebApplicationException.class)
-            .satisfies(e -> assertThat(((WebApplicationException) e).getResponse().getStatus()).isEqualTo(400));
+    private static LlmCallFailedException providerFailure(int status, String body, boolean explicitModel) {
+        return new LlmCallFailedException("LLM API 错误 (" + status + ")", true, null, status,
+            io.aster.llm.client.ProviderErrorClassifier.classify(status, body, explicitModel));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static java.util.Map<String, Object> entityOf(Throwable e) {
+        return (java.util.Map<String, Object>) ((WebApplicationException) e).getResponse().getEntity();
     }
 
     @Test
-    @DisplayName("complete：未指定 model 时 provider 400 → 保持今天的降级（空补全、upstreamReached=true）")
-    void completeWithoutModelKeepsRecovery() {
+    @DisplayName("★complete：404 not_found_error + BYOK model → 400 provider_rejected_model，不伪装为空补全")
+    void completeRejectedModelIs400() {
+        options("openai", "nope-1");
+        when(client.chat(any(), any())).thenReturn(Uni.createFrom().failure(providerFailure(404,
+            "{\"type\":\"error\",\"error\":{\"type\":\"not_found_error\",\"message\":\"model: nope-1\"}}", true)));
+        assertThatThrownBy(() -> service.complete("t", new CompleteRequest("Rule r", null, null), null, "r")
+            .await().atMost(Duration.ofSeconds(5)))
+            .isInstanceOf(WebApplicationException.class)
+            .satisfies(e -> {
+                assertThat(((WebApplicationException) e).getResponse().getStatus()).isEqualTo(400);
+                assertThat(entityOf(e)).containsEntry("error", "provider_rejected_model")
+                    .containsEntry("message", "model: nope-1")
+                    .containsEntry("providerErrorType", "not_found_error");
+            });
+    }
+
+    @Test
+    @DisplayName("★complete：事故 400（workspace 未绑定，带 model）→ 400 provider_bad_request + provider 原文")
+    void completeWorkspaceScopeIsBadRequest() {
+        options("anthropic", "claude-sonnet-4-5");
+        when(client.chat(any(), any())).thenReturn(Uni.createFrom().failure(providerFailure(400,
+            io.aster.llm.client.ProviderErrorClassifierTest.INCIDENT_BODY, true)));
+        assertThatThrownBy(() -> service.complete("t", new CompleteRequest("Rule r", null, null), null, "r")
+            .await().atMost(Duration.ofSeconds(5)))
+            .satisfies(e -> {
+                assertThat(((WebApplicationException) e).getResponse().getStatus()).isEqualTo(400);
+                assertThat(entityOf(e)).containsEntry("error", "provider_bad_request")
+                    .containsEntry("message", io.aster.llm.client.ProviderErrorClassifierTest.WORKSPACE_MESSAGE)
+                    .containsEntry("providerErrorType", "invalid_request_error");
+            });
+    }
+
+    @Test
+    @DisplayName("★I1 complete：平台 key 失败 → 400 保留 error 与 providerErrorType，省略 message")
+    void completePlatformSourceOmitsMessage() {
+        when(service.optionsResolver.resolve(anyString(), any())).thenReturn(
+            new LlmRuntimeOptions("k", "anthropic", "https://x", LlmRuntimeOptions.Source.PLATFORM));
+        when(client.chat(any(), any())).thenReturn(Uni.createFrom().failure(providerFailure(400,
+            io.aster.llm.client.ProviderErrorClassifierTest.INCIDENT_BODY, false)));
+        assertThatThrownBy(() -> service.complete("t", new CompleteRequest("Rule r", null, null), null, "r")
+            .await().atMost(Duration.ofSeconds(5)))
+            .satisfies(e -> {
+                assertThat(((WebApplicationException) e).getResponse().getStatus()).isEqualTo(400);
+                assertThat(entityOf(e)).containsEntry("error", "provider_bad_request")
+                    .containsEntry("providerErrorType", "invalid_request_error")
+                    .doesNotContainKey("message");
+            });
+    }
+
+    @Test
+    @DisplayName("complete：401 无可解析 body → 400 provider_auth_failed + 中文兜底 message，无 providerErrorType")
+    void completeAuthFailedFallbackMessage() {
         options("openai", null);
-        when(client.chat(any(), any())).thenReturn(Uni.createFrom().failure(
-            new LlmCallFailedException("LLM API 错误 (400)", true, null, 400)));
-        CompleteResponse res = service.complete("t", new CompleteRequest("Rule r", null, null), null, "r")
-            .await().atMost(Duration.ofSeconds(5));
-        assertThat(res.completion()).isEmpty();
-        assertThat(res.upstreamReached()).isTrue();
+        when(client.chat(any(), any())).thenReturn(Uni.createFrom().failure(providerFailure(401, "", false)));
+        assertThatThrownBy(() -> service.complete("t", new CompleteRequest("Rule r", null, null), null, "r")
+            .await().atMost(Duration.ofSeconds(5)))
+            .satisfies(e -> {
+                assertThat(((WebApplicationException) e).getResponse().getStatus()).isEqualTo(400);
+                assertThat(entityOf(e)).containsEntry("error", "provider_auth_failed")
+                    .containsEntry("message", "provider 拒绝了本次请求")
+                    .doesNotContainKey("providerErrorType");
+            });
+    }
+
+    @Test
+    @DisplayName("complete：429 / 5xx → 保持软失败（空补全、upstreamReached=true）")
+    void completeRateLimitedAndServerErrorKeepRecovery() {
+        options("openai", "gpt-4o");
+        for (int status : new int[] {429, 500, 529}) {
+            when(client.chat(any(), any())).thenReturn(Uni.createFrom().failure(providerFailure(status, "{}", true)));
+            CompleteResponse res = service.complete("t", new CompleteRequest("Rule r", null, null), null, "r")
+                .await().atMost(Duration.ofSeconds(5));
+            assertThat(res.completion()).isEmpty();
+            assertThat(res.upstreamReached()).isTrue();
+        }
     }
 
     @Test

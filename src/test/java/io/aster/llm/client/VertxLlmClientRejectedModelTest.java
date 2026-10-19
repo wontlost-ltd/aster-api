@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-/** ADR 0048 §6：流式 400 的错误码判定在 client（唯一拿得到状态码的地方）。 */
+/** ADR 0048 §6（2026-10-19 修订）：provider 错误码判定在 client（唯一拿得到状态码与错误体的地方）。 */
 class VertxLlmClientRejectedModelTest {
 
     private Vertx vertx;
@@ -38,35 +38,98 @@ class VertxLlmClientRejectedModelTest {
         vertx.close();
     }
 
-    @Test
-    @DisplayName("★流式：BYOK 指定 model + provider 400 → error 帧为 provider_rejected_model")
-    void streamRejectedModel() throws Exception {
-        int port = listen(sock -> sock.write(
-            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"));
-        LlmRuntimeOptions opts = new LlmRuntimeOptions("k", "openai", "http://127.0.0.1:" + port,
-            LlmRuntimeOptions.Source.BYOK, LlmRuntimeOptions.WireFormat.OPENAI_NATIVE, false, "nope-1");
+    private static String http(int status, String reason, String body) {
+        return "HTTP/1.1 " + status + " " + reason + "\r\nContent-Type: application/json\r\nContent-Length: "
+            + body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length + "\r\n\r\n" + body;
+    }
 
+    private static LlmRuntimeOptions anthropicByok(int port, String model) {
+        return new LlmRuntimeOptions("k", "anthropic", "http://127.0.0.1:" + port,
+            LlmRuntimeOptions.Source.BYOK, LlmRuntimeOptions.WireFormat.OPENAI_NATIVE, false, model);
+    }
+
+    private LlmStreamEvent firstError(LlmRuntimeOptions opts) {
         List<LlmStreamEvent> events = client().streamChat(request(), opts)
             .collect().asList().await().atMost(Duration.ofSeconds(10));
-
-        assertThat(events).anySatisfy(ev -> {
-            assertThat(ev.type()).isEqualTo(LlmStreamEvent.Type.ERROR);
-            assertThat(ev.error()).isEqualTo("provider_rejected_model");
-        });
+        return events.stream().filter(e -> e.type() == LlmStreamEvent.Type.ERROR).findFirst().orElseThrow();
     }
 
     @Test
-    @DisplayName("流式：未指定 model 的 400 → 保持原文案 LLM API 错误 (400)")
-    void streamPlain400() throws Exception {
-        int port = listen(sock -> sock.write(
-            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"));
-        LlmRuntimeOptions opts = new LlmRuntimeOptions("k", "openai", "http://127.0.0.1:" + port,
-            LlmRuntimeOptions.Source.BYOK);
+    @DisplayName("★事故回归：流式 workspace 未绑定 400（带显式 model）→ provider_bad_request + 原文 + type")
+    void streamWorkspaceScope400() throws Exception {
+        int port = listen(sock -> sock.write(http(400, "Bad Request", ProviderErrorClassifierTest.INCIDENT_BODY)));
+        LlmStreamEvent ev = firstError(anthropicByok(port, "claude-sonnet-4-5"));
+        assertThat(ev.error()).isEqualTo("provider_bad_request");
+        assertThat(ev.message()).isEqualTo(ProviderErrorClassifierTest.WORKSPACE_MESSAGE);
+        assertThat(ev.providerErrorType()).isEqualTo("invalid_request_error");
+    }
 
-        List<LlmStreamEvent> events = client().streamChat(request(), opts)
-            .collect().asList().await().atMost(Duration.ofSeconds(10));
+    @Test
+    @DisplayName("★I1 流式：平台 key（PLATFORM）失败 → 保留 code 与 providerErrorType，省略 message")
+    void streamPlatformSourceOmitsMessage() throws Exception {
+        int port = listen(sock -> sock.write(http(400, "Bad Request", ProviderErrorClassifierTest.INCIDENT_BODY)));
+        LlmRuntimeOptions platform = new LlmRuntimeOptions("k", "anthropic", "http://127.0.0.1:" + port,
+            LlmRuntimeOptions.Source.PLATFORM);
+        LlmStreamEvent ev = firstError(platform);
+        assertThat(ev.error()).isEqualTo("provider_bad_request");
+        assertThat(ev.providerErrorType()).isEqualTo("invalid_request_error");
+        assertThat(ev.message()).isNull();
+    }
 
-        assertThat(events).anySatisfy(ev -> assertThat(ev.error()).isEqualTo("LLM API 错误 (400)"));
+    @Test
+    @DisplayName("流式：404 not_found_error + 显式 model → provider_rejected_model")
+    void streamNotFoundIsRejectedModel() throws Exception {
+        int port = listen(sock -> sock.write(http(404, "Not Found",
+            "{\"type\":\"error\",\"error\":{\"type\":\"not_found_error\",\"message\":\"model: nope-1\"}}")));
+        LlmStreamEvent ev = firstError(anthropicByok(port, "nope-1"));
+        assertThat(ev.error()).isEqualTo("provider_rejected_model");
+        assertThat(ev.message()).isEqualTo("model: nope-1");
+    }
+
+    @Test
+    @DisplayName("流式：401 → provider_auth_failed；空 body 的 400 → provider_bad_request 且无 message")
+    void streamAuthAndEmptyBody() throws Exception {
+        int port = listen(sock -> sock.write(http(401, "Unauthorized",
+            "{\"error\":{\"type\":\"authentication_error\",\"message\":\"bad key\"}}")));
+        assertThat(firstError(anthropicByok(port, null)).error()).isEqualTo("provider_auth_failed");
+        server.close();
+
+        int port2 = listen(sock -> sock.write(http(400, "Bad Request", "{}")));
+        LlmStreamEvent ev = firstError(anthropicByok(port2, "m"));
+        assertThat(ev.error()).isEqualTo("provider_bad_request");
+        assertThat(ev.message()).isNull();
+        assertThat(ev.providerErrorType()).isNull();
+    }
+
+    @Test
+    @DisplayName("流式：529 overloaded → provider_unavailable")
+    void streamOverloaded() throws Exception {
+        int port = listen(sock -> sock.write(http(529, "Overloaded",
+            "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}")));
+        assertThat(firstError(anthropicByok(port, null)).error()).isEqualTo("provider_unavailable");
+    }
+
+    @Test
+    @DisplayName("非流式 chat：失败异常携带分类结果（statusCode 保留）")
+    void chatCarriesClassification() throws Exception {
+        int port = listen(sock -> sock.write(http(400, "Bad Request", ProviderErrorClassifierTest.INCIDENT_BODY)));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                client().chat(request(), anthropicByok(port, "m")).await().atMost(Duration.ofSeconds(10)))
+            .isInstanceOfSatisfying(LlmCallFailedException.class, e -> {
+                assertThat(e.statusCode()).isEqualTo(400);
+                assertThat(e.providerError().code()).isEqualTo("provider_bad_request");
+                assertThat(e.providerError().providerMessage()).isEqualTo(ProviderErrorClassifierTest.WORKSPACE_MESSAGE);
+            });
+    }
+
+    @Test
+    @DisplayName("listModels：失败异常携带分类结果；404 不因无 model 被当成 rejected_model")
+    void listModelsCarriesClassification() throws Exception {
+        int port = listen(sock -> sock.write(http(400, "Bad Request", ProviderErrorClassifierTest.INCIDENT_BODY)));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                client().listModels(anthropicByok(port, null)).await().atMost(Duration.ofSeconds(10)))
+            .isInstanceOfSatisfying(LlmCallFailedException.class, e ->
+                assertThat(e.providerError().code()).isEqualTo("provider_bad_request"));
     }
 
     private static LlmRequest request() {

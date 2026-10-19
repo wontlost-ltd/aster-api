@@ -8,6 +8,7 @@ import io.aster.llm.api.dto.GeneratePolicyRequest;
 import io.aster.llm.api.dto.ModelsResponse;
 import io.aster.llm.api.dto.SuggestRequest;
 import io.aster.llm.client.LlmCallFailedException;
+import io.aster.llm.client.ProviderErrorClassifier;
 import io.aster.llm.client.LlmClient;
 import io.aster.llm.config.LlmConfig;
 import io.aster.llm.model.ByokOverride;
@@ -135,7 +136,8 @@ public class LlmProxyService {
                         fullSource.append(event.delta());
                         emitter.emit(toJson(GeneratePolicyEvent.delta(event.delta())));
                     } else if (event.type() == LlmStreamEvent.Type.ERROR) {
-                        emitter.emit(toJson(GeneratePolicyEvent.error(event.error())));
+                        emitter.emit(toJson(GeneratePolicyEvent.error(
+                            event.error(), event.message(), event.providerErrorType())));
                         emitter.complete();
                     }
                 },
@@ -307,6 +309,12 @@ public class LlmProxyService {
                     return Uni.createFrom().item(new ModelsResponse(options.provider(), null, defaultModel, fetchedAt));
                 }
                 LOG.warnf("模型列表查询失败: tenant=%s provider=%s status=%d", tenantId, options.provider(), status);
+                ProviderErrorClassifier.Classified c = t.providerError();
+                if (c != null && (ProviderErrorClassifier.AUTH_FAILED.equals(c.code())
+                    || ProviderErrorClassifier.BAD_REQUEST.equals(c.code()))) {
+                    // key 本身被 provider 判为不可用：422 让 cloud 拒绝保存，而不是存成「未验证」
+                    return Uni.createFrom().failure(providerKeyRejected(c));
+                }
                 return Uni.createFrom().failure(jsonError(502, "models_unavailable", "无法从 provider 读取模型列表，请稍后重试"));
             });
     }
@@ -316,6 +324,26 @@ public class LlmProxyService {
 
     private static List<String> boundModelIds(List<String> ids) {
         return ids.stream().filter(id -> MODEL_ID.matcher(id).matches()).distinct().sorted().limit(200).toList();
+    }
+
+    private static jakarta.ws.rs.WebApplicationException providerKeyRejected(ProviderErrorClassifier.Classified c) {
+        return new jakarta.ws.rs.WebApplicationException(
+            jakarta.ws.rs.core.Response.status(422)
+                .entity(errorBody("provider_key_rejected", c, "provider 拒绝了该 API key", c.code(), true))
+                .type(jakarta.ws.rs.core.MediaType.APPLICATION_JSON)
+                .build());
+    }
+
+    /** 错误响应体：exposeMessage=false 时省略 message；message 缺省回落到中文兜底；reason / providerErrorType 为空则不输出（字段顺序固定）。 */
+    private static java.util.Map<String, Object> errorBody(
+        String error, ProviderErrorClassifier.Classified c, String fallback, String reason, boolean exposeMessage) {
+        java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("error", error);
+        if (reason != null) body.put("reason", reason);
+        // 平台 key 失败：不透出 provider 说明（可能涉及我方账户），连兜底文案也省略，只留错误码
+        if (exposeMessage) body.put("message", c.providerMessage() != null ? c.providerMessage() : fallback);
+        if (c.providerErrorType() != null) body.put("providerErrorType", c.providerErrorType());
+        return body;
     }
 
     private static jakarta.ws.rs.WebApplicationException jsonError(int status, String code, String message) {
@@ -358,13 +386,17 @@ public class LlmProxyService {
                 usageReporter.reportUsage(tenantId, "complete", model, result.usage(), usedByok, requestId);
                 return new CompleteResponse(result.content(), model, true);
             })
-            .onFailure(t -> isRejectedModel(options, t)).transform(t ->
-                new jakarta.ws.rs.WebApplicationException(
+            .onFailure(LlmProxyService::isProviderClientError).transform(t -> {
+                ProviderErrorClassifier.Classified c = ((LlmCallFailedException) t).providerError();
+                String fallback = ProviderErrorClassifier.REJECTED_MODEL.equals(c.code())
+                    ? "provider 拒绝了所选模型: " + model
+                    : "provider 拒绝了本次请求";
+                return new jakarta.ws.rs.WebApplicationException(
                     jakarta.ws.rs.core.Response.status(400)
-                        .entity(java.util.Map.of("error", "provider_rejected_model",
-                            "message", "provider 拒绝了所选模型: " + model))
+                        .entity(errorBody(c.code(), c, fallback, null, options.usedByok()))
                         .type(jakarta.ws.rs.core.MediaType.APPLICATION_JSON)
-                        .build()))
+                        .build());
+            })
             .onFailure(t -> !(t instanceof jakarta.ws.rs.WebApplicationException)).recoverWithItem(throwable -> {
                 LOG.errorf(throwable, "代码补全失败");
                 return new CompleteResponse("", model, reachedProvider(throwable));
@@ -378,9 +410,10 @@ public class LlmProxyService {
         return model;
     }
 
-    /** BYOK 指定了 model 且 provider 以 400 拒绝 → 不回退默认 model、不伪装成功。 */
-    private static boolean isRejectedModel(LlmRuntimeOptions options, Throwable t) {
-        return options.hasModel() && t instanceof LlmCallFailedException e && e.statusCode() == 400;
+    /** provider 返回了认证失败 / 模型被拒 / 请求不合法：不回退、不伪装成功（429/5xx 仍走软失败）。 */
+    private static boolean isProviderClientError(Throwable t) {
+        return t instanceof LlmCallFailedException e
+            && e.providerError() != null && e.providerError().isClientError();
     }
 
     /** 流首帧固定为 meta，告知 cloud 本次实际发出的 model。 */
@@ -410,7 +443,7 @@ public class LlmProxyService {
     static String toCloudFrame(LlmStreamEvent event) {
         return switch (event.type()) {
             case REACHED -> toJson(GeneratePolicyEvent.upstreamReached());
-            case ERROR -> toJson(GeneratePolicyEvent.error(event.error()));
+            case ERROR -> toJson(GeneratePolicyEvent.error(event.error(), event.message(), event.providerErrorType()));
             default -> toJson(GeneratePolicyEvent.delta(event.delta()));
         };
     }

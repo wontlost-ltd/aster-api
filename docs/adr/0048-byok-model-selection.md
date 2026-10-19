@@ -140,6 +140,15 @@ key 重复录入，`keyHint` 相同），顺序即优先级。这样「这次到
 | 自定义网关不提供 `/v1/models` | 404/405 视为「不支持列表」，不记 `lastError`，UI 退化为文本框 |
 | envelope 带 model 但 provider 不支持 | 与现有「不支持 provider」同路径：aster-api 抛错，不回退 |
 
+> **修订（2026-10-19）**：上表「provider 400 → `provider_rejected_model`」的判定过粗，已按 provider 的 HTTP 状态与错误体细分。
+> 事故：未绑定 workspace 的 Anthropic key 对所有调用返回 400 `invalid_request_error`，被误报为「模型被拒」，且 provider 的原因被丢弃。
+> 现统一由 `ProviderErrorClassifier` 分类（流式、非流式、模型列表共用）：401/403/`authentication_error`/`permission_error` →
+> `provider_auth_failed`；404/`not_found_error`/`model_not_found` → `provider_rejected_model`（仅请求带显式 model，否则
+> `provider_bad_request`）；429 → `provider_rate_limited`；≥500/529/`overloaded_error`/`api_error` → `provider_unavailable`；
+> 其余 4xx（含上述 400）→ `provider_bad_request`。错误帧/响应体附带脱敏、截断到 300 字符的 `message` 与 `providerErrorType`；
+> `complete` 对三类客户端错误回 400，`/models` 对 `provider_auth_failed` / `provider_bad_request` 回 422 `provider_key_rejected`。
+> 原始错误体仍不落日志、不回显。
+
 ---
 
 ## 7. 测试与发版
