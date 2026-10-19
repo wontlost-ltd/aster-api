@@ -60,177 +60,261 @@ public class VertxLlmClient implements LlmClient {
         return sharedWebClient.client();
     }
 
+    /**
+     * 「模型不接受 temperature」记忆；一个 client（ApplicationScoped，即每 JVM 一个）一份。
+     * 流式与非流式共用，保证任一路径检测到后另一路径也直接省略。
+     */
+    final TemperatureOmissionMemo temperatureMemo = new TemperatureOmissionMemo();
+
+    /** 一次流式调用的不变部分；重试沿用同一 emitter，使重试对下游不可见。 */
+    private record StreamCall(io.smallrye.mutiny.subscription.MultiEmitter<? super LlmStreamEvent> emitter,
+                              LlmRuntimeOptions options, URI baseUri, String chatPath) {
+        String provider() {
+            return options.provider();
+        }
+    }
+
     @Override
     public Multi<LlmStreamEvent> streamChat(LlmRequest request, LlmRuntimeOptions options) {
-        String apiKey = options.apiKey();
         String provider = options.provider();
         return Multi.createFrom().emitter(emitter -> {
             try {
                 validateCustomEndpoint(options);
                 URI baseUri = URI.create(options.baseUrl());
-                String chatPath = resolveChatPath(baseUri, provider);
-                JsonObject body = buildRequestBody(request, options);
-                int port = resolvePort(baseUri);
-                boolean ssl = "https".equals(baseUri.getScheme());
-
-                // 记实际发出的模型（Anthropic 会被兜底替换），而非请求里的原值——
-                // 否则日志与 provider 收到的不一致，排障时会被误导（aster-api#360）。
-                LOG.infof("LLM 流式请求: provider=%s, model=%s, url=%s:%d%s, source=%s",
-                    provider, body.getString("model"), baseUri.getHost(), port, chatPath, options.source());
-
-                // 使用底层 HttpClient 获取 response stream，避免 WebClient.sendJsonObject 缓冲整个响应体
-                //
-                // ★超时分两种，不能混用（issue #302 H0）：
-                //   - connectTimeout 用 timeout()（30s）：建连阶段的上限。
-                //     此前这里错填成 readTimeout()（120s），既让建连迟迟不失败，
-                //     又**根本没有配读超时**——provider 建连成功后挂住不发数据，
-                //     连接与请求就永久悬着，只能靠客户端断开或进程重启释放。
-                //   - readIdleTimeout 用 readTimeout()（120s）：**空闲**超时，
-                //     每收到一个 chunk 就重置。SSE 必须用空闲而非总时长，
-                //     否则一次正常的长回答会被拦腰砍断。
-                io.vertx.core.http.HttpClientOptions clientOptions = new io.vertx.core.http.HttpClientOptions()
-                    .setSsl(ssl)
-                    .setDefaultHost(baseUri.getHost())
-                    .setDefaultPort(port)
-                    .setConnectTimeout((int) config.timeout().toMillis())
-                    // ★单位显式设为毫秒：setReadIdleTimeout 默认按**秒**取整，
-                    //   若配成 500ms 会截断成 0，而 0 在 Vert.x 里表示「禁用超时」——
-                    //   一个本意收紧超时的配置反而把保护整个关掉。
-                    .setIdleTimeoutUnit(java.util.concurrent.TimeUnit.MILLISECONDS)
-                    .setReadIdleTimeout((int) config.readTimeout().toMillis());
-
-                io.vertx.core.http.HttpClient httpClient = mutinyVertx.getDelegate().createHttpClient(clientOptions);
-                io.vertx.core.http.RequestOptions reqOptions = new io.vertx.core.http.RequestOptions()
-                    .setMethod(HttpMethod.POST)
-                    .setURI(chatPath)
-                    .putHeader("Content-Type", "application/json")
-                    .putHeader("Accept", "text/event-stream");
-
-                // 注入认证头
-                switch (provider) {
-                    case "anthropic" -> {
-                        reqOptions.putHeader("x-api-key", apiKey);
-                        reqOptions.putHeader("anthropic-version", "2023-06-01");
-                    }
-                    default -> reqOptions.putHeader("Authorization", "Bearer " + apiKey);
-                }
-
-                // 用于跨 chunk 拼接不完整的字节（防止多字节 UTF-8 字符被截断）
-                // 使用数组包装以支持 lambda 内重新赋值
-                io.vertx.core.buffer.Buffer[] byteBufferHolder = { io.vertx.core.buffer.Buffer.buffer() };
-
-                // 下游取消时关闭 HTTP 连接，释放资源并停止 token 消耗
-                emitter.onTermination(() -> {
-                    httpClient.close();
-                });
-
-                httpClient.request(reqOptions, reqAr -> {
-                    if (reqAr.failed()) {
-                        // 本地异常 message 记日志，不回显前端（红队硬化：可能含目标 host/URL 细节）
-                        LOG.errorf(reqAr.cause(), "LLM 连接失败: provider=%s", provider);
-                        emitter.emit(LlmStreamEvent.error("LLM 连接失败"));
-                        emitter.complete();
-                        httpClient.close();
-                        return;
-                    }
-
-                    io.vertx.core.http.HttpClientRequest clientRequest = reqAr.result();
-                    clientRequest.response(respAr -> {
-                        if (respAr.failed()) {
-                            LOG.errorf(respAr.cause(), "LLM 响应读取失败: provider=%s", provider);
-                            emitter.emit(LlmStreamEvent.error("LLM 响应读取失败"));
-                            emitter.complete();
-                            httpClient.close();
-                            return;
-                        }
-
-                        io.vertx.core.http.HttpClientResponse clientResponse = respAr.result();
-                        int statusCode = clientResponse.statusCode();
-
-                        if (statusCode != 200) {
-                            // 非 200：统一交给 ProviderErrorClassifier 分类（Anthropic/OpenAI 错误体）。
-                            // 只透出脱敏、截断后的 error.message 与 error.type，原始错误体不落日志、不回显。
-                            // SSRF 硬化：底层 HttpClient.request() 默认【不】跟随重定向，且此处把 3xx
-                            // 一并当错误终止——自定义端点若返回 302 到内网也不会被跟随（与非流式路径
-                            // WebClient.followRedirects(false) 语义一致）。
-                            clientResponse.bodyHandler(errBuf -> {
-                                ProviderErrorClassifier.Classified c = classifyAndLog(
-                                    statusCode, errBuf.toString(), options, provider);
-                                // 平台 key 的 provider 说明可能涉及我方账户（额度、组织信息），不向用户透出
-                                String exposed = options.usedByok() ? c.providerMessage() : null;
-                                emitter.emit(LlmStreamEvent.error(c.code(), exposed, c.providerErrorType()));
-                                emitter.complete();
-                                httpClient.close();
-                            });
-                            return;
-                        }
-
-                        // 逐 chunk 解析 SSE，使用 Buffer 拼接避免多字节 UTF-8 字符被截断
-                        clientResponse.handler(chunk -> {
-                            byteBufferHolder[0].appendBuffer(chunk);
-                            // 安全地转换为字符串并逐行解析
-                            String text = byteBufferHolder[0].toString();
-                            int lastNewline = text.lastIndexOf('\n');
-                            if (lastNewline < 0) return; // 没有完整行，等待下一个 chunk
-
-                            // 处理已完成的行，保留不完整的尾部
-                            String completePart = text.substring(0, lastNewline + 1);
-                            String remainder = text.substring(lastNewline + 1);
-                            byteBufferHolder[0] = io.vertx.core.buffer.Buffer.buffer(remainder);
-
-                            for (String line : completePart.split("\n", -1)) {
-                                line = line.stripTrailing();
-                                if (line.startsWith("data: ") || line.startsWith("data:")) {
-                                    String data = line.startsWith("data: ") ? line.substring(6) : line.substring(5);
-                                    LlmStreamEvent event = sseParser.parseLine(data, provider);
-                                    if (event != null) {
-                                        if (event.type() == LlmStreamEvent.Type.DONE) {
-                                            emitter.complete();
-                                            httpClient.close();
-                                            return;
-                                        }
-                                        emitter.emit(event);
-                                    }
-                                }
-                            }
-                        });
-
-                        clientResponse.endHandler(v -> {
-                            // 处理尾部缓冲区中的最后一行（没有换行符结尾的情况）
-                            if (byteBufferHolder[0].length() > 0) {
-                                String tail = byteBufferHolder[0].toString().stripTrailing();
-                                if (tail.startsWith("data: ") || tail.startsWith("data:")) {
-                                    String data = tail.startsWith("data: ") ? tail.substring(6) : tail.substring(5);
-                                    LlmStreamEvent event = sseParser.parseLine(data, provider);
-                                    if (event != null && event.type() != LlmStreamEvent.Type.DONE) {
-                                        emitter.emit(event);
-                                    }
-                                }
-                            }
-                            emitter.complete();
-                            httpClient.close();
-                        });
-
-                        clientResponse.exceptionHandler(ex -> {
-                            LOG.errorf(ex, "LLM 流式响应异常: provider=%s", provider);
-                            emitter.emit(LlmStreamEvent.error("流式响应异常"));
-                            emitter.complete();
-                            httpClient.close();
-                        });
-                    });
-
-                    // 已连上 provider：从这里起请求算「到达第三方」，计入配额（cloud#470）。
-                    // 放在发送之前而非写完回调里，保证它先于任何响应事件到达下游。
-                    emitter.emit(LlmStreamEvent.reached());
-                    clientRequest.end(io.vertx.core.buffer.Buffer.buffer(body.encode()));
-                });
-
+                StreamCall call = new StreamCall(emitter, options, baseUri, resolveChatPath(baseUri, provider));
+                startStreamAttempt(call, buildWireBody(request, options, baseUri), true);
             } catch (Exception e) {
                 LOG.errorf(e, "LLM 流式请求异常: provider=%s", provider);
                 emitter.emit(LlmStreamEvent.error("请求异常"));
                 emitter.complete();
             }
         });
+    }
+
+    /**
+     * 发出一次流式 HTTP 请求。
+     *
+     * <p>{@code firstAttempt} 为 true 时才发 REACHED 并允许「去掉 temperature 重试」：重试发生在 provider 的非 200
+     * 响应里，此时下游只收到过首次的那一个 REACHED（它先于任何响应事件），失败的首次响应没有产生 delta / usage /
+     * error，因此 meta（由 LlmProxyService 在调用 client 之前发出）、upstream_reached 都不会重复。
+     */
+    private void startStreamAttempt(StreamCall call, JsonObject body, boolean firstAttempt) {
+        var emitter = call.emitter();
+        LlmRuntimeOptions options = call.options();
+        String provider = call.provider();
+        URI baseUri = call.baseUri();
+        String chatPath = call.chatPath();
+        String apiKey = options.apiKey();
+        try {
+            int port = resolvePort(baseUri);
+            boolean ssl = "https".equals(baseUri.getScheme());
+
+            // 记实际发出的模型（Anthropic 会被兜底替换），而非请求里的原值——
+            // 否则日志与 provider 收到的不一致，排障时会被误导（aster-api#360）。
+            LOG.infof("LLM 流式请求: provider=%s, model=%s, url=%s:%d%s, source=%s",
+                provider, body.getString("model"), baseUri.getHost(), port, chatPath, options.source());
+
+            // 使用底层 HttpClient 获取 response stream，避免 WebClient.sendJsonObject 缓冲整个响应体
+            //
+            // ★超时分两种，不能混用（issue #302 H0）：
+            //   - connectTimeout 用 timeout()（30s）：建连阶段的上限。
+            //     此前这里错填成 readTimeout()（120s），既让建连迟迟不失败，
+            //     又**根本没有配读超时**——provider 建连成功后挂住不发数据，
+            //     连接与请求就永久悬着，只能靠客户端断开或进程重启释放。
+            //   - readIdleTimeout 用 readTimeout()（120s）：**空闲**超时，
+            //     每收到一个 chunk 就重置。SSE 必须用空闲而非总时长，
+            //     否则一次正常的长回答会被拦腰砍断。
+            io.vertx.core.http.HttpClientOptions clientOptions = new io.vertx.core.http.HttpClientOptions()
+                .setSsl(ssl)
+                .setDefaultHost(baseUri.getHost())
+                .setDefaultPort(port)
+                .setConnectTimeout((int) config.timeout().toMillis())
+                // ★单位显式设为毫秒：setReadIdleTimeout 默认按**秒**取整，
+                //   若配成 500ms 会截断成 0，而 0 在 Vert.x 里表示「禁用超时」——
+                //   一个本意收紧超时的配置反而把保护整个关掉。
+                .setIdleTimeoutUnit(java.util.concurrent.TimeUnit.MILLISECONDS)
+                .setReadIdleTimeout((int) config.readTimeout().toMillis());
+
+            io.vertx.core.http.HttpClient httpClient = mutinyVertx.getDelegate().createHttpClient(clientOptions);
+            io.vertx.core.http.RequestOptions reqOptions = new io.vertx.core.http.RequestOptions()
+                .setMethod(HttpMethod.POST)
+                .setURI(chatPath)
+                .putHeader("Content-Type", "application/json")
+                .putHeader("Accept", "text/event-stream");
+
+            // 注入认证头
+            switch (provider) {
+                case "anthropic" -> {
+                    reqOptions.putHeader("x-api-key", apiKey);
+                    reqOptions.putHeader("anthropic-version", "2023-06-01");
+                }
+                default -> reqOptions.putHeader("Authorization", "Bearer " + apiKey);
+            }
+
+            // 用于跨 chunk 拼接不完整的字节（防止多字节 UTF-8 字符被截断）
+            // 使用数组包装以支持 lambda 内重新赋值
+            io.vertx.core.buffer.Buffer[] byteBufferHolder = { io.vertx.core.buffer.Buffer.buffer() };
+
+            // 下游取消时关闭 HTTP 连接，释放资源并停止 token 消耗（重试时由新一次请求接管该钩子）
+            emitter.onTermination(() -> {
+                httpClient.close();
+            });
+
+            httpClient.request(reqOptions, reqAr -> {
+                if (reqAr.failed()) {
+                    // 本地异常 message 记日志，不回显前端（红队硬化：可能含目标 host/URL 细节）
+                    LOG.errorf(reqAr.cause(), "LLM 连接失败: provider=%s", provider);
+                    emitter.emit(LlmStreamEvent.error("LLM 连接失败"));
+                    emitter.complete();
+                    httpClient.close();
+                    return;
+                }
+
+                io.vertx.core.http.HttpClientRequest clientRequest = reqAr.result();
+                clientRequest.response(respAr -> {
+                    if (respAr.failed()) {
+                        LOG.errorf(respAr.cause(), "LLM 响应读取失败: provider=%s", provider);
+                        emitter.emit(LlmStreamEvent.error("LLM 响应读取失败"));
+                        emitter.complete();
+                        httpClient.close();
+                        return;
+                    }
+
+                    io.vertx.core.http.HttpClientResponse clientResponse = respAr.result();
+                    int statusCode = clientResponse.statusCode();
+
+                    if (statusCode != 200) {
+                        // 非 200：统一交给 ProviderErrorClassifier 分类（Anthropic/OpenAI 错误体）。
+                        // SSRF 硬化：底层 HttpClient.request() 默认【不】跟随重定向，且此处把 3xx
+                        // 一并当错误终止——自定义端点若返回 302 到内网也不会被跟随（与非流式路径
+                        // WebClient.followRedirects(false) 语义一致）。
+                        clientResponse.bodyHandler(errBuf ->
+                            handleStreamHttpError(call, body, firstAttempt, statusCode, errBuf.toString(), httpClient));
+                        return;
+                    }
+
+                    // 逐 chunk 解析 SSE，使用 Buffer 拼接避免多字节 UTF-8 字符被截断
+                    clientResponse.handler(chunk -> {
+                        byteBufferHolder[0].appendBuffer(chunk);
+                        // 安全地转换为字符串并逐行解析
+                        String text = byteBufferHolder[0].toString();
+                        int lastNewline = text.lastIndexOf('\n');
+                        if (lastNewline < 0) return; // 没有完整行，等待下一个 chunk
+
+                        // 处理已完成的行，保留不完整的尾部
+                        String completePart = text.substring(0, lastNewline + 1);
+                        String remainder = text.substring(lastNewline + 1);
+                        byteBufferHolder[0] = io.vertx.core.buffer.Buffer.buffer(remainder);
+
+                        for (String line : completePart.split("\n", -1)) {
+                            line = line.stripTrailing();
+                            if (line.startsWith("data: ") || line.startsWith("data:")) {
+                                String data = line.startsWith("data: ") ? line.substring(6) : line.substring(5);
+                                LlmStreamEvent event = sseParser.parseLine(data, provider);
+                                if (event != null) {
+                                    if (event.type() == LlmStreamEvent.Type.DONE) {
+                                        emitter.complete();
+                                        httpClient.close();
+                                        return;
+                                    }
+                                    emitter.emit(event);
+                                }
+                            }
+                        }
+                    });
+
+                    clientResponse.endHandler(v -> {
+                        // 处理尾部缓冲区中的最后一行（没有换行符结尾的情况）
+                        if (byteBufferHolder[0].length() > 0) {
+                            String tail = byteBufferHolder[0].toString().stripTrailing();
+                            if (tail.startsWith("data: ") || tail.startsWith("data:")) {
+                                String data = tail.startsWith("data: ") ? tail.substring(6) : tail.substring(5);
+                                LlmStreamEvent event = sseParser.parseLine(data, provider);
+                                if (event != null && event.type() != LlmStreamEvent.Type.DONE) {
+                                    emitter.emit(event);
+                                }
+                            }
+                        }
+                        emitter.complete();
+                        httpClient.close();
+                    });
+
+                    clientResponse.exceptionHandler(ex -> {
+                        LOG.errorf(ex, "LLM 流式响应异常: provider=%s", provider);
+                        emitter.emit(LlmStreamEvent.error("流式响应异常"));
+                        emitter.complete();
+                        httpClient.close();
+                    });
+                });
+
+                // 已连上 provider：从这里起请求算「到达第三方」，计入配额（cloud#470）。
+                // 放在发送之前而非写完回调里，保证它先于任何响应事件到达下游；重试不重复发。
+                if (firstAttempt) {
+                    emitter.emit(LlmStreamEvent.reached());
+                }
+                clientRequest.end(io.vertx.core.buffer.Buffer.buffer(body.encode()));
+            });
+
+        } catch (Exception e) {
+            LOG.errorf(e, "LLM 流式请求异常: provider=%s", provider);
+            emitter.emit(LlmStreamEvent.error("请求异常"));
+            emitter.complete();
+        }
+    }
+
+    /**
+     * 流式非 200 响应：先判断是否「模型不接受 temperature」并重试一次，否则分类上报。
+     * 只透出脱敏、截断后的 error.message 与 error.type，原始错误体不落日志、不回显。
+     */
+    private void handleStreamHttpError(StreamCall call, JsonObject body, boolean firstAttempt, int statusCode,
+                                       String errBody, io.vertx.core.http.HttpClient httpClient) {
+        var emitter = call.emitter();
+        LlmRuntimeOptions options = call.options();
+        httpClient.close();
+        if (shouldRetryWithoutTemperature(firstAttempt, statusCode, errBody, body, options, call.baseUri())) {
+            // 下游已断开（取消）就不必再发请求：否则新请求会在已终止的 emitter 上建连失败并记误导性错误日志
+            if (!emitter.isCancelled()) {
+                startStreamAttempt(call, withoutTemperature(body), false);
+            }
+            return;
+        }
+        ProviderErrorClassifier.Classified c = classifyAndLog(statusCode, errBody, options, call.provider());
+        // 平台 key 的 provider 说明可能涉及我方账户（额度、组织信息），不向用户透出
+        String exposed = options.usedByok() ? c.providerMessage() : null;
+        emitter.emit(LlmStreamEvent.error(c.code(), exposed, c.providerErrorType()));
+        emitter.complete();
+    }
+
+    /**
+     * 判定是否应「去掉 temperature 重试一次」。仅首次尝试、请求体带 temperature 且 provider 明确拒绝时成立；
+     * 成立时记住该 (provider, host, model) 并打一行 INFO（不含 key 与原始错误体）。
+     */
+    private boolean shouldRetryWithoutTemperature(boolean firstAttempt, int status, String errBody,
+                                                  JsonObject body, LlmRuntimeOptions options, URI baseUri) {
+        if (!firstAttempt
+            || !ProviderErrorClassifier.isTemperatureUnsupported(status, errBody, body.containsKey("temperature"))) {
+            return false;
+        }
+        String model = body.getString("model");
+        if (temperatureMemo.remember(TemperatureOmissionMemo.key(options.provider(), baseUri.getHost(), model))) {
+            LOG.infof("provider=%s model=%s temperature unsupported → retrying without and remembering",
+                options.provider(), model);
+        }
+        return true;
+    }
+
+    /** 构造实际发出的请求体：已记忆「该模型不接受 temperature」的组合首发就不带该字段。 */
+    private JsonObject buildWireBody(LlmRequest request, LlmRuntimeOptions options, URI baseUri) {
+        JsonObject body = buildRequestBody(request, options);
+        String key = TemperatureOmissionMemo.key(options.provider(), baseUri.getHost(), body.getString("model"));
+        return temperatureMemo.shouldOmit(key) ? withoutTemperature(body) : body;
+    }
+
+    /** 其余字段逐一保持不变，仅去掉 temperature。 */
+    private static JsonObject withoutTemperature(JsonObject body) {
+        JsonObject copy = body.copy();
+        copy.remove("temperature");
+        return copy;
     }
 
     @Override
@@ -321,58 +405,74 @@ public class VertxLlmClient implements LlmClient {
         return basePath.isEmpty() ? "/v1/models" : basePath + "/models";
     }
 
+    /** 一次非流式调用的不变部分；重试沿用同一 emitter。 */
+    private record ChatCall(io.smallrye.mutiny.subscription.UniEmitter<? super LlmChatResult> emitter,
+                            LlmRequest request, LlmRuntimeOptions options, URI baseUri, String chatPath) {
+    }
+
     @Override
     public Uni<LlmChatResult> chat(LlmRequest request, LlmRuntimeOptions options) {
-        String apiKey = options.apiKey();
         String provider = options.provider();
         validateCustomEndpoint(options);
         URI baseUri = URI.create(options.baseUrl());
         String chatPath = resolveChatPath(baseUri, provider);
-        int port = resolvePort(baseUri);
 
         LlmRequest nonStreamRequest = new LlmRequest(
             request.model(), request.messages(),
             request.temperature(), request.maxTokens(), false
         );
-        JsonObject body = buildRequestBody(nonStreamRequest, options);
+        JsonObject body = buildWireBody(nonStreamRequest, options, baseUri);
 
-        return Uni.createFrom().emitter(emitter -> {
-            HttpRequest<Buffer> httpRequest = getClient()
-                .request(HttpMethod.POST, port, baseUri.getHost(), chatPath)
-                .ssl("https".equals(baseUri.getScheme()))
-                .followRedirects(false)
-                .timeout(config.timeout().toMillis())
-                .putHeader("Content-Type", "application/json");
+        return Uni.createFrom().emitter(emitter ->
+            sendChat(new ChatCall(emitter, request, options, baseUri, chatPath), body, true));
+    }
 
-            addAuthHeaders(httpRequest, apiKey, provider);
+    /** 发出一次非流式请求；首次被判定「不接受 temperature」时去掉该字段重发一次（仅一次）。 */
+    private void sendChat(ChatCall call, JsonObject body, boolean firstAttempt) {
+        var emitter = call.emitter();
+        LlmRuntimeOptions options = call.options();
+        String provider = options.provider();
+        HttpRequest<Buffer> httpRequest = getClient()
+            .request(HttpMethod.POST, resolvePort(call.baseUri()), call.baseUri().getHost(), call.chatPath())
+            .ssl("https".equals(call.baseUri().getScheme()))
+            .followRedirects(false)
+            .timeout(config.timeout().toMillis())
+            .putHeader("Content-Type", "application/json");
 
-            httpRequest.sendJsonObject(body, ar -> {
-                if (ar.failed()) {
-                    boolean reached = !LlmCallFailedException.isConnectFailure(ar.cause());
-                    emitter.fail(new LlmCallFailedException(
-                        reached ? "LLM 响应读取失败" : "LLM 连接失败", reached, ar.cause()));
+        addAuthHeaders(httpRequest, options.apiKey(), provider);
+
+        httpRequest.sendJsonObject(body, ar -> {
+            if (ar.failed()) {
+                boolean reached = !LlmCallFailedException.isConnectFailure(ar.cause());
+                emitter.fail(new LlmCallFailedException(
+                    reached ? "LLM 响应读取失败" : "LLM 连接失败", reached, ar.cause()));
+                return;
+            }
+
+            HttpResponse<Buffer> response = ar.result();
+            if (response.statusCode() != 200) {
+                String errBody = bodyText(response);
+                if (shouldRetryWithoutTemperature(
+                    firstAttempt, response.statusCode(), errBody, body, options, call.baseUri())) {
+                    sendChat(call, withoutTemperature(body), false);
                     return;
                 }
+                ProviderErrorClassifier.Classified c = classifyAndLog(
+                    response.statusCode(), errBody, options, provider);
+                emitter.fail(new LlmCallFailedException(
+                    "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode(), c));
+                return;
+            }
 
-                HttpResponse<Buffer> response = ar.result();
-                if (response.statusCode() != 200) {
-                    ProviderErrorClassifier.Classified c = classifyAndLog(
-                        response.statusCode(), bodyText(response), options, provider);
-                    emitter.fail(new LlmCallFailedException(
-                        "LLM API 错误 (" + response.statusCode() + ")", true, null, response.statusCode(), c));
-                    return;
-                }
-
-                try {
-                    JsonObject responseJson = response.bodyAsJsonObject();
-                    String content = extractContent(responseJson, provider);
-                    LlmUsage usage = extractUsage(responseJson, provider);
-                    recordTokenUsage(usage, LlmModelPolicy.wireModel(request.model(), options, config));
-                    emitter.complete(new LlmChatResult(content, usage));
-                } catch (Exception e) {
-                    emitter.fail(new LlmCallFailedException("LLM 响应解析失败", true, e));
-                }
-            });
+            try {
+                JsonObject responseJson = response.bodyAsJsonObject();
+                String content = extractContent(responseJson, provider);
+                LlmUsage usage = extractUsage(responseJson, provider);
+                recordTokenUsage(usage, LlmModelPolicy.wireModel(call.request().model(), options, config));
+                emitter.complete(new LlmChatResult(content, usage));
+            } catch (Exception e) {
+                emitter.fail(new LlmCallFailedException("LLM 响应解析失败", true, e));
+            }
         });
     }
 

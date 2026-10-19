@@ -149,6 +149,17 @@ key 重复录入，`keyHint` 相同），顺序即优先级。这样「这次到
 > `complete` 对三类客户端错误回 400，`/models` 对 `provider_auth_failed` / `provider_bad_request` 回 422 `provider_key_rejected`。
 > 原始错误体仍不落日志、不回显。
 
+> **修订（2026-10-20）：按模型自适应省略 `temperature`。** 事故：BYOK Anthropic 的 claude-opus-5-5 对 `temperature` 回 400
+> ``"`temperature` is deprecated for this model."``（OpenAI 推理模型同类：`Unsupported parameter: 'temperature'`，`error.param == "temperature"`），
+> 而 `PromptComposer` 总会带上它。`VertxLlmClient` 现在：首发仍带 `temperature`；若 provider 返回 400 且错误体
+> （复用 `ProviderErrorClassifier` 的解析）`param == "temperature"`，或 message 同时含 temperature 与
+> deprecated / unsupported / not supported / not allowed，且请求体确实带了该字段，则**同一请求只去掉 `temperature` 重试一次**
+> （流式与非流式均如此，重试仍失败则按原规则分类上报，绝不循环）。并把 (provider, 网关 host, 实际发出的 model) 记入
+> 进程内有界记忆（`TemperatureOmissionMemo`，256 条，无 TTL，key 不含 API key / 完整 baseUrl），之后同组合首发即省略。
+> 重试在 client 内部完成：`meta` 由 `LlmProxyService` 在调用 client 前发出，`upstream_reached` 只在首次尝试发出，
+> 失败的首次响应不产生 delta / usage / error，因此下游仍只见一个 `meta`、至多一个 `upstream_reached`，且 token 用量只来自成功的那次。
+> 首次检测打一行 INFO（不含 key 与原始错误体）；被恢复的 400 不打 WARN。
+
 ---
 
 ## 7. 测试与发版
