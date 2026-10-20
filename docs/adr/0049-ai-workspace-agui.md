@@ -1,7 +1,7 @@
 # ADR 0049：AI 助手改用 AG-UI（vaadin-agui + agui-vaadin-pro）独立服务
 
-- 状态：**DRAFT**（2026-10-20）
-- 实施计划：待定稿后编写（`docs/superpowers/plans/2026-10-20-ai-workspace-agui.md`）
+- 状态：**ACCEPTED**（2026-10-20）
+- 实施计划：`docs/superpowers/plans/2026-10-20-ai-workspace-agui.md`
 - 决策者：用户已拍板「方向 1：新增 Spring Boot + Vaadin 服务（k3s），完整使用 vaadin-agui + Pro；形态 3：独立 AI 工作台为主 + 策略编辑器紧凑侧栏，共用会话；
   AI 调用经 cloud 现有 `/api/llm/*`；`ai.aster-lang.cloud` 同站子域 + cloud 签发一次性交接令牌；首版 Pro 模块 Conversations / Audit / Governance /
   Observability；SaaS 先上，验收通过后 on-prem 同步切换并删除旧 React 面板；on-prem 仅在客户配置了 Pro license key 时启用 Pro 能力」
