@@ -40,8 +40,20 @@ public interface LlmConfig {
     @WithDefault("0.2")
     double temperature();
 
+    /** 全局输出上限（generate 等未单独配置的场景）。 */
     @WithDefault("2048")
     int maxTokens();
+
+    /**
+     * suggest（策略优化建议）的输出上限。建议是带改进片段的长文本，沿用全局 2048 时
+     * 常被拦腰截断；单独配置，与全局上限互不影响。
+     */
+    @WithDefault("8192")
+    int suggestMaxTokens();
+
+    /** 站内助手问答的输出上限；与 suggest 同理，不与全局上限共用。 */
+    @WithDefault("8192")
+    int assistantMaxTokens();
 
     /** 连接超时 */
     @WithDefault("30s")

@@ -32,6 +32,8 @@ class PromptComposerAssistantTest {
         InvocationHandler h = (proxy, method, args) -> switch (method.getName()) {
             case "model" -> "stub-model";
             case "maxTokens" -> 2048;
+            case "suggestMaxTokens" -> 8000;
+            case "assistantMaxTokens" -> 6000;
             case "temperature" -> 0.2;
             case "enabled" -> true;
             case "toString" -> "LlmConfigStub";
@@ -59,7 +61,7 @@ class PromptComposerAssistantTest {
     }
 
     private static AssistantRequest req(String query, List<AssistantRequest.GroundingHit> hits) {
-        return new AssistantRequest(query, hits, "zh-CN", null, null);
+        return new AssistantRequest(query, hits, "zh-CN", null, null, null);
     }
 
     private static AssistantRequest.GroundingHit hit(String title, String snippet, String href) {
@@ -137,7 +139,7 @@ class PromptComposerAssistantTest {
     private static AssistantRequest reqWithAdmin(String query, String adminInstructions) {
         return new AssistantRequest(query, List.of(
             hit("回滚", "回退到指定版本", "/zh/docs/api/policies/rollback")),
-            "zh-CN", null, adminInstructions);
+            "zh-CN", null, adminInstructions, null);
     }
 
     @Test
@@ -187,6 +189,42 @@ class PromptComposerAssistantTest {
         // 全文三引号必须成对；出现奇数个即说明有段落越界
         long fences = user.split("\"\"\"", -1).length - 1;
         assertThat(fences % 2).isZero();
+    }
+
+    private static AssistantRequest reqWithResultsUi(Boolean resultsUi) {
+        return new AssistantRequest("怎么回滚", List.of(hit("回滚", "回退到指定版本", "/zh/docs/x")),
+            "zh-CN", null, null, resultsUi);
+    }
+
+    @Test
+    void resultsUi_缺省与true_保留查看下方搜索结果的提示() {
+        // 既有调用方（cloud 站内助手面板）不传该字段：行为必须不变
+        assertThat(composer.buildAssistantContext("t1", reqWithResultsUi(null)).getSystemPrompt())
+            .contains("check the search results shown below the answer");
+        assertThat(composer.buildAssistantContext("t1", reqWithResultsUi(true)).getSystemPrompt())
+            .contains("check the search results shown below the answer");
+    }
+
+    @Test
+    void resultsUi_false_去掉下方搜索结果的提示_其余硬约束不变() {
+        String sys = composer.buildAssistantContext("t1", reqWithResultsUi(false)).getSystemPrompt();
+        assertThat(sys).doesNotContainIgnoringCase("search results").doesNotContainIgnoringCase("below");
+        assertThat(sys).containsIgnoringCase("ONLY from the provided site excerpts");
+        assertThat(sys).contains("say you don't know — never guess");
+        assertThat(sys).containsIgnoringCase("Cite the href");
+    }
+
+    @Test
+    void 输出上限取助手专属配置而非全局() {
+        assertThat(composer.buildAssistantContext("t1", req("q", List.of())).toLlmRequest().maxTokens())
+            .isEqualTo(6000);
+    }
+
+    @Test
+    void suggest输出上限取专属配置而非全局() {
+        PromptContext ctx = composer.buildSuggestContext("t1",
+            new io.aster.llm.api.dto.SuggestRequest("Rule r: return 1.", "zh-CN", null, null));
+        assertThat(ctx.toLlmRequest().maxTokens()).isEqualTo(8000);
     }
 
     @Test

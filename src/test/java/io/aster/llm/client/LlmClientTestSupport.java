@@ -72,6 +72,16 @@ final class LlmClientTestSupport {
         }
 
         @Override
+        public int suggestMaxTokens() {
+            return 16;
+        }
+
+        @Override
+        public int assistantMaxTokens() {
+            return 16;
+        }
+
+        @Override
         public java.util.Optional<String> apiKey() {
             return java.util.Optional.of("k");
         }

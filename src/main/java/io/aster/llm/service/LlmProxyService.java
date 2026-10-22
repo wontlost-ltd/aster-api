@@ -115,7 +115,8 @@ public class LlmProxyService {
         io.smallrye.mutiny.subscription.MultiEmitter<? super String> emitter,
         UsageReportCtx rc
     ) {
-        StringBuilder fullSource = new StringBuilder();
+        // 本 attempt 的文本与停止原因；终帧的 truncated 取最后一个 attempt 的结论。
+        StreamOutcome outcome = new StreamOutcome();
         int currentAttempt = attempt.get();
         // #185：本 attempt 的 token。attempt 内用 max（Anthropic output_tokens 是累计绝对值，
         // 取 latest；OpenAI 单 final 帧 max 等价）；attempt 结束再 plus 到 rc.usageAcc()（跨 attempt 累加）。
@@ -126,6 +127,7 @@ public class LlmProxyService {
         llmClient.streamChat(ctx.toLlmRequest(), options)
             .subscribe().with(
                 event -> {
+                    outcome.observe(event);
                     if (event.type() == LlmStreamEvent.Type.USAGE && event.usage() != null) {
                         // attempt 内取 max（不转发前端）。
                         attemptUsage.updateAndGet(u -> u.max(event.usage()));
@@ -133,7 +135,6 @@ public class LlmProxyService {
                         // 每个 attempt 各发一次；cloud 只按首个记一笔（cloud#470）。
                         emitter.emit(toJson(GeneratePolicyEvent.upstreamReached()));
                     } else if (event.type() == LlmStreamEvent.Type.DELTA && event.delta() != null) {
-                        fullSource.append(event.delta());
                         emitter.emit(toJson(GeneratePolicyEvent.delta(event.delta())));
                     } else if (event.type() == LlmStreamEvent.Type.ERROR) {
                         emitter.emit(toJson(GeneratePolicyEvent.error(
@@ -152,7 +153,7 @@ public class LlmProxyService {
                     rc.usageAcc().updateAndGet(g -> g.plus(attemptUsage.get()));
 
                     // 流结束，执行编译校验
-                    String source = fullSource.toString().trim();
+                    String source = outcome.text().trim();
                     if (source.isEmpty()) {
                         // 内容为空也回填（可能已消耗 prompt token）
                         reportStreamUsage(rc);
@@ -166,7 +167,7 @@ public class LlmProxyService {
                     if (result.ok()) {
                         // 校验通过，输出清理后的最终代码
                         String cleanedSource = validator.cleanLlmOutput(source);
-                        emitter.emit(toJson(GeneratePolicyEvent.finalResult(cleanedSource, true)));
+                        emitter.emit(toJson(GeneratePolicyEvent.finalResult(cleanedSource, true, outcome.stopReason())));
                         reportStreamUsage(rc); // #185：流程终态，回填累计 token
                         emitter.complete();
                     } else if (currentAttempt < maxAttempts) {
@@ -195,7 +196,7 @@ public class LlmProxyService {
                         emitter.emit(toJson(GeneratePolicyEvent.validationError(result.errorsAsString())));
                         // 仍然输出最后一次的代码，让用户手动修复
                         String cleanedSource = validator.cleanLlmOutput(source);
-                        emitter.emit(toJson(GeneratePolicyEvent.finalResult(cleanedSource, false)));
+                        emitter.emit(toJson(GeneratePolicyEvent.finalResult(cleanedSource, false, outcome.stopReason())));
                         reportStreamUsage(rc); // #185：流程终态（含所有 repair attempt 累计）
                         emitter.complete();
                     }
@@ -218,29 +219,8 @@ public class LlmProxyService {
             return Multi.createFrom().item(toJson(GeneratePolicyEvent.error("未配置 LLM API Key")));
         }
 
-        PromptContext ctx = promptComposer.buildSuggestContext(tenantId, req);
-        String model = applyModel(ctx, options);
-        boolean usedByok = options.usedByok();
-        // issue #185：累加 USAGE 事件，流结束回填。
-        AtomicReference<LlmUsage> usageAcc = new AtomicReference<>(LlmUsage.ZERO);
-
-        Multi<String> body = llmClient.streamChat(ctx.toLlmRequest(), options)
-            .onItem().invoke(event -> {
-                if (event.type() == LlmStreamEvent.Type.USAGE && event.usage() != null) {
-                    // suggest 单 attempt：attempt 内 max（Anthropic 累计 output 取 latest）。
-                    usageAcc.updateAndGet(u -> u.max(event.usage()));
-                }
-            })
-            .onCompletion().invoke(() ->
-                usageReporter.reportUsage(tenantId, "suggest", model, usageAcc.get(), usedByok, requestId))
-            // 与 generate 对齐：发 JSON delta（{"type":"delta","data":"..."}）而非裸
-            // 文本。裸文本经 SSE TEXT_PLAIN 逐帧传输时，token 前导空格与内部换行
-            // 会被 data: 行首空格规则 / 多行拆分吞掉 → 前端拼出的代码丢空格
-            // （"Return resource" → "Returnresource"）。JSON 把内容包成字符串值，
-            // 前端 JSON.parse 后原样还原，空格/换行全保留。
-            .filter(LlmProxyService::isForwardedToCloud)
-            .map(LlmProxyService::toCloudFrame);
-        return withMetaFrame(model, body);
+        return streamPassThrough(tenantId, "suggest", promptComposer.buildSuggestContext(tenantId, req),
+            options, requestId);
     }
 
     /**
@@ -262,23 +242,81 @@ public class LlmProxyService {
             return Multi.createFrom().item(toJson(GeneratePolicyEvent.error("未配置 LLM API Key")));
         }
 
-        PromptContext ctx = promptComposer.buildAssistantContext(tenantId, req);
+        return streamPassThrough(tenantId, "assistant", promptComposer.buildAssistantContext(tenantId, req),
+            options, requestId);
+    }
+
+    /**
+     * suggest / assistant 共用的透传流：meta → provider 事件（delta / upstream_reached / error）→ final。
+     *
+     * <p>帧序与字段：
+     * <ul>
+     *   <li>发 JSON delta（{"type":"delta","data":"..."}）而非裸文本。裸文本经 SSE TEXT_PLAIN 逐帧传输时，
+     *       token 前导空格与内部换行会被 data: 行首空格规则 / 多行拆分吞掉（"Return resource" →
+     *       "Returnresource"）；JSON 把内容包成字符串值，前端 JSON.parse 后原样还原。</li>
+     *   <li>正常结束时追加一帧 final：data 为完整回答，truncated 标明上游是否因输出上限截断
+     *       （否则长回答在中途戛然而止，用户无从得知）。出现过 error 帧则不发 final，
+     *       避免消费方把失败当成功收尾。</li>
+     * </ul>
+     *
+     * <p>计量：USAGE 事件 attempt 内取 max（Anthropic 累计 output 取 latest），流结束按 callKind 回填（#185）。
+     */
+    private Multi<String> streamPassThrough(String tenantId, String callKind, PromptContext ctx,
+                                            LlmRuntimeOptions options, String requestId) {
         String model = applyModel(ctx, options);
         boolean usedByok = options.usedByok();
         AtomicReference<LlmUsage> usageAcc = new AtomicReference<>(LlmUsage.ZERO);
+        StreamOutcome outcome = new StreamOutcome();
 
         Multi<String> body = llmClient.streamChat(ctx.toLlmRequest(), options)
             .onItem().invoke(event -> {
+                outcome.observe(event);
                 if (event.type() == LlmStreamEvent.Type.USAGE && event.usage() != null) {
                     usageAcc.updateAndGet(u -> u.max(event.usage()));
                 }
             })
             .onCompletion().invoke(() ->
-                usageReporter.reportUsage(tenantId, "assistant", model, usageAcc.get(), usedByok, requestId))
-            // 同 suggest：发 JSON delta 而非裸文本，避免 SSE 逐帧传输吞掉空格/换行。
+                usageReporter.reportUsage(tenantId, callKind, model, usageAcc.get(), usedByok, requestId))
             .filter(LlmProxyService::isForwardedToCloud)
             .map(LlmProxyService::toCloudFrame);
-        return withMetaFrame(model, body);
+        // deferred：上游完成后才读取 outcome，此时文本与停止原因已齐全。
+        Multi<String> finalFrame = Multi.createFrom().deferred(() -> outcome.failed()
+            ? Multi.createFrom().empty()
+            : Multi.createFrom().item(toJson(GeneratePolicyEvent.finalText(outcome.text(), outcome.stopReason()))));
+        return withMetaFrame(model, Multi.createBy().concatenating().streams(body, finalFrame));
+    }
+
+    /**
+     * 一次 provider 流的观察结果：拼接的完整文本、最后一次出现的停止原因、是否出现过错误。
+     * 同一条流的事件按序串行到达，无需同步。
+     */
+    static final class StreamOutcome {
+        private final StringBuilder text = new StringBuilder();
+        private String stopReason;
+        private boolean failed;
+
+        void observe(LlmStreamEvent event) {
+            if (event.stopReason() != null) {
+                stopReason = event.stopReason();
+            }
+            if (event.type() == LlmStreamEvent.Type.DELTA && event.delta() != null) {
+                text.append(event.delta());
+            } else if (event.type() == LlmStreamEvent.Type.ERROR) {
+                failed = true;
+            }
+        }
+
+        String text() {
+            return text.toString();
+        }
+
+        String stopReason() {
+            return stopReason;
+        }
+
+        boolean failed() {
+            return failed;
+        }
     }
 
     /** 经 BYOK 凭证查询 provider 模型列表；仅服务 BYOK（无 envelope → 400），上游失败 → 502。 */
@@ -435,7 +473,7 @@ public class LlmProxyService {
         return switch (event.type()) {
             case REACHED, ERROR -> true;
             case DELTA -> event.delta() != null;
-            case DONE, USAGE -> false;
+            case DONE, USAGE, STOP -> false;
         };
     }
 

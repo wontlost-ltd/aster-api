@@ -124,13 +124,13 @@ class LlmProxyServiceUpstreamReachedTest {
     }
 
     @Test
-    @DisplayName("suggest：USAGE / DONE 不转发")
+    @DisplayName("suggest：USAGE / DONE 不转发（正常结束只追加 final）")
     void suggestDropsUsageAndDone() {
         providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.usage(new io.aster.llm.model.LlmUsage(1, 2)),
             LlmStreamEvent.done());
 
         assertThat(collect(service.streamSuggest("t", new SuggestRequest("s", null, null, null), null, "r")))
-            .containsExactly(META, REACHED);
+            .containsExactly(META, REACHED, "{\"type\":\"final\",\"data\":\"\",\"truncated\":false}");
     }
 
     @Test
@@ -139,7 +139,8 @@ class LlmProxyServiceUpstreamReachedTest {
         providerEmits(LlmStreamEvent.reached(), LlmStreamEvent.delta("x"), LlmStreamEvent.done());
 
         assertThat(collect(service.streamSuggest("t", new SuggestRequest("s", null, null, null), null, "r")))
-            .containsExactly(META, REACHED, "{\"type\":\"delta\",\"data\":\"x\"}");
+            .containsExactly(META, REACHED, "{\"type\":\"delta\",\"data\":\"x\"}",
+                "{\"type\":\"final\",\"data\":\"x\",\"truncated\":false}");
     }
 
     @Test
@@ -148,7 +149,8 @@ class LlmProxyServiceUpstreamReachedTest {
         providerEmits(LlmStreamEvent.reached());
 
         AssistantRequest req = mock(AssistantRequest.class);
-        assertThat(collect(service.streamAssistant("t", req, null, "r"))).containsExactly(META, REACHED);
+        assertThat(collect(service.streamAssistant("t", req, null, "r")))
+            .containsExactly(META, REACHED, "{\"type\":\"final\",\"data\":\"\",\"truncated\":false}");
     }
 
     @Test
