@@ -12,6 +12,9 @@ import java.util.List;
  */
 public final class EntryFunctionException extends IllegalArgumentException {
 
+    /** 「函数不存在」消息的固定前缀；缓存只保留消息文本，重建后靠它区分两种情形。 */
+    private static final String MISSING_PREFIX = "未找到函数 '";
+
     private EntryFunctionException(String message) {
         super(message);
     }
@@ -23,7 +26,12 @@ public final class EntryFunctionException extends IllegalArgumentException {
 
     static EntryFunctionException missing(String requested, List<String> available) {
         return new EntryFunctionException(
-            "未找到函数 '" + requested + "'，模块中可用的函数: " + available);
+            MISSING_PREFIX + requested + "'，模块中可用的函数: " + available);
+    }
+
+    /** 请求的函数不在模块中（而非被 main 等入口抢占）。 */
+    public boolean isMissingFunction() {
+        return getMessage() != null && getMessage().startsWith(MISSING_PREFIX);
     }
 
     static EntryFunctionException shadowed(String requested, String preferred) {

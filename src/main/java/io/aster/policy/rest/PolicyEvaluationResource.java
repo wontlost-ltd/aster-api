@@ -2,6 +2,7 @@ package io.aster.policy.rest;
 
 import io.aster.billing.ApiQuotaGuard;
 import io.aster.monitoring.BusinessMetrics;
+import io.aster.policy.api.EvaluationFailure;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.api.model.BatchRequest;
 import io.aster.policy.event.AuditEvent;
@@ -32,6 +33,10 @@ import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.openapi.annotations.Operation;
+import org.eclipse.microprofile.openapi.annotations.media.Content;
+import org.eclipse.microprofile.openapi.annotations.media.Schema;
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 import org.jboss.logging.Logger;
 
 import java.util.ArrayList;
@@ -214,6 +219,18 @@ public class PolicyEvaluationResource {
      */
     @POST
     @Path("/evaluate")
+    @Operation(summary = "按模块/函数名评估已部署策略",
+        description = "失败时返回对应 HTTP 状态，响应体仍为 EvaluationResponse：error 为说明，code 为机器可读错误码。")
+    @APIResponse(responseCode = "200", description = "评估成功",
+        content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
+    @APIResponse(responseCode = "400", description = "请求不合法（code=function_not_executable 等）",
+        content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
+    @APIResponse(responseCode = "404", description = "策略或函数不存在（code=policy_not_found / function_not_found）",
+        content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
+    @APIResponse(responseCode = "409", description = "没有已批准且启用的版本（code=no_executable_version）",
+        content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
+    @APIResponse(responseCode = "500", description = "评估失败（code=evaluation_failed，不含内部细节）",
+        content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
     public Uni<EvaluationResponse> evaluate(@Valid EvaluationRequest request) {
         // ADR 0041 §3：agent 在执行前校验，非法即 400——不执行、不计费、不落链
         final AgentIdentity agent = validatedAgent(request.agent());
@@ -271,7 +288,7 @@ public class PolicyEvaluationResource {
                 result.getDecision(), result.getRuleId(), result.getControls(), result.getProfile())
                 .withEvidence(evidence.correlationId());
         })
-        .onFailure().recoverWithItem(throwable -> {
+        .onFailure().transform(throwable -> {
             long executionTime = System.currentTimeMillis() - startTime;
 
             // 记录错误指标（非阻塞）
@@ -291,9 +308,9 @@ public class PolicyEvaluationResource {
                 evidence
             );
 
-            LOG.errorf(throwable, "Policy evaluation failed after %dms: %s.%s", executionTime, request.policyModule(), request.policyFunction());
+            EvaluationFailure failure = logFailure(throwable, executionTime, request.policyModule(), request.policyFunction());
             recordApiCall("/api/v1/policies/evaluate", "api_error", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
-            return EvaluationResponse.error(throwable.getMessage()).withEvidence(evidence.correlationId());
+            return failureException(failure, executionTime, evidence.correlationId());
         });
     }
 
@@ -306,6 +323,16 @@ public class PolicyEvaluationResource {
      */
     @POST
     @Path("/evaluate-json")
+    @Operation(summary = "直接评估请求携带的 Core IR JSON",
+        description = "失败时返回对应 HTTP 状态，响应体仍为 EvaluationResponse：error 为说明，code 为机器可读错误码。")
+    @APIResponse(responseCode = "200", description = "评估成功",
+        content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
+    @APIResponse(responseCode = "400", description = "Core IR 或上下文不合法（code=invalid_request）",
+        content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
+    @APIResponse(responseCode = "404", description = "Core IR 中没有目标函数（code=function_not_found）",
+        content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
+    @APIResponse(responseCode = "500", description = "评估失败（code=evaluation_failed，不含内部细节）",
+        content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
     public Uni<EvaluationResponse> evaluateJson(@Valid JsonPolicyRequest request) {
         // ADR 0041 §3：agent 在执行前校验，非法即 400——不执行、不计费、不落链
         final AgentIdentity agent = validatedAgent(request.agent());
@@ -387,7 +414,7 @@ public class PolicyEvaluationResource {
                     decision, result.ruleId(), result.controls(), result.profile())
                     .withEvidence(evidence.correlationId());
             })
-            .onFailure().recoverWithItem(throwable -> {
+            .onFailure().transform(throwable -> {
                 long executionTime = System.currentTimeMillis() - startTime;
 
                 // 记录错误指标（非阻塞）
@@ -410,17 +437,18 @@ public class PolicyEvaluationResource {
                     evidence
                 );
 
-                LOG.errorf(throwable, "JSON policy evaluation failed after %dms: %s.%s", executionTime, policyModule, policyFunction);
+                EvaluationFailure failure = logFailure(throwable, executionTime, policyModule, policyFunction);
                 recordApiCall("/api/v1/policies/evaluate-json", "api_error", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
-                return EvaluationResponse.error(throwable.getMessage()).withEvidence(evidence.correlationId());
+                return failureException(failure, executionTime, evidence.correlationId());
             });
         } catch (Exception e) {
             long executionTime = System.currentTimeMillis() - startTime;
             businessMetrics.endPolicyEvaluation(sample);
 
-            LOG.errorf(e, "Failed to process JSON policy: %s", e.getMessage());
+            // Core IR 解析 / 参数映射 / 选函数失败归因为 4xx；执行期失败 500 且不透出内部消息
+            EvaluationFailure failure = logFailure(e, executionTime, "<json>", "<json>");
             recordApiCall("/api/v1/policies/evaluate-json", "api_error", executionTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
-            return Uni.createFrom().item(EvaluationResponse.error("JSON 策略解析失败: " + e.getMessage()));
+            return Uni.createFrom().failure(failureException(failure, executionTime, null));
         }
     }
 
@@ -1099,6 +1127,13 @@ public class PolicyEvaluationResource {
      */
     @POST
     @Path("/evaluate/batch")
+    @Operation(summary = "批量评估已部署策略",
+        description = "部分成功语义：单条失败不影响整批，整批仍返回 200，失败条目内联在 results 中"
+            + "（error 为说明，code 为与单次 /evaluate 相同的错误码）。只有整批无法处理时才返回非 200。")
+    @APIResponse(responseCode = "200", description = "批量结果（含内联的单条失败）",
+        content = @Content(schema = @Schema(implementation = BatchEvaluationResponse.class)))
+    @APIResponse(responseCode = "500", description = "整批处理失败（code=evaluation_failed）",
+        content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
     public Uni<BatchEvaluationResponse> evaluateBatch(@Valid BatchEvaluationRequest request) {
         // batch 按"批中每条都算一次调用"扣配额：在 quota 检查之外，结果落地时按条 recordApiCall
         enforceApiQuota("/api/v1/policies/evaluate/batch");
@@ -1172,7 +1207,9 @@ public class PolicyEvaluationResource {
                         false
                     );
 
-                    responses.add(EvaluationResponse.error(attempt.getError()));
+                    // 单条失败内联返回：批量是部分成功语义，不能因一条失败让整批变成非 200
+                    String code = attempt.getErrorCode() != null ? attempt.getErrorCode() : EvaluationFailure.EVALUATION_FAILED;
+                    responses.add(EvaluationResponse.failure(code, attempt.getError(), 0));
                     recordApiCall("/api/v1/policies/evaluate/batch", "api_error", execTime, tenantId, performedBy, apiKeyId, quotaOwnerId);
                 }
 
@@ -1185,7 +1222,38 @@ public class PolicyEvaluationResource {
                     batchResult.getSuccessCount(),
                     batchResult.getFailureCount()
                 );
-            });
+            })
+            .onFailure().transform(throwable -> failureException(
+                logFailure(throwable, System.currentTimeMillis() - startTime, "<batch>", "<batch>"),
+                System.currentTimeMillis() - startTime, null));
+    }
+
+    /**
+     * 评估失败归因并记日志：调用方错误（4xx）只记一行 WARN，不打堆栈；其余按 ERROR 记完整异常。
+     */
+    private static EvaluationFailure logFailure(Throwable throwable, long executionTime, String module, String function) {
+        EvaluationFailure failure = EvaluationFailure.classify(throwable);
+        if (failure.clientError()) {
+            LOG.warnf("Policy evaluation rejected after %dms: %s.%s status=%d code=%s",
+                executionTime, module, function, failure.status(), failure.code());
+        } else {
+            LOG.errorf(throwable, "Policy evaluation failed after %dms: %s.%s", executionTime, module, function);
+        }
+        return failure;
+    }
+
+    /**
+     * 把归因结果转成带实体的 WebApplicationException：实体非空时 JAX-RS 直接使用该响应、不经异常映射器，
+     * 故响应体仍是 EvaluationResponse（保留 error 字段，新增 code），老客户端照常解析。
+     */
+    static WebApplicationException failureException(EvaluationFailure failure, long executionTimeMs, String correlationId) {
+        EvaluationResponse body = EvaluationResponse.failure(failure.code(), failure.message(), executionTimeMs)
+            .withEvidence(correlationId);
+        return new WebApplicationException(
+            jakarta.ws.rs.core.Response.status(failure.status())
+                .entity(body)
+                .type(MediaType.APPLICATION_JSON)
+                .build());
     }
 
     /**

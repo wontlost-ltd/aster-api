@@ -54,6 +54,19 @@ public class PolicySourceRepositoryImpl implements PolicySourceRepository {
     }
 
     @Override
+    public boolean hasAnyVersion(String tenantId, String module, String function) {
+        if (tenantId == null || module == null || function == null) {
+            return false;
+        }
+        return PolicyVersion.count(
+            "tenantId = ?1 and moduleName = ?2 and functionName = ?3",
+            tenantId,
+            module,
+            function
+        ) > 0;
+    }
+
+    @Override
     public Optional<PolicyArtifact> findCoreJsonArtifact(Long versionId) {
         if (versionId == null) {
             return Optional.empty();

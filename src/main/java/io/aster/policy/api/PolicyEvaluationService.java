@@ -356,13 +356,9 @@ public class PolicyEvaluationService {
                     }
                 }
                 if (version.isEmpty()) {
-                    throw new RuntimeException(String.format(
-                        "策略版本未找到: %s.%s (版本: %s, 租户: %s)",
-                        cacheKey.getPolicyModule(),
-                        cacheKey.getPolicyFunction(),
-                        preResolvedVersionId,
-                        cacheKey.getTenantId()
-                    ));
+                    // 与「不存在」同口径回 404，不泄漏其它租户版本的存在性
+                    throw PolicyNotExecutableException.policyNotFound(
+                        cacheKey.getPolicyModule(), cacheKey.getPolicyFunction());
                 }
             } else {
                 java.util.Optional<PolicyCatalog> catalog = policySourceRepository.findActiveCatalog(
@@ -371,23 +367,16 @@ public class PolicyEvaluationService {
                     cacheKey.getPolicyFunction()
                 );
 
-                if (catalog.isEmpty()) {
-                    throw new RuntimeException(String.format(
-                        "策略未找到: %s.%s (租户: %s)",
-                        cacheKey.getPolicyModule(),
-                        cacheKey.getPolicyFunction(),
-                        cacheKey.getTenantId()
-                    ));
-                }
-
-                version = policySourceRepository.findActiveVersion(catalog.get().id);
+                // 没有目录或没有激活的默认版本：再看是否存在任何版本，区分「不存在」(404)
+                // 与「有版本但都未批准/激活」(409)。后者此前被包装成笼统的评估失败，原因丢失。
+                version = catalog.flatMap(c -> policySourceRepository.findActiveVersion(c.id));
                 if (version.isEmpty()) {
-                    throw new RuntimeException(String.format(
-                        "策略活跃版本未找到: %s.%s (租户: %s)",
-                        cacheKey.getPolicyModule(),
-                        cacheKey.getPolicyFunction(),
-                        cacheKey.getTenantId()
-                    ));
+                    throw policySourceRepository.hasAnyVersion(cacheKey.getTenantId(),
+                            cacheKey.getPolicyModule(), cacheKey.getPolicyFunction())
+                        ? PolicyNotExecutableException.noExecutableVersion(
+                            cacheKey.getPolicyModule(), cacheKey.getPolicyFunction())
+                        : PolicyNotExecutableException.policyNotFound(
+                            cacheKey.getPolicyModule(), cacheKey.getPolicyFunction());
                 }
             }
 
@@ -444,6 +433,9 @@ public class PolicyEvaluationService {
             );
             return compiledPolicy;
 
+        } catch (PolicyNotExecutableException e) {
+            // 已归因的业务状态原样上抛，供 REST 层映射为 404 / 409
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException(String.format(
                 "动态策略执行异常: %s.%s",
@@ -611,13 +603,18 @@ public class PolicyEvaluationService {
                     result,
                     null
                 ))
-                .onFailure().recoverWithItem(error -> new EvaluationAttempt(
-                    index,
-                    req.policyModule,
-                    req.policyFunction,
-                    null,
-                    error.getMessage()
-                ));
+                .onFailure().recoverWithItem(error -> {
+                    // 单条失败按与单次评估相同的规则归因，错误码随条目内联返回
+                    EvaluationFailure failure = EvaluationFailure.classify(error);
+                    return new EvaluationAttempt(
+                        index,
+                        req.policyModule,
+                        req.policyFunction,
+                        null,
+                        failure.message(),
+                        failure.code()
+                    );
+                });
 
             attempts.add(attempt);
         }
