@@ -80,8 +80,9 @@ public class AiAssistantResource {
      *
      * 事件类型：
      * - delta: 增量内容
+     * - validating: 流已结束、正在编译校验（保活帧，无 data）
      * - validation_error: 编译校验失败
-     * - final: 最终代码（已通过校验或达到最大重试次数）
+     * - final: 最终代码（已通过校验或达到最大重试次数；validated / truncated / diagnostics）
      * - error: 服务端错误
      */
     @POST
@@ -106,6 +107,9 @@ public class AiAssistantResource {
      * 策略优化建议（SSE 流式）
      *
      * POST /api/v1/ai/suggest
+     *
+     * <p>帧序：meta → upstream_reached → delta* → final（data 为完整回答，带 truncated）；
+     * 出错时以 error 结束、不发 final。
      */
     @POST
     @Path("/suggest")

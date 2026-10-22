@@ -152,7 +152,13 @@ public class LlmProxyService {
                     // 放在这里覆盖所有分支（成功/repair/最终失败），每个 attempt 的 token 都算一次。
                     rc.usageAcc().updateAndGet(g -> g.plus(attemptUsage.get()));
 
-                    // 流结束，执行编译校验
+                    // provider 已报错：error 帧已发出并结束流，只回填 token。
+                    // 不能继续拿残缺内容去校验，更不能触发修复重试（会对已结束的流再调一次 provider）。
+                    if (outcome.failed()) {
+                        reportStreamUsage(rc);
+                        return;
+                    }
+
                     String source = outcome.text().trim();
                     if (source.isEmpty()) {
                         // 内容为空也回填（可能已消耗 prompt token）
@@ -162,46 +168,109 @@ public class LlmProxyService {
                         return;
                     }
 
-                    ValidationResult result = validator.validate(source, locale);
-
-                    if (result.ok()) {
-                        // 校验通过，输出清理后的最终代码
-                        String cleanedSource = validator.cleanLlmOutput(source);
-                        emitter.emit(toJson(GeneratePolicyEvent.finalResult(cleanedSource, true, outcome.stopReason())));
-                        reportStreamUsage(rc); // #185：流程终态，回填累计 token
-                        emitter.complete();
-                    } else if (currentAttempt < maxAttempts) {
-                        // 校验失败，尝试修复
-                        LOG.warnf("编译校验失败 (尝试 %d/%d): %s",
-                            currentAttempt, maxAttempts, result.errorsAsString());
-
-                        emitter.emit(toJson(GeneratePolicyEvent.validationError(result.errorsAsString())));
-
-                        // 构建修复 Prompt
-                        PromptContext repairCtx = promptComposer.buildRepairContext(
-                            currentCtx.get(), source, result, locale);
-                        currentCtx.set(repairCtx);
-                        int nextAttempt = attempt.incrementAndGet();
-
-                        // 通知前端修复开始
-                        emitter.emit(toJson(GeneratePolicyEvent.repairStart(nextAttempt, maxAttempts)));
-
-                        // 递归重试（rc 累加 token 跨 attempt）
-                        executeGenerateAttempt(repairCtx, options, locale,
-                            attempt, maxAttempts, currentCtx, emitter, rc);
-                    } else {
-                        // 超出重试次数
-                        LOG.errorf("编译校验最终失败 (%d 次尝试): %s",
-                            maxAttempts, result.errorsAsString());
-                        emitter.emit(toJson(GeneratePolicyEvent.validationError(result.errorsAsString())));
-                        // 仍然输出最后一次的代码，让用户手动修复
-                        String cleanedSource = validator.cleanLlmOutput(source);
-                        emitter.emit(toJson(GeneratePolicyEvent.finalResult(cleanedSource, false, outcome.stopReason())));
-                        reportStreamUsage(rc); // #185：流程终态（含所有 repair attempt 累计）
-                        emitter.complete();
+                    // 编译校验可能耗时：先发轻量 validating 帧，避免 Cloudflare 等代理把最后一个 delta
+                    // 之后长时间无数据的流按空闲断开（断开后客户端永远收不到 final）；
+                    // 校验本身切到 worker 线程，不占用 I/O 线程。
+                    emitter.emit(toJson(GeneratePolicyEvent.validating()));
+                    GenerateAttempt current = new GenerateAttempt(source, outcome.stopReason(), currentAttempt,
+                        locale, options, attempt, maxAttempts, currentCtx, emitter, rc);
+                    try {
+                        io.smallrye.mutiny.infrastructure.Infrastructure.getDefaultWorkerPool()
+                            .execute(() -> finishGenerateAttempt(current));
+                    } catch (java.util.concurrent.RejectedExecutionException e) {
+                        failGenerateAttempt(current, e);
                     }
                 }
             );
+    }
+
+    /** 一个 generate attempt 流结束后做校验 / 修复所需的全部上下文。 */
+    private record GenerateAttempt(
+        String source,
+        String stopReason,
+        int currentAttempt,
+        String locale,
+        LlmRuntimeOptions options,
+        AtomicInteger attempt,
+        int maxAttempts,
+        AtomicReference<PromptContext> currentCtx,
+        io.smallrye.mutiny.subscription.MultiEmitter<? super String> emitter,
+        UsageReportCtx rc
+    ) {}
+
+    /**
+     * 校验本 attempt 的输出：通过 → final(validated=true)；未通过且还有次数 → 修复重试；
+     * 次数用尽 → final(validated=false, diagnostics=编译错误)。
+     *
+     * <p>★任何异常（校验器、修复 prompt 组装、发起下一次调用）都必须收敛成终帧，
+     * 否则流会在没有 final / error 的情况下静默结束，前端拿不到校验结论（生产 E2E F3）。
+     */
+    private void finishGenerateAttempt(GenerateAttempt a) {
+        var emitter = a.emitter();
+        try {
+            ValidationResult result = validator.validate(a.source(), a.locale());
+
+            if (result.ok()) {
+                // 校验通过，输出清理后的最终代码
+                String cleanedSource = validator.cleanLlmOutput(a.source());
+                emitter.emit(toJson(GeneratePolicyEvent.finalResult(cleanedSource, true, a.stopReason())));
+                reportStreamUsage(a.rc()); // #185：流程终态，回填累计 token
+                emitter.complete();
+            } else if (a.currentAttempt() < a.maxAttempts()) {
+                // 校验失败，尝试修复
+                LOG.warnf("编译校验失败 (尝试 %d/%d): %s",
+                    a.currentAttempt(), a.maxAttempts(), result.errorsAsString());
+
+                emitter.emit(toJson(GeneratePolicyEvent.validationError(result.errorsAsString())));
+
+                // 构建修复 Prompt
+                PromptContext repairCtx = promptComposer.buildRepairContext(
+                    a.currentCtx().get(), a.source(), result, a.locale());
+                a.currentCtx().set(repairCtx);
+                int nextAttempt = a.attempt().incrementAndGet();
+
+                // 通知前端修复开始
+                emitter.emit(toJson(GeneratePolicyEvent.repairStart(nextAttempt, a.maxAttempts())));
+
+                // 递归重试（rc 累加 token 跨 attempt）
+                executeGenerateAttempt(repairCtx, a.options(), a.locale(),
+                    a.attempt(), a.maxAttempts(), a.currentCtx(), emitter, a.rc());
+            } else {
+                // 超出重试次数
+                LOG.errorf("编译校验最终失败 (%d 次尝试): %s",
+                    a.maxAttempts(), result.errorsAsString());
+                emitter.emit(toJson(GeneratePolicyEvent.validationError(result.errorsAsString())));
+                // 仍然输出最后一次的代码，让用户手动修复
+                String cleanedSource = validator.cleanLlmOutput(a.source());
+                emitter.emit(toJson(GeneratePolicyEvent.finalResult(
+                    cleanedSource, false, a.stopReason(), result.errors())));
+                reportStreamUsage(a.rc()); // #185：流程终态（含所有 repair attempt 累计）
+                emitter.complete();
+            }
+        } catch (RuntimeException e) {
+            failGenerateAttempt(a, e);
+        }
+    }
+
+    /** 校验 / 修复过程出错：仍以 final(validated=false) 收尾，带上原始输出与诊断，让用户拿到代码。 */
+    private void failGenerateAttempt(GenerateAttempt a, Exception e) {
+        LOG.errorf(e, "编译校验/修复过程异常 (尝试 %d/%d)", a.currentAttempt(), a.maxAttempts());
+        a.emitter().emit(toJson(GeneratePolicyEvent.finalResult(
+            safeClean(a.source()), false, a.stopReason(), List.of(VALIDATION_UNAVAILABLE))));
+        reportStreamUsage(a.rc());
+        a.emitter().complete();
+    }
+
+    /** 校验过程出错时的诊断文案（不含异常细节，异常只记日志）。 */
+    static final String VALIDATION_UNAVAILABLE = "编译校验过程出错，以下代码未经校验";
+
+    /** 清理 LLM 输出；清理本身出错时退回原文，保证终帧一定能发出。 */
+    private String safeClean(String source) {
+        try {
+            return validator.cleanLlmOutput(source);
+        } catch (RuntimeException e) {
+            return source;
+        }
     }
 
     /**
