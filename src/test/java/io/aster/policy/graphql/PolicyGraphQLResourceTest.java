@@ -927,7 +927,9 @@ public class PolicyGraphQLResourceTest {
         boolean foundPolicyNotFound = false;
         Throwable current = cause;
         while (current != null) {
-            if (current.getMessage() != null && current.getMessage().contains("策略未找到")) {
+            // 未找到策略以类型化异常上抛（F11：REST 层据此回 404 policy_not_found）
+            if (current instanceof io.aster.policy.api.PolicyNotExecutableException e
+                    && e.reason() == io.aster.policy.api.PolicyNotExecutableException.Reason.POLICY_NOT_FOUND) {
                 foundPolicyNotFound = true;
                 break;
             }
