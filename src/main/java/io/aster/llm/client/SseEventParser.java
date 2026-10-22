@@ -79,12 +79,14 @@ public class SseEventParser {
 
         JsonNode firstChoice = choices.get(0);
         String content = firstChoice.path("delta").path("content").asText(null);
+        // finish_reason 可能与最后一段内容同帧（部分兼容代理），也可能单独成帧（原生 OpenAI）。
+        String stopReason = normalizeStopReason(textOrNull(firstChoice.path("finish_reason")));
         if (content != null) {
-            return LlmStreamEvent.delta(content);
+            return LlmStreamEvent.delta(content).withStopReason(stopReason);
         }
 
-        // finish_reason=stop 不再直接 DONE：继续等 usage 帧 + [DONE] 标记（见上）。
-        return null;
+        // finish_reason 帧不直接 DONE：继续等 usage 帧 + [DONE] 标记（见上），只记下停止原因。
+        return stopReason != null ? LlmStreamEvent.stop(stopReason) : null;
     }
 
     /**
@@ -109,9 +111,14 @@ public class SseEventParser {
                 int input = root.path("message").path("usage").path("input_tokens").asInt(0);
                 yield input > 0 ? LlmStreamEvent.usage(new io.aster.llm.model.LlmUsage(input, 0)) : null;
             }
+            // message_delta 同时携带 delta.stop_reason（max_tokens 即被输出上限截断）。
             case "message_delta" -> {
                 int output = root.path("usage").path("output_tokens").asInt(0);
-                yield output > 0 ? LlmStreamEvent.usage(new io.aster.llm.model.LlmUsage(0, output)) : null;
+                String stopReason = normalizeStopReason(textOrNull(root.path("delta").path("stop_reason")));
+                if (output > 0) {
+                    yield LlmStreamEvent.usage(new io.aster.llm.model.LlmUsage(0, output)).withStopReason(stopReason);
+                }
+                yield stopReason != null ? LlmStreamEvent.stop(stopReason) : null;
             }
             case "message_stop" -> LlmStreamEvent.done();
             case "error" -> {
@@ -123,5 +130,33 @@ public class SseEventParser {
             }
             default -> null;
         };
+    }
+
+    /**
+     * 把各 provider 的停止原因归一化：凡是「因输出上限被截断」的取值一律映射为
+     * {@link LlmStreamEvent#STOP_MAX_TOKENS}，下游只需比较这一个值；其余取值小写后原样保留
+     * （stop / end_turn / content_filter / tool_calls …），便于排障。
+     *
+     * <ul>
+     *   <li>Anthropic：{@code max_tokens}；上下文窗口耗尽时为 {@code model_context_window_exceeded}；</li>
+     *   <li>OpenAI 及兼容端点：{@code length}；</li>
+     *   <li>经兼容层转发的 Gemini 等：{@code MAX_TOKENS} / {@code max_output_tokens}。</li>
+     * </ul>
+     */
+    static String normalizeStopReason(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String reason = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (reason) {
+            case "length", "max_tokens", "max_output_tokens", "model_context_window_exceeded" ->
+                LlmStreamEvent.STOP_MAX_TOKENS;
+            default -> reason;
+        };
+    }
+
+    /** 只接受字符串节点：JSON null / 缺失 / 非字符串一律视为未给出。 */
+    private static String textOrNull(JsonNode node) {
+        return node != null && node.isTextual() ? node.asText() : null;
     }
 }

@@ -226,6 +226,8 @@ class PolicyEvaluationFunctionSelectionTest {
         given().header("X-Tenant-Id", TENANT).contentType(ContentType.JSON).body(requestBody("helper"))
             .when().post("/api/v1/policies/evaluate")
             .then()
+            .statusCode(400)
+            .body("code", equalTo("function_not_executable"))
             .body("result", nullValue())
             .body("error", allOf(containsString("'helper'"), containsString("'main'"),
                 not(containsString("Policy evaluation failed"))));
@@ -238,6 +240,8 @@ class PolicyEvaluationFunctionSelectionTest {
         given().header("X-Tenant-Id", TENANT).contentType(ContentType.JSON).body(requestBody("nosuch"))
             .when().post("/api/v1/policies/evaluate")
             .then()
+            .statusCode(404)
+            .body("code", equalTo("function_not_found"))
             .body("result", nullValue())
             .body("error", allOf(containsString("'nosuch'"), not(containsString("Policy evaluation failed"))));
     }

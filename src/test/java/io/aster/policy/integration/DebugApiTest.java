@@ -40,7 +40,9 @@ class DebugApiTest {
             .when()
             .post("/api/v1/policies/evaluate")
             .then()
-            .statusCode(200)
+            // debug-tenant 下没有部署该策略：按 F11 的状态码契约回 404 policy_not_found（此前为 200 + error）
+            .statusCode(404)
+            .body("code", org.hamcrest.Matchers.equalTo("policy_not_found"))
             .extract()
             .body()
             .asString();

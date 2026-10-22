@@ -30,6 +30,9 @@ import java.util.List;
  *        包裹为数据、设长度上限、且<b>只能追加，绝不能覆盖 system prompt 的三条
  *        硬约束</b>（只依据站内条目 / 无依据就说不知道 / 必须给引用）——否则一句
  *        "请尽量给出有帮助的回答"就能拆掉防幻觉护栏，而那是本产品可信定位的根基。
+ * @param resultsUi 调用方是否在回答下方展示站内检索结果（可空，缺省 true）。为 false 时
+ *        （如 AI 工作区这类没有结果列表的调用方）prompt 不再让模型提示用户「查看下方搜索结果」，
+ *        否则会把用户引向一个不存在的界面。
  */
 // Phase 2 BYOK：忽略顶层 _byok envelope（见 GeneratePolicyRequest 注释）。
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -49,8 +52,16 @@ public record AssistantRequest(
 
     // 管理员附加指令：详见类级 javadoc 的 @param adminInstructions 说明。
     @Size(max = 4_096, message = "adminInstructions 长度超过上限（最多 4096 字符）")
-    String adminInstructions
+    String adminInstructions,
+
+    // 调用方是否展示检索结果列表：详见类级 javadoc 的 @param resultsUi 说明。
+    Boolean resultsUi
 ) {
+    /** 未传按 true 处理，保持既有调用方（cloud 站内助手面板）的行为不变。 */
+    public boolean showsResultsUi() {
+        return resultsUi == null || resultsUi;
+    }
+
     public String getLocaleOrDefault() {
         return locale == null || locale.isBlank() ? "zh-CN" : locale;
     }

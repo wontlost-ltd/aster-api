@@ -288,7 +288,7 @@ public class ApiKeyAuthFilter {
             .entity(Map.of(
                 "error", "unauthorized",
                 "reason", reason,
-                "message", "Invalid or revoked API key. See https://aster-lang.cloud/billing/api-keys"
+                "message", "Invalid or revoked API key. See https://aster-lang.cloud/settings/api-keys"
             ))
             .type(MediaType.APPLICATION_JSON)
             .build();

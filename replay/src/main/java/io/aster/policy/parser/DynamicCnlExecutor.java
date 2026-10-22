@@ -294,10 +294,11 @@ public class DynamicCnlExecutor {
                 coreModule = MAPPER.readValue(coreIrJson, CoreModel.Module.class);
             } catch (Exception e) {
                 throw new DynamicExecutionException(
-                    "Core IR JSON 解析失败: " + e.getMessage(), e);
+                    "Core IR JSON 解析失败: " + e.getMessage(), e, DynamicExecutionException.Kind.INVALID_INPUT);
             }
             if (coreModule == null || coreModule.decls == null) {
-                throw new DynamicExecutionException("Core IR JSON 不含任何声明");
+                throw new DynamicExecutionException("Core IR JSON 不含任何声明",
+                    DynamicExecutionException.Kind.INVALID_INPUT);
             }
 
             List<String> functionNames = new java.util.ArrayList<>();
@@ -316,12 +317,14 @@ public class DynamicCnlExecutor {
 
             List<CoreModel.Param> functionParams = findFunctionParams(coreModule, targetFunction);
             if (functionParams == null) {
-                throw new DynamicExecutionException("未找到函数参数定义: " + targetFunction);
+                throw new DynamicExecutionException("未找到函数参数定义: " + targetFunction,
+                    DynamicExecutionException.Kind.FUNCTION_NOT_FOUND);
             }
             NamedContextMapper.MappingResult mappingResult =
                 NamedContextMapper.mapContext(context, functionParams, dataDeclsOf(coreModule));
             if (!mappingResult.success()) {
-                throw new DynamicExecutionException("参数映射失败: " + mappingResult.error());
+                throw new DynamicExecutionException("参数映射失败: " + mappingResult.error(),
+                    DynamicExecutionException.Kind.INVALID_INPUT);
             }
 
             // 重新序列化：入参 JSON 可能含多余空白/字段顺序差异，统一走 MAPPER 产出
@@ -596,9 +599,11 @@ public class DynamicCnlExecutor {
             throw new AmbiguousEntryException(ambiguous.candidates());
         } else if (selection instanceof EntryPointSelector.NotFound notFound) {
             throw new DynamicExecutionException(
-                "未找到指定函数 '" + notFound.requested() + "',可用: " + notFound.candidates());
+                "未找到指定函数 '" + notFound.requested() + "',可用: " + notFound.candidates(),
+                DynamicExecutionException.Kind.FUNCTION_NOT_FOUND);
         } else {
-            throw new DynamicExecutionException("CNL 中未找到可执行的函数");
+            throw new DynamicExecutionException("CNL 中未找到可执行的函数",
+                DynamicExecutionException.Kind.FUNCTION_NOT_FOUND);
         }
     }
 
@@ -932,12 +937,41 @@ public class DynamicCnlExecutor {
     public static class DynamicExecutionException extends RuntimeException {
         private static final long serialVersionUID = 1L;
 
+        /**
+         * 失败归因：REST 层据此区分「调用方可自行修正」（输入不合法 / 目标函数不存在）
+         * 与「服务端执行失败」，分别回 4xx 与 500，而不是一律包装成同一种错误。
+         */
+        public enum Kind {
+            /** 执行期失败（缺省）：调用方无法通过修改请求解决。 */
+            EXECUTION,
+            /** 请求携带的策略体或上下文不合法。 */
+            INVALID_INPUT,
+            /** 指定的目标函数不存在。 */
+            FUNCTION_NOT_FOUND
+        }
+
+        private final Kind kind;
+
         public DynamicExecutionException(String message) {
-            super(message);
+            this(message, Kind.EXECUTION);
         }
 
         public DynamicExecutionException(String message, Throwable cause) {
+            this(message, cause, Kind.EXECUTION);
+        }
+
+        public DynamicExecutionException(String message, Kind kind) {
+            super(message);
+            this.kind = kind;
+        }
+
+        public DynamicExecutionException(String message, Throwable cause, Kind kind) {
             super(message, cause);
+            this.kind = kind;
+        }
+
+        public Kind kind() {
+            return kind;
         }
     }
 
@@ -969,7 +1003,7 @@ public class DynamicCnlExecutor {
         private final List<String> candidates;
 
         public AmbiguousEntryException(List<String> candidates) {
-            super("未指定入口函数，候选函数不唯一: " + candidates);
+            super("未指定入口函数，候选函数不唯一: " + candidates, Kind.INVALID_INPUT);
             this.candidates = candidates == null ? List.of() : List.copyOf(candidates);
         }
 
