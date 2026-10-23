@@ -15,6 +15,9 @@ class PromptComposerSyntaxTest {
         for (String locale : new String[]{"en", "zh", "de"}) {
             String template = resource("prompts/developer/policy_gen_" + locale + ".txt");
             assertThat(template).contains("as Int").doesNotContain("RIGHT: Define User has name, age.");
+            // 每种语言的"正确示例"都必须带类型（英/中/德本地化标签不同，示例行相同）
+            assertThat(template).contains("Define User has name as Text, age as Int.")
+                .doesNotContain("Define User has name, age.");
         }
     }
 
@@ -34,6 +37,20 @@ class PromptComposerSyntaxTest {
         assertThat(context.getSystemPrompt()).doesNotContain("RIGHT: Define User has name, age.");
         // 生成规则/输出格式两节会把建议模式压成纯代码输出，不得注入 Suggest
         assertThat(context.getSystemPrompt()).doesNotContain("## Generation Rules").doesNotContain("## Output Format");
+    }
+
+    @Test
+    void syntaxSectionsKeepFirstTwoSectionsForEveryLocale() throws Exception {
+        for (String locale : new String[]{"en", "zh", "de"}) {
+            String template = resource("prompts/developer/policy_gen_" + locale + ".txt");
+            String[] headings = template.split("\\n## ");
+            String kept = PromptComposer.syntaxSections(template);
+            // 前两节（语法约束、常见错误）保留，后两节（生成规则、输出格式）截掉
+            assertThat(kept).as(locale).contains("## " + headings[1].split("\\n")[0])
+                .contains("## " + headings[2].split("\\n")[0])
+                .doesNotContain("## " + headings[3].split("\\n")[0])
+                .doesNotContain("## " + headings[4].split("\\n")[0]);
+        }
     }
 
     @Test

@@ -23,7 +23,8 @@ Du generierst aster-lang Richtliniencode. Befolge diese Einschraenkungen strikt.
 - FALSCH: Return result (fehlender Punkt)
   RICHTIG: Return result.
 - FALSCH: Define User has name: Text, age: Int.
-  RICHTIG: Define User has name, age.
+  RICHTIG: Define User has name as Text, age as Int.
+- Niemals Doppelpunkt-Typsyntax (`name: Text`) verwenden; schreibe `name as Text`.
 
 ## Generierungsregeln
 1. Ausgabe muss die Syntaxvalidierung des aster-lang Compilers bestehen

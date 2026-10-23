@@ -230,6 +230,18 @@ class PolicyCompilerTest {
         });
     }
 
+    @Test
+    void typeErrorsCoexistWithGovernanceDiagnostics() {
+        // 未登记控制点（W704）来自 GovernanceDiagnostics，不来自类型检查；类型错误下仍只出现一次
+        String src = untypedEnumPolicy().replace(
+            "Rule evaluateSmallBusinessLoan given application, produce:",
+            "@id(\"GP-001\")\n@control(\"ACME:ART1\")\nRule evaluateSmallBusinessLoan given application, produce:");
+        var result = policyCompiler.compile(src, "en");
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getDiagnostics()).anySatisfy(d -> assertThat(d.code()).isEqualTo("E012"));
+        assertThat(result.getDiagnostics().stream().filter(d -> "W704".equals(d.code())).count()).isEqualTo(1);
+    }
+
     private String untypedEnumPolicy() {
         return """
             Module company.finance.smallbusiness.
