@@ -11,7 +11,7 @@
 - 错误关键字 "Data"：使用 "Define <类型名> has <字段>."
 - 内联 if/then/else：改为块式 "If <条件>\n  <语句>.\nOtherwise\n  <语句>."
 - 错误模式匹配 "case X =>"：使用 "When X, Return <值>."
-- 字段类型标注 "name: Text"：去掉类型，只用字段名 "name"
+- 字段类型用 `as` 标注，例如 `name as Text`；禁止 `name: Text` 冒号写法
 - 缺少 "set to"：使用 "<类型> with <字段> set to <值>."
 - 符号运算符 ">", "<", "+"：使用 "greater than", "less than", "plus"
 - Define 中字段间缺少逗号："Define X has a, b, c."
@@ -25,5 +25,6 @@
 4. 使用块式 If/Otherwise，不用内联 if/then/else
 5. 使用 Match/When，不用 match/case
 6. 使用 Define，不用 Data
-7. 只输出修复后的完整策略代码
-8. 不要输出解释
+7. 字段、参数与返回类型一律用 `as`，禁止冒号类型语法
+8. 只输出修复后的完整策略代码
+9. 不要输出解释

@@ -107,9 +107,13 @@ public class PromptComposer {
         String locale = req.getLocaleOrDefault();
         String model = req.model() != null ? req.model() : config.model();
 
+        String syntaxRules = syntaxSections(templates.load("developer", "policy_gen", locale));
         String systemPrompt = "You are an aster-lang policy expert and code reviewer. "
             + "Analyze the given policy code and provide actionable optimization suggestions. "
             + "Focus on: simplification, performance, readability, and correctness. "
+            + "Every improved snippet and complete correction must be compilable aster-lang. "
+            + "Use `as` for field and parameter types; never use colon type syntax (`name: Text`).\n\n"
+            + "Shared aster-lang syntax constraints:\n" + syntaxRules + "\n\n"
             + "Reply in the language requested by the user.";
 
         StringBuilder userPrompt = new StringBuilder();
@@ -128,6 +132,22 @@ public class PromptComposer {
             .model(model)
             .temperature(0.3)
             .maxTokens(config.suggestMaxTokens());
+    }
+
+    /**
+     * 从 Generate 模板里截取"语法约束 + 常见错误"两节，供 Suggest 复用。
+     * 模板固定为四节（语法约束 / 常见错误 / 生成规则 / 输出格式），后两节要求"只输出完整策略源码"，
+     * 与 Suggest 的"分优先级给建议与片段"格式冲突，注入后会把建议模式压成纯代码输出，故在第三个
+     * 二级标题处截断；模板少于三节时整段返回。
+     */
+    static String syntaxSections(String generateTemplate) {
+        if (generateTemplate == null) {
+            return "";
+        }
+        int first = generateTemplate.indexOf("\n## ");
+        int second = first < 0 ? -1 : generateTemplate.indexOf("\n## ", first + 1);
+        int third = second < 0 ? -1 : generateTemplate.indexOf("\n## ", second + 1);
+        return third < 0 ? generateTemplate.trim() : generateTemplate.substring(0, third).trim();
     }
 
     /**

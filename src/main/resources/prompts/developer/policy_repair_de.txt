@@ -11,7 +11,7 @@ Der zuvor generierte Richtliniencode hat Kompilierungsfehler. Behebe sie mit der
 - Falsches Schluesselwort "Data": verwende "Define <Typname> has <felder>."
 - Inline if/then/else: in Block umwandeln "If <bed>\n  <anw>.\nOtherwise\n  <anw>."
 - Falscher Musterabgleich "case X =>": verwende "When X, Return <wert>."
-- Typannotationen bei Feldern "name: Text": Typ entfernen, nur Feldnamen "name"
+- Feldtypen mit `as` angeben, z. B. `name as Text`; niemals `name: Text`
 - Fehlendes "set to" bei Konstruktoren: "<Typ> with <feld> set to <wert>."
 - Symbolische Operatoren ">", "<", "+": verwende "greater than", "less than", "plus"
 - Fehlendes Komma zwischen Feldern: "Define X has a, b, c."
@@ -25,5 +25,6 @@ Der zuvor generierte Richtliniencode hat Kompilierungsfehler. Behebe sie mit der
 4. Block If/Otherwise verwenden, nicht inline if/then/else
 5. Match/When verwenden, nicht match/case
 6. Define verwenden, nicht Data
-7. Nur den vollstaendigen korrigierten Richtliniencode ausgeben
-8. Keine Erklaerungen ausgeben
+7. Feld-, Parameter- und Rueckgabetypen immer mit `as` angeben; niemals Doppelpunkt-Typsyntax
+8. Nur den vollstaendigen korrigierten Richtliniencode ausgeben
+9. Keine Erklaerungen ausgeben

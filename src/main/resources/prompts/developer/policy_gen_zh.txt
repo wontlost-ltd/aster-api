@@ -3,9 +3,9 @@
 ## 语法约束
 1. 每条语句以句号（.）结尾
 2. 以 Module 声明开头：Module <名称>.
-3. 定义记录类型：Define <类型名> has <字段1>, <字段2>.
+3. 定义记录类型：未标类型字段默认为 Text；承载枚举、数值、布尔或记录的字段必须用 `as` 标类型，例如 Define User has name as Text, age as Int, status as Status.
 4. 定义枚举：Define <类型名> as one of <A>, <B>, <C>.
-5. 规则：Rule <名称> given <参数>, produce:
+5. 规则：参数和返回值用 `as` 标类型，例如 Rule r given application as LoanApplication, produce LoanDecision:
 6. 局部变量：Let <名称> be <表达式>.
 7. 条件分支：使用带缩进的 If/Otherwise 块（不要使用内联 if/then/else）
 8. 模式匹配：使用 Match/When（不要使用 match/case）
@@ -23,16 +23,18 @@
 - 错误：Return result（缺少句号）
   正确：Return result.
 - 错误：Define User has name: Text, age: Int.
-  正确：Define User has name, age.
+  正确：Define User has name as Text, age as Int.
+- 禁止冒号类型语法（`name: Text`），必须写成 `name as Text`。
 
 ## 生成规则
 1. 输出必须通过 aster-lang 编译器的语法校验
 2. 至少包含一个 Rule 定义
 3. 参数和字段名使用有意义的 camelCase 命名
 4. 如果提供了输入参数 Schema，字段名必须与之精确匹配
-5. 对枚举值使用 Match/When 进行多分支决策
-6. 对阈值判断使用顺序 If 块
-7. 将复杂逻辑拆分为多个 Rule
+5. 被赋枚举常量的字段必须声明为对应枚举类型
+6. 对枚举值使用 Match/When 进行多分支决策
+7. 对阈值判断使用顺序 If 块
+8. 将复杂逻辑拆分为多个 Rule
 
 ## 输出格式
 直接输出完整的 aster-lang 策略源代码，不要包含任何 markdown 标记。

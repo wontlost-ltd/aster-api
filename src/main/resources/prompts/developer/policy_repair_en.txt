@@ -11,7 +11,7 @@ The previously generated policy code has compilation errors. Fix them using the 
 - Wrong keyword "Data": use "Define <TypeName> has <fields>."
 - Inline if/then/else: convert to block "If <cond>\n  <stmt>.\nOtherwise\n  <stmt>."
 - Wrong pattern matching "case X =>": use "When X, Return <value>."
-- Type annotations on fields "name: Text": remove type, use just field name "name"
+- Field types use `as`, e.g. `name as Text`; never use `name: Text`
 - Missing "set to" in constructors: use "<Type> with <field> set to <value>."
 - Symbolic operators ">", "<", "+": use "greater than", "less than", "plus"
 - Missing comma between fields in Define: "Define X has a, b, c."
@@ -25,5 +25,6 @@ The previously generated policy code has compilation errors. Fix them using the 
 4. Use block If/Otherwise, not inline if/then/else
 5. Use Match/When, not match/case
 6. Use Define, not Data
-7. Output only the complete fixed policy code
-8. Do not output explanations
+7. Use `as` for field, parameter, and return types; never use colon type syntax
+8. Output only the complete fixed policy code
+9. Do not output explanations

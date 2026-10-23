@@ -58,6 +58,20 @@ class PromptComposerAssistantTest {
         Field f = PromptComposer.class.getDeclaredField("config");
         f.setAccessible(true);
         f.set(composer, stubConfig());
+        // Suggest 复用 Generate 模板里的语法约束：注入直接读 classpath 的模板加载器桩
+        //（真实注册表依赖 LlmConfig.prompt()，这里的配置桩没有它）。
+        Field t = PromptComposer.class.getDeclaredField("templates");
+        t.setAccessible(true);
+        t.set(composer, new PromptTemplateRegistry() {
+            @Override public String load(String category, String name, String locale) {
+                String path = "prompts/" + category + "/" + name + "_" + locale.split("-")[0] + ".txt";
+                try (var in = Thread.currentThread().getContextClassLoader().getResourceAsStream(path)) {
+                    return new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                } catch (Exception e) {
+                    throw new IllegalStateException(path, e);
+                }
+            }
+        });
     }
 
     private static AssistantRequest req(String query, List<AssistantRequest.GroundingHit> hits) {

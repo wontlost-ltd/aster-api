@@ -4,6 +4,8 @@ import aster.core.ast.Module;
 import aster.core.ir.CoreModel;
 import aster.core.lowering.CoreLowering;
 import aster.core.typecheck.governance.GovernanceChecker;
+import aster.core.typecheck.TypeChecker;
+import aster.core.typecheck.model.Diagnostic;
 import aster.core.lexicon.SemanticTokenKind;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.common.JacksonMappers;
@@ -20,6 +22,7 @@ import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
@@ -42,6 +45,9 @@ public class PolicyCompiler {
     private final io.aster.policy.stability.StabilityEnforcement stabilityEnforcement;
     private final io.aster.policy.analysis.RuleConflictDiagnostics ruleConflictDiagnostics;
     private final GovernanceChecker governanceChecker;
+
+    @ConfigProperty(name = "aster.compile.typecheck", defaultValue = "enforce")
+    String typecheckMode = "enforce";
 
     @Inject
     public PolicyCompiler(PolicySourceRepository policySourceRepository,
@@ -83,6 +89,22 @@ public class PolicyCompiler {
      * @param aliasSetJson 版本冻结的别名 JSON（kind→[别名,...]），null=无用户别名
      */
     public CompilationResult compile(String sourceCnl, String locale, String aliasSetJson) {
+        return compile(sourceCnl, locale, aliasSetJson, "warn".equalsIgnoreCase(typecheckMode));
+    }
+
+    /**
+     * 宽松模式编译：类型诊断照常产出，但不影响 success。
+     *
+     * <p>供已落库版本的路径使用（运行时求值、Cedar 导出、审批视图）。这些版本可能来自 API/快照
+     * 而从未经过编辑器保存门（典型如 aster-guard 的 `req.context.amount`：未标类型的 context 默认 Text，
+     * TS 与 Java 检查器都会报 E011），强制阻断会让线上已在跑的策略突然失败。阻断只发生在
+     * 编辑器/保存门走的 {@link #compile(String, String, String)}。
+     */
+    public CompilationResult compileLenient(String sourceCnl, String locale, String aliasSetJson) {
+        return compile(sourceCnl, locale, aliasSetJson, true);
+    }
+
+    private CompilationResult compile(String sourceCnl, String locale, String aliasSetJson, boolean warnOnly) {
         if (sourceCnl == null || sourceCnl.isBlank()) {
             return CompilationResult.failure("CNL 源代码不能为空");
         }
@@ -100,6 +122,20 @@ public class PolicyCompiler {
             LOG.debugf("降级 AST → Core IR...");
             CoreLowering lowering = new CoreLowering();
             CoreModel.Module coreModule = lowering.lowerModule(astModule);
+
+            // TypeChecker 持有可变诊断状态，故每次编译独立创建实例。
+            // 治理类诊断（W700/E70x/E72x）由下方 GovernanceDiagnostics 按编译通道的降级规则单独产出，
+            // 这里剔除，避免同一条 W704 出现两次或在通道上被错误地当成阻断错误。
+            List<Diagnostic> typecheckDiagnostics = new TypeChecker().typecheckModule(coreModule).stream()
+                .filter(d -> d.code().category() != aster.core.typecheck.ErrorCode.Category.GOVERNANCE)
+                .toList();
+            List<CompilationResult.Diagnostic> mappedTypecheck = typecheckDiagnostics.stream()
+                .map(d -> mapTypecheckDiagnostic(d, warnOnly))
+                .toList();
+            List<String> typeErrors = typecheckDiagnostics.stream()
+                .filter(d -> d.severity() == Diagnostic.Severity.ERROR && !warnOnly)
+                .map(d -> typecheckError(d))
+                .toList();
 
             // 3. 序列化 Core IR → JSON
             String coreJson = MAPPER.writeValueAsString(coreModule);
@@ -127,11 +163,17 @@ public class PolicyCompiler {
                 null
             );
 
-            // 三类诊断合流走同一 diagnostics 通道（与 ADR 0031 W600 同构，非平行字段）
+            // 四类诊断合流走同一 diagnostics 通道（与 ADR 0031 W600 同构，非平行字段）。
+            // 类型错误不早退：稳定性/冲突/治理扫描只依赖已成功降级的 IR，照常产出，
+            // 调用方一次就能拿到完整诊断集合；仅 success 由类型错误决定。
             List<CompilationResult.Diagnostic> allDiagnostics =
                 new java.util.ArrayList<>(stability.diagnostics());
+            allDiagnostics.addAll(mappedTypecheck);
             allDiagnostics.addAll(conflicts);
             allDiagnostics.addAll(governance);
+            if (!typeErrors.isEmpty()) {
+                return CompilationResult.failure(typeErrors, allDiagnostics);
+            }
 
             return CompilationResult.success(coreJson, metadata, allDiagnostics);
 
@@ -148,6 +190,24 @@ public class PolicyCompiler {
             LOG.error(message, e);
             return CompilationResult.failure(message);
         }
+    }
+
+    static CompilationResult.Diagnostic mapTypecheckDiagnostic(Diagnostic diagnostic, boolean warnOnly) {
+        int line = diagnostic.span().map(s -> s.start == null ? 1 : s.start.line).orElse(1);
+        int column = diagnostic.span().map(s -> s.start == null ? 1 : s.start.col).orElse(1);
+        int endLine = diagnostic.span().map(s -> s.end == null ? line : s.end.line).orElse(1);
+        int endColumn = diagnostic.span().map(s -> s.end == null ? column : s.end.col).orElse(1);
+        String severity = warnOnly && diagnostic.severity() == Diagnostic.Severity.ERROR
+            ? "warning" : diagnostic.severity().name().toLowerCase(java.util.Locale.ROOT);
+        boolean blocking = diagnostic.severity() == Diagnostic.Severity.ERROR && !warnOnly;
+        return new CompilationResult.Diagnostic(line, column, endLine, endColumn, diagnostic.message(),
+            diagnostic.code().code(), severity, null, null, blocking);
+    }
+
+    private static String typecheckError(Diagnostic diagnostic) {
+        int line = diagnostic.span().map(s -> s.start == null ? 1 : s.start.line).orElse(1);
+        int column = diagnostic.span().map(s -> s.start == null ? 1 : s.start.col).orElse(1);
+        return diagnostic.code().code() + " L" + line + ":" + column + " " + diagnostic.message();
     }
 
     /**
@@ -204,7 +264,8 @@ public class PolicyCompiler {
 
         LOG.infof("动态编译 CNL 源代码: versionId=%d, locale=%s, hasAliases=%b",
             policyVersionId, version.locale, version.aliasSet != null);
-        return compile(version.content, version.locale, version.aliasSet);
+        // 运行时求值：宽松模式，类型问题只随诊断返回，不改变已落库版本的可执行性
+        return compileLenient(version.content, version.locale, version.aliasSet);
     }
 
     /**
