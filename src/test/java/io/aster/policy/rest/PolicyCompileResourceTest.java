@@ -153,6 +153,33 @@ public class PolicyCompileResourceTest {
             .body("diagnostics.find { it.code == 'W601' }.blocking", is(false));
     }
 
+    // 服务端类型检查（生产 E2E 2026-10-23 G2）：未标类型字段被赋枚举值 → success=false，
+    // E012 带 1-based 行列与 blocking=true 原样到达 REST 调用方（cloud 保存门与 Validated 徽章依赖它）。
+    @Test
+    public void compileUntypedEnumField_returnsBlockingE012() {
+        String source = String.join("\n",
+            "Module M.",
+            "Define Status as one of Approved, Rejected.",
+            "Define Decision has status, reason.",
+            "Rule r given x as Int, produce Decision:",
+            "  Return Decision with status set to Approved, reason set to \"ok\".");
+
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body(java.util.Map.of("source", source, "locale", "en-US"))
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200)
+            .contentType(ContentType.JSON)
+            .body("success", is(false))
+            .body("diagnostics.find { it.code == 'E012' }", notNullValue())
+            .body("diagnostics.find { it.code == 'E012' }.severity", is("error"))
+            .body("diagnostics.find { it.code == 'E012' }.blocking", is(true))
+            .body("diagnostics.find { it.code == 'E012' }.startLine", is(5));
+    }
+
     @Test
     public void compileCleanSource_hasNoW601Warning() {
         // 负向断言：误报会让业务人员忽略整个功能

@@ -175,6 +175,61 @@ class PolicyCompilerTest {
         });
     }
 
+    @Test
+    void typeErrorsStillCarryOtherDiagnostics() {
+        // 类型错误不早退：规则冲突（W601）等非阻断诊断与 E012 一起返回
+        String src = untypedEnumPolicy().replace(
+            "  If application.creditScore less than 580\n",
+            "  If application.creditScore less than 580\n    If application.creditScore greater than 700\n      Return LoanDecision with status set to Review, reason set to \"odd\", riskTier set to Low.\n");
+        var result = policyCompiler.compile(src, "en");
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getDiagnostics()).anySatisfy(d -> assertThat(d.code()).isEqualTo("E012"));
+        assertThat(result.getDiagnostics()).anySatisfy(d -> assertThat(d.code())
+            .isEqualTo(io.aster.policy.analysis.RuleConflictDiagnostics.CONFLICT_CODE));
+    }
+
+    @Test
+    void typecheckDiagnosticMappingFallsBackWhenSpanIsMissing() {
+        var noSpan = new aster.core.typecheck.model.Diagnostic(
+            aster.core.typecheck.model.Diagnostic.Severity.ERROR,
+            aster.core.typecheck.ErrorCode.FIELD_TYPE_MISMATCH, "msg",
+            java.util.Optional.empty(), java.util.Optional.empty(), java.util.Map.of());
+        var mapped = PolicyCompiler.mapTypecheckDiagnostic(noSpan, false);
+        assertThat(mapped.line()).isEqualTo(1);
+        assertThat(mapped.column()).isEqualTo(1);
+        assertThat(mapped.endLine()).isEqualTo(1);
+        assertThat(mapped.endColumn()).isEqualTo(1);
+        assertThat(mapped.blocking()).isTrue();
+
+        var origin = new aster.core.ir.CoreModel.Origin();
+        origin.start = new aster.core.ir.CoreModel.Position();
+        origin.start.line = 7;
+        origin.start.col = 3;
+        var startOnly = new aster.core.typecheck.model.Diagnostic(
+            aster.core.typecheck.model.Diagnostic.Severity.ERROR,
+            aster.core.typecheck.ErrorCode.UNKNOWN_FIELD, "msg",
+            java.util.Optional.of(origin), java.util.Optional.empty(), java.util.Map.of());
+        var mappedStart = PolicyCompiler.mapTypecheckDiagnostic(startOnly, true);
+        assertThat(mappedStart.line()).isEqualTo(7);
+        assertThat(mappedStart.endLine()).isEqualTo(7);
+        assertThat(mappedStart.endColumn()).isEqualTo(3);
+        assertThat(mappedStart.severity()).isEqualTo("warning");
+        assertThat(mappedStart.blocking()).isFalse();
+    }
+
+    @Test
+    void lenientCompileKeepsStoredVersionsExecutable() {
+        // 运行时/导出/审批视图路径：类型错误降为 warning，success 不受影响
+        var result = policyCompiler.compileLenient(untypedEnumPolicy(), "en", null);
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(result.getCoreJson()).isNotBlank();
+        assertThat(result.getDiagnostics()).anySatisfy(d -> {
+            assertThat(d.code()).isEqualTo("E012");
+            assertThat(d.severity()).isEqualTo("warning");
+            assertThat(d.blocking()).isFalse();
+        });
+    }
+
     private String untypedEnumPolicy() {
         return """
             Module company.finance.smallbusiness.
