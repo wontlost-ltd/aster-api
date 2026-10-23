@@ -218,19 +218,6 @@ class PolicyCompilerTest {
     }
 
     @Test
-    void lenientCompileKeepsStoredVersionsExecutable() {
-        // 运行时/导出/审批视图路径：类型错误降为 warning，success 不受影响
-        var result = policyCompiler.compileLenient(untypedEnumPolicy(), "en", null);
-        assertThat(result.isSuccess()).isTrue();
-        assertThat(result.getCoreJson()).isNotBlank();
-        assertThat(result.getDiagnostics()).anySatisfy(d -> {
-            assertThat(d.code()).isEqualTo("E012");
-            assertThat(d.severity()).isEqualTo("warning");
-            assertThat(d.blocking()).isFalse();
-        });
-    }
-
-    @Test
     void typeErrorsCoexistWithGovernanceDiagnostics() {
         // 未登记控制点（W704）来自 GovernanceDiagnostics，不来自类型检查；类型错误下仍只出现一次
         String src = untypedEnumPolicy().replace(

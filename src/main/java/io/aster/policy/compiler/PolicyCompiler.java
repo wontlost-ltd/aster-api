@@ -89,22 +89,9 @@ public class PolicyCompiler {
      * @param aliasSetJson 版本冻结的别名 JSON（kind→[别名,...]），null=无用户别名
      */
     public CompilationResult compile(String sourceCnl, String locale, String aliasSetJson) {
-        return compile(sourceCnl, locale, aliasSetJson, "warn".equalsIgnoreCase(typecheckMode));
-    }
-
-    /**
-     * 宽松模式编译：类型诊断照常产出，但不影响 success。
-     *
-     * <p>供已落库版本的路径使用（运行时求值、Cedar 导出、审批视图）。这些版本可能来自 API/快照
-     * 而从未经过编辑器保存门（典型如 aster-guard 的 `req.context.amount`：未标类型的 context 默认 Text，
-     * TS 与 Java 检查器都会报 E011），强制阻断会让线上已在跑的策略突然失败。阻断只发生在
-     * 编辑器/保存门走的 {@link #compile(String, String, String)}。
-     */
-    public CompilationResult compileLenient(String sourceCnl, String locale, String aliasSetJson) {
-        return compile(sourceCnl, locale, aliasSetJson, true);
-    }
-
-    private CompilationResult compile(String sourceCnl, String locale, String aliasSetJson, boolean warnOnly) {
+        // 类型检查对所有编译路径一视同仁（编辑器/保存门、运行时求值、Cedar 导出、审批视图）：
+        // 上线前清库重建，没有需要宽容的历史版本；aster.compile.typecheck=warn 只是紧急降级口。
+        boolean warnOnly = "warn".equalsIgnoreCase(typecheckMode);
         if (sourceCnl == null || sourceCnl.isBlank()) {
             return CompilationResult.failure("CNL 源代码不能为空");
         }
@@ -264,8 +251,7 @@ public class PolicyCompiler {
 
         LOG.infof("动态编译 CNL 源代码: versionId=%d, locale=%s, hasAliases=%b",
             policyVersionId, version.locale, version.aliasSet != null);
-        // 运行时求值：宽松模式，类型问题只随诊断返回，不改变已落库版本的可执行性
-        return compileLenient(version.content, version.locale, version.aliasSet);
+        return compile(version.content, version.locale, version.aliasSet);
     }
 
     /**
