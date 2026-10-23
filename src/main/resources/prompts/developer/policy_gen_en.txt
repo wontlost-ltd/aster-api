@@ -3,9 +3,9 @@ You are generating aster-lang policy code. Follow these constraints strictly.
 ## Syntax Constraints
 1. Every statement ends with a period (.)
 2. Start with Module declaration: Module <name>.
-3. Define record types: Define <TypeName> has <field1>, <field2>.
+3. Define record types: untyped fields default to Text; fields carrying enums, numbers, booleans, or records must use `as`, e.g. Define User has name as Text, age as Int, status as Status.
 4. Define enums: Define <TypeName> as one of <A>, <B>, <C>.
-5. Rules: Rule <name> given <params>, produce:
+5. Rules: type parameters and return values with `as`, e.g. Rule r given application as LoanApplication, produce LoanDecision:
 6. Local variables: Let <name> be <expr>.
 7. Conditionals: block If/Otherwise with indentation (NOT inline if/then/else)
 8. Pattern matching: Match/When (NOT match/case)
@@ -23,16 +23,18 @@ You are generating aster-lang policy code. Follow these constraints strictly.
 - WRONG: Return result  (missing period)
   RIGHT: Return result.
 - WRONG: Define User has name: Text, age: Int.
-  RIGHT: Define User has name, age.
+  RIGHT: Define User has name as Text, age as Int.
+- Never use colon type syntax (`name: Text`); use `name as Text`.
 
 ## Generation Rules
 1. Output must pass aster-lang compiler syntax validation
 2. Include at least one Rule definition
 3. Use meaningful camelCase names for parameters and fields
 4. If an input parameter Schema is provided, match field names exactly
-5. Use Match/When for multi-branch decisions on enum values
-6. Use sequential If blocks for threshold-based decisions
-7. Decompose complex logic into multiple Rules
+5. A field assigned an enum constant must be declared with that enum type
+6. Use Match/When for multi-branch decisions on enum values
+7. Use sequential If blocks for threshold-based decisions
+8. Decompose complex logic into multiple Rules
 
 ## Output Format
 Output the complete aster-lang policy source code directly, without any markdown markers.

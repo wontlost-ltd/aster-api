@@ -130,7 +130,7 @@ public class PolicyCompileResourceTest {
         String source = String.join("\n",
             "Module M.",
             "",
-            "Rule r given x as Number produce Number:",
+            "Rule r given x as Int produce Int:",
             "  If x is greater than 100:",
             "    If x is less than 50:",
             "      Return 1.",
@@ -159,7 +159,7 @@ public class PolicyCompileResourceTest {
         String source = String.join("\n",
             "Module M.",
             "",
-            "Rule r given x as Number produce Number:",
+            "Rule r given x as Int produce Int:",
             "  If x is greater than 100:",
             "    Return 1.",
             "  Return 0.");

@@ -4,6 +4,8 @@ import aster.core.ast.Module;
 import aster.core.ir.CoreModel;
 import aster.core.lowering.CoreLowering;
 import aster.core.typecheck.governance.GovernanceChecker;
+import aster.core.typecheck.TypeChecker;
+import aster.core.typecheck.model.Diagnostic;
 import aster.core.lexicon.SemanticTokenKind;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.common.JacksonMappers;
@@ -20,6 +22,7 @@ import io.quarkus.cache.CacheResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Optional;
@@ -42,6 +45,9 @@ public class PolicyCompiler {
     private final io.aster.policy.stability.StabilityEnforcement stabilityEnforcement;
     private final io.aster.policy.analysis.RuleConflictDiagnostics ruleConflictDiagnostics;
     private final GovernanceChecker governanceChecker;
+
+    @ConfigProperty(name = "aster.compile.typecheck", defaultValue = "enforce")
+    String typecheckMode = "enforce";
 
     @Inject
     public PolicyCompiler(PolicySourceRepository policySourceRepository,
@@ -101,6 +107,24 @@ public class PolicyCompiler {
             CoreLowering lowering = new CoreLowering();
             CoreModel.Module coreModule = lowering.lowerModule(astModule);
 
+            // TypeChecker 持有可变诊断状态，故每次编译独立创建实例。
+            // 治理类诊断（W700/E70x/E72x）由下方 GovernanceDiagnostics 按编译通道的降级规则单独产出，
+            // 这里剔除，避免同一条 W704 出现两次或在通道上被错误地当成阻断错误。
+            List<Diagnostic> typecheckDiagnostics = new TypeChecker().typecheckModule(coreModule).stream()
+                .filter(d -> d.code().category() != aster.core.typecheck.ErrorCode.Category.GOVERNANCE)
+                .toList();
+            boolean warnOnly = "warn".equalsIgnoreCase(typecheckMode);
+            List<CompilationResult.Diagnostic> mappedTypecheck = typecheckDiagnostics.stream()
+                .map(d -> mapTypecheckDiagnostic(d, warnOnly))
+                .toList();
+            List<String> typeErrors = typecheckDiagnostics.stream()
+                .filter(d -> d.severity() == Diagnostic.Severity.ERROR && !warnOnly)
+                .map(d -> typecheckError(d))
+                .toList();
+            if (!typeErrors.isEmpty()) {
+                return CompilationResult.failure(typeErrors, mappedTypecheck);
+            }
+
             // 3. 序列化 Core IR → JSON
             String coreJson = MAPPER.writeValueAsString(coreModule);
             LOG.debugf("Core JSON 长度: %d 字符", coreJson.length());
@@ -130,6 +154,7 @@ public class PolicyCompiler {
             // 三类诊断合流走同一 diagnostics 通道（与 ADR 0031 W600 同构，非平行字段）
             List<CompilationResult.Diagnostic> allDiagnostics =
                 new java.util.ArrayList<>(stability.diagnostics());
+            allDiagnostics.addAll(mappedTypecheck);
             allDiagnostics.addAll(conflicts);
             allDiagnostics.addAll(governance);
 
@@ -148,6 +173,24 @@ public class PolicyCompiler {
             LOG.error(message, e);
             return CompilationResult.failure(message);
         }
+    }
+
+    private static CompilationResult.Diagnostic mapTypecheckDiagnostic(Diagnostic diagnostic, boolean warnOnly) {
+        int line = diagnostic.span().map(s -> s.start == null ? 1 : s.start.line).orElse(1);
+        int column = diagnostic.span().map(s -> s.start == null ? 1 : s.start.col).orElse(1);
+        int endLine = diagnostic.span().map(s -> s.end == null ? line : s.end.line).orElse(1);
+        int endColumn = diagnostic.span().map(s -> s.end == null ? column : s.end.col).orElse(1);
+        String severity = warnOnly && diagnostic.severity() == Diagnostic.Severity.ERROR
+            ? "warning" : diagnostic.severity().name().toLowerCase(java.util.Locale.ROOT);
+        boolean blocking = diagnostic.severity() == Diagnostic.Severity.ERROR && !warnOnly;
+        return new CompilationResult.Diagnostic(line, column, endLine, endColumn, diagnostic.message(),
+            diagnostic.code().code(), severity, null, null, blocking);
+    }
+
+    private static String typecheckError(Diagnostic diagnostic) {
+        int line = diagnostic.span().map(s -> s.start == null ? 1 : s.start.line).orElse(1);
+        int column = diagnostic.span().map(s -> s.start == null ? 1 : s.start.col).orElse(1);
+        return diagnostic.code().code() + " L" + line + ":" + column + " " + diagnostic.message();
     }
 
     /**
