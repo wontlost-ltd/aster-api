@@ -33,6 +33,12 @@ public interface PolicySourceRepository {
     Optional<PolicyVersion> findActiveVersion(UUID catalogId);
 
     /**
+     * 该租户下此模块/函数是否存在任何版本（不论状态）。
+     * 用于区分「策略不存在」与「存在但没有可执行版本」两种评估失败。
+     */
+    boolean hasAnyVersion(String tenantId, String module, String function);
+
+    /**
      * 查询指定策略版本下的核心 JSON 产物。
      *
      * @param versionId 策略版本ID

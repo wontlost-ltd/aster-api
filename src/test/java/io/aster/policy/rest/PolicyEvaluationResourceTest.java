@@ -583,7 +583,8 @@ public class PolicyEvaluationResourceTest {
     }
 
     /**
-     * 测试错误处理 - 策略执行失败（参数不匹配）
+     * 测试错误处理 - 策略执行失败（参数不匹配）。
+     * 运行时只给出执行失败文本，无法可靠区分输入问题与内部故障，按 500 evaluation_failed 回，且不透出内部消息。
      */
     @Test
     public void testEvaluatePolicy_ParameterMismatch() {
@@ -602,10 +603,11 @@ public class PolicyEvaluationResourceTest {
         .when()
             .post("/api/v1/policies/evaluate")
         .then()
-            .statusCode(200)
+            .statusCode(500)
             .contentType(ContentType.JSON)
             .body("result", nullValue())
-            .body("error", notNullValue());
+            .body("error", notNullValue())
+            .body("code", equalTo("evaluation_failed"));
     }
 
     /**

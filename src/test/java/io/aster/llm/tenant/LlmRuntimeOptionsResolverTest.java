@@ -176,6 +176,8 @@ class LlmRuntimeOptionsResolverTest {
         @Override public String anthropicDefaultModel() { return "claude-m"; }
         @Override public double temperature() { return 0.2; }
         @Override public int maxTokens() { return 100; }
+        @Override public int suggestMaxTokens() { return 100; }
+        @Override public int assistantMaxTokens() { return 100; }
         @Override public Duration timeout() { return Duration.ofSeconds(30); }
         @Override public Duration readTimeout() { return Duration.ofSeconds(120); }
         @Override public Optional<String> apiKey() { return Optional.empty(); }

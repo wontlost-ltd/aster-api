@@ -127,7 +127,7 @@ public class PromptComposer {
             .userPrompt(userPrompt.toString())
             .model(model)
             .temperature(0.3)
-            .maxTokens(config.maxTokens());
+            .maxTokens(config.suggestMaxTokens());
     }
 
     /**
@@ -136,7 +136,8 @@ public class PromptComposer {
      * <p><b>核心约束：只依据给定条目作答。</b> 助手的价值全在"答案可溯源"——
      * 这是本产品可信定位的一部分。若让模型自由发挥，它会用训练数据里的通用
      * 知识编出看似合理、实则本站不存在的功能与路径，比不回答更有害。
-     * 因此 system prompt 明确要求：无依据就说不知道，并让用户看下方检索结果。
+     * 因此 system prompt 明确要求：无依据就说不知道；调用方展示了检索结果时
+     * （{@link AssistantRequest#showsResultsUi()}），再让用户看下方的结果列表。
      *
      * <p>groundingHits 来自客户端，与 query 一样全部经 {@link #wrapUserData}
      * 包裹为数据，不得当作指令执行。
@@ -145,10 +146,14 @@ public class PromptComposer {
         String locale = req.getLocaleOrDefault();
         String model = req.model() != null ? req.model() : config.model();
 
+        // 没有结果列表的调用方（如 AI 工作区）不能让模型指向「下方的搜索结果」，否则答复会误导用户。
+        String fallbackHint = req.showsResultsUi()
+            ? " and tell the user to check the search results shown below the answer"
+            : "";
         String systemPrompt = "You are the Aster documentation assistant. "
             + "Answer ONLY from the provided site excerpts. "
-            + "If the excerpts do not contain the answer, say you don't know and tell the user "
-            + "to check the search results shown below the answer — never guess, and never "
+            + "If the excerpts do not contain the answer, say you don't know" + fallbackHint
+            + " — never guess, and never "
             + "invent features, endpoints, or page paths that are not in the excerpts. "
             + "Cite the href of every excerpt you rely on. "
             + "Keep the answer short (at most a few sentences). "
@@ -197,7 +202,7 @@ public class PromptComposer {
             .model(model)
             // 比 suggest(0.3) 更低：问答要稳定复现，不需要创造性。
             .temperature(0.1)
-            .maxTokens(config.maxTokens());
+            .maxTokens(config.assistantMaxTokens());
     }
 
     private String buildUserPrompt(GeneratePolicyRequest req) {

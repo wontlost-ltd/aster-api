@@ -38,11 +38,14 @@ class SseEventParserTest {
         @Test
         void parseFinishReason_stop不再直接DONE_等usage帧() {
             // issue #185：开启 stream_options.include_usage 后，finish_reason=stop 帧之后还有 usage 帧。
-            // 若在 stop 就 DONE 会提前结束流、拿不到 token。stop 帧现在返回 null（继续等 usage + [DONE]）。
+            // 若在 stop 就 DONE 会提前结束流、拿不到 token。stop 帧只产出 STOP（记停止原因），不结束流。
             String data = """
                 {"choices":[{"delta":{},"finish_reason":"stop"}]}""";
             LlmStreamEvent event = parser.parseLine(data, "openai");
-            assertThat(event).isNull();
+            assertThat(event).isNotNull();
+            assertThat(event.type()).isEqualTo(LlmStreamEvent.Type.STOP).isNotEqualTo(LlmStreamEvent.Type.DONE);
+            assertThat(event.stopReason()).isEqualTo("stop");
+            assertThat(event.truncated()).isFalse();
         }
 
         @Test
@@ -172,6 +175,90 @@ class SseEventParserTest {
             assertThat(event.type()).isEqualTo(LlmStreamEvent.Type.USAGE);
             assertThat(event.usage().promptTokens()).isEqualTo(0);
             assertThat(event.usage().completionTokens()).isEqualTo(52);
+        }
+    }
+
+    /** 停止原因映射：各 provider 的「输出上限截断」统一为 max_tokens，其余原样小写保留。 */
+    @Nested
+    class StopReasonMapping {
+
+        @Test
+        void openai_length_映射为max_tokens且标记截断() {
+            LlmStreamEvent event = parser.parseLine("""
+                {"choices":[{"delta":{},"finish_reason":"length"}]}""", "openai");
+            assertThat(event.type()).isEqualTo(LlmStreamEvent.Type.STOP);
+            assertThat(event.stopReason()).isEqualTo(LlmStreamEvent.STOP_MAX_TOKENS);
+            assertThat(event.truncated()).isTrue();
+        }
+
+        @Test
+        void openai_内容与finish_reason同帧_内容不丢且带停止原因() {
+            // 部分兼容代理把最后一段内容与 finish_reason 放在同一帧
+            LlmStreamEvent event = parser.parseLine("""
+                {"choices":[{"delta":{"content":"tail"},"finish_reason":"length"}]}""", "custom");
+            assertThat(event.type()).isEqualTo(LlmStreamEvent.Type.DELTA);
+            assertThat(event.delta()).isEqualTo("tail");
+            assertThat(event.truncated()).isTrue();
+        }
+
+        @Test
+        void openai_content_filter_原样保留且不算截断() {
+            LlmStreamEvent event = parser.parseLine("""
+                {"choices":[{"delta":{},"finish_reason":"content_filter"}]}""", "openai");
+            assertThat(event.stopReason()).isEqualTo("content_filter");
+            assertThat(event.truncated()).isFalse();
+        }
+
+        @Test
+        void openai_finish_reason为null_内容帧无停止原因() {
+            LlmStreamEvent event = parser.parseLine("""
+                {"choices":[{"delta":{"content":"x"},"finish_reason":null}]}""", "openai");
+            assertThat(event.stopReason()).isNull();
+            assertThat(event.truncated()).isFalse();
+        }
+
+        @Test
+        void 兼容层的大写MAX_TOKENS同样识别为截断() {
+            LlmStreamEvent event = parser.parseLine("""
+                {"choices":[{"delta":{},"finish_reason":"MAX_TOKENS"}]}""", "custom");
+            assertThat(event.truncated()).isTrue();
+        }
+
+        @Test
+        void anthropic_message_delta_max_tokens_用量与停止原因同帧() {
+            LlmStreamEvent event = parser.parseLine("""
+                {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"output_tokens":2048}}""",
+                "anthropic");
+            assertThat(event.type()).isEqualTo(LlmStreamEvent.Type.USAGE);
+            assertThat(event.usage().completionTokens()).isEqualTo(2048);
+            assertThat(event.stopReason()).isEqualTo(LlmStreamEvent.STOP_MAX_TOKENS);
+            assertThat(event.truncated()).isTrue();
+        }
+
+        @Test
+        void anthropic_end_turn_不算截断() {
+            LlmStreamEvent event = parser.parseLine("""
+                {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":10}}""",
+                "anthropic");
+            assertThat(event.stopReason()).isEqualTo("end_turn");
+            assertThat(event.truncated()).isFalse();
+        }
+
+        @Test
+        void anthropic_无用量时只产出STOP() {
+            LlmStreamEvent event = parser.parseLine("""
+                {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":0}}""",
+                "anthropic");
+            assertThat(event.type()).isEqualTo(LlmStreamEvent.Type.STOP);
+            assertThat(event.truncated()).isTrue();
+        }
+
+        @Test
+        void anthropic_上下文窗口耗尽同样视为截断() {
+            LlmStreamEvent event = parser.parseLine("""
+                {"type":"message_delta","delta":{"stop_reason":"model_context_window_exceeded"},"usage":{"output_tokens":5}}""",
+                "anthropic");
+            assertThat(event.truncated()).isTrue();
         }
     }
 
