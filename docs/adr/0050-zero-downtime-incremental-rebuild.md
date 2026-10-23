@@ -1,6 +1,6 @@
 # ADR 0050：不停机的增量数据重建与更新（替代整库 DROP/CREATE）
 
-- 状态：**ACCEPTED**（2026-10-24 用户定稿；rev 1 经 Codex 审查 66 分/退回，rev 2 逐条回应，rev 3 并入 aster-cloud#540 的部署顺序后续任务）
+- 状态：**ACCEPTED**（2026-10-24 用户定稿；rev 1 经 Codex 审查 66 分/退回，rev 2 逐条回应，rev 3 并入 aster-cloud#540 的部署顺序后续任务，rev 4 回应 Codex 对 rev 3 的复审 79 分/退回：会话撤销路径、唯一 Worker 发布路径、门禁缓存与 run 原子性、safeColumnRead 边界、治理元数据解析契约、实施顺序）
 - 背景事件：2026-10-24 为启用 Java TypeChecker 强制模式，生产 `aster_api` 与 `aster_cloud` 两库整体 DROP/CREATE 重建
   （见 wontlost-ltd/aster-api#374、wontlost-ltd/aster-cloud#538、`prod-e2e-20261023/findings.md`）
 - 第二个背景事件：2026-10-23 22:17Z–22:35Z，aster-cloud#539（新增 `User.aiWorkspaceEnabled` 列）合入后 Workers 先于 k3s 迁移 Job 上线，
@@ -10,7 +10,7 @@
 - 相关：ADR 0030（回放地基）、ADR 0046（治理档案）、k3s `apps/infrastructure/postgres-cluster/OWNER-SEPARATION.md`、
   `docs/runbooks/pg-restore-drill.md`、aster-api `MigrationGovernanceTest`、`ToolchainIdentityProvider`、`AuditChainAppender`
   （advisory lock 先例）、aster-cloud `src/lib/admin-auth.ts`、`src/lib/api-signing.ts`、`src/lib/platform-settings.ts`
-- 审查记录：`.claude/review-report-adr0050.md`（Codex，2026-10-24）
+- 审查记录：`.claude/review-report-adr0050.md`（rev 1）、`.claude/review-report-adr0050-rev3.md`（rev 3），均为 Codex 2026-10-24
 
 ---
 
@@ -97,24 +97,34 @@
    时执行 `ALTER DEFAULT PRIVILEGES IN SCHEMA ai_workspace ...`，否则 `RAISE EXCEPTION`（生产）/`NOTICE`（本地，按 profile）。
    生产 `ai_workspace` 当前 owner 已是 `aster_ai_user`（2026-10-24 重建时 `CREATE SCHEMA ... AUTHORIZATION aster_ai_user`）。
 5. **治理测试加码，用结构化元数据而非正则**（rev 2 回应 Codex 改进项 6）：
-   - 含 `DROP TABLE`/`DROP COLUMN` 的迁移文件头必须带 `-- aster-migration: {"contractOf":"Vx.y.z","objects":["t.c"]}` JSON 元数据；
-     `MigrationGovernanceTest` 解析该 JSON，校验 `contractOf` 指向的迁移存在且版本号小于当前、`objects` 与 DROP 目标一致。
-     元数据缺失/不合法/歧义 → 测试失败。SQL 文本只做"是否出现 DROP"的宽匹配触发，不做语义解析。
+   - 含 `DROP TABLE`/`DROP COLUMN` 的迁移文件**第一行**必须是 `-- aster-migration: {"contractOf":"Vx.y.z","objects":["t.c"]}`；
+     解析契约（测试级）：取第一行，匹配 `^-- aster-migration: (\{.*\})$`，用 Jackson 解析为固定 record（未知字段即失败）；`contractOf` 必须存在于
+     迁移目录且版本号严格小于当前；`objects` 必须与检测到的 DROP 目标集合相等。
+   - DROP 检测在**去掉 `--` 行注释、`/* */` 块注释与单引号字符串**后的文本上进行，匹配 `DROP\s+(TABLE|COLUMN)(\s+IF\s+EXISTS)?\s+([\w".]+)`；
+     `ALTER TABLE x DROP COLUMN y` 归一化为 `x.y`。动态 SQL 与 DO 块内的 DROP 不在解析范围，由另一条规则直接拒绝：迁移中不得出现 `EXECUTE`。
+     元数据缺失/不合法/对象不一致 → 测试失败。
    - 任何迁移不得含 `DROP DATABASE`/`DROP SCHEMA public`。
    - 正反例夹具覆盖：注释内的 DROP、大小写、`IF EXISTS`、schema 限定名、多条 DROP。
 
 6. **部署顺序契约（吸收 #540）**——expand/contract 不只约束 SQL，也约束发布：
-   - **迁移先行**：aster-cloud 任何含 `drizzle/*.sql` 且有代码读取新对象的改动，拆成两个 PR：先合迁移（只含 `drizzle/`、`src/db/schema.ts`
-     以及不读取新列的代码），待 ArgoCD migrate Job 成功后再合读取代码。CI 新增检查：同一 PR 同时改动 `drizzle/*.sql` 与 `src/**`（schema.ts 除外）
-     时失败，提示拆分；紧急修复可用 PR 标签 `migration-and-code` 显式豁免并在描述中给出容错说明。
-   - **Worker 部署门禁**：`ci.yml` 的 main 分支流程在 `build-migrate-image` 之后增加「等待 k3s migrate Job 成功」步骤（查询 ArgoCD 应用的
-     `operationState` 或 Job 状态），只有迁移落库后才允许触发 Workers 生产部署；Workers Builds 的自动部署改为由该流程显式触发
-     （或在 Cloudflare 侧关闭 main 自动构建，改用 `wrangler deploy` 步骤）。
-   - **热路径读取容错**：`(dashboard)/layout.tsx`、`auth.ts` 等每请求都执行的查询，对迁移期新增列的读取包一层 `safeColumnRead`
-     （捕获 `42703 undefined_column`，按列默认值降级并记一次告警），确保迁移窗口内站点可用而不是 500。容错只允许存在一个版本周期，
-     迁移稳定后删除。
-   - **image-pin bot 自愈**：源仓 `image-pin-pr` job 在检测到 bot 分支相对 main BEHIND 时自动以 main 为基重建分支再推送；
-     verify-image-pin 通过后由现有 auto-merge 合入，不再依赖人工重跑。aster-api 的 image-pin 流程同样适用。
+   - **迁移先行**：aster-cloud 任何含 `drizzle/*.sql` 的改动与读取新对象的代码拆成两个 PR。CI 规则（`scripts/ci/check-migration-split.mjs`，按
+     PR changed-files 判定）：若改动集同时包含 `drizzle/**/*.sql` 与任一 `src/**` 文件（白名单例外：`src/db/schema.ts`、`src/__tests__/**`、`drizzle/meta/**`），
+     且 PR 无 `migration-and-code` 标签 → 失败并提示拆分；带标签时要求 PR 描述含 `## 迁移窗口容错` 小节，否则同样失败。规则故意保守（宁可误报要求拆分），
+     验收用矩阵覆盖：仅迁移、仅代码、迁移+schema.ts、迁移+测试、迁移+业务代码无标签、有标签无说明、有标签有说明。
+   - **唯一 Worker 发布路径**：关闭 Cloudflare Workers Builds 对 aster-cloud `main` 的自动构建/部署（Cloudflare 控制台操作，列为上线前置，由运维执行并在
+     k3s 手册记录日期）；生产部署只走仓内已有的 `.github/workflows/deploy-worker.yml`（`pnpm deploy` → opennextjs build → `wrangler deploy`），
+     设 `vars.ENABLE_CI_WORKER_DEPLOY=true` 启用。该 workflow 在部署前新增门禁步骤：若本次 main 推送含 `drizzle/**/*.sql`，则轮询 k3s
+     `aster-cloud-migrate` Job（或 ArgoCD `operationState`）直至成功，超时 20 分钟则失败且**不部署**；不含迁移时直接部署。
+     验收：Cloudflare 构建历史在切换日期之后不再出现自动构建；含迁移的 main 推送在 Job 成功前 `wrangler deploy` 步骤未执行。
+   - **热路径读取容错 `safeColumnRead`**：实现边界在**查询 Promise 层**，不是返回值层——Drizzle `columns:` 投影会生成含新列的 SELECT，缺列时 SQL
+     直接抛错，不存在部分对象。签名 `safeColumnRead(run: () => Promise<T>, fallback: () => Promise<T>)`：执行 `run`，仅当错误链（`err.cause?.code`
+     或 `err.code`）为 SQLSTATE `42703` 时执行不选新列的 `fallback` 投影并记一次告警（带列名与路径）；其他错误原样抛出。只用于 autocommit 的
+     独立查询（事务内 42703 会使事务 aborted，不在此范围）。使用点登记在 `src/lib/safe-column-read.ts` 的列清单常量中，列清单为空时 lint 规则要求
+     删除调用，保证容错只存活一个版本周期。单测用 postgres 驱动的错误形状（`code: '42703'`）与非 42703 错误各一例。
+   - **image-pin bot 自愈**：共享脚本 `scripts/ci/open-image-pin-pr.sh` 已用 `git checkout -B $BRANCH origin/main` 从 main 重建分支，
+     因此 BEHIND 的根因不是重建缺失，而是**job 在 stale-commit gate 跳过或失败后没有后续重试**（#806 需人工重跑）。改法：源仓 `image-pin-pr` job
+     失败/跳过时，由 k3s 侧 `verify-image-pin` 对 BEHIND 的 open PR 触发源仓 `workflow_dispatch` 重跑（复用现有跨仓凭据）；
+     并在 `open-image-pin-pr-flow.test.sh` 增加「现有 bot 分支落后 main」夹具。aster-cloud 与 aster-api 共用同一脚本版本，核对两仓后再合。
 
 ### 2.2 B. 存量策略增量重验
 
@@ -124,15 +134,16 @@
   - 表 `policy_version_validation`：`version_id`、`toolchain_id`、`status` ∈ {valid, invalid}、`diagnostics` jsonb、`diagnostics_schema` int、
     `run_id`、`checked_at`；**唯一键 `(version_id, toolchain_id)`**，保留跨工具链历史。不存在"pending"行——未验证就是没有行。
   - 表 `policy_revalidation_run`：`id`、`toolchain_id`、`scope`（all / tenant）、`status` ∈ {queued, running, done, failed}、
-    `cursor`（最后处理的 version_id，断点续跑）、`total`/`checked`/`invalid_count`、`started_at`/`finished_at`、`error`；
+    `cursor`（最后处理的 version_id）、`scope_max_version_id`、`heartbeat_at`、`total`/`checked`/`invalid_count`、`started_at`/`finished_at`、`error`；
     **唯一部分索引 `(toolchain_id, scope) WHERE status IN ('queued','running')`**，保证同一工具链同一范围最多一个活动 run。
 - **重验入口契约**（rev 2 回应首要阻塞项）：新增 `PolicyCompiler.typecheckVersion(PolicyVersion v)`：读取版本冻结的
   `content`/`locale`/`aliasSet`，**直接调用 `compile(String, locale, aliasSet)` 的字符串路径**，不读 artifact/coreJson，不经
   `policy-compile-by-version` 缓存。这是唯一允许写验证表的入口。
-- **任务**：`PolicyRevalidationJob`（`@Scheduled` 每 30 秒轮询 + 启动时一次）。每次轮询在事务内
-  `SELECT ... FROM policy_revalidation_run WHERE status IN ('queued','running') FOR UPDATE SKIP LOCKED LIMIT 1`，拿到即处理一批
-  （默认 50 条，批间休眠可配），写 `cursor` 后提交。多副本靠 `SKIP LOCKED` 互斥，崩溃后 `running` 行由下一个副本按 `cursor` 续跑
-  （`running` 超过租期阈值视为可接管）。不引入新调度框架。
+- **任务**：`PolicyRevalidationJob`（`@Scheduled` 每 30 秒轮询 + 启动时一次）。run 创建时固化扫描集合：`scope_max_version_id = max(policy_versions.id)`，
+  run 期间新增的版本不纳入（它们由门禁首访同步验证覆盖）。每次轮询一个事务：`SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1` 取一条 `queued`，或
+  `running` 且 `heartbeat_at < now() - 2 min` 的 run；处理一批（默认 50 条，`WHERE id > cursor AND id <= scope_max_version_id`），
+  **批内验证结果 `INSERT ... ON CONFLICT DO NOTHING` 与 `cursor`、`heartbeat_at`、计数在同一事务提交**，故崩溃最多重做一批且不产生重复行。
+  多副本靠 `SKIP LOCKED` 互斥，接管靠 `heartbeat_at` 过期。不引入新调度框架，也不用 advisory lock（run 行本身就是锁对象）。
 - **触发**（用户拍板：只在 toolchain 变化时）：api 启动时读取 `currentToolchainId()`，与 `policy_revalidation_run` 中最新 `done` 的
   `toolchain_id` 比较，不一致则 `INSERT ... ON CONFLICT DO NOTHING` 一条 `queued` run（唯一部分索引保证多副本只插一条）。
   `build=dev` 或 `core=dev` 的身份串在 `%prod` 下视为配置错误，启动失败（避免工具链变化被 `dev` 掩盖）。admin 端点可手动插入 run。
@@ -141,7 +152,9 @@
   - 查 `(versionId, currentToolchainId)`：`valid` → 放行；`invalid` → enforce 拒绝并返回诊断 / warn 告警后放行；
   - **无行 → 同步调用 `typecheckVersion` 并写入结果，再按上述规则处理**（fail-closed：同步验证失败或读表失败一律拒绝，warn 模式亦然）。
     因此部署后第一次执行某版本会多一次编译，之后命中验证表；后台 run 只是把这笔开销提前。
-  - 门禁结果缓存键为 `(versionId, toolchainId)`，与编译缓存分离；TTL 5 分钟，admin 手动重跑 run 完成时主动失效。
+  - **验证行不可变**：`(version_id, toolchain_id)` 一旦写入即不更新（`INSERT ... ON CONFLICT DO NOTHING`）；版本内容与工具链都不可变，
+    同一对的判定结果因此是确定的，重跑只会补缺行，不会把 `valid` 翻成 `invalid`。基于此，门禁**只缓存 `valid`**（键 `(versionId, toolchainId)`，
+    进程内、不设 TTL、随 Pod 生命周期），`invalid` 与缺行每次读库（一次主键查询，且是拒绝路径）。不再需要跨副本失效。
   - `aster.compile.typecheck=warn` 保留为紧急降级，但只影响 `invalid` 的处置，不影响"无行必验"。
 - **admin 端点**（aster-api，经 `AdminHmacVerifier` 验签 HMAC+时间戳+nonce，body 参与签名；`X-User-Role` 不作为授权依据）：
   `POST /api/v1/admin/revalidation/runs`（body: scope, tenantId?）、`GET /api/v1/admin/revalidation/runs/{id}`、
@@ -153,10 +166,14 @@
 
 ### 2.3 C. 会话纪元与设备信任
 
-- **存储与一致性**（rev 2 回应 60 秒缓存冲突）：`auth.dbEpoch` 存 `PlatformSetting`，但**鉴权路径不走 60 秒缓存**：
-  `jwt()` 回调在**每次**被调用时（Auth.js 对每个受保护请求都会调用 `jwt()` 解码并可刷新 token）用 `getSettingUncached` 直接读库，
-  读失败 → **fail-closed**（视为纪元不匹配，返回 null 使会话失效）。每请求多一次主键查询，Hyperdrive 内可接受；若实测成本过高，
-  改为 Workers KV 单键，同样不走 isolate 缓存。
+- **撤销路径（有据可查）**：Auth.js JWT 策略下，`auth()`/`/api/auth/session` 都进入 `@auth/core` 的 session action：它调用 `callbacks.jwt`，
+  **若返回 `null`，不再调用 `session()`，并写入清除会话 cookie 的响应**（`@auth/core@0.41.3` `lib/actions/session.js` 第 28–56 行：
+  `if (token !== null) {...} else { response.cookies.push(...sessionStore.clean()) }`）。本 ADR 的契约即基于此：`jwt()` 在非初次登录分支
+  （`!user`）每次执行 `getSettingUncached('auth.dbEpoch')`，`token.dbEpoch !== current` 或读库失败 → `return null`。初次登录分支写入当前 epoch。
+  当前 `auth.ts` 的 `jwt()` 恒返回 token，这是要改的实现，不是前提。验收用真实 `NextAuth(config).handlers` 调 `/api/auth/session`，
+  断言响应体为 `null` 且 `Set-Cookie` 清除会话 cookie。
+- **成本预算**：每次 `auth()` 一次主键查询；一个 dashboard 请求通常调用 `auth()` 1–3 次（layout + 页面 + API）。预算：p95 增量 ≤ 15 ms，
+  DB 新增 QPS ≤ 当前请求 QPS × 3；staging 用 e2e-cloud 压测记录。超预算则改为 Workers KV 单键（写入时同步更新），同样不走 isolate 缓存。
 - **写入**：`/api/admin/platform-settings` 的 key 白名单加入 `auth.dbEpoch`，类型为正整数、只允许单调递增、body 必须带
   `confirm: "logout-all"`；写入前后记 `AuditLog`（操作者、旧/新 epoch）。
 - **覆盖矩阵**（验收用）：Credentials 初次登录、OAuth 初次登录、既有 JWT 后续请求、`session.update`、并发 bump。
@@ -207,19 +224,21 @@
 - `PolicyExecutionGateTest`：三态 × enforce/warn 矩阵；无行时同步验证并落表；读表异常 → 拒绝；缓存键含 toolchain。
 - `PolicyCompilerTypecheckVersionTest`：存在 artifact/coreJson 的版本仍产生 TypeChecker 诊断（证明绕过快路径）。
 - `ToolchainIdentityProviderTest` 扩展：`%prod` 下 `dev` 段启动失败。
-- `MigrationGovernanceTest`：元数据缺失/不合法/`contractOf` 不存在/对象不一致各一例变红；注释内 DROP、`IF EXISTS`、限定名、多 DROP 正例通过。
+- `MigrationGovernanceTest`：元数据缺失/不合法/`contractOf` 不存在/对象不一致各一例变红；注释内 DROP、字符串内 DROP、`IF EXISTS`、schema 限定名、多 DROP 正例通过；DO 块内 DROP 被 `EXECUTE` 禁令拒绝。
 
 **aster-api Postgres 集成**
-- 两副本并发启动只产生一条 `queued` run；两 worker 并发轮询只有一个拿到 run；worker 中途退出后另一副本按 `cursor` 续跑且不重复写行。
+- 两副本并发启动只产生一条 `queued` run；两 worker 并发轮询只有一个拿到 run；worker 在批中途被杀后另一副本在 `heartbeat_at` 过期后接管，按 `cursor` 续跑，验证表无重复行；run 期间新增的版本不在 `scope_max_version_id` 内且由门禁首访验证。
 - 空库与存量库各跑一次 Flyway：owner 自检通过；人为改坏一个表 owner → 启动失败并打印不符项。
 
 **aster-cloud CI 与部署顺序**
-- 同一 PR 同时含 `drizzle/*.sql` 与 `src/**` 代码改动且无 `migration-and-code` 标签 → CI 失败并给出拆分提示；只含迁移或只含代码 → 通过。
+- PR 拆分矩阵：仅迁移 / 仅代码 / 迁移+schema.ts / 迁移+测试 → 通过；迁移+业务代码无标签 → 失败；有标签无容错小节 → 失败；有标签有小节 → 通过。
+- Worker 发布路径：切换日期后 Cloudflare 构建历史无自动构建；含迁移的 main 推送，`deploy-worker` 在 Job 成功前不执行 `wrangler deploy`，Job 失败或超时则部署步骤失败。
+- `safeColumnRead`：驱动错误 `code: '42703'` → 走 fallback 并产生一次告警；其他错误原样抛出；列清单为空时 lint 报错。
 - staging 演练：先合一条加列迁移，确认 Job 成功后再合读取代码；全程登录态页面 200。反向演练（故意先合代码）在容错层生效时页面仍 200 并产生告警。
 - image-pin bot 分支人为落后 main 一个提交：源仓 job 自动重建分支并自动合并，无人工介入。
 
 **aster-cloud Vitest**
-- `dbEpoch`：Credentials/OAuth 初次登录写入；旧 token 在 bump 后下一次 `jwt()` 返回 null；读库失败返回 null；非单调/缺 `confirm` 写入被拒；审计行存在。
+- `dbEpoch`：初次登录（密码与第三方登录）写入；bump 后用真实 handlers 调 `/api/auth/session`，响应为 `null` 且 `Set-Cookie` 清除会话 cookie；读库失败同样清除；非单调/缺 `confirm` 写入被拒；审计行存在。
 - admin 代理：非 admin 403；签名缺 body 哈希被 api 拒绝（契约测试）。
 
 **e2e（本地栈 + e2e-cloud）**
@@ -264,20 +283,22 @@
 
 ---
 
-## 8. 实施拆分（供 writing-plans 使用，按依赖排序）
+## 8. 实施拆分（供 writing-plans 使用，按依赖排序；rev 4 调整为"先发布控制与权限前置，再表迁移与服务逻辑，最后集成演练"）
 
-1. aster-api：`ToolchainIdentityProvider` 的 `%prod` fail-fast；Flyway `afterMigrate` owner 自检回调；`MigrationGovernanceTest` 元数据规则（小，先行）。
-2. aster-api：验证表 + run 表迁移、`typecheckVersion`、`PolicyRevalidationJob`（`SKIP LOCKED`）、`PolicyExecutionGate` 接入 evaluate、三个 admin 端点、审计。
-3. aster-cloud：`dbEpoch`（uncached 读、白名单、confirm、审计、`jwt()` 比对）、admin 代理路由与页面、"需修复"徽标。
-4. aster-ai-workspace：`schema-aiw.sql` owner/默认权限 `DO` 块（按 profile 决定 EXCEPTION/NOTICE）。
-5. 校验脚本：cloud ↔ api 版本 `sourceHash` 比对。
-6. k3s：OWNER-SEPARATION 手册改为"首轮超级用户移交 + 回调自检"；新增蓝绿数据库手册（含 2.4 的不覆盖项与回切条件）。
-7. aster-cloud：部署顺序契约——PR 拆分检查、Worker 部署等待迁移 Job 的门禁、`safeColumnRead` 容错；源仓 image-pin job 的 BEHIND 自愈（aster-cloud 与 aster-api 两处）。
-8. 本地栈演练与 e2e-cloud 用例（第 4 节）。
+1. **发布控制前置（aster-cloud + Cloudflare）**：关闭 Workers Builds 对 main 的自动部署（运维）；`deploy-worker.yml` 增加"含迁移则等待 migrate Job"门禁并启用；
+   `check-migration-split.mjs` PR 拆分检查；`safeColumnRead` 工具与 lint 规则。此后所有含列读取的 cloud 改动都按契约上线。
+2. **权限前置（k3s）**：OWNER-SEPARATION 手册改为"首轮超级用户移交全部对象 + 回调自检"，在生产执行一次移交并核对；记录 Workers Builds 关闭日期。
+3. aster-api：`ToolchainIdentityProvider` 的 `%prod` fail-fast；Flyway `afterMigrate` owner 自检回调；`MigrationGovernanceTest` 元数据解析与 EXECUTE 规则。
+4. aster-api：验证表 + run 表迁移、`typecheckVersion`、`PolicyRevalidationJob`（`SKIP LOCKED` + heartbeat + 同事务提交）、`PolicyExecutionGate`（只缓存 valid）、三个 admin 端点、审计。
+5. aster-cloud：`dbEpoch`（uncached 读、白名单、confirm、审计、`jwt()` 返回 null）、admin 代理路由与页面、"需修复"徽标。先合迁移（如有）再合代码。
+6. aster-ai-workspace：`schema-aiw.sql` owner/默认权限 `DO` 块（按 profile 决定 EXCEPTION/NOTICE）。
+7. 校验脚本：cloud ↔ api 版本 `sourceHash` 比对；image-pin BEHIND 自动重跑与脚本夹具（两仓）。
+8. k3s：蓝绿数据库手册（含 2.4 的不覆盖项与回切条件）。
+9. 本地栈演练、staging 压测（epoch 成本预算）与 e2e-cloud 用例（第 4 节）。
 
 ---
 
-## 9. rev 2 对 Codex 审查的回应摘要
+## 9. 对 Codex 审查的回应摘要（rev 2 / rev 4）
 
 | Codex 阻塞/建议 | 处置 |
 |---|---|
@@ -291,3 +312,9 @@
 | 验收无测试落点、回滚风险遗漏 | 第 4 节按测试类/场景列出；第 6 节分加法与不可逆 |
 | 文件路径写错（`compile/` → `compiler/`） | 已更正 |
 | #540 事故三条后续（迁移先行、读取容错、bot 自愈） | 并入 2.1.6 部署顺序契约与第 4、5、8 节 |
+| rev 3 复审：`jwt()` 返回 null 能否注销未证明 | 引用 `@auth/core` session action 源码行为，验收改用真实 handlers（2.3） |
+| rev 3 复审：Worker 门禁未闭环 | 选定唯一路径：关闭 Workers Builds，`deploy-worker.yml` 含迁移时等待 Job（2.1.6） |
+| rev 3 复审：5 分钟缓存与"只执行有效证明"矛盾；run 原子性 | 验证行不可变，只缓存 valid 且不设 TTL；批结果与 cursor 同事务，heartbeat 接管（2.2） |
+| rev 3 复审：safeColumnRead 边界 | 查询 Promise 层捕获 42703，fallback 投影，autocommit 限定（2.1.6） |
+| rev 3 复审：治理元数据解析契约 | 第一行 JSON + 去注释/字串后的 DROP 匹配 + EXECUTE 禁令（2.1.5） |
+| rev 3 复审：第 8 节顺序 | 发布控制与权限前置提前到 1、2（第 8 节） |
