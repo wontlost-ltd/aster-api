@@ -67,7 +67,7 @@ public class CedarExportService {
 
     public CedarExportOutcome exportSource(String source, String locale, String aliasSetJson, String functionName) {
         String sourceHash = sha256(source == null ? "" : source);
-        CompilationResult compiled = compiler.compile(source, locale, aliasSetJson);
+        CompilationResult compiled = compiler.compileLenient(source, locale, aliasSetJson);
         List<CompileDiagnostic> errors = compileErrors(compiled);
         if (!errors.isEmpty()) {
             return new CedarExportOutcome(false, null, functionName, null, null, null, null, List.of(), 0, 0,

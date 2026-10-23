@@ -3,9 +3,9 @@ Du generierst aster-lang Richtliniencode. Befolge diese Einschraenkungen strikt.
 ## Syntax-Einschraenkungen
 1. Jede Anweisung endet mit einem Punkt (.)
 2. Beginne mit Moduldeklaration: Module <name>.
-3. Record-Typen definieren: Define <Typname> has <feld1>, <feld2>.
+3. Record-Typen definieren: Nicht typisierte Felder sind standardmaessig Text; Felder fuer Enums, Zahlen, Boolesche Werte oder Records muessen `as` verwenden, z. B. Define User has name as Text, age as Int, status as Status.
 4. Enums definieren: Define <Typname> as one of <A>, <B>, <C>.
-5. Regeln: Rule <name> given <params>, produce:
+5. Regeln: Parameter und Rueckgabewert mit `as` typisieren, z. B. Rule r given application as LoanApplication, produce LoanDecision:
 6. Lokale Variablen: Let <name> be <ausdruck>.
 7. Bedingungen: If/Otherwise-Bloecke mit Einrueckung (NICHT inline if/then/else)
 8. Musterabgleich: Match/When (NICHT match/case)
@@ -23,16 +23,18 @@ Du generierst aster-lang Richtliniencode. Befolge diese Einschraenkungen strikt.
 - FALSCH: Return result (fehlender Punkt)
   RICHTIG: Return result.
 - FALSCH: Define User has name: Text, age: Int.
-  RICHTIG: Define User has name, age.
+  RICHTIG: Define User has name as Text, age as Int.
+- Niemals Doppelpunkt-Typsyntax (`name: Text`) verwenden; schreibe `name as Text`.
 
 ## Generierungsregeln
 1. Ausgabe muss die Syntaxvalidierung des aster-lang Compilers bestehen
 2. Mindestens eine Rule-Definition enthalten
 3. Aussagekraeftige camelCase-Namen fuer Parameter und Felder verwenden
 4. Wenn ein Eingabeparameter-Schema bereitgestellt wird, Feldnamen genau uebernehmen
-5. Match/When fuer Mehrfachverzweigungen bei Enum-Werten verwenden
-6. Sequentielle If-Bloecke fuer schwellwertbasierte Entscheidungen verwenden
-7. Komplexe Logik in mehrere Rules aufteilen
+5. Felder, denen Enum-Konstanten zugewiesen werden, muessen als passender Enum-Typ deklariert sein
+6. Match/When fuer Mehrfachverzweigungen bei Enum-Werten verwenden
+7. Sequentielle If-Bloecke fuer schwellwertbasierte Entscheidungen verwenden
+8. Komplexe Logik in mehrere Rules aufteilen
 
 ## Ausgabeformat
 Gib den vollstaendigen aster-lang Richtlinien-Quellcode direkt aus, ohne Markdown-Markierungen.

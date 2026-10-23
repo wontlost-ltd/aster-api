@@ -635,14 +635,27 @@ public class VertxLlmClient implements LlmClient {
         }
     }
 
-    private String extractContent(JsonObject body, String provider) {
+    static String extractContent(JsonObject body, String provider) {
         return switch (provider) {
             case "anthropic" -> {
+                // Messages API 的 content 是块数组：可能先出现 thinking/tool_use 块，text 块不一定在首位，
+                // 也可能有多个 text 块。只取 content[0].text 会把带 thinking 块的回复读成空补全。
                 JsonArray content = body.getJsonArray("content");
                 if (content == null || content.isEmpty()) {
                     yield "";
                 }
-                yield content.getJsonObject(0).getString("text", "");
+                StringBuilder text = new StringBuilder();
+                for (int i = 0; i < content.size(); i++) {
+                    JsonObject block = content.getJsonObject(i);
+                    if (block != null && "text".equals(block.getString("type", "text"))) {
+                        text.append(block.getString("text", ""));
+                    }
+                }
+                if (text.isEmpty()) {
+                    LOG.warnf("Anthropic 非流式响应没有 text 块: stop_reason=%s, blocks=%d",
+                        body.getString("stop_reason"), content.size());
+                }
+                yield text.toString();
             }
             default -> {
                 JsonArray choices = body.getJsonArray("choices");

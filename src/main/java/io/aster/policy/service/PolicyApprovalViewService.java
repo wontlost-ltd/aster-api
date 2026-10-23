@@ -60,7 +60,7 @@ public class PolicyApprovalViewService {
 
         // IR 摘要：用版本冻结的别名编译，取 Core IR JSON（截断为摘要，完整 IR 另有端点）。
         String irSummary;
-        CompilationResult cr = policyCompiler.compile(v.content, v.locale, v.aliasSet);
+        CompilationResult cr = policyCompiler.compileLenient(v.content, v.locale, v.aliasSet);
         if (cr.isSuccess()) {
             String core = cr.getCoreJson();
             irSummary = core.length() > 2000 ? core.substring(0, 2000) + "…(truncated)" : core;
