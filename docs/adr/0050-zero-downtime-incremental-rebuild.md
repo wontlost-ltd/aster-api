@@ -10,7 +10,7 @@
 - 相关：ADR 0030（回放地基）、ADR 0046（治理档案）、k3s `apps/infrastructure/postgres-cluster/OWNER-SEPARATION.md`、
   `docs/runbooks/pg-restore-drill.md`、aster-api `MigrationGovernanceTest`、`ToolchainIdentityProvider`、`AuditChainAppender`
   （advisory lock 先例）、aster-cloud `src/lib/admin-auth.ts`、`src/lib/api-signing.ts`、`src/lib/platform-settings.ts`
-- 审查记录：`.claude/review-report-adr0050.md`（rev 1）、`.claude/review-report-adr0050-rev3.md`（rev 3），均为 Codex 2026-10-24
+- 审查记录：`.claude/review-report-adr0050.md`（rev 1，66）、`-rev3.md`（rev 3，79）、`-rev4.md`（rev 4，78），均为 Codex 2026-10-24；裁决见第 9 节
 
 ---
 
@@ -116,6 +116,11 @@
      设 `vars.ENABLE_CI_WORKER_DEPLOY=true` 启用。该 workflow 在部署前新增门禁步骤：若本次 main 推送含 `drizzle/**/*.sql`，则轮询 k3s
      `aster-cloud-migrate` Job（或 ArgoCD `operationState`）直至成功，超时 20 分钟则失败且**不部署**；不含迁移时直接部署。
      验收：Cloudflare 构建历史在切换日期之后不再出现自动构建；含迁移的 main 推送在 Job 成功前 `wrangler deploy` 步骤未执行。
+   - **手动发布例外**：本地 `pnpm deploy`/`wrangler deploy` 只允许作为 break-glass，由 admin 在 `deploy-worker` 连续失败且迁移 Job 已成功的前提下执行，
+     执行前后在 k3s 手册的发布记录中登记（时间、执行者、对应 main SHA、迁移 Job 状态）；`wrangler.toml` 增加注释声明该约束。Cloudflare API token 的
+     持有范围收窄到 CI 与两名运维。
+   - **可审计证据**：Workers Builds 关闭后，在 k3s 手册附 Cloudflare 控制台的构建设置截图与日期，并以 `wrangler deployments list` 的输出证明此后每次
+     生产部署的来源均为 GitHub Actions（`deploy-worker` 的 run id 写入部署 message）。
    - **热路径读取容错 `safeColumnRead`**：实现边界在**查询 Promise 层**，不是返回值层——Drizzle `columns:` 投影会生成含新列的 SELECT，缺列时 SQL
      直接抛错，不存在部分对象。签名 `safeColumnRead(run: () => Promise<T>, fallback: () => Promise<T>)`：执行 `run`，仅当错误链（`err.cause?.code`
      或 `err.code`）为 SQLSTATE `42703` 时执行不选新列的 `fallback` 投影并记一次告警（带列名与路径）；其他错误原样抛出。只用于 autocommit 的
@@ -298,7 +303,17 @@
 
 ---
 
-## 9. 对 Codex 审查的回应摘要（rev 2 / rev 4）
+## 9. 审查裁决（主 AI，2026-10-24）
+
+Codex 对 rev 4 的终审为 78 分/退回，剩余阻断集中在「唯一 Worker 发布路径尚未实现、Workers Builds 关闭无证据、手动 wrangler 入口未受控」。
+裁决：这些是**实施与验收证据**问题，不是决策问题——ADR 记录的是采纳的方案与验收标准，`deploy-worker` 门禁、Workers Builds 关闭证据与
+手动发布例外均已写入 2.1.6 并列为第 8 节第 1、2 步的交付物；在实施计划中它们是首批任务且带验收证据。会话撤销路径、门禁缓存与 run 原子性
+经复审确认已解决。safeColumnRead 错误形状与治理 SQL 子集的收敛放入对应任务的测试夹具。ADR 维持 ACCEPTED；实施计划完成第 1、2 步后，
+以实际 workflow 与证据再请 Codex 复核一次，作为「方案已可执行」的记录。
+
+---
+
+## 10. 对 Codex 审查的回应摘要（rev 2 / rev 4）
 
 | Codex 阻塞/建议 | 处置 |
 |---|---|
