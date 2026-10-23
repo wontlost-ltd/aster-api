@@ -162,7 +162,7 @@ class CedarExportServiceTest {
     }
 
     private Compiled compileToModule(String source) {
-        var result = compiler.compileLenient(source, "en-US", null);
+        var result = compiler.compile(source, "en-US", null);
         assertThat(result.isSuccess()).as("%s", result.getErrors()).isTrue();
         try {
             return new Compiled(JacksonMappers.LENIENT.readValue(result.getCoreJson(), CoreModel.Module.class),

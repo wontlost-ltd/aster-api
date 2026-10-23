@@ -347,4 +347,28 @@ class MigrationGovernanceTest {
         checksums.forEach((name, hash) -> sb.append(name).append('=').append(hash).append('\n'));
         Files.writeString(GOLDEN_FILE, sb.toString(), StandardCharsets.UTF_8);
     }
+    /**
+     * 直接 INSERT policy_versions / policy_catalog 的迁移会绕过服务端编译与类型检查（保存门只在
+     * REST 路径上）。V5.2.0 的 demo 工作流数据是历史遗留且已由 V6.13.0 在生产删除；之后的迁移
+     * 一律不得再以 SQL 灌策略源码——种子必须走会编译的路径（REST / 带编译门的脚本）。
+     */
+    @Test
+    @DisplayName("迁移不得直接灌入策略源码（V5.2.0 之后禁止 INSERT policy_versions/policy_catalog）")
+    void migrationsMustNotSeedPolicySourcesDirectly() throws IOException {
+        Pattern insert = Pattern.compile("(?i)insert\\s+into\\s+(policy_versions|policy_catalog)\\b");
+        List<String> violations = new ArrayList<>();
+        for (Path f : versionedMigrations()) {
+            String name = f.getFileName().toString();
+            if (name.startsWith("V5.2.0__")) {
+                continue;
+            }
+            String body = Files.readString(f);
+            if (insert.matcher(body).find()) {
+                violations.add(name);
+            }
+        }
+        assertThat(violations)
+            .as("这些迁移直接写入策略表，绕过编译/类型检查门禁；请改走 REST 或带编译门的种子脚本")
+            .isEmpty();
+    }
 }
