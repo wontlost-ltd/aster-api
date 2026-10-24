@@ -38,27 +38,20 @@
 
 Worktree: `git -C /Users/rpang/IdeaProjects/aster-cloud worktree add -b feat/release-controls /Users/rpang/IdeaProjects/aster-cloud-adr50 origin/main`.
 
-### Task 1: Single Worker release path
+### Task 1: Single Worker release path — DONE (aster-cloud#541, 2026-10-24)
 
-**Files:**
-- Modify: `.github/workflows/deploy-worker.yml`
-- Create: `scripts/ci/wait-migrate-job.sh`, `scripts/ci/wait-migrate-job.test.sh`
-- Modify: `wrangler.toml` (comment: manual deploy is break-glass only)
-- Modify: `docs/` runbook page for releases (or create `docs/RELEASE.md`)
+**Design amendment (recorded in aster-api `.claude/operations-log.md`):** the plan originally called for a new `wait-migrate-job.sh` polling the k3s Job. Implementation found that `ci.yml`'s `image-pin-pr` job already performs the fail-loud wait (image-pin PR merged → ArgoCD sync → synced revision carries this run's migrate digest and is Healthy, #187). To keep one source of truth, `deploy-worker.yml` now triggers on `workflow_run` of `CI` (completed, main) and only deploys when the CI conclusion is `success`, checking out `workflow_run.head_sha`; no new polling script.
 
-**Interfaces:**
-- `wait-migrate-job.sh <main-sha> [timeout-seconds=1200]`: exits 0 when the k3s `aster-cloud-migrate` Job whose image `sourceSha` equals `<main-sha>` reached `succeeded`, or when the push contains no `drizzle/**/*.sql` (prints `no-migration`); exits 1 on Job failure, 2 on timeout. Reads k3s via the existing cross-repo token used by `open-image-pin-pr.sh`.
-- `deploy-worker.yml`: step `Wait for migration` (uses the script) placed before `pnpm deploy`; deploy message includes `run_id` so `wrangler deployments list` attributes the deploy.
+**Files (as merged):**
+- Modified: `.github/workflows/deploy-worker.yml` (workflow_run trigger, pre-deploy check, run id in deploy message, post-deploy timestamp check)
+- Created: `scripts/ci/deploy-worker-workflow.test.sh` (structure test, wired into `ci.yml` bash test group), `docs/RELEASE.md`
+- Modified: `wrangler.toml` (break-glass comment), `package.json` (`deploy` passes `--message github-actions-run-${DEPLOY_RUN_ID}`)
 
-- [ ] **Step 1: Write `wait-migrate-job.test.sh`** with fixtures: no-migration push → `no-migration`/exit 0; Job succeeded → exit 0; Job failed → exit 1; timeout → exit 2 (use stubbed `kubectl`/`gh` on `PATH`).
-- [ ] **Step 2: Implement the script**; run the test; run `bash -n` on the workflow after editing.
-- [ ] **Step 3: Edit `deploy-worker.yml`**: keep the `vars.ENABLE_CI_WORKER_DEPLOY` gate; add the wait step; write `run_id` into the deploy message.
-- [ ] **Step 4: Document** in the release runbook: Workers Builds must be off; manual `pnpm deploy` is break-glass (admin, after Job success, logged in k3s handbook).
-- [ ] **Step 5: HUMAN STEP** — user disables Workers Builds auto-deploy for `aster-cloud` main in the Cloudflare console, sets `gh variable set ENABLE_CI_WORKER_DEPLOY --body true`, and records the date + screenshot path in `k3s-aster-ai/docs/runbooks/release-evidence.md` (Task 3 creates the file).
-- [ ] **Step 6: Evidence** — first main push after cutover: `wrangler deployments list --name aster-cloud` shows the GitHub run id; Cloudflare build history shows no new automatic build.
-- [ ] **Step 7: Commit** `ci(release): Worker 唯一发布路径——含迁移时等待 k3s migrate Job 后再 wrangler deploy`.
+- [x] Steps 1–4 and 7 delivered in #541.
+- [ ] **Step 5: HUMAN STEP** — user disables Workers Builds auto-deploy for `aster-cloud` main in the Cloudflare console, sets `gh variable set ENABLE_CI_WORKER_DEPLOY --body true -R wontlost-ltd/aster-cloud`, records date + screenshot path in `k3s-aster-ai/docs/runbooks/release-evidence.md` (k3s#807).
+- [ ] **Step 6: Evidence** — first main push after cutover: `wrangler deployments list --name aster-cloud` shows `github-actions-run-<id>`; Cloudflare build history shows no new automatic build.
 
-### Task 2: PR split check and `safeColumnRead`
+### Task 2: PR split check and `safeColumnRead` — DONE (aster-cloud#541, 2026-10-24)
 
 **Files:**
 - Create: `scripts/ci/check-migration-split.mjs`, `src/__tests__/ci/check-migration-split.test.ts`
@@ -77,7 +70,7 @@ Worktree: `git -C /Users/rpang/IdeaProjects/aster-cloud worktree add -b feat/rel
 
 ## Part B — Owner prerequisites and handbooks (k3s-aster-ai)
 
-### Task 3: Handbook rewrite and evidence file
+### Task 3: Handbook rewrite and evidence file — docs delivered in k3s#807; HUMAN STEP 2 pending
 
 **Files:**
 - Modify: `apps/infrastructure/postgres-cluster/OWNER-SEPARATION.md`
