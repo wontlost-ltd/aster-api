@@ -73,6 +73,9 @@ public class PolicyEvaluationService {
     PolicyCompiler policyCompiler;
 
     @Inject
+    io.aster.policy.compiler.PolicyExecutionGate executionGate;
+
+    @Inject
     TrufflePolicyRuntime trufflePolicyRuntime;
 
     @Inject
@@ -226,7 +229,9 @@ public class PolicyEvaluationService {
             })
             // EntryFunctionException 的消息只含函数名、且是调用方唯一能自行修正的原因：
             // 不包装，让 /evaluate 与 /evaluate/batch 把它原样回给调用方。
-            .onFailure(e -> !(e instanceof io.aster.policy.parser.EntryFunctionException))
+            // 执行门禁的 422（policy_version_invalid）同理：带诊断原样回给调用方，而不是被包成 500。
+            .onFailure(e -> !(e instanceof io.aster.policy.parser.EntryFunctionException)
+                && !(e instanceof jakarta.ws.rs.WebApplicationException))
             .transform(e -> new RuntimeException("Policy evaluation failed", e));
     }
 
@@ -381,6 +386,11 @@ public class PolicyEvaluationService {
             }
 
             String versionId = String.valueOf(version.get().id);
+
+            var gateDecision = executionGate.check(version.get().id);
+            if (!gateDecision.allowed()) {
+                io.aster.policy.compiler.PolicyExecutionGate.reject(gateDecision);
+            }
 
             // 2. 检查编译缓存
             java.util.Optional<io.aster.policy.cache.CompiledPolicy> cachedPolicy =
@@ -772,6 +782,10 @@ public class PolicyEvaluationService {
                 }
 
                 // 编译策略以获取元数据
+                var gateDecision = executionGate.check(version.get().id);
+                if (!gateDecision.allowed()) {
+                    io.aster.policy.compiler.PolicyExecutionGate.reject(gateDecision);
+                }
                 CompilationResult compilationResult = policyCompiler.compile(version.get().id);
                 if (!compilationResult.isSuccess()) {
                     return new PolicyValidationResult(

@@ -179,6 +179,14 @@ public class PolicyCompiler {
         }
     }
 
+    /** 按版本冻结的源码重新类型检查，不读取已存编译产物。 */
+    public CompilationResult typecheckVersion(PolicyVersion version) {
+        if (version == null) {
+            return CompilationResult.failure("策略版本不能为空");
+        }
+        return compile(version.content, version.locale, version.aliasSet);
+    }
+
     static CompilationResult.Diagnostic mapTypecheckDiagnostic(Diagnostic diagnostic, boolean warnOnly) {
         int line = diagnostic.span().map(s -> s.start == null ? 1 : s.start.line).orElse(1);
         int column = diagnostic.span().map(s -> s.start == null ? 1 : s.start.col).orElse(1);
