@@ -2029,3 +2029,243 @@ ADR 的定性覆盖它，但按名单完整性该列出。
 
 **七次失败的代价，本可以用一次十分钟的刻画实验避免。**
 「我以为这个正则是这么工作的」——那个「以为」值得先花十分钟证实。
+
+---
+
+## §13 接线：从「六个死模块」到一条可观测的链路
+
+### 问题：地基铺好了，线没接
+
+§7–§12 建了六个模块（SourceIR / QuantityIR / MappingIR / ProofIR /
+CandidateGenerator / EntityProposer），每个都有测试、两引擎都有对等实现。
+**但实测它们的生产调用数全为 0，也不在 `src/index.ts` 的导出面内** ——
+六个模块全是死代码。
+
+这也解释了此前「UI 需要改吗」那个问题的答案为什么是"不需要"：
+**没有任何东西能到达 UI**。
+
+### `runSemanticBridge`：主链路
+
+```
+人类文档
+  ├─ parseSourceIr ──────────► 文档结构（Document/Section/Span）
+  ├─ extractQuantities ──────► 数量实体（确定性，零 AI）
+  └─ canonicalize→lex→parse→lower
+        ├─ computeNodeIds ───► 稳定节点 ID
+        ├─ generateCandidates► 候选映射（机械切片，不猜）
+        └─ verifyMapping ────► VERIFIED / REVIEW_REQUIRED / REJECTED
+```
+
+★**分层降级**是关键设计：前两层对**任意文本**都成立（它们只依赖形态特征），
+第 3 层需要可编译源码。编译失败时前两层结果**保留**，
+并在 `diagnostics` 里说明第 3 层为何跳过。
+
+实测：
+
+| 输入 | 结果 |
+|---|---|
+| 可编译 Aster 源码 | 2 条候选全 **VERIFIED** |
+| 纯人类文档（不可编译） | SourceIR 正常；抽出 **4 个数量**（`$10,000` / `3 天` / `15%` / `2026-01-01`）；第 3 层如实报告跳过 |
+
+**这就是「任意文字可执行化」的现实形态**：不是"任意文字都能编译"，
+而是**分层地、如实地**给出能给的部分，并说清哪部分给不了。
+
+### ★接线时踩的坑：单测全绿，错的是"那根线"
+
+第一版我从 `computeNodeIds()` 的返回值取 `value` 做 `resolve`。
+但 `NodeIdentity` 只有 `{nodeId, contentHash, kind}` —— **根本没有 value**。
+结果 `verifyMapping` 拿不到值，把**每一条候选都判成 REJECTED**。
+
+★此时两侧模块的单元测试**全是绿的**：`candidate-generator` 切片正确、
+`mapping-ir` 判定正确 —— **错的是它们之间的那根线**。
+只有端到端跑一次才暴露。
+
+> 这正是本仓反复记录的「**验了对象，没验连线**」。
+> 已改为从 IR 本身取值，并补 `pipeline.test.ts` 把连线钉死
+> （变异验证：复刻该错误 → 红，且报出"多半是 resolve 取不到 value"）。
+
+### 双引擎 verifier 一致性门禁（§7 的硬要求）
+
+§7 对一致性的要求是**有区分**的：
+
+```
+LLM 生成的 candidate  →  不要求一致
+Verifier 的结果       →  **必须一致**
+```
+
+新增**共享语料** `aster-lang-test/corpus/mapping-verdict/cases.json`（12 例，
+覆盖三种 verdict），两侧读**同一个文件**：
+`verdict-parity.test.ts`（TS）与 `MappingIrVerdictParityTest`（Java）。
+
+★**单源**：若两侧各抄一份语料，它们会各自漂移，
+"一致性门禁"就退化成两个互不相干的测试 —— 看着都绿，实际什么都没保证。
+
+#### ★一个 no-op 变异的教训
+
+变异验证时我先试「给 Java 的 `EXACT_VALUE_KINDS` 加 `Text`」制造分叉 ——
+**门禁没红**，我一度以为它失效了。查下去发现：加进 kind 列表后仍会卡在
+`parseLiteralFromText`（它不认识 `Text`）返回 null，最终仍判 `REVIEW_REQUIRED`
+—— **那是个 no-op 变异，行为根本没变**。
+
+换成「移除 `Bool`」这个真变异 → 门禁**立刻变红**，报出判定不符。
+
+> **变异必须能真正改变行为，否则"门禁没红"证明不了任何事。**
+> 这条已写进语料的 `_doc`，避免后人重走。
+
+---
+
+## §14 三段式第③段：人工复核队列
+
+### 把「AI 不能定义什么叫正确」写进类型
+
+ADR §3 的原则此前只是文字。`review-queue.ts` 把它变成**类型约束**：
+
+| 函数 | 能产出什么 |
+|---|---|
+| `buildReviewQueue` | 只产出 `ReviewItem`（待复核项），**不产出 Proof** |
+| `recordHumanProof` | 唯一能产出 Proof 的入口；`subject` 被 `Extract` 限制为 `DOMAIN_EXPERT \| ENGINEER` |
+
+★**机器无法调用 `recordHumanProof` 给自己发证书** —— 类型系统不允许传
+`VERIFIER`。这比写在文档里的约定强得多。
+
+另外两条硬约束：
+
+- **空理由直接抛错** —— 没有理由的批准等于没有复核，宁可拒绝记录也不留空壳 proof
+- **时间由调用方传入**，不取系统时钟 —— 取时钟会让同一输入产出不同记录，无法复现、无法测试
+
+### LLM 是**可选增强**，不是主链路依赖
+
+```
+不传 provider    → 映射类验证完整，无 Entity 待复核项
+provider 抛错    → 只记 diagnostics，映射类结果**保留**（已测）
+LLM 幻觉         → 幻觉闸门丢弃 + **如实报告**进 diagnostics
+```
+
+★最后一条尤其重要：丢弃**必须**可见。
+「LLM 产出了不合规内容」是评估模型可靠性最重要的信号，静默吞掉等于丢掉它。
+
+### Proof 的时效性是**算出来**的
+
+Proof 锚定到**判定时**那一版的 `contentHash`。内容一变，
+`isApplicableTo` 算出 `CONTENT_CHANGED`；节点没了算出 `NODE_GONE`
+—— 而**不是**悄悄沿用旧结论。proof 记录本身永不修改（三态均已测）。
+
+### ★这就是 UI 的数据契约
+
+```
+ReviewQueue = {
+  counts:      { verified, reviewRequired, rejected }   ← 三类计数
+  items:       [{ text, span, reason, source }]          ← 每条待复核项
+  diagnostics: [...]                                     ← 所有"没做成"的事
+}
+```
+
+一个复核界面要展示的就是这个：**原文片段 ↔ 目标节点 ↔ 为什么机器证不了**。
+UI 拿到它即可开工，**无需再猜输入形态** —— 这正是我此前建议
+「先接线再设计 UI」的原因。
+
+### 端到端实测
+
+```
+① + ② 机器： {"verified":2,"reviewRequired":1,"rejected":0}
+   [ENTITY] "approve_payment" @29-44
+      Entity「approve_payment」的类别 Role 属**语义**判断，机器只能确认该文本
+      存在于声称位置，证明不了它指代该实体 —— 须领域专家确认。
+
+③ 人复核（DOMAIN_EXPERT）：
+   Proof: DOMAIN_EXPERT by alice@example.com
+   锚定 hash: 6f1d937173328dd6...
+   内容未变 → 适用: true
+   内容已变 → 适用: false
+```
+
+### 回归
+
+- TS **1896 tests** 全绿（+20）；Java **1669 tests** 全绿（+2）
+- 双引擎 IR parity：字段级 **223/223**、浅层指纹 **223/223**
+- 每处接线均做变异验证（复刻错误实现 → 变红 → 还原 → 变绿）
+
+### 下一步（未做，需产品决策）
+
+1. **UI 复核界面** —— 数据契约已就位（`ReviewQueue`），可以开工了
+2. **ProofIR 持久化** —— 目前 proof 是内存对象，落库需要 schema 与
+   append-only 约束（参考本仓 `audit-log` 的做法）
+3. **Java 侧 pipeline 对等** —— 目前只有 TS 侧有 `runSemanticBridge`；
+   §7 只要求 **verifier 结果**一致（已有门禁），主链路是否也要对等是个开放问题
+
+---
+
+## §15 三项待决事项的决议（2026-09-14）
+
+### ① Java 侧主链路 —— **要对等**，已完成
+
+**决议依据**（用户）：「有些人只用 Java 引擎，有些人只用 JavaScript 引擎」。
+
+★我此前把它写成"开放问题"是**误判**：§7 只要求 **verifier 判定**一致，
+那说的是「同一候选两侧判一样」；而**能力**是另一回事——
+只在 TS 侧接线，等于只用 Java 引擎的用户拿不到语义桥。
+**一致性 ≠ 能力对等。**
+
+已补 `CandidateGenerator`（Java 侧六个模块里唯一缺的）与 `SemanticBridge`。
+
+**实测两引擎输出逐字节一致**（同输入 dump 对拍 7/7 全同，含 nodeId 与 span）：
+
+```
+SUMMARY 2,0,0
+CAND VERIFIED|10000|$.decls{approve_payment}.body.statements[0].expr|64-69
+QTY  MONEY|$10,000|17-24|10000   DURATION|3 天|41-44|3
+     PERCENT|15%|56-59|15        DATE|2026-01-01|69-79|2026-01-01
+```
+
+新增**共享语料** `bridge-cases.json`，两侧读同一文件，覆盖
+「可编译源码」与「不可编译文档（分层降级）」两种形态。
+
+★变异验证：Java 侧 resolve 改从 `NodeIdentity` 取值 → 门禁变红（verified 2→0）。
+★并记一个 **no-op 变异**：改 `segmentOf` 的 `_` 规则**不会**变红
+——当前语料没有 `_` 节点，该改动**不可观测**。
+**变异必须能被语料观察到**，否则"没红"证明不了任何事（本轮第二次撞见）。
+
+### ② UI 复核界面 —— 三项决策已定
+
+★先纠正我自己：我此前把 UI 列为"需大量产品决策"是**说大了**。
+查过 `aster-cloud` 后发现现成范式很清楚——`decision-trace-panel.tsx`
+等面板都是**纯展示组件**（props 进、JSX 出，取数在上层），
+`ReviewQueue` 的形状本就是这类组件的 props。**90% 是照约定实现**。
+
+真正需要决策的只有三项，均已拍板：
+
+| 决策 | 选择 | 含义 |
+|---|---|---|
+| 界面位置 | **策略详情页新增 tab**（与 versions/analytics 并列） | 复核是策略的一个视角，不是独立实体 |
+| 复核权限 | **仅特定角色**（`DOMAIN_EXPERT`），**团队管理员可指定** | 需在团队成员上增加该角色位 |
+| 结论可撤销性 | **不可撤销，只能追加新 Proof 覆盖** | 与 ProofIR 不可变设计一致；撤销＝再记一条，历史完整保留 |
+
+★第三条与 `ProofIr.resolveEffective` 天然契合：
+「当前有效结论」是**算出来**的（取最新适用的 proof），不是改出来的。
+
+### ③ ProofIR 持久化 —— 落 `aster-cloud`
+
+**判定依据**（查代码得出，非猜测）：
+
+- `policies` 表在 **`aster-cloud`**（`src/db/schema.ts:569`）
+- 团队角色枚举也在 cloud：`teamRoleEnum = ['owner','admin','member','viewer']`（`:102`）
+- Proof 必须 join **策略** 与 **复核人身份**，两者都在 cloud
+
+→ 放 `aster-api` 会制造跨库 join。虽然 `aster-api` 有成熟的
+append-only 审计表先例（`V4.2.0__add_audit_hash_chain.sql`），
+但**数据归属**优先于**技术先例**。
+
+★需新增：
+1. `proofs` 表（append-only：无 UPDATE/DELETE，撤销＝追加）
+2. `teamRoleEnum` 增加 `domain_expert`，或用独立的 `policy_reviewers` 关联表
+   （★后者更可取：复核权限是**按策略**授予的，不是全团队一刀切）
+
+---
+
+## §16 下一步（按依赖顺序）
+
+1. **`policy_reviewers` 表 + 角色授予**（团队管理员指定 DOMAIN_EXPERT）
+2. **`proofs` 表**（append-only）+ BFF 路由
+3. **复核 tab UI**（数据契约 `ReviewQueue` 已就位）
+
+★第 1 步是第 2/3 步的前提：没有"谁能复核"，`ProofSubject.by` 就没有可信来源。
