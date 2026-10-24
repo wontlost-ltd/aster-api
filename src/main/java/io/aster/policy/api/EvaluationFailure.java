@@ -16,6 +16,7 @@ import io.aster.policy.parser.EntryFunctionException;
 public record EvaluationFailure(int status, String code, String message) {
 
     public static final String NO_EXECUTABLE_VERSION = "no_executable_version";
+    public static final String POLICY_VERSION_INVALID = "policy_version_invalid";
     public static final String POLICY_NOT_FOUND = "policy_not_found";
     public static final String FUNCTION_NOT_FOUND = "function_not_found";
     public static final String FUNCTION_NOT_EXECUTABLE = "function_not_executable";
@@ -51,6 +52,10 @@ public record EvaluationFailure(int status, String code, String message) {
                 case POLICY_NOT_FOUND -> new EvaluationFailure(404, POLICY_NOT_FOUND, e.getMessage());
                 case NO_EXECUTABLE_VERSION -> new EvaluationFailure(409, NO_EXECUTABLE_VERSION, e.getMessage());
             };
+        }
+        if (t instanceof io.aster.policy.compiler.PolicyVersionInvalidException e) {
+            // 执行门禁拒绝（ADR 0050）：调用方需修复策略源码或等待重验，属 4xx
+            return new EvaluationFailure(422, POLICY_VERSION_INVALID, e.getMessage());
         }
         if (t instanceof EntryFunctionException e) {
             // 函数不存在 → 404；被 main 等入口抢占 → 400（调用方可改调用的函数，消息里给了做法）

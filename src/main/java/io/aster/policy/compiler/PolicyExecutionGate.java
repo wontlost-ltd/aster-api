@@ -5,13 +5,9 @@ import io.aster.policy.repository.PolicySourceRepository;
 import io.aster.policy.stability.ToolchainIdentityProvider;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import jakarta.ws.rs.WebApplicationException;
-import jakarta.ws.rs.core.MediaType;
-import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 @ApplicationScoped
@@ -62,11 +58,9 @@ public class PolicyExecutionGate {
         return new GateDecision(!enforce, diagnostics, enforce ? "invalid-enforce" : "invalid-warn", toolchain);
     }
 
+    /** 以类型化异常上抛，由 REST 层 EvaluationFailure 归因为 422 policy_version_invalid。 */
     public static void reject(GateDecision decision) {
-        throw new WebApplicationException(Response.status(422)
-            .entity(Map.of("error", "policy_version_invalid", "toolchainId", decision.toolchainId(),
-                "diagnostics", decision.diagnostics(), "reason", decision.reason()))
-            .type(MediaType.APPLICATION_JSON).build());
+        throw new PolicyVersionInvalidException(decision.diagnostics(), decision.toolchainId(), decision.reason());
     }
 
     public record GateDecision(boolean allowed, List<CompilationResult.Diagnostic> diagnostics,

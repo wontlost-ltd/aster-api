@@ -229,9 +229,7 @@ public class PolicyEvaluationService {
             })
             // EntryFunctionException 的消息只含函数名、且是调用方唯一能自行修正的原因：
             // 不包装，让 /evaluate 与 /evaluate/batch 把它原样回给调用方。
-            // 执行门禁的 422（policy_version_invalid）同理：带诊断原样回给调用方，而不是被包成 500。
-            .onFailure(e -> !(e instanceof io.aster.policy.parser.EntryFunctionException)
-                && !(e instanceof jakarta.ws.rs.WebApplicationException))
+            .onFailure(e -> !(e instanceof io.aster.policy.parser.EntryFunctionException))
             .transform(e -> new RuntimeException("Policy evaluation failed", e));
     }
 
@@ -784,7 +782,16 @@ public class PolicyEvaluationService {
                 // 编译策略以获取元数据
                 var gateDecision = executionGate.check(version.get().id);
                 if (!gateDecision.allowed()) {
-                    io.aster.policy.compiler.PolicyExecutionGate.reject(gateDecision);
+                    // 校验接口不抛：把门禁拒绝当作"不可执行"的校验结论返回
+                    return new PolicyValidationResult(
+                        false,
+                        "Policy version failed type check for current toolchain: " + gateDecision.reason(),
+                        policyModule,
+                        policyFunction,
+                        null,
+                        null,
+                        null
+                    );
                 }
                 CompilationResult compilationResult = policyCompiler.compile(version.get().id);
                 if (!compilationResult.isSuccess()) {
