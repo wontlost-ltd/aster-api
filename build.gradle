@@ -127,7 +127,7 @@ dependencies {
     testImplementation 'io.rest-assured:rest-assured'
     testImplementation 'io.smallrye.reactive:smallrye-mutiny-vertx-junit5'
     testImplementation 'org.assertj:assertj-core:3.27.7'
-    testImplementation 'org.mockito:mockito-core:5.23.0'
+    testImplementation 'org.mockito:mockito-core:5.24.0'
     testImplementation 'io.quarkus:quarkus-jdbc-h2'
     testImplementation 'org.awaitility:awaitility:4.3.0'
     testImplementation 'com.tngtech.archunit:archunit-junit5:1.5.1'
