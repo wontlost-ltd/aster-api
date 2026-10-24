@@ -5,6 +5,8 @@ DELETE /api/v1/admin/lexicons/{fileName}
 DELETE /api/v1/admin/messages/{locale}
 DELETE /api/v1/policies/cache
 GET /api/v1/admin/byok-allowlist
+GET /api/v1/admin/revalidation/invalid
+GET /api/v1/admin/revalidation/runs/{id}
 GET /api/v1/audit
 GET /api/v1/audit/anomalies
 GET /api/v1/audit/anomalies/{id}
@@ -42,6 +44,7 @@ POST /api/v1/admin/byok-allowlist
 POST /api/v1/admin/lexicons
 POST /api/v1/admin/lexicons/{id}/disable
 POST /api/v1/admin/lexicons/{id}/enable
+POST /api/v1/admin/revalidation/runs
 POST /api/v1/ai/assistant
 POST /api/v1/ai/complete
 POST /api/v1/ai/generate
