@@ -11,8 +11,9 @@ public class PolicyRevalidationJob {
     @Inject RevalidationRunService runs;
     @ConfigProperty(name = "aster.revalidation.batch-size", defaultValue = "50") int batchSize;
 
-    @Scheduled(every = "30s", concurrentExecution = SKIP)
+    // 节奏可运维调整（ASTER_REVALIDATION_INTERVAL / ASTER_REVALIDATION_BATCH_SIZE），忙时放慢全量重验。
+    @Scheduled(every = "${aster.revalidation.interval}", concurrentExecution = SKIP)
     void tick() {
-        runs.claimAndProcessBatch(batchSize);
+        runs.claimAndProcessBatch(Math.max(1, batchSize));
     }
 }

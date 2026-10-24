@@ -63,7 +63,7 @@ class PolicyExecutionGateTest {
         when(versions.findVersionById(9L)).thenReturn(Optional.of(version));
         when(compiler.typecheckVersion(version)).thenReturn(CompilationResult.success("{}", CompilationMetadata.empty()));
         assertThat(gate.check(9).reason()).isEqualTo("sync-validated");
-        verify(validation).insertIfAbsent(9, "tc", "valid", List.of(), null);
+        verify(validation).insertIfAbsent(9, "tc", "valid", List.of(), null, false);
     }
 
     @Test void missingStatusInvalidRefusesInEnforce() {
@@ -85,7 +85,7 @@ class PolicyExecutionGateTest {
         var decision = gate.check(13);
         assertThat(decision.reason()).isEqualTo("invalid-warn");
         assertThat(decision.allowed()).isTrue();
-        verify(validation).insertIfAbsent(13, "tc", "invalid", List.of(diagnostic), null);
+        verify(validation).insertIfAbsent(13, "tc", "invalid", List.of(diagnostic), null, false);
     }
 
     @Test void storageFailuresRefuseEvenInWarnAndGateOffAllows() {
@@ -101,7 +101,7 @@ class PolicyExecutionGateTest {
         when(validation.findStatus(14, "tc")).thenReturn(Optional.empty());
         when(versions.findVersionById(14L)).thenReturn(Optional.of(version));
         when(compiler.typecheckVersion(version)).thenReturn(CompilationResult.success("{}", CompilationMetadata.empty()));
-        doThrow(new IllegalStateException("offline")).when(validation).insertIfAbsent(14, "tc", "valid", List.of(), null);
+        doThrow(new IllegalStateException("offline")).when(validation).insertIfAbsent(14, "tc", "valid", List.of(), null, false);
         gate.typecheckMode = "warn";
         assertThat(gate.check(14).reason()).isEqualTo("storage-error");
     }

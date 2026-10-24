@@ -11,6 +11,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
+import java.time.Duration;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -30,34 +32,65 @@ public class RevalidationRunService {
         String toolchain = toolchains.currentToolchainId();
         List<?> latest = entityManager.createNativeQuery("SELECT toolchain_id FROM policy_revalidation_run WHERE status='done' ORDER BY id DESC LIMIT 1").getResultList();
         if (!latest.isEmpty() && toolchain.equals(latest.getFirst())) return Optional.empty();
-        return enqueue("all", null, toolchain, STARTUP_TRIGGER);
+        return enqueue("all", null, toolchain, STARTUP_TRIGGER, MODE_ENFORCE);
     }
 
     /** 启动期自动重验的发起者标识；管理员发起的由 REST 层传入 admin:<用户 id>。 */
     public static final String STARTUP_TRIGGER = "startup:toolchain-change";
+    /** 任务模式：enforce 判定立即生效；report 只写 advisory 行，门禁不读。 */
+    public static final String MODE_ENFORCE = "enforce";
+    public static final String MODE_REPORT = "report";
+    @ConfigProperty(name = "aster.revalidation.batch-size", defaultValue = "50") int batchSize;
+    @ConfigProperty(name = "aster.revalidation.interval", defaultValue = "30s") Duration interval;
+
+    /**
+     * 发起前预估：扫描集合大小与按当前节奏（每 interval 一批 batchSize）的耗时，供管理员确认时看到影响面。
+     * 这是估算而非入队快照：不与随后的 enqueue 共享事务，入队后以 run 行的 total 为准；节奏值与 job 实际使用的同源
+     * （batchSize 非正时两边都按 1 处理）。
+     */
+    public Preview preview(String scope, String tenantId) {
+        long total = scopeTotal(scope, tenantId, scopeMaxVersionId(scope, tenantId));
+        int effectiveBatch = Math.max(1, batchSize);
+        long batches = (total + effectiveBatch - 1) / effectiveBatch;
+        long estimatedSeconds = batches * interval.toSeconds();
+        return new Preview(toolchains.currentToolchainId(), total, effectiveBatch, interval.toSeconds(), (estimatedSeconds + 59) / 60);
+    }
+
+    public record Preview(String toolchainId, long total, int batchSize, long intervalSeconds, long estimatedMinutes) {}
+
+    private long scopeMaxVersionId(String scope, String tenantId) {
+        var maxQuery = entityManager.createNativeQuery("SELECT COALESCE(MAX(id), 0) FROM policy_versions" +
+            ("tenant".equals(scope) ? " WHERE tenant_id = :tenant" : ""));
+        if ("tenant".equals(scope)) maxQuery.setParameter("tenant", tenantId);
+        return ((Number) maxQuery.getSingleResult()).longValue();
+    }
+
+    private long scopeTotal(String scope, String tenantId, long maxId) {
+        return ((Number) entityManager.createNativeQuery(
+            "SELECT COUNT(*) FROM policy_versions WHERE id <= :maxId AND (:scope <> 'tenant' OR tenant_id = :tenant)")
+            .setParameter("maxId", maxId).setParameter("scope", scope).setParameter("tenant", tenantId)
+            .getSingleResult()).longValue();
+    }
 
     /**
      * 入队一次重验；triggeredBy 落到 policy_revalidation_run.triggered_by 并作为审计事件的 performedBy，
      * 让「谁在什么时候让全平台策略重新过门禁」可追溯。
      */
     @Transactional
-    public Optional<Long> enqueue(String scope, String tenantId, String triggeredBy) {
-        return enqueue(scope, tenantId, toolchains.currentToolchainId(), triggeredBy);
+    public Optional<Long> enqueue(String scope, String tenantId, String triggeredBy, String mode) {
+        return enqueue(scope, tenantId, toolchains.currentToolchainId(), triggeredBy, mode);
     }
 
-    private Optional<Long> enqueue(String scope, String tenantId, String toolchain, String triggeredBy) {
-        var maxQuery = entityManager.createNativeQuery("SELECT COALESCE(MAX(id), 0) FROM policy_versions" +
-            ("tenant".equals(scope) ? " WHERE tenant_id = :tenant" : ""));
-        if ("tenant".equals(scope)) maxQuery.setParameter("tenant", tenantId);
-        Number max = (Number) maxQuery.getSingleResult();
+    private Optional<Long> enqueue(String scope, String tenantId, String toolchain, String triggeredBy, String mode) {
+        long maxId = scopeMaxVersionId(scope, tenantId);
         List<?> rows = entityManager.createNativeQuery("""
-            INSERT INTO policy_revalidation_run(toolchain_id, scope, scope_tenant, status, scope_max_version_id, total, triggered_by)
+            INSERT INTO policy_revalidation_run(toolchain_id, scope, scope_tenant, status, scope_max_version_id, total, triggered_by, mode)
             VALUES (:toolchain, :scope, :tenant, 'queued', :maxId,
-                (SELECT COUNT(*) FROM policy_versions WHERE id <= :maxId AND (:scope <> 'tenant' OR tenant_id = :tenant)), :triggeredBy)
+                (SELECT COUNT(*) FROM policy_versions WHERE id <= :maxId AND (:scope <> 'tenant' OR tenant_id = :tenant)), :triggeredBy, :mode)
             ON CONFLICT DO NOTHING RETURNING id
             """).setParameter("toolchain", toolchain).setParameter("scope", scope)
-            .setParameter("tenant", tenantId).setParameter("maxId", max.longValue())
-            .setParameter("triggeredBy", triggeredBy).getResultList();
+            .setParameter("tenant", tenantId).setParameter("maxId", maxId)
+            .setParameter("triggeredBy", triggeredBy).setParameter("mode", mode).getResultList();
         if (rows.isEmpty()) return Optional.empty();
         Long runId = ((Number) rows.getFirst()).longValue();
         audit("policy.revalidation.start", runId, scope.equals("tenant") ? tenantId : "system", triggeredBy);
@@ -67,7 +100,7 @@ public class RevalidationRunService {
     @Transactional
     public boolean claimAndProcessBatch(int batchSize) {
         List<?> rows = entityManager.createNativeQuery("""
-            SELECT id, toolchain_id, scope, scope_tenant, cursor, scope_max_version_id, checked, invalid_count
+            SELECT id, toolchain_id, scope, scope_tenant, cursor, scope_max_version_id, checked, invalid_count, mode
             FROM policy_revalidation_run
             WHERE status='queued' OR (status='running' AND heartbeat_at < now() - interval '2 minutes')
             ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
@@ -82,6 +115,7 @@ public class RevalidationRunService {
         long maxId = ((Number) run[5]).longValue();
         int checked = ((Number) run[6]).intValue();
         int invalid = ((Number) run[7]).intValue();
+        boolean advisory = MODE_REPORT.equals(run[8]);
         Instant now = Instant.now();
         entityManager.createNativeQuery("UPDATE policy_revalidation_run SET status='running', started_at=COALESCE(started_at,:now), heartbeat_at=:now WHERE id=:id")
             .setParameter("now", now).setParameter("id", runId).executeUpdate();
@@ -92,7 +126,7 @@ public class RevalidationRunService {
             for (PolicyVersion version : batch) {
                 var result = compiler.typecheckVersion(version);
                 boolean valid = ValidationRepository.isValid(result);
-                validations.insertIfAbsent(version.id, toolchain, valid ? "valid" : "invalid", ValidationRepository.diagnosticsOf(result), runId);
+                validations.insertIfAbsent(version.id, toolchain, valid ? "valid" : "invalid", ValidationRepository.diagnosticsOf(result), runId, advisory);
                 cursor = version.id;
                 checked++;
                 if (!valid) invalid++;

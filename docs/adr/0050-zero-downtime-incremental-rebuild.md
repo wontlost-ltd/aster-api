@@ -1,6 +1,6 @@
 # ADR 0050：不停机的增量数据重建与更新（替代整库 DROP/CREATE）
 
-- 状态：**ACCEPTED**（2026-10-24 用户定稿；rev 1 经 Codex 审查 66 分/退回，rev 2 逐条回应，rev 3 并入 aster-cloud#540 的部署顺序后续任务，rev 4 回应 Codex 对 rev 3 的复审 79 分/退回：会话撤销路径、唯一 Worker 发布路径、门禁缓存与 run 原子性、safeColumnRead 边界、治理元数据解析契约、实施顺序；rev 5（2026-10-24）按已上线实现修正 §2.1.4 的 ai_workspace 自检形态，并记录 Task 1 复用 CI 既有迁移等待的设计修订）
+- 状态：**ACCEPTED**（2026-10-24 用户定稿；rev 1 经 Codex 审查 66 分/退回，rev 2 逐条回应，rev 3 并入 aster-cloud#540 的部署顺序后续任务，rev 4 回应 Codex 对 rev 3 的复审 79 分/退回：会话撤销路径、唯一 Worker 发布路径、门禁缓存与 run 原子性、safeColumnRead 边界、治理元数据解析契约、实施顺序；rev 5（2026-10-24）按已上线实现修正 §2.1.4 的 ai_workspace 自检形态，并记录 Task 1 复用 CI 既有迁移等待的设计修订；rev 6（2026-10-24）§2.2 补充重验的影响控制：发起者留痕、发起前预估、租户范围入口、可调节奏与 report 只报告模式）
 - 背景事件：2026-10-24 为启用 Java TypeChecker 强制模式，生产 `aster_api` 与 `aster_cloud` 两库整体 DROP/CREATE 重建
   （见 wontlost-ltd/aster-api#374、wontlost-ltd/aster-cloud#538、`prod-e2e-20261023/findings.md`）
 - 第二个背景事件：2026-10-23 22:17Z–22:35Z，aster-cloud#539（新增 `User.aiWorkspaceEnabled` 列）合入后 Workers 先于 k3s 迁移 Job 上线，
@@ -170,6 +170,21 @@
   run 进度与失败清单；策略详情页读到 `invalid` 显示"需修复"徽标与诊断。保存门不变（已强制）。
 - **审计**：run 创建/完成/失败、手动重跑写 api `audit_logs`（action `policy.revalidation.*`）；cloud 侧 admin 操作写 `AuditLog`
   （现有 `byok-allowlist` 写法）。
+- **影响控制（rev 6）**：全量重验是全平台生效的动作，判定一经写入即对门禁生效，影响随 run 进度逐步落到客户。为此：
+  - **发起者留痕**：`policy_revalidation_run.triggered_by`（`admin:<cloud 用户 id>` / `startup:toolchain-change`）作为 start 事件的
+    `performedBy`；cloud 代理在 api 受理后写 `AuditLog` `policy.revalidation.started`（V6.32.0，aster-api#385 / aster-cloud#554）。
+  - **发起前预估**：`GET /api/v1/admin/revalidation/preview?scope&tenantId` 返回扫描集合大小、当前节奏（batchSize、interval）与
+    预计分钟数；admin 页确认框必须展示这组数字再允许确认。preview 是**估算**而非入队快照（不与 enqueue 共享事务），
+    入队后以 run 行的 `total` 为准；admin 页确认时锁定预估时的 scope/tenantId/mode，确认与预估描述的是同一次操作。
+  - **租户范围入口**：api 早已支持 `scope=tenant`，admin 页提供范围选择，先对单租户重验再全量是推荐做法。
+  - **可调节奏**：`aster.revalidation.interval`（`ASTER_REVALIDATION_INTERVAL`，默认 30s）与 `aster.revalidation.batch-size`
+    （`ASTER_REVALIDATION_BATCH_SIZE`，默认 50）均为运维可调，忙时放慢。
+  - **report 只报告模式**：`policy_revalidation_run.mode ∈ {enforce, report}`（默认 enforce）。report run 把判定写为
+    `policy_version_validation.advisory = true`；门禁的 `findStatus` 只读 `advisory = false` 的行，因此 advisory 行**视同无行**：
+    首次执行仍同步验证，并通过 `INSERT ... ON CONFLICT DO UPDATE SET advisory = false WHERE advisory`（只翻标志，
+    status/diagnostics 不变）把该行提升为正式行；enforce run 同理提升。正式行永不被 report run 降级。判定不可变的原则保持：
+    同一 `(version_id, toolchain_id)` 的 status 一旦写入不再改写。`GET .../invalid` 返回 `advisory` 标志供 admin 页区分
+    「参考」与「生效」。启动期工具链变化触发的 run 固定为 enforce（用户拍板：enforce 下 invalid 拒绝执行）。
 
 ### 2.3 C. 会话纪元与设备信任
 

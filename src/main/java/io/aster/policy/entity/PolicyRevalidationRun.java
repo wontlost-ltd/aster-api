@@ -28,4 +28,6 @@ public class PolicyRevalidationRun extends PanacheEntityBase {
     @Column(columnDefinition = "text") public String error;
     /** 发起者：admin:<cloud 用户 id> 或 startup:toolchain-change；列上线前的历史任务为 null。 */
     @Column(name = "triggered_by") public String triggeredBy;
+    /** enforce：判定立即对门禁生效；report：只记录为 advisory，不拦截。 */
+    @Column(nullable = false) public String mode;
 }
