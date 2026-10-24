@@ -44,15 +44,27 @@ public class RevalidationAdminResource {
         if (request.requestedBy() != null && !REQUESTED_BY.matcher(request.requestedBy()).matches()) throw error(400, "invalid_requested_by");
         // 本端点只有 HMAC 签名的 cloud 后台能调用；requestedBy 是 cloud 已验证的管理员 id，缺省时只记「admin」。
         String triggeredBy = request.requestedBy() == null ? "admin" : "admin:" + request.requestedBy();
-        var id = runs.enqueue(request.scope(), request.tenantId(), triggeredBy);
+        String mode = request.mode() == null ? RevalidationRunService.MODE_ENFORCE : request.mode();
+        if (!RevalidationRunService.MODE_ENFORCE.equals(mode) && !RevalidationRunService.MODE_REPORT.equals(mode)) throw error(400, "invalid_mode");
+        var id = runs.enqueue(request.scope(), request.tenantId(), triggeredBy, mode);
         if (id.isEmpty()) return Response.status(409).entity(Map.of("error", "active_run_exists")).build();
         return Response.status(202).entity(Map.of("runId", id.get())).build();
+    }
+
+    /** 发起前预估影响面：扫描集合大小、当前节奏与预计耗时。scope 规则与 create 一致。 */
+    @GET @Path("/preview")
+    public Response preview(@Context HttpHeaders headers, @QueryParam("scope") String scope, @QueryParam("tenantId") String tenantId) {
+        hmac.verify(headers, "GET", BASE + "/preview", null, 0, null);
+        String safeScope = scope == null ? "all" : scope;
+        if (!"all".equals(safeScope) && !"tenant".equals(safeScope)) throw error(400, "invalid_scope");
+        if ("tenant".equals(safeScope) && (tenantId == null || tenantId.isBlank())) throw error(400, "tenant_required");
+        return Response.ok(runs.preview(safeScope, tenantId)).build();
     }
 
     @GET @Path("/runs/{id}")
     public Response get(@Context HttpHeaders headers, @PathParam("id") long id) {
         hmac.verify(headers, "GET", BASE + "/runs/" + id, null, 0, null);
-        List<?> rows = entityManager.createNativeQuery("SELECT id,toolchain_id,scope,scope_tenant,status,cursor,scope_max_version_id,total,checked,invalid_count,started_at,finished_at,error,triggered_by FROM policy_revalidation_run WHERE id=:id")
+        List<?> rows = entityManager.createNativeQuery("SELECT id,toolchain_id,scope,scope_tenant,status,cursor,scope_max_version_id,total,checked,invalid_count,started_at,finished_at,error,triggered_by,mode FROM policy_revalidation_run WHERE id=:id")
             .setParameter("id", id).getResultList();
         if (rows.isEmpty()) throw error(404, "run_not_found");
         Object[] r = (Object[]) rows.getFirst();
@@ -71,6 +83,7 @@ public class RevalidationAdminResource {
         result.put("finishedAt", r[11]);
         result.put("error", r[12]);
         result.put("triggeredBy", r[13]);
+        result.put("mode", r[14]);
         return Response.ok(result).build();
     }
 
@@ -80,12 +93,13 @@ public class RevalidationAdminResource {
         hmac.verify(headers, "GET", BASE + "/invalid", null, 0, null);
         int safePage = Math.max(0, page == null ? 0 : page);
         int safeSize = Math.min(200, Math.max(1, size == null ? 50 : size));
-        List<?> rows = entityManager.createNativeQuery("SELECT version_id,toolchain_id,diagnostics,checked_at FROM policy_version_validation WHERE status='invalid' AND (CAST(:toolchain AS text) IS NULL OR toolchain_id=:toolchain) ORDER BY checked_at DESC,version_id LIMIT :limit OFFSET :offset")
+        List<?> rows = entityManager.createNativeQuery("SELECT version_id,toolchain_id,diagnostics,checked_at,advisory FROM policy_version_validation WHERE status='invalid' AND (CAST(:toolchain AS text) IS NULL OR toolchain_id=:toolchain) ORDER BY checked_at DESC,version_id LIMIT :limit OFFSET :offset")
             .setParameter("toolchain", toolchainId).setParameter("limit", safeSize).setParameter("offset", safePage * safeSize).getResultList();
         List<Map<String, Object>> items = rows.stream().map(row -> {
             Object[] values = (Object[]) row;
             return Map.<String, Object>of("versionId", values[0], "toolchainId", values[1],
-                "diagnostics", values[2] == null ? "[]" : values[2].toString(), "checkedAt", values[3]);
+                "diagnostics", values[2] == null ? "[]" : values[2].toString(), "checkedAt", values[3],
+                "advisory", Boolean.TRUE.equals(values[4]));
         }).toList();
         return Response.ok(Map.of("page", safePage, "size", safeSize, "items", items)).build();
     }
@@ -94,5 +108,5 @@ public class RevalidationAdminResource {
         return new WebApplicationException(Response.status(status).entity(Map.of("error", code)).build());
     }
 
-    public record RunRequest(String scope, String tenantId, String requestedBy) {}
+    public record RunRequest(String scope, String tenantId, String requestedBy, String mode) {}
 }

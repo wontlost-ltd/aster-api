@@ -34,7 +34,7 @@ public class PolicyExecutionGate {
             CompilationResult checked = compiler.typecheckVersion(version);
             boolean valid = ValidationRepository.isValid(checked);
             var diagnostics = ValidationRepository.diagnosticsOf(checked);
-            validations.insertIfAbsent(versionId, toolchain, valid ? "valid" : "invalid", diagnostics, null);
+            validations.insertIfAbsent(versionId, toolchain, valid ? "valid" : "invalid", diagnostics, null, false);
             return decide(valid ? "valid" : "invalid", diagnostics, key, toolchain, "sync-validated");
         } catch (Exception e) {
             LOG.errorf(e, "策略版本验证存储失败: versionId=%d", versionId);
