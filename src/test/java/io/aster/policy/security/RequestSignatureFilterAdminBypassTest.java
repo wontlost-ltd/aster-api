@@ -26,4 +26,15 @@ class RequestSignatureFilterAdminBypassTest {
         assertThat(result).isNotNull();
         verify(context, never()).getEntityStream();
     }
+
+    @Test
+    void revalidationAdminPathsUseResourceHmacInsteadOfGlobalSignature() {
+        RequestSignatureFilter filter = new RequestSignatureFilter();
+        ContainerRequestContext context = mock(ContainerRequestContext.class);
+        UriInfo uriInfo = mock(UriInfo.class);
+        when(context.getUriInfo()).thenReturn(uriInfo);
+        when(uriInfo.getPath()).thenReturn("/api/v1/admin/revalidation/invalid");
+        assertThat(filter.filter(context)).isNotNull();
+        verify(context, never()).getEntityStream();
+    }
 }
