@@ -32,15 +32,28 @@ class RevalidationAdminResourceTest {
     }
 
     @Test void validSignatureCreatesRunAndRoleHeaderDoesNotReplaceSignature() {
-        when(runs.enqueue("all", null)).thenReturn(Optional.of(41L));
+        when(runs.enqueue("all", null, "admin")).thenReturn(Optional.of(41L));
         Response response = resource.create(headers, "{\"scope\":\"all\"}");
         assertThat(response.getStatus()).isEqualTo(202);
         verify(hmac).verify(eq(headers), eq("POST"), eq("/api/v1/admin/revalidation/runs"),
             eq("application/json"), anyLong(), anyString());
     }
 
+    @Test void requestedByIsRecordedAsAdminActor() {
+        when(runs.enqueue("all", null, "admin:user-7")).thenReturn(Optional.of(42L));
+        assertThat(resource.create(headers, "{\"scope\":\"all\",\"requestedBy\":\"user-7\"}").getStatus()).isEqualTo(202);
+        verify(runs).enqueue("all", null, "admin:user-7");
+    }
+
+    @Test void malformedRequestedByIsRejected() {
+        assertThatThrownBy(() -> resource.create(headers, "{\"scope\":\"all\",\"requestedBy\":\"u 7;drop\"}"))
+            .isInstanceOf(WebApplicationException.class)
+            .extracting(e -> ((WebApplicationException) e).getResponse().getStatus()).isEqualTo(400);
+        verifyNoInteractions(runs);
+    }
+
     @Test void activeRunReturnsConflict() {
-        when(runs.enqueue("all", null)).thenReturn(Optional.empty());
+        when(runs.enqueue("all", null, "admin")).thenReturn(Optional.empty());
         assertThat(resource.create(headers, "{\"scope\":\"all\"}").getStatus()).isEqualTo(409);
     }
 
@@ -49,9 +62,10 @@ class RevalidationAdminResourceTest {
         when(resource.entityManager.createNativeQuery(anyString())).thenReturn(query);
         when(query.setParameter("id", 41L)).thenReturn(query);
         when(query.getResultList()).thenReturn(List.<Object>of((Object) new Object[]{41L, "tc", "all", null, "done",
-            12L, 12L, 12, 12, 1, null, null, null}));
+            12L, 12L, 12, 12, 1, null, null, null, "admin:user-7"}));
         Response response = resource.get(headers, 41L);
         assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(((java.util.Map<?, ?>) response.getEntity()).get("triggeredBy")).isEqualTo("admin:user-7");
         verify(hmac).verify(eq(headers), eq("GET"), eq("/api/v1/admin/revalidation/runs/41"), isNull(), eq(0L), isNull());
     }
 

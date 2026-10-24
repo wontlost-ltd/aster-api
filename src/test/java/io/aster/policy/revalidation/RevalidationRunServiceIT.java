@@ -20,9 +20,22 @@ class RevalidationRunServiceIT {
         String toolchain = toolchains.currentToolchainId();
         entityManager.createNativeQuery("DELETE FROM policy_revalidation_run WHERE toolchain_id=:tc")
             .setParameter("tc", toolchain).executeUpdate();
-        runs.enqueue("all", null);
-        runs.enqueue("all", null);
+        runs.enqueue("all", null, "admin:user-7");
+        runs.enqueue("all", null, "admin:user-8");
         assertThat(count(toolchain)).isEqualTo(1L);
+        assertThat(entityManager.createNativeQuery("SELECT triggered_by FROM policy_revalidation_run WHERE toolchain_id=:tc")
+            .setParameter("tc", toolchain).getSingleResult()).isEqualTo("admin:user-7");
+    }
+
+    @Test
+    @Transactional
+    void startupEnqueueRecordsToolchainChangeAsTrigger() {
+        String toolchain = toolchains.currentToolchainId();
+        entityManager.createNativeQuery("DELETE FROM policy_revalidation_run WHERE toolchain_id=:tc")
+            .setParameter("tc", toolchain).executeUpdate();
+        assertThat(runs.enqueueIfToolchainChanged()).isPresent();
+        assertThat(entityManager.createNativeQuery("SELECT triggered_by FROM policy_revalidation_run WHERE toolchain_id=:tc")
+            .setParameter("tc", toolchain).getSingleResult()).isEqualTo(RevalidationRunService.STARTUP_TRIGGER);
     }
 
     private long count(String toolchain) {

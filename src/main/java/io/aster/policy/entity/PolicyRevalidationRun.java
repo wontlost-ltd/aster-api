@@ -26,4 +26,6 @@ public class PolicyRevalidationRun extends PanacheEntityBase {
     @Column(name = "started_at") public Instant startedAt;
     @Column(name = "finished_at") public Instant finishedAt;
     @Column(columnDefinition = "text") public String error;
+    /** 发起者：admin:<cloud 用户 id> 或 startup:toolchain-change；列上线前的历史任务为 null。 */
+    @Column(name = "triggered_by") public String triggeredBy;
 }
