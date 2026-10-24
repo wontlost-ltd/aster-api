@@ -1,6 +1,6 @@
 # ADR 0050：不停机的增量数据重建与更新（替代整库 DROP/CREATE）
 
-- 状态：**ACCEPTED**（2026-10-24 用户定稿；rev 1 经 Codex 审查 66 分/退回，rev 2 逐条回应，rev 3 并入 aster-cloud#540 的部署顺序后续任务，rev 4 回应 Codex 对 rev 3 的复审 79 分/退回：会话撤销路径、唯一 Worker 发布路径、门禁缓存与 run 原子性、safeColumnRead 边界、治理元数据解析契约、实施顺序）
+- 状态：**ACCEPTED**（2026-10-24 用户定稿；rev 1 经 Codex 审查 66 分/退回，rev 2 逐条回应，rev 3 并入 aster-cloud#540 的部署顺序后续任务，rev 4 回应 Codex 对 rev 3 的复审 79 分/退回：会话撤销路径、唯一 Worker 发布路径、门禁缓存与 run 原子性、safeColumnRead 边界、治理元数据解析契约、实施顺序；rev 5（2026-10-24）按已上线实现修正 §2.1.4 的 ai_workspace 自检形态，并记录 Task 1 复用 CI 既有迁移等待的设计修订）
 - 背景事件：2026-10-24 为启用 Java TypeChecker 强制模式，生产 `aster_api` 与 `aster_cloud` 两库整体 DROP/CREATE 重建
   （见 wontlost-ltd/aster-api#374、wontlost-ltd/aster-cloud#538、`prod-e2e-20261023/findings.md`）
 - 第二个背景事件：2026-10-23 22:17Z–22:35Z，aster-cloud#539（新增 `User.aiWorkspaceEnabled` 列）合入后 Workers 先于 k3s 迁移 Job 上线，
@@ -93,9 +93,11 @@
    - **跳过不再静默**：回调结束时执行一次自检查询（schema owner、`pg_tables`/`pg_sequences`/`pg_views` owner、审计表 ACL、
      业务表 ACL、默认权限），任一不符 → `RAISE EXCEPTION`，Flyway 失败，Pod 不就绪。角色不存在（本地/CI）时整段跳过并 `NOTICE`，
      由 `%prod` 配置项 `aster.db.owner-check=strict` 决定是否允许跳过。
-4. **`ai_workspace` schema 同样进代码**：aster-ai-workspace 的 `schema-aiw.sql`（每次启动执行）追加 `DO` 块：当前角色是 schema owner
-   时执行 `ALTER DEFAULT PRIVILEGES IN SCHEMA ai_workspace ...`，否则 `RAISE EXCEPTION`（生产）/`NOTICE`（本地，按 profile）。
-   生产 `ai_workspace` 当前 owner 已是 `aster_ai_user`（2026-10-24 重建时 `CREATE SCHEMA ... AUTHORIZATION aster_ai_user`）。
+4. **`ai_workspace` schema 同样进代码**（rev 5 按实现修正）：aster-ai-workspace 以启动期 Java 自检实现（`SchemaOwnerCheck`，ApplicationRunner）：
+   `ai_workspace` schema 与其中全部表的 owner 必须是当前连接角色或其所属组角色（`pg_has_role`），`aiw.db.owner-check` = off / lenient（默认，
+   非 PostgreSQL 自动跳过）/ strict（生产，不符即启动失败并点名对象）。不再在 `schema-aiw.sql` 放 `DO` 块：Spring sql-init 按分号切分
+   会切坏块体，且单一 owner 角色对自建表天然拥有全部权限，默认权限授予是空操作。生产 `ai_workspace` owner 为 `aster_ai_user`，
+   `AIW_DB_OWNER_CHECK=strict` 已于 2026-10-24 上线并自检通过。
 5. **治理测试加码，用结构化元数据而非正则**（rev 2 回应 Codex 改进项 6）：
    - 含 `DROP TABLE`/`DROP COLUMN` 的迁移文件**第一行**必须是 `-- aster-migration: {"contractOf":"Vx.y.z","objects":["t.c"]}`；
      解析契约（测试级）：取第一行，匹配 `^-- aster-migration: (\{.*\})$`，用 Jackson 解析为固定 record（未知字段即失败）；`contractOf` 必须存在于
@@ -111,7 +113,7 @@
      PR changed-files 判定）：若改动集同时包含 `drizzle/**/*.sql` 与任一 `src/**` 文件（白名单例外：`src/db/schema.ts`、`src/__tests__/**`、`drizzle/meta/**`），
      且 PR 无 `migration-and-code` 标签 → 失败并提示拆分；带标签时要求 PR 描述含 `## 迁移窗口容错` 小节，否则同样失败。规则故意保守（宁可误报要求拆分），
      验收用矩阵覆盖：仅迁移、仅代码、迁移+schema.ts、迁移+测试、迁移+业务代码无标签、有标签无说明、有标签有说明。
-   - **唯一 Worker 发布路径**：关闭 Cloudflare Workers Builds 对 aster-cloud `main` 的自动构建/部署（Cloudflare 控制台操作，列为上线前置，由运维执行并在
+   - **唯一 Worker 发布路径**（rev 5 补记：已于 2026-10-24 实施——`deploy-worker.yml` 改为 CI 成功后的 `workflow_run` 触发，复用 CI `image-pin-pr` job 既有的迁移等待，不另写轮询；Workers Builds 已关闭，证据见 k3s `docs/runbooks/release-evidence.md`）：关闭 Cloudflare Workers Builds 对 aster-cloud `main` 的自动构建/部署（Cloudflare 控制台操作，列为上线前置，由运维执行并在
      k3s 手册记录日期）；生产部署只走仓内已有的 `.github/workflows/deploy-worker.yml`（`pnpm deploy` → opennextjs build → `wrangler deploy`），
      设 `vars.ENABLE_CI_WORKER_DEPLOY=true` 启用。该 workflow 在部署前新增门禁步骤：若本次 main 推送含 `drizzle/**/*.sql`，则轮询 k3s
      `aster-cloud-migrate` Job（或 ArgoCD `operationState`）直至成功，超时 20 分钟则失败且**不部署**；不含迁移时直接部署。
