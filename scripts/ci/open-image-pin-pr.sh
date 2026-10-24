@@ -135,10 +135,27 @@ wait_for_verification() {
 }
 
 # 验签通过后按本 run 锁定的 head 直接合并；head 被他人改动时 --match-head-commit 拒绝合并。
+MERGE_RETRY_ATTEMPTS="${MERGE_RETRY_ATTEMPTS:-8}"
+MERGE_RETRY_SECONDS="${MERGE_RETRY_SECONDS:-15}"
+# ★verify-image-pin 的 check-run 已 completed success，GitHub 规则集对 head 的 required-status 评估却可能滞后几秒到几十秒，
+#   此时 `gh pr merge` 报 "Required status check \"verify-image-pin\" is expected"（aster-cloud#546）。
+#   只对这一种可识别的瞬态错误重试；其它错误原样失败。
 merge_when_verified() {
-  local pr="$1" sha="$2"
+  local pr="$1" sha="$2" attempt err_file
   wait_for_verification "$sha" || return 1
-  gh pr merge "$pr" -R "$K3S_REPO" --squash --delete-branch --match-head-commit "$sha"
+  err_file="$(mktemp)"
+  for (( attempt = 1; attempt <= MERGE_RETRY_ATTEMPTS; attempt++ )); do
+    if gh pr merge "$pr" -R "$K3S_REPO" --squash --delete-branch --match-head-commit "$sha" 2>"$err_file"; then
+      rm -f "$err_file"; return 0
+    fi
+    if ! grep -qiE 'status check .* is expected' "$err_file"; then
+      cat "$err_file" >&2; rm -f "$err_file"; return 1
+    fi
+    echo "::notice::规则集尚未登记 ${VERIFY_CHECK_NAME} 结果（第 ${attempt}/${MERGE_RETRY_ATTEMPTS} 次），${MERGE_RETRY_SECONDS}s 后重试合并"
+    sleep "$MERGE_RETRY_SECONDS"
+  done
+  echo "::error::合并重试 ${MERGE_RETRY_ATTEMPTS} 次后规则集仍未登记 ${VERIFY_CHECK_NAME}：$(tr '\n' ' ' < "$err_file")" >&2
+  rm -f "$err_file"; return 1
 }
 
 

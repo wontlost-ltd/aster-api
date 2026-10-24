@@ -64,7 +64,14 @@ case "$1 $2" in
   "pr create") echo 700 > "$state/open_pr"; echo "https://example.test/pull/700" ;;
   "pr edit")   : ;;
   "pr view")   git --git-dir="$FAKE_BARE" rev-parse "refs/heads/$FAKE_BRANCH" ;;
-  "pr merge")  : ;;
+  "pr merge")
+    # 可选注入：前 N 次合并模拟规则集尚未登记 required check（aster-cloud#546）
+    [[ -f "$state/merge_fail_times" ]] || echo "${MERGE_FAIL_TIMES:-0}" > "$state/merge_fail_times"
+    if (( $(cat "$state/merge_fail_times") > 0 )); then
+      echo $(( $(cat "$state/merge_fail_times") - 1 )) > "$state/merge_fail_times"
+      echo 'GraphQL: Required status check "verify-image-pin" is expected. (mergePullRequest)' >&2; exit 1
+    fi
+    : ;;
   api\ *)
     jq_expr=""; while [[ $# -gt 0 ]]; do [[ "$1" == "--jq" ]] && { jq_expr="$2"; break; }; shift; done
     printf '{"check_runs":[{"name":"verify-image-pin","app":{"id":4253193},"status":"completed","conclusion":"%s","started_at":"2026-10-12T10:00:00Z"}]}' \
@@ -156,6 +163,12 @@ make_k3s "$NEW_DIGEST" cafe 42; run_script "" success
 [[ "$(cat "$FAKE_STATE/rc")" == 0 ]] && pass "返回 0" || fail "返回 $(cat "$FAKE_STATE/rc")"
 grep -q "image-lock 已最新且无 open PR" "$FAKE_STATE/stdout" && pass "走的是无改动路径" || fail "未走无改动路径"
 [[ -z "$(line_of '^pr merge')" && -z "$(line_of 'check-runs')" ]] && pass "无多余调用" || fail "不应合并：$(calls | tr '\n' '|')"
+
+echo "=== G. 验签已过但规则集滞后：首次合并报 is expected，重试后合并成功 ==="
+make_k3s "$OLD_DIGEST"
+MERGE_FAIL_TIMES=2 MERGE_RETRY_SECONDS=0 run_script "" success && pass "脚本成功" || fail "脚本失败"
+[[ "$(grep -c '^pr merge' "$FAKE_STATE/calls.log")" == "3" ]] && pass "合并重试了两次后成功" \
+  || fail "合并调用次数异常：$(grep -c '^pr merge' "$FAKE_STATE/calls.log")"
 
 echo "=== E. 有改动、验签失败：不合并，脚本失败 ==="
 make_k3s "$OLD_DIGEST"; run_script "" failure
