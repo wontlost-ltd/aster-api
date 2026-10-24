@@ -5,6 +5,7 @@ DELETE /api/v1/admin/lexicons/{fileName}
 DELETE /api/v1/admin/messages/{locale}
 DELETE /api/v1/policies/cache
 GET /api/v1/admin/byok-allowlist
+GET /api/v1/admin/policy-versions/source-hashes
 GET /api/v1/admin/revalidation/invalid
 GET /api/v1/admin/revalidation/runs/{id}
 GET /api/v1/audit

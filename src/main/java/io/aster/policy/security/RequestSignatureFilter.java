@@ -44,7 +44,8 @@ public class RequestSignatureFilter {
                 || isMessagesReadPath(path)
                 || isLexiconAdminPath(path)
                 || isMessagesAdminPath(path)
-                || isByokAllowlistAdminPath(path)) {
+                || isByokAllowlistAdminPath(path)
+                || isPolicyVersionSourceHashAdminPath(path)) {
             return Uni.createFrom().voidItem();
         }
 
@@ -133,5 +134,11 @@ public class RequestSignatureFilter {
      */
     private static boolean isByokAllowlistAdminPath(String path) {
         return "/api/v1/admin/byok-allowlist".equals(path) || "api/v1/admin/byok-allowlist".equals(path);
+    }
+
+    /** 策略哈希 admin 读端点由资源内 AdminHmacVerifier 验签。 */
+    private static boolean isPolicyVersionSourceHashAdminPath(String path) {
+        return "/api/v1/admin/policy-versions/source-hashes".equals(path)
+            || "api/v1/admin/policy-versions/source-hashes".equals(path);
     }
 }

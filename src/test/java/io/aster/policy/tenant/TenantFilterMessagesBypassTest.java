@@ -121,6 +121,15 @@ class TenantFilterMessagesBypassTest {
     }
 
     @Test
+    @DisplayName("admin source-hashes 跳过 tenant（资源内 HMAC）→ 不要求 X-Tenant-Id")
+    void sourceHashAdminPathBypassesTenant() throws Exception {
+        TenantFilter filter = newFilter();
+        ContainerRequestContext ctx = newCtx("GET", "/api/v1/admin/policy-versions/source-hashes", Map.of());
+        filter.filter(ctx);
+        verify(ctx, never()).abortWith(any());
+    }
+
+    @Test
     @DisplayName("兄弟路径不被误豁免：裸 /api/v1/messages（无 locale 段）仍要求 X-Tenant-Id")
     void bareMessagesPathNotExempt() throws Exception {
         // matchesMessagesPath 只匹配 `/api/v1/messages/` 前缀（必带 locale 段），
