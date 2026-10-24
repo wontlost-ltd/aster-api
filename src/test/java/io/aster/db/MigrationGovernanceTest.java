@@ -50,6 +50,20 @@ class MigrationGovernanceTest {
     // V<version>__<description>.sql —— 版本段允许语义化点分（如 6.10.0）
     private static final Pattern MIGRATION_NAME =
         Pattern.compile("^V(\\d+(?:\\.\\d+)*)__([a-zA-Z0-9_]+)\\.sql$");
+    // 历史迁移被 checksum golden 锁定，豁免仅适用于这些既有文件，新迁移不得加入。
+    private static final Set<String> HISTORICAL_DROP_EXEMPTIONS = Set.of(
+        "V6.1.0__add_dynamic_policy_fields.sql",
+        "V6.2.0__create_policy_catalog.sql",
+        "V6.3.0__create_policy_artifacts.sql");
+    // 历史函数/触发器使用动态 EXECUTE，golden 锁定后不可改写。
+    private static final Set<String> HISTORICAL_EXECUTE_EXEMPTIONS = Set.of(
+        "V6.20.3__replay_batch_segmented_execution.sql",
+        "V6.20.4__replay_batch_fail_closed_all_paths.sql",
+        "V6.20.5__replay_batch_deferrable_fail_closed.sql",
+        "V6.22.0__audit_logs_append_only.sql",
+        "V6.22.1__audit_logs_revoke_write.sql",
+        "V6.23.0__audit_chain_anchor.sql",
+        "V6.24.0__audit_owner_separation.sql");
 
     @Test
     @DisplayName("migration 命名规范：V<version>__<desc>.sql")
@@ -64,6 +78,78 @@ class MigrationGovernanceTest {
         assertThat(violations)
             .as("不符合 V<version>__<desc>.sql 命名的 migration（会让 Flyway 解析失败或乱序）")
             .isEmpty();
+    }
+
+    @Test
+    @DisplayName("回调文件名必须匹配 afterMigrate__*.sql")
+    void callbackNamingConvention() throws IOException {
+        try (Stream<Path> files = Files.list(MIGRATION_DIR)) {
+            assertThat(files.map(p -> p.getFileName().toString())
+                .filter(n -> n.startsWith("afterMigrate") && !n.matches("afterMigrate__[^/]+\\.sql"))
+                .toList()).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("删除对象的迁移必须声明既有契约和对象清单")
+    void dropMigrationsCarryContractMetadata() throws IOException {
+        List<Path> files = migrationsInFlywayOrder();
+        for (Path file : files) {
+            String name = file.getFileName().toString();
+            Set<String> drops = DropDetector.detect(DropDetector.stripCommentsAndStrings(
+                Files.readString(file, StandardCharsets.UTF_8)));
+            if (drops.isEmpty() || HISTORICAL_DROP_EXEMPTIONS.contains(name)) continue;
+            List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+            MigrationMetadata metadata = lines.isEmpty() ? null : MigrationMetadata.parse(lines.get(0)).orElse(null);
+            assertThat(metadata).as("%s 首行必须包含迁移契约元数据", name).isNotNull();
+            assertThat(files.stream().map(p -> p.getFileName().toString()).filter(n ->
+                n.equals(metadata.contractOf()) &&
+                    MIGRATION_NAME.matcher(n).matches() &&
+                    compareVersions(versionOf(n), versionOf(name)) < 0).findAny())
+                .as("%s contractOf 必须指向较早的迁移", name).isPresent();
+            assertThat(new HashSet<>(metadata.objects())).isEqualTo(drops);
+        }
+    }
+
+    @Test
+    @DisplayName("迁移不得使用动态 EXECUTE，历史迁移使用固定豁免清单")
+    void migrationsMustNotUseExecute() throws IOException {
+        Pattern execute = Pattern.compile("\\bEXECUTE\\b", Pattern.CASE_INSENSITIVE);
+        for (Path file : versionedMigrations()) {
+            String name = file.getFileName().toString();
+            boolean found = execute.matcher(DropDetector.stripCommentsAndStrings(
+                Files.readString(file, StandardCharsets.UTF_8))).find();
+            if (HISTORICAL_EXECUTE_EXEMPTIONS.contains(name)) continue;
+            assertThat(found).as("%s 不得使用动态 EXECUTE", name).isFalse();
+        }
+    }
+
+    @Test
+    @DisplayName("迁移不得删除数据库或 public schema")
+    void migrationsMustNotDropDatabaseOrPublicSchema() throws IOException {
+        Pattern forbidden = Pattern.compile("\\bDROP\\s+(?:DATABASE|SCHEMA\\s+(?:IF\\s+EXISTS\\s+)?public)\\b",
+            Pattern.CASE_INSENSITIVE);
+        for (Path file : versionedMigrations()) {
+            assertThat(forbidden.matcher(DropDetector.stripCommentsAndStrings(
+                Files.readString(file, StandardCharsets.UTF_8))).find())
+                .as("%s 不得删除数据库或 public schema", file.getFileName()).isFalse();
+        }
+    }
+
+    private static String versionOf(String fileName) {
+        Matcher matcher = MIGRATION_NAME.matcher(fileName);
+        return matcher.matches() ? matcher.group(1) : "";
+    }
+
+    private static int compareVersions(String left, String right) {
+        String[] a = left.split("\\.");
+        String[] b = right.split("\\.");
+        for (int i = 0; i < Math.max(a.length, b.length); i++) {
+            int x = i < a.length ? Integer.parseInt(a[i]) : 0;
+            int y = i < b.length ? Integer.parseInt(b[i]) : 0;
+            if (x != y) return Integer.compare(x, y);
+        }
+        return 0;
     }
 
     @Test

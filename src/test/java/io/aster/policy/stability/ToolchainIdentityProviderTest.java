@@ -55,4 +55,22 @@ class ToolchainIdentityProviderTest {
             .isNotEqualTo("dev")
             .matches("\\d+\\.\\d+\\.\\d+.*"); // 语义版本形态，如 1.0.14
     }
+
+    @Test
+    void strictProductionRejectsDevelopmentIdentityWithSegmentNames() {
+        ToolchainIdentityGuard guard = new ToolchainIdentityGuard();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+            guard.check("abi=V1;core=dev;validator=1.0;build=dev", "prod", true))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("core")
+            .hasMessageContaining("build");
+    }
+
+    @Test
+    void lenientIdentityDoesNotThrow() {
+        ToolchainIdentityGuard guard = new ToolchainIdentityGuard();
+        org.assertj.core.api.Assertions.assertThatCode(() ->
+            guard.check("abi=V1;core=dev;validator=1.0;build=dev", "test", false))
+            .doesNotThrowAnyException();
+    }
 }
