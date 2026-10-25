@@ -58,7 +58,8 @@ class EvaluateSourceSimulateContractTest {
         // ★原实现只 contains 一段含硬编码缩进的字面量——只证明「存在一处被 gate 的
         //   调用」，挡不住别处还有未 gate 的同名调用（审计实证：在其后无条件再调
         //   一次 enforceApiQuota，测试照样全绿）。改为遍历每一处 + 括号深度判定。
-        assertEveryCallIsGated(evaluateSourceBody(source()), "enforceApiQuota(");
+        // #393：配额闸门入口为 quotaGate（内含 enforceApiQuota + 异步每秒限流）
+        assertEveryCallIsGated(evaluateSourceBody(source()), "quotaGate(");
     }
 
     @Test

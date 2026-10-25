@@ -92,6 +92,24 @@ public class PlanGateService {
         }
     }
 
+    /**
+     * 非阻塞读取已确认的 plan（event-loop 安全）：只读缓存，未命中时触发后台预热并返回空。
+     *
+     * <p>与 {@link #lookupPlan} 的区别：后者未命中时返回 {@code PlanInfo.failOpen()}（pro），
+     * 调用方无法区分「真的是 pro」与「还不知道」。按 plan 分档的每秒限流必须区分两者，
+     * 否则冷启动时 enterprise 会被按 pro 限到 10 RPS。
+     */
+    public java.util.Optional<PlanInfo> peekPlan(String tenantId) {
+        if (!config.enabled() || tenantId == null || tenantId.isBlank() || cache == null) {
+            return java.util.Optional.empty();
+        }
+        PlanInfo cached = cache.getIfPresent(tenantId);
+        if (cached == null) {
+            triggerAsyncLookup(tenantId);
+        }
+        return java.util.Optional.ofNullable(cached);
+    }
+
     /** 查询某租户的 plan 信息（带 cache，故障 fail-open） */
     public PlanInfo lookupPlan(String tenantId) {
         if (!config.enabled()) {

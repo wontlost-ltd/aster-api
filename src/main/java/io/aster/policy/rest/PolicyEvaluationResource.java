@@ -234,7 +234,11 @@ public class PolicyEvaluationResource {
     public Uni<EvaluationResponse> evaluate(@Valid EvaluationRequest request) {
         // ADR 0041 §3：agent 在执行前校验，非法即 400——不执行、不计费、不落链
         final AgentIdentity agent = validatedAgent(request.agent());
-        enforceApiQuota("/api/v1/policies/evaluate");
+        return quotaGate("/api/v1/policies/evaluate").chain(() -> evaluateAdmitted(request, agent));
+    }
+
+    /** {@link #evaluate} 通过配额与每秒限流之后的主体。 */
+    private Uni<EvaluationResponse> evaluateAdmitted(EvaluationRequest request, AgentIdentity agent) {
         // 跨线程预捕获，必须在进入 Uni 之前——理由见 RequestIdentity。
         RequestIdentity identity = captureIdentity();
         String tenantId = identity.tenantId();
@@ -336,7 +340,11 @@ public class PolicyEvaluationResource {
     public Uni<EvaluationResponse> evaluateJson(@Valid JsonPolicyRequest request) {
         // ADR 0041 §3：agent 在执行前校验，非法即 400——不执行、不计费、不落链
         final AgentIdentity agent = validatedAgent(request.agent());
-        enforceApiQuota("/api/v1/policies/evaluate-json");
+        return quotaGate("/api/v1/policies/evaluate-json").chain(() -> evaluateJsonAdmitted(request, agent));
+    }
+
+    /** {@link #evaluateJson} 通过配额与每秒限流之后的主体。 */
+    private Uni<EvaluationResponse> evaluateJsonAdmitted(JsonPolicyRequest request, AgentIdentity agent) {
         // 跨线程预捕获，必须在进入 Uni 之前——理由见 RequestIdentity。
         RequestIdentity identity = captureIdentity();
         String tenantId = identity.tenantId();
@@ -521,9 +529,17 @@ public class PolicyEvaluationResource {
             // 会让 simulate 悄悄失效并开始扣真实配额，排查时零线索。
             LOG.debugf("simulate=true 被忽略：调用方未通过 HMAC 验证，按真实执行计费");
         }
+        Uni<Void> gate = Uni.createFrom().voidItem();
         if (!effectiveSimulate) {
-            enforceApiQuota("/api/v1/policies/evaluate-source");
+            gate = quotaGate("/api/v1/policies/evaluate-source");
         }
+        // 并发许可必须在限流裁决之后再抢：被 429 的请求不占许可，也就不存在许可泄漏
+        return gate.chain(() -> evaluateSourceAdmitted(request, trace, replayCapture, agent, effectiveSimulate));
+    }
+
+    /** {@link #evaluateSource} 通过配额与每秒限流之后的主体（含并发许可闸门）。 */
+    private Uni<EvaluationResponse> evaluateSourceAdmitted(SourcePolicyRequest request, boolean trace,
+            boolean replayCapture, AgentIdentity agent, boolean effectiveSimulate) {
         // Bounded concurrency gate. Acquire before doing any work; if
         // the wait window expires, return 503 with Retry-After so the
         // caller (BFF / playground) backs off instead of piling on.
@@ -1136,7 +1152,11 @@ public class PolicyEvaluationResource {
         content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
     public Uni<BatchEvaluationResponse> evaluateBatch(@Valid BatchEvaluationRequest request) {
         // batch 按"批中每条都算一次调用"扣配额：在 quota 检查之外，结果落地时按条 recordApiCall
-        enforceApiQuota("/api/v1/policies/evaluate/batch");
+        return quotaGate("/api/v1/policies/evaluate/batch").chain(() -> evaluateBatchAdmitted(request));
+    }
+
+    /** {@link #evaluateBatch} 通过配额与每秒限流之后的主体。 */
+    private Uni<BatchEvaluationResponse> evaluateBatchAdmitted(BatchEvaluationRequest request) {
         // 跨线程预捕获，必须在进入 Uni 之前——理由见 RequestIdentity。
         RequestIdentity identity = captureIdentity();
         String tenantId = identity.tenantId();
@@ -1459,7 +1479,66 @@ public class PolicyEvaluationResource {
     }
 
     /**
-     * 同步检查 API 配额；命中即抛 WebApplicationException
+     * 配额闸门：月度配额同步裁决（纯内存，命中即抛 403/429），每秒限流以 Uni 异步裁决（#393）。
+     *
+     * <p>调用方把端点主体 chain 在返回值之后：限流被拒时主体（含 evaluate-source 的并发许可）
+     * 根本不会执行。续体由 {@link ApiQuotaGuard#checkRateAsync} 切回请求的 Vert.x 上下文。
+     * trial 旁路与 enforceApiQuota 同口径：旁路请求既不查配额也不限流。
+     */
+    private Uni<Void> quotaGate(String endpointPath) {
+        enforceApiQuota(endpointPath);
+        String apiKeyId = apiKeyIdFromContext();
+        if (apiKeyId == null || apiKeyId.isBlank() || isGuardedTrial(endpointPath, tenantId())) {
+            return Uni.createFrom().voidItem();
+        }
+        // 响应对象在请求线程上取好，续体里只写头，不再经由请求作用域代理
+        io.vertx.core.http.HttpServerResponse response =
+            routingContext == null ? null : routingContext.response();
+        return apiQuotaGuard.checkRateAsync(tenantId(), quotaOwnerId(), apiKeyId)
+            .invoke(rate -> writeRateHeaders(response, rate))
+            .invoke(rate -> {
+                if (!rate.allowed()) {
+                    throw rateLimitExceeded(rate);
+                }
+            })
+            .replaceWithVoid();
+    }
+
+    private static void writeRateHeaders(io.vertx.core.http.HttpServerResponse response, ApiQuotaGuard.RateCheck rate) {
+        if (response == null || rate.limit() <= 0 && rate.allowed()) {
+            return;
+        }
+        response.putHeader("X-RateLimit-Limit", String.valueOf(rate.limit()));
+        response.putHeader("X-RateLimit-Remaining", String.valueOf(Math.max(0, rate.limit() - rate.used())));
+    }
+
+    private static WebApplicationException rateLimitExceeded(ApiQuotaGuard.RateCheck rate) {
+        return new WebApplicationException(
+            jakarta.ws.rs.core.Response.status(429)
+                .header("Retry-After", "1")
+                .entity(Map.of(
+                    "error", "rate_limit_exceeded",
+                    "message", "Per-API-key per-second 限流：超过 " + rate.limit() + " RPS",
+                    "rps_limit", rate.limit(),
+                    "rps_used", rate.used()
+                ))
+                .type(MediaType.APPLICATION_JSON)
+                .build()
+        );
+    }
+
+    /** trial 旁路三重校验：path == TRIAL_PATH && guard 凭证 && tenantId == "trial"。 */
+    private boolean isGuardedTrial(String endpointPath, String tenantId) {
+        boolean guardedTrial = io.aster.policy.security.TrialBypassPredicate
+            .isGuardedTrialPath(
+                endpointPath,
+                jaxrsCtx == null ? null : (Boolean) jaxrsCtx.getProperty(
+                    io.aster.policy.security.TrialEndpointGuard.TRIAL_GUARD_PASSED_PROP));
+        return guardedTrial && "trial".equals(tenantId);
+    }
+
+    /**
+     * 同步检查 API 月度配额；命中即抛 WebApplicationException
      * 写入 X-Quota-Limit / Remaining / Reset / Warning 响应头（API-5）
      *
      * 已用 == 0 而 limit == 0 时仍会写 0/0 的响应头，给客户端清晰信号"plan 不开放"
@@ -1477,12 +1556,7 @@ public class PolicyEvaluationResource {
         // TrialEndpointGuard 已经做了成本控制（Origin + body cap + per-IP
         // limiter + concurrent semaphore），叠加 PlanGate 会把 "trial" 当成
         // 未签约租户 403。
-        boolean guardedTrial = io.aster.policy.security.TrialBypassPredicate
-            .isGuardedTrialPath(
-                endpointPath,
-                jaxrsCtx == null ? null : (Boolean) jaxrsCtx.getProperty(
-                    io.aster.policy.security.TrialEndpointGuard.TRIAL_GUARD_PASSED_PROP));
-        if (guardedTrial && "trial".equals(tenantId)) {
+        if (isGuardedTrial(endpointPath, tenantId)) {
             return new ApiQuotaGuard.GuardResult(
                 ApiQuotaGuard.Verdict.ALLOW, -1L, 0L, 0, null);
         }
@@ -1527,30 +1601,6 @@ public class PolicyEvaluationResource {
             default -> { /* ALLOW: 即使 soft warn 也继续 */ }
         }
 
-        // API-7: per-API-key per-second 限流（API key 命中 verifier 后生效）
-        String apiKeyId = apiKeyIdFromContext();
-        if (apiKeyId != null && !apiKeyId.isBlank()) {
-            ApiQuotaGuard.RateCheck rate = apiQuotaGuard.checkRate(tenantId, apiKeyId);
-            if (routingContext != null && routingContext.response() != null) {
-                routingContext.response().putHeader("X-RateLimit-Limit", String.valueOf(rate.limit()));
-                routingContext.response().putHeader("X-RateLimit-Remaining",
-                    String.valueOf(Math.max(0, rate.limit() - rate.used())));
-            }
-            if (!rate.allowed()) {
-                throw new WebApplicationException(
-                    jakarta.ws.rs.core.Response.status(429)
-                        .header("Retry-After", "1")
-                        .entity(Map.of(
-                            "error", "rate_limit_exceeded",
-                            "message", "Per-API-key per-second 限流：超过 " + rate.limit() + " RPS",
-                            "rps_limit", rate.limit(),
-                            "rps_used", rate.used()
-                        ))
-                        .type(MediaType.APPLICATION_JSON)
-                        .build()
-                );
-            }
-        }
         return result;
     }
 

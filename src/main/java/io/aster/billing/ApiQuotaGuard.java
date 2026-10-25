@@ -32,10 +32,17 @@ import java.util.concurrent.TimeUnit;
  *
  * 调用次数记录由 recordAsync(...) 异步走，不阻塞热路径。
  *
- * <p>线程模型（#393）：{@link #check} 与 {@link #checkRate} 在 Vert.x event-loop 上被同步调用，
- * 两者都只做内存裁决——配额视图由 {@link io.aster.billing.snapshot.LocalQuotaSnapshotService#peekOwner}
- * 异步从 Redis 加载，每秒限流由 {@link ApiKeyRateLimiter} 异步汇总集群计数，热路径没有任何
- * 网络等待，也就不需要把调用方改造成 Uni 链。
+ * <p>线程模型（#393）：
+ * <ul>
+ *   <li>{@link #check}（月度配额）在 Vert.x event-loop 上同步调用，只读进程内视图——视图由
+ *       {@link io.aster.billing.snapshot.LocalQuotaSnapshotService#peekOwner} 异步从 Redis 加载；</li>
+ *   <li>{@link #checkRateAsync}（每秒限流）返回 {@code Uni}，由调用方组合进请求链：裁决来自 Redis
+ *       原子 INCR 的回包，热路径不阻塞；{@link #checkRate} 是同一逻辑的同步版，仅供 worker 线程。</li>
+ * </ul>
+ *
+ * <p>200% 硬上限不是原子封顶：check 读用量与成功后的 INCR 分离，并发中的请求可能同时看到
+ * 「未超限」而全部放行，超出量以「判定时已在途的请求数」为上界，此后的 check 立即 429。
+ * 这与产品口径一致——100%~200% 本就是放行区间，硬上限防的是持续滥用而非单次并发尖峰。
  */
 @ApplicationScoped
 public class ApiQuotaGuard {
@@ -242,27 +249,82 @@ public class ApiQuotaGuard {
     }
 
     /**
-     * 同步检查 per-API-key per-second 限流（纯内存裁决，event-loop 安全）。
+     * 异步检查 per-API-key per-second 限流（event-loop 安全，调用方须组合进请求 Uni）。
      *
      * <p>#393 之前每个请求都把 cloud {@code /api/internal/api/rate-check} 的同步 HTTP 丢进
      * 4 线程池，再在 event-loop 上 {@code Future.get(1s)} 等结果：既阻塞 event-loop，又把
      * 每个 evaluate 绑上 ~100ms 出站 RTT。现由 {@link ApiKeyRateLimiter} 按同一算法在本服务
-     * Redis 上计数。plan 查询失败 fail-open（rate-check 是软控制，访问鉴权在 ApiKeyVerifierService）。
+     * Redis 上原子计数裁决。
+     *
+     * <p>plan 取值（不阻塞）：租户 plan 缓存 → 配额 owner 的本地快照 → 都未知则本次 fail-open
+     * （与旧实现「plan 查询失败即放行」一致，后台预热完成后下一次请求即按真实档位限流）。
+     * 不能拿 {@code lookupPlan} 的 fail-open 值（pro）去限流：那会把 enterprise 冷启动限成 10 RPS。
+     * Free 档不靠这里拦截——月度 {@link #check} 对 apiCallsLimit==0 直接 403。
+     */
+    public io.smallrye.mutiny.Uni<RateCheck> checkRateAsync(String tenantId, String quotaOwnerId, String apiKeyId) {
+        if (!config.enabled() || apiKeyId == null || apiKeyId.isBlank()) {
+            return io.smallrye.mutiny.Uni.createFrom().item(RateCheck.UNCHECKED);
+        }
+        String plan = knownPlan(tenantId, quotaOwnerId);
+        if (plan == null) {
+            return io.smallrye.mutiny.Uni.createFrom().item(RateCheck.UNCHECKED);
+        }
+        return resumeOnCaller(rateLimiter.acquire(apiKeyId, plan));
+    }
+
+    /**
+     * 让裁决结果回到调用方的 Vert.x（duplicated）上下文再向下游发射。
+     *
+     * <p>Redis 回包通常本就在该上下文，但超时分支由 Mutiny 的定时线程触发；若不切回，调用方
+     * 后续的 chain（读 routingContext / 请求作用域 bean、抢 evaluate-source 许可）会跑在
+     * 非请求线程上。assembly 时不在 Vert.x 上下文（单测 / worker）则原样返回。
+     */
+    static <T> io.smallrye.mutiny.Uni<T> resumeOnCaller(io.smallrye.mutiny.Uni<T> uni) {
+        io.vertx.core.Context caller = io.vertx.core.Vertx.currentContext();
+        if (caller == null) {
+            return uni;
+        }
+        return uni.emitOn(task -> {
+            if (io.vertx.core.Vertx.currentContext() == caller) {
+                task.run();
+            } else {
+                caller.runOnContext(ignored -> task.run());
+            }
+        });
+    }
+
+    /**
+     * 同步版每秒限流——<b>仅限 worker 线程</b>（如返回 {@code Response} 的 GuardDecisionResource）：
+     * worker 上 {@code lookupPlan} 可同步取到真实 plan，限流裁决本身带短超时与本地兜底，不会久等。
      */
     public RateCheck checkRate(String tenantId, String apiKeyId) {
         if (!config.enabled() || apiKeyId == null || apiKeyId.isBlank()) {
-            return new RateCheck(true, 0, 0);
+            return RateCheck.UNCHECKED;
         }
         String plan;
         try {
             plan = planGateService.lookupPlan(tenantId).plan();
         } catch (Exception e) {
-            return new RateCheck(true, 0, 0);
+            return RateCheck.UNCHECKED;
         }
-        return rateLimiter.tryAcquire(apiKeyId, plan);
+        return rateLimiter.acquire(apiKeyId, plan).await().atMost(java.time.Duration.ofSeconds(2));
     }
 
-    public record RateCheck(boolean allowed, int used, int limit) {}
+    /** 非阻塞取已确认的 plan：租户缓存优先，其次配额 owner 快照；都未知返回 null。 */
+    private String knownPlan(String tenantId, String quotaOwnerId) {
+        try {
+            return planGateService.peekPlan(tenantId).map(PlanInfo::plan)
+                .or(() -> snapshot.peekOwner(quotaOwnerId).map(q -> q.user().plan()))
+                .orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    public record RateCheck(boolean allowed, int used, int limit) {
+        /** 未参与限流（plan gate 关闭 / 无 key / plan 未知时 fail-open）。 */
+        public static final RateCheck UNCHECKED = new RateCheck(true, 0, 0);
+    }
 
     /**
      * 异步记录一次调用 — fire-and-forget，不阻塞业务路径

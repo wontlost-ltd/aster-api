@@ -50,7 +50,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * <ul>
  *   <li>{@link #peekOwner}：纯内存读取进程内配额视图；未加载时触发一次异步 MGET 并立即返回空；</li>
  *   <li>{@link #incrementCounter}：响应式 INCR，回包的全局计数同步回写进程内视图；</li>
- *   <li>{@link #incrementRateWindow}：响应式 INCR 每秒窗口计数，供 ApiKeyRateLimiter 汇总集群用量。</li>
+ *   <li>{@link #incrementRateWindow}：响应式 INCR 每秒窗口计数，回包即 ApiKeyRateLimiter 的集群裁决依据。</li>
  * </ul>
  * 其余阻塞方法（set / invalidate / getApiKey / reset）只允许在 worker 线程调用：
  * {@code @Blocking} 的推送端点、定时对账、verifyPool / precheckPool 均满足。
@@ -224,17 +224,21 @@ public class LocalQuotaSnapshotService {
     }
 
     /**
-     * 响应式 INCR 每秒限流窗口（event-loop 安全，惰性）。首个 INCR 顺带设置 TTL；
-     * 失败按 0 返回：限流降级为单副本本地窗口，而不是拒绝请求。
+     * 响应式 INCR 每秒限流窗口（event-loop 安全，惰性）。首个 INCR 顺带设置 TTL。
+     *
+     * <p>与计数不同，这里<b>不吞异常</b>：INCR 的回包就是集群裁决依据，故障必须让调用方
+     * （ApiKeyRateLimiter）明确知道并切到本地兜底窗口，而不是被一个伪造的 0 当成「集群空闲」。
      */
     public Uni<Long> incrementRateWindow(String apiKeyId, long epochSecond) {
-        if (!reactiveAvailable() || apiKeyId == null) return Uni.createFrom().item(0L);
+        if (!reactiveAvailable()) {
+            return Uni.createFrom().failure(new IllegalStateException("reactive redis unavailable"));
+        }
         String key = NS + "rl:" + apiKeyId + ":" + epochSecond;
         return Uni.createFrom().deferred(() -> reactive.value(String.class, Long.class).incr(key))
             .call(v -> v == 1L
                 ? reactive.key(String.class).expire(key, RATE_WINDOW_TTL_SECONDS)
                 : Uni.createFrom().voidItem())
-            .onFailure().recoverWithItem(e -> redisFailure("rate", apiKeyId, e));
+            .onFailure().invoke(e -> count("aster_quota_redis_errors_total", "op", "rate"));
     }
 
     /** 阻塞读取当月计数——仅供运维 / 测试在 worker 线程使用，热路径请用 {@link #peekOwner}。 */
