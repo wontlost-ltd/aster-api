@@ -91,25 +91,20 @@ public class ReplayBatchService {
      * 实测对照：无限递归策略在「无限制 / limit=100 / limit=1」三种配置下表现完全一致，
      * 全部止于 JVM 栈溢出。
      *
-     * <p>真正的执行上界由 {@link #runWithTimeout} 的 <b>wall-clock 超时</b>提供
-     * （见 {@code replayOne}），生产 {@code /evaluate} 路径同样改用看门狗
-     * （{@code TrufflePolicyRuntime}）。
+     * <p>真正停下 guest 执行的是 {@code DynamicCnlExecutor} 内的<b>墙钟看门狗</b>
+     * （{@code ExecutionWatchdog}，缺省 5s，与生产 {@code /evaluate} 同一机制同一配置）：
+     * 到点 {@code close(true)} 中止执行、丢弃 Context，执行线程随即释放。
+     * Aster 允许无界递归（图灵完备），浅而宽的指数分支递归不会栈溢出，只能靠它停下。
      *
-     * <p>我曾在这里包一层线程池 + {@code Future.get(timeout)}，但那有两个问题：
-     * 每条重跑新建线程池（万条批次 = 10000 次创建/销毁），且
-     * {@code shutdownNow()} 只发 interrupt、<b>不保证停下 Truffle 执行</b>——
-     * 调用者不再等待，被弃线程仍在烧 CPU。已移除。
+     * <p>本常量是外层的<b>等待上限</b>（{@link #runWithTimeout}），兜底覆盖看门狗之外的
+     * 编译阶段（parse/lower，开销与源码长度相关、本身有界）。看门狗上限远小于它，
+     * 故正常情况下外层超时不会触发；触发时 {@code cancel(true)} 只能尽力中断。
      *
-     * <p>于是「段最坏耗时」不再是严格上界，而是一个<b>工程预算</b>：
-     * 10M statements 在本仓实测策略上远低于 60s（典型 &lt;10K statements，
-     * ADR 0033 §5.1 实测 1.35ms/条）。租约按此预算的 2 倍取值，
-     * 留的是**数量级**余量而非精确证明。
-     *
-     * <p>★这条边界必须写明，否则下一个人会以为租约有严格保证——
+     * <p>「段最坏耗时」据此是<b>工程预算</b>而非严格证明：租约按此预算的 2 倍取值，
+     * 留的是<b>数量级</b>余量。这条边界必须写明，否则下一个人会以为租约有严格保证——
      * 而那正是前三轮租约取值出错的模式（把估算当成证明）。
      */
     private static final java.time.Duration EXEC_TIMEOUT = java.time.Duration.ofSeconds(60);
-    // ↑ 注意这**不是**一个被强制执行的超时（见下方说明）。
 
     /**
      * 单段拉取的超时上界。
@@ -719,10 +714,10 @@ public class ReplayBatchService {
     /**
      * 带 wall-clock 超时地执行一次重跑。
      *
-     * <p>★超时归 {@link ReplayFailureKind#TIMEOUT}（可重试）。
-     * 它<b>不保证</b>停下已在跑的 Truffle 执行——被弃线程仍会烧完 CPU，
-     * 但数量由容量闸门许可数封顶。它保证的是**调用者不再等待**，
-     * 从而让「段最坏耗时」成为真实上界（ADR 0034 §12.4）。
+     * <p>★超时归 {@link ReplayFailureKind#TIMEOUT}（可重试）。guest 执行本身已由
+     * {@code DynamicCnlExecutor} 的看门狗在更短的上限内真正中止（线程随之释放），
+     * 这里的等待上限只兜底看门狗之外的阶段，保证**调用者不再等待**，
+     * 从而让「段最坏耗时」有界（ADR 0034 §12.4）。
      */
     private static <T> T runWithTimeout(java.util.concurrent.Callable<T> work) throws Exception {
         java.util.concurrent.Future<T> f = REPLAY_POOL.submit(work);
@@ -881,17 +876,10 @@ public class ReplayBatchService {
         String tenantId) {
 
         try {
-            // ★执行上界由 **wall-clock 超时** 提供——不能靠 statementLimit。
-            //   实测（limit=1/2/10，同一策略连续执行 10 万次）：
-            //   Aster AST **根本不产生可计数的 statement**，statementLimit 完全不触发。
-            //   我上一轮删掉这层超时、改称「上界由 statementLimit 保证」，
-            //   净效果是把执行上界从「有」变成「没有」，而注释却宣称有——
-            //   本仓「注释声称 ≠ 实现如此」的又一次。
-            //
-            //   ★用**共享**线程池而非每条新建：万条批次原会创建 10000 个池。
-            //   shutdownNow 确实不保证停下 Truffle（被弃线程仍占 CPU），
-            //   但它保证**调用者不再等待**，从而让「段耗时」有真实上界——
-            //   这正是租约取值的依据。被弃线程由容量闸门的许可数封顶。
+            // ★执行上界由**墙钟**提供——不能靠 statementLimit（实测在 Aster 上完全不触发）。
+            //   两层：DynamicCnlExecutor 内的看门狗到点 close(true) 真正中止 guest 执行
+            //   并释放线程；外层 runWithTimeout 只是等待兜底。
+            //   ★用**共享**有界线程池而非每条新建：万条批次原会创建 10000 个池。
             var execResult = capacityGate.withPermit(PERMIT_WAIT_MS, () ->
                 runWithTimeout(() -> replayExecutor.execute(
                     tenantId, target.content(), e.input(),
@@ -957,6 +945,11 @@ public class ReplayBatchService {
             }
         }
 
+        // 看门狗中止（墙钟上限）：结构化 kind 判定，不靠消息文本
+        if (isWatchdogTimeout(ex)) {
+            return ReplayFailureKind.TIMEOUT;
+        }
+
         if (ex instanceof java.util.concurrent.TimeoutException || msg.contains("timeout")) {
             return ReplayFailureKind.TIMEOUT;
         }
@@ -972,6 +965,16 @@ public class ReplayBatchService {
         return ReplayFailureKind.INPUT_INCOMPATIBLE;
     }
 
+
+    private static boolean isWatchdogTimeout(Throwable ex) {
+        for (Throwable t = ex; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof io.aster.policy.parser.DynamicCnlExecutor.DynamicExecutionException de
+                && de.kind() == io.aster.policy.parser.DynamicCnlExecutor.DynamicExecutionException.Kind.TIMEOUT) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /** 目标版本不存在——整批失败，且重跑无用。 */
     static class TargetVersionMissingException extends RuntimeException {

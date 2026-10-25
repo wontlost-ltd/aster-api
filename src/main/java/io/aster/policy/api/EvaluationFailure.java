@@ -22,6 +22,7 @@ public record EvaluationFailure(int status, String code, String message) {
     public static final String FUNCTION_NOT_EXECUTABLE = "function_not_executable";
     public static final String INVALID_REQUEST = "invalid_request";
     public static final String EVALUATION_FAILED = "evaluation_failed";
+    public static final String EXECUTION_TIMEOUT = "execution_timeout";
 
     /** 500 的固定文案：与旧响应的 error 文本一致，老客户端的展示不变。 */
     public static final String GENERIC_MESSAGE = "Policy evaluation failed";
@@ -67,6 +68,8 @@ public record EvaluationFailure(int status, String code, String message) {
             return switch (e.kind()) {
                 case INVALID_INPUT -> new EvaluationFailure(400, INVALID_REQUEST, e.getMessage());
                 case FUNCTION_NOT_FOUND -> new EvaluationFailure(404, FUNCTION_NOT_FOUND, e.getMessage());
+                // 超过墙钟上限：原因在策略本身（如指数级递归），重试无益，归 422；消息只含上限值
+                case TIMEOUT -> new EvaluationFailure(422, EXECUTION_TIMEOUT, e.getMessage());
                 // 执行期失败：消息可能含内部细节，继续沿 cause 链找，找不到即落到 500
                 case EXECUTION -> null;
             };

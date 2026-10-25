@@ -804,6 +804,13 @@ public class PolicyEvaluationResource {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
                     System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap, quotaOwnerSnap);
                 }
+                // 被墙钟看门狗中止：回 422 + execution_timeout（与 /evaluate-json 同一归因口径），
+                // 而不是混进 200 + error 的普通执行失败，调用方据 code 即可识别「策略跑超时」。
+                if (e.kind() == DynamicCnlExecutor.DynamicExecutionException.Kind.TIMEOUT) {
+                    throw failureException(EvaluationFailure.classify(e),
+                        System.currentTimeMillis() - apiCallStart,
+                        evidence == null ? null : evidence.correlationId());
+                }
                 return EvaluationResponse.error("CNL 动态执行失败: " + e.getMessage())
                     .withEvidence(evidence == null ? null : evidence.correlationId());
 
