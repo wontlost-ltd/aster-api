@@ -111,6 +111,16 @@ public class UiMessagesService {
     /** 覆盖层读失败、尚待重试确认的 locale；空集 = 全部 locale 的覆盖层状态已确认。 */
     private final Set<String> overlayPending = ConcurrentHashMap.newKeySet();
 
+    /**
+     * locale → 覆盖层代次。admin 写 / 删在改完 Redis 后推进代次；{@link #reload} 读 Redis 前记下代次，
+     * 提交时代次已变说明读到的是变更前的旧值，直接丢弃。这样请求线程上的写 / 删与执行器上的
+     * 重试 / 热刷新无论如何交错，内存最终都与 Redis 一致，且请求线程无需等待执行器。
+     */
+    private final ConcurrentHashMap<String, Long> generations = new ConcurrentHashMap<>();
+
+    /** 代次比较与内存提交的原子性锁。 */
+    private final Object commitLock = new Object();
+
     private PubSubCommands<String> pubSubCommands;
     private ResilientRedisSubscriber redisSubscriber;
 
@@ -192,7 +202,7 @@ public class UiMessagesService {
      * 从 classpath 读 {@code ui-messages/<locale>.json}，计算 sha256。
      * 资源缺失 → empty（不抛，便于 P1 未发版时优雅降级）。
      */
-    private Optional<MessagesEntry> loadFromClasspath(String locale) {
+    Optional<MessagesEntry> loadFromClasspath(String locale) {
         // 安全校验：locale 拼进 classpath 资源路径前必须落在白名单字符集，
         // 非法输入（含 / . \ 等）直接 empty（与"资源缺失"同款优雅降级），杜绝路径穿越。
         if (locale == null || !LOCALE_ID_PATTERN.matcher(locale).matches()) {
@@ -241,6 +251,16 @@ public class UiMessagesService {
         return redisStrings().get(REDIS_OVERRIDE_PREFIX + locale);
     }
 
+    /** 写覆盖层，故障抛异常。包内可见：单测可覆写。 */
+    void writeOverlay(String locale, String json) {
+        redisStrings().set(REDIS_OVERRIDE_PREFIX + locale, json);
+    }
+
+    /** 删覆盖层，故障抛异常。包内可见：单测可覆写。 */
+    void deleteOverlay(String locale) {
+        redisDataSource.get().key(String.class).del(REDIS_OVERRIDE_PREFIX + locale);
+    }
+
     private ValueCommands<String, String> redisStrings() {
         return redisDataSource.get().value(String.class);
     }
@@ -282,6 +302,7 @@ public class UiMessagesService {
         if (locale == null || !LOCALE_ID_PATTERN.matcher(locale).matches()) {
             return Optional.empty();
         }
+        long readGeneration = generation(locale);
         RedisLoad redis = loadFromRedis(locale);
         if (redis.kind() == RedisLoadKind.ERROR) {
             store.computeIfAbsent(locale, l -> loadFromClasspath(l).orElse(null));
@@ -289,12 +310,43 @@ public class UiMessagesService {
             scheduleOverlayRetry();
             return Optional.empty();
         }
-        overlayPending.remove(locale);
         Optional<MessagesEntry> entry = redis.kind() == RedisLoadKind.PRESENT
             ? Optional.of(redis.entry())
             : loadFromClasspath(locale);
-        entry.ifPresent(e -> store.put(locale, e));
+        if (!commitIfCurrent(locale, readGeneration, entry.orElse(null))) {
+            LOG.debugf("ui-messages 丢弃过期读取 locale=%s（读取期间覆盖层已被写 / 删）", locale);
+            return Optional.empty();
+        }
         return entry;
+    }
+
+    private long generation(String locale) {
+        return generations.getOrDefault(locale, 0L);
+    }
+
+    /** 读取期间代次未变才提交（entry 为 null 表示两处都缺失，只确认状态、不动内存）。 */
+    private boolean commitIfCurrent(String locale, long readGeneration, MessagesEntry entry) {
+        synchronized (commitLock) {
+            if (generation(locale) != readGeneration) {
+                return false;
+            }
+            if (entry != null) {
+                store.put(locale, entry);
+            }
+            overlayPending.remove(locale);
+            return true;
+        }
+    }
+
+    /** admin 写 / 删改完 Redis 后调用：推进代次让在途旧读取作废；entry 非 null 时同时提交该权威内容。 */
+    private void advanceGeneration(String locale, MessagesEntry entry) {
+        synchronized (commitLock) {
+            generations.merge(locale, 1L, Long::sum);
+            if (entry != null) {
+                store.put(locale, entry);
+                overlayPending.remove(locale);
+            }
+        }
     }
 
     // ──────────────────────────────────────── 覆盖层读失败重试（#391）
@@ -379,7 +431,7 @@ public class UiMessagesService {
             return Optional.empty();
         }
         try {
-            redisStrings().set(REDIS_OVERRIDE_PREFIX + key, json);
+            writeOverlay(key, json);
         } catch (Exception e) {
             LOG.warnf(e, "ui-messages 写覆盖 Redis set 失败 locale=%s", key);
             return Optional.empty();
@@ -387,8 +439,7 @@ public class UiMessagesService {
         // 写成功后本 pod 自更新内存（不等 pub/sub，避免发布失败时本 pod 还吐旧内容）。
         byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
         MessagesEntry entry = new MessagesEntry(json, sha256Hex(bytes));
-        store.put(key, entry);
-        overlayPending.remove(key); // 刚写入的就是覆盖层真相，无需再重试确认
+        advanceGeneration(key, entry); // 刚写入的就是覆盖层真相：提交并作废在途旧读取
         // 广播给其它 pod；记录是否成功（Codex 审查：广播失败 → propagated=false，调用方标记
         // degraded，其它 pod 仍会在下次 reload/重启时从 Redis 真相源纠偏，不会永久不一致）。
         boolean propagated = publishReload(key);
@@ -423,12 +474,13 @@ public class UiMessagesService {
         }
         String key = locale.trim();
         try {
-            redisDataSource.get().key(String.class).del(REDIS_OVERRIDE_PREFIX + key);
+            deleteOverlay(key);
         } catch (Exception e) {
             LOG.warnf(e, "ui-messages 删除覆盖失败 locale=%s", key);
             return DeleteResult.UNAVAILABLE;
         }
-        // 本 pod 自更新（回退 classpath）+ 广播。
+        // 本 pod 自更新（回退 classpath）+ 广播；先推进代次，删除前开始的在途读取不会再把旧覆盖层写回。
+        advanceGeneration(key, null);
         reload(key);
         boolean propagated = publishReload(key);
         LOG.infof("ui-messages 运行时覆盖已删除（回退 classpath 基线）: %s propagated=%s", key, propagated);
@@ -446,8 +498,13 @@ public class UiMessagesService {
             LOG.debug("RedisDataSource 未配置，ui-messages 热刷新禁用（启动加载仍有效）");
             return;
         }
-        ScheduledExecutorService executor = executor();
         pubSubCommands = redisDataSource.get().pubsub(String.class);
+        subscribeReloadChannel();
+    }
+
+    /** 建立自愈订阅：消息与（重新）订阅成功回调都转交单线程执行器。包内可见：单测用假 supervisor 驱动。 */
+    void subscribeReloadChannel() {
+        ScheduledExecutorService executor = executor();
         redisSubscriber = broadcastSupervisor.subscribe("ui_messages_reload_broadcast", RELOAD_CHANNEL,
             payload -> executor.execute(() -> handleReload(payload)),
             () -> executor.execute(this::refreshExpectedLocales));
