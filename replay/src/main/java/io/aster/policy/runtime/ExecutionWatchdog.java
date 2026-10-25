@@ -6,9 +6,9 @@ import org.jboss.logging.Logger;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -52,18 +52,30 @@ public final class ExecutionWatchdog {
             return t;
         });
 
+    /** 关闭线程上限。 */
+    private static final int CLOSER_MAX_THREADS = 32;
+
     /**
-     * 关闭执行器：按需扩容的 daemon 平台线程池（空闲 30s 回收）。不设固定上限是刻意的——
-     * 固定 N 个线程时，N 次慢关闭就会让第 N+1 次排队；而并发关闭数天然受「同时在跑的 Context 数」
-     * 约束（各执行入口的许可 / 池容量），线程数因此有界。
+     * 关闭执行器：至多 {@value #CLOSER_MAX_THREADS} 个 daemon 平台线程，空闲 30s 回收；
+     * 队列无界，超出时关闭任务排队而不是被丢弃（丢弃即失控执行永不停止）。
+     *
+     * <p>上限安全的理由：close(true) 只阻塞到被取消的执行线程抵达下一个安全点退出，通常是毫秒级；
+     * 同时需要关闭的 Context 数又受各执行入口的许可 / 池容量约束。32 路并发关闭远高于单 Pod 的
+     * 并发执行数，排队只会在极端情况下出现，且排队代价是「晚几毫秒停下」而非「停不下」。
      * 不用虚拟线程：GraalVM 在 HotSpot 上对虚拟线程操作 Context 仍标记为实验性。
      */
-    private static final Executor CLOSER = new ThreadPoolExecutor(
-        0, Integer.MAX_VALUE, 30L, TimeUnit.SECONDS, new SynchronousQueue<>(), r -> {
-            Thread t = new Thread(r, "aster-policy-watchdog-close");
-            t.setDaemon(true);
-            return t;
-        });
+    private static final Executor CLOSER = newCloser();
+
+    private static ThreadPoolExecutor newCloser() {
+        ThreadPoolExecutor pool = new ThreadPoolExecutor(
+            CLOSER_MAX_THREADS, CLOSER_MAX_THREADS, 30L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(), r -> {
+                Thread t = new Thread(r, "aster-policy-watchdog-close");
+                t.setDaemon(true);
+                return t;
+            });
+        pool.allowCoreThreadTimeOut(true);
+        return pool;
+    }
 
     private ExecutionWatchdog() {
     }
@@ -162,19 +174,32 @@ public final class ExecutionWatchdog {
     }
 
     /**
-     * 失败是否由 Context 被关闭/取消引起：沿 cause 链找已取消或被中断的 {@link PolyglotException}，
-     * 或 Context 已关闭时 polyglot API 抛出的 {@link IllegalStateException}
-     * （关闭发生在两次 guest 调用之间时，下一次调用拿到的就是它）。
+     * 失败是否由 Context 被关闭/取消引起。沿 cause 链找：
+     * <ul>
+     *   <li>已取消或被中断的 {@link PolyglotException}——guest 执行中途被 close(true) 打断；</li>
+     *   <li>由 polyglot API 自身抛出的 {@link IllegalStateException}——关闭发生在两次 guest 调用之间时，
+     *       下一次 {@code Context}/{@code Value} 调用会抛它。按抛出点（栈顶帧所属包）认定，
+     *       而不是任何 IllegalStateException：宿主代码自己抛的同类异常必须按真实错误上报。</li>
+     * </ul>
      */
     static boolean isCancellation(Throwable failure) {
         for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause()) {
             if (t instanceof PolyglotException pe && (pe.isCancelled() || pe.isInterrupted())) {
                 return true;
             }
-            if (t instanceof IllegalStateException) {
+            if (t instanceof IllegalStateException && thrownByPolyglotApi(t)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static boolean thrownByPolyglotApi(Throwable t) {
+        StackTraceElement[] frames = t.getStackTrace();
+        if (frames.length == 0) {
+            return false;
+        }
+        String origin = frames[0].getClassName();
+        return origin.startsWith("org.graalvm.polyglot.") || origin.startsWith("com.oracle.truffle.polyglot.");
     }
 }

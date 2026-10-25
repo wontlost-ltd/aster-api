@@ -108,9 +108,10 @@ class ExecutionWatchdogTest {
         assertTrue(guard.disarm(), "已触发即不可逆，Context 必须丢弃");
         assertFalse(guard.timedOut(new ArithmeticException("guest 自身错误")),
             "关闭失败后 guest 抛出的真实错误不得被冒充为超时");
-        assertTrue(guard.timedOut(new RuntimeException("wrapped",
-                new IllegalStateException("The Context is already closed."))),
+        assertTrue(guard.timedOut(new RuntimeException("wrapped", closedContextFailure())),
             "已触发且失败由关闭引起时归为超时");
+        assertFalse(guard.timedOut(new RuntimeException("wrapped", new IllegalStateException("宿主自身状态错误"))),
+            "宿主代码自己抛的 IllegalStateException 即便在触发后也按真实错误上报");
 
         // 关闭失败不得拖垮看门狗：后续守卫照常触发
         CountDownLatch next = new CountDownLatch(1);
@@ -123,6 +124,24 @@ class ExecutionWatchdogTest {
         ExecutionWatchdog.Guard guard = ExecutionWatchdog.arm(() -> { }, 60_000);
         assertFalse(guard.timedOut(new IllegalStateException("closed")));
         assertFalse(guard.disarm());
+    }
+
+    @Test
+    void 真实已关闭Context抛出的异常被认定为取消() {
+        assertTrue(ExecutionWatchdog.isCancellation(closedContextFailure()));
+        assertFalse(ExecutionWatchdog.isCancellation(new IllegalStateException("unrelated")));
+    }
+
+    /** 由真实 polyglot API 产生「Context 已关闭」异常，不手工伪造其抛出点。 */
+    private static RuntimeException closedContextFailure() {
+        org.graalvm.polyglot.Context ctx = org.graalvm.polyglot.Context.newBuilder("aster").build();
+        ctx.close();
+        try {
+            ctx.eval("aster", "{}");
+        } catch (RuntimeException e) {
+            return e;
+        }
+        throw new AssertionError("已关闭的 Context 应拒绝执行");
     }
 
     private static void spinNanos(long nanos) {
