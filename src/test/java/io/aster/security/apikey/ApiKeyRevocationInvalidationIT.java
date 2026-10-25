@@ -61,6 +61,9 @@ class ApiKeyRevocationInvalidationIT {
             ApiKeyVerifyResult.valid("ak-id-2", userId, "tenant-y", "pro", "active"));
         assertNotNull(verifier.tryCacheLookup(key), "预置后应命中缓存");
 
+        // 订阅在启动后由后台异步建立：先等其就绪，避免广播早于 SUBSCRIBE 到达而丢失。
+        await().atMost(Duration.ofSeconds(10)).until(verifier::isBroadcastActive);
+
         // 模拟"另一副本"撤销后发来的广播：直接向 Redis channel 发 userId。
         // 本 pod 的订阅回调应清掉本地缓存（不经 invalidateForUser 的本地清除路径）。
         redis.pubsub(String.class).publish(INVALIDATE_CHANNEL, userId);

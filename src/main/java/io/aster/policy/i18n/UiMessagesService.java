@@ -1,8 +1,9 @@
 package io.aster.policy.i18n;
 
+import io.aster.common.redis.RedisBroadcastSupervisor;
+import io.aster.common.redis.ResilientRedisSubscriber;
 import io.quarkus.redis.datasource.RedisDataSource;
 import io.quarkus.redis.datasource.pubsub.PubSubCommands;
-import io.quarkus.redis.datasource.pubsub.PubSubCommands.RedisSubscriber;
 import io.quarkus.redis.datasource.value.ValueCommands;
 import io.quarkus.runtime.StartupEvent;
 import io.vertx.core.json.JsonObject;
@@ -79,11 +80,14 @@ public class UiMessagesService {
     @Inject
     Instance<RedisDataSource> redisDataSource;
 
+    @Inject
+    RedisBroadcastSupervisor broadcastSupervisor;
+
     /** locale-id → 已加载的 messages 条目（JSON 原文 + sha256）。 */
     private final ConcurrentHashMap<String, MessagesEntry> store = new ConcurrentHashMap<>();
 
     private PubSubCommands<String> pubSubCommands;
-    private RedisSubscriber redisSubscriber;
+    private ResilientRedisSubscriber redisSubscriber;
     private ExecutorService reloadExecutor;
 
     /** 一个 locale 的界面文案：原始 JSON 文本 + 其 SHA-256（版本 / ETag 来源）。 */
@@ -289,24 +293,33 @@ public class UiMessagesService {
 
     // ──────────────────────────────────────── Redis 热刷新
 
+    /**
+     * 订阅交给 {@link RedisBroadcastSupervisor}：后台异步建立，失败或断线后退避重订阅，不阻塞启动；
+     * down 期间启动加载的文案仍有效。每次（重新）订阅成功后重解析已加载 locale，补齐漏收的热刷新。
+     */
     private void initReloadChannel() {
         if (redisDataSource == null || redisDataSource.isUnsatisfied()) {
             LOG.debug("RedisDataSource 未配置，ui-messages 热刷新禁用（启动加载仍有效）");
             return;
         }
-        try {
-            reloadExecutor = Executors.newSingleThreadExecutor(runnable -> {
-                Thread thread = new Thread(runnable, "ui-messages-reload");
-                thread.setDaemon(true);
-                return thread;
-            });
-            pubSubCommands = redisDataSource.get().pubsub(String.class);
-            redisSubscriber = pubSubCommands.subscribe(RELOAD_CHANNEL, payload ->
-                reloadExecutor.execute(() -> handleReload(payload))
-            );
-            LOG.infof("ui-messages 热刷新通道已启用: %s", RELOAD_CHANNEL);
-        } catch (Exception e) {
-            LOG.warn("初始化 ui-messages 热刷新订阅失败（启动加载仍有效）", e);
+        reloadExecutor = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "ui-messages-reload");
+            thread.setDaemon(true);
+            return thread;
+        });
+        pubSubCommands = redisDataSource.get().pubsub(String.class);
+        redisSubscriber = broadcastSupervisor.subscribe("ui_messages_reload_broadcast", RELOAD_CHANNEL,
+            payload -> reloadExecutor.execute(() -> handleReload(payload)),
+            () -> reloadExecutor.execute(this::refreshLoadedLocales));
+    }
+
+    /**
+     * 重新解析全部已加载 locale（ADR 0021：先 Redis 覆盖层、miss 回退 classpath）。订阅（重新）建立后
+     * 调用，弥补 down 期间漏收的热刷新事件；解析为空（miss / Redis error）时保留当前内存条目。
+     */
+    void refreshLoadedLocales() {
+        for (String locale : loadedLocales()) {
+            resolveEntry(locale).ifPresent(entry -> store.put(locale, entry));
         }
     }
 
@@ -364,11 +377,7 @@ public class UiMessagesService {
     @PreDestroy
     void shutdown() {
         if (redisSubscriber != null) {
-            try {
-                redisSubscriber.unsubscribe();
-            } catch (Exception e) {
-                LOG.debugf("ui-messages Redis unsubscribe 失败: %s", e.getMessage());
-            }
+            redisSubscriber.close();
         }
         if (reloadExecutor != null) {
             reloadExecutor.shutdown();
