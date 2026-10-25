@@ -1,7 +1,9 @@
 package io.aster.billing;
 
 import io.aster.billing.snapshot.LocalQuotaSnapshotService;
+import io.aster.billing.snapshot.LocalQuotaSnapshotService.LocalQuota;
 import io.aster.billing.snapshot.UserSnapshot;
+import io.smallrye.mutiny.Uni;
 import io.vertx.core.json.JsonObject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,6 +41,7 @@ class ApiQuotaGuardQuotaOwnerKeyTest {
         // 合法的 cloud 地址：任何出站路径都不会落进 URI.create(null) 的异常分支
         when(config.cloudInternalUrl()).thenReturn("http://cloud.internal:3000");
         snapshot = mock(LocalQuotaSnapshotService.class);
+        when(snapshot.incrementCounter(anyString())).thenReturn(Uni.createFrom().item(1L));
         guard = spy(new ApiQuotaGuard());
         doNothing().when(guard).postUsage(any());
         guard.config = config;
@@ -53,16 +56,14 @@ class ApiQuotaGuardQuotaOwnerKeyTest {
 
     @Test
     void check_readsOwnerSnapshotAndCounter_notMember() {
-        when(snapshot.getUser("owner-1")).thenReturn(Optional.of(
-            new UserSnapshot("owner-1", "team", 1000L, "active", null, null)));
-        when(snapshot.getCounter("owner-1")).thenReturn(2000L);
+        when(snapshot.peekOwner("owner-1")).thenReturn(Optional.of(new LocalQuota(
+            new UserSnapshot("owner-1", "team", 1000L, "active", null, null), 2000L)));
 
         ApiQuotaGuard.GuardResult r = guard.check("team-1", "owner-1");
 
         assertThat(r.verdict()).isEqualTo(ApiQuotaGuard.Verdict.RATE_LIMITED);
         assertThat(r.used()).isEqualTo(2000L);
-        verify(snapshot, never()).getUser("member-1");
-        verify(snapshot, never()).getCounter("member-1");
+        verify(snapshot, never()).peekOwner("member-1");
     }
 
     @Test
