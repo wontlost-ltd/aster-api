@@ -55,8 +55,11 @@ public class ApiKeyVerifierService {
     @Inject
     jakarta.enterprise.inject.Instance<io.quarkus.redis.datasource.RedisDataSource> redisDataSource;
 
+    @Inject
+    io.aster.common.redis.RedisBroadcastSupervisor broadcastSupervisor;
+
     private io.quarkus.redis.datasource.pubsub.PubSubCommands<String> pubSubCommands;
-    private io.quarkus.redis.datasource.pubsub.PubSubCommands.RedisSubscriber invalidateSubscriber;
+    private io.aster.common.redis.ResilientRedisSubscriber invalidateSubscriber;
 
     @Inject
     io.aster.billing.snapshot.LocalQuotaSnapshotService localSnapshot;
@@ -108,41 +111,30 @@ public class ApiKeyVerifierService {
         LOG.info("ApiKeyVerifierService started: cacheTtl=" + CACHE_TTL);
     }
 
-    /** 红队 P0-F（Codex 审查后补）：广播订阅是否活跃。false=退化到 60s TTL 兜底，供健康检查/指标读取。 */
-    private volatile boolean broadcastActive = false;
-
     /** 跨副本失效广播是否处于活跃状态（订阅已建立）。false 表示当前仅靠 60s TTL 兜底。 */
     public boolean isBroadcastActive() {
-        return broadcastActive;
+        return invalidateSubscriber != null && invalidateSubscriber.isUp();
     }
 
+    /**
+     * 订阅交给 {@link io.aster.common.redis.RedisBroadcastSupervisor}：后台异步建立，失败或断线后
+     * 退避重订阅，不阻塞启动；down 期间跨副本撤销退化到 60s TTL 兜底。
+     */
     private void initInvalidateBroadcast() {
         if (redisUnavailable()) {
             LOG.warn("apikey 失效广播未启用（无 Redis）；跨副本撤销退化到 60s TTL 兜底 "
                 + "[apikey_invalidate_broadcast=down]");
             return;
         }
-        try {
-            pubSubCommands = redisDataSource.get().pubsub(String.class);
-            // payload = userId。远端 pod 收到即清本地缓存（invalidateLocalOnly 不再回广播，防环）。
-            invalidateSubscriber = pubSubCommands.subscribe(INVALIDATE_CHANNEL,
-                this::invalidateLocalOnly);
-            broadcastActive = true;
-            LOG.infof("apikey 失效广播通道已启用: %s [apikey_invalidate_broadcast=up]", INVALIDATE_CHANNEL);
-        } catch (Exception e) {
-            // 可观测：明确标记 broadcast down，operator 可据此告警；本副本 TTL 兜底仍有效。
-            LOG.warn("初始化 apikey 失效广播订阅失败（退化到 60s TTL 兜底）"
-                + " [apikey_invalidate_broadcast=down]", e);
-        }
+        pubSubCommands = redisDataSource.get().pubsub(String.class);
+        // payload = userId。远端 pod 收到即清本地缓存（invalidateLocalOnly 不再回广播，防环）。
+        invalidateSubscriber = broadcastSupervisor.subscribe("apikey_invalidate_broadcast",
+            INVALIDATE_CHANNEL, this::invalidateLocalOnly, null);
     }
 
     void onStop(@Observes io.quarkus.runtime.ShutdownEvent ev) {
         if (invalidateSubscriber != null) {
-            try {
-                invalidateSubscriber.unsubscribe();
-            } catch (Exception e) {
-                LOG.debugf("apikey 失效广播退订异常（忽略）: %s", e.getMessage());
-            }
+            invalidateSubscriber.close();
         }
         if (verifyPool != null) {
             verifyPool.shutdown();

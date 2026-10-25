@@ -2,6 +2,8 @@ package io.aster.llm.security;
 
 import io.aster.security.net.SsrfGuard;
 import io.aster.security.net.ValidatedEndpoint;
+import io.aster.common.redis.RedisBroadcastSupervisor;
+import io.aster.common.redis.ResilientRedisSubscriber;
 import io.quarkus.redis.datasource.RedisDataSource;
 import io.quarkus.redis.datasource.pubsub.PubSubCommands;
 import io.quarkus.redis.datasource.set.SetCommands;
@@ -54,12 +56,15 @@ public class ByokAllowlistService {
     Instance<RedisDataSource> redisDataSource;
 
     @Inject
+    RedisBroadcastSupervisor broadcastSupervisor;
+
+    @Inject
     SsrfGuard ssrfGuard;
 
     private final Set<AllowlistEntry> entries = Collections.synchronizedSet(new LinkedHashSet<>());
 
     private PubSubCommands<String> pubSubCommands;
-    private PubSubCommands.RedisSubscriber subscriber;
+    private ResilientRedisSubscriber subscriber;
     private ExecutorService applyExecutor;
     private ScheduledExecutorService reconcileScheduler;
 
@@ -75,34 +80,28 @@ public class ByokAllowlistService {
         });
         applyExecutor.execute(this::reconcileFromRedisSet);
         initBroadcastChannel();
-        // 订阅后再对账一次，关闭“读 SET 后/订阅前”窗口。
-        applyExecutor.execute(this::reconcileFromRedisSet);
         initReconcileSchedule();
     }
 
     @PreDestroy
     void onStop() {
         if (subscriber != null) {
-            try {
-                subscriber.unsubscribe();
-            } catch (Exception e) {
-                LOG.debug("取消 BYOK allowlist 订阅失败（停机阶段，忽略）", e);
-            }
+            subscriber.close();
         }
         shutdownQuietly(reconcileScheduler);
         shutdownQuietly(applyExecutor);
     }
 
+    /**
+     * 订阅交给 {@link RedisBroadcastSupervisor}：后台异步建立，失败或断线后退避重订阅，不阻塞启动；
+     * down 期间本副本内存仍有效，定时对账兜底。
+     * 每次（重新）订阅成功后对账一次，关闭“读 SET 后/订阅前”及断线期间漏收广播的窗口。
+     */
     private void initBroadcastChannel() {
-        try {
-            pubSubCommands = redisDataSource.get().pubsub(String.class);
-            subscriber = pubSubCommands.subscribe(ALLOWLIST_CHANNEL, payload ->
-                applyExecutor.execute(() -> applyRemoteEvent(payload))
-            );
-            LOG.infof("BYOK endpoint allowlist 广播通道已启用: %s", ALLOWLIST_CHANNEL);
-        } catch (Exception e) {
-            LOG.warn("初始化 BYOK allowlist 广播订阅失败（本副本内存仍有效，定时对账兜底）", e);
-        }
+        pubSubCommands = redisDataSource.get().pubsub(String.class);
+        subscriber = broadcastSupervisor.subscribe("byok_allowlist_broadcast", ALLOWLIST_CHANNEL,
+            payload -> applyExecutor.execute(() -> applyRemoteEvent(payload)),
+            () -> applyExecutor.execute(this::reconcileFromRedisSet));
     }
 
     private void initReconcileSchedule() {

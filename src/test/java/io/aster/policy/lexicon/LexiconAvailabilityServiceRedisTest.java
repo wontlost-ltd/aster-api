@@ -39,6 +39,9 @@ class LexiconAvailabilityServiceRedisTest {
     @Inject
     LexiconAvailabilityService service;
 
+    @Inject
+    io.aster.common.redis.RedisBroadcastSupervisor broadcastSupervisor;
+
     @BeforeEach
     void cleanup() {
         // 清持久禁用集 + 恢复 registry baseline。
@@ -105,6 +108,9 @@ class LexiconAvailabilityServiceRedisTest {
         LexiconRegistry.getInstance().markAvailable("zh-CN");
         assertThat(LexiconRegistry.getInstance().has("zh-CN")).isTrue();
 
+        // 订阅在启动后由后台异步建立：先等其就绪，避免广播早于 SUBSCRIBE 到达而丢失。
+        await().atMost(Duration.ofSeconds(10)).until(() ->
+            broadcastSupervisor.isUp(LexiconAvailabilityService.AVAILABILITY_CHANNEL));
         redis.pubsub(String.class).publish(
             LexiconAvailabilityService.AVAILABILITY_CHANNEL, "disable:zh-CN");
 
