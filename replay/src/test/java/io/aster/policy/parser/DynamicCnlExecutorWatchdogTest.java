@@ -5,9 +5,16 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -74,5 +81,47 @@ class DynamicCnlExecutorWatchdogTest {
         DynamicCnlExecutor.ExecutionResult ok = DynamicCnlExecutor.executeWithContext(
             EXPONENTIAL_POLICY, Map.of("n", 5), "boom", "en-US");
         assertEquals(32, ((Number) ok.result()).intValue());
+    }
+
+    @Test
+    void 多个并发失控执行都在上限附近被中止() throws Exception {
+        int n = 4;
+        ExecutorService pool = Executors.newFixedThreadPool(n);
+        try {
+            long start = System.nanoTime();
+            List<Future<DynamicCnlExecutor.DynamicExecutionException>> futures = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                futures.add(pool.submit(() -> assertThrows(DynamicCnlExecutor.DynamicExecutionException.class,
+                    () -> DynamicCnlExecutor.executeWithContext(
+                        EXPONENTIAL_POLICY, Map.of("n", 40), "boom", "en-US"))));
+            }
+            for (Future<DynamicCnlExecutor.DynamicExecutionException> f : futures) {
+                DynamicCnlExecutor.DynamicExecutionException ex =
+                    f.get(TEST_TIMEOUT_MS + MARGIN_MS, TimeUnit.MILLISECONDS);
+                assertEquals(DynamicCnlExecutor.DynamicExecutionException.Kind.TIMEOUT, ex.kind(), ex.getMessage());
+            }
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+            assertTrue(elapsedMs < TEST_TIMEOUT_MS + MARGIN_MS, "并发超时不得互相排队，实际 " + elapsedMs + "ms");
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void 期限边界上只有两种结果_正常结果或TIMEOUT() {
+        // 上限压到 1~3ms，让「执行刚好完成」与「看门狗刚好触发」反复相撞：
+        // 不允许出现被误归为普通执行失败、或结果错误的第三种结局。
+        for (int i = 0; i < 300; i++) {
+            System.setProperty(ExecutionWatchdog.TIMEOUT_PROPERTY, Long.toString(1 + i % 3));
+            try {
+                DynamicCnlExecutor.ExecutionResult r = DynamicCnlExecutor.executeWithContext(
+                    EXPONENTIAL_POLICY, Map.of("n", 8), "boom", "en-US");
+                assertNotNull(r.result());
+                assertEquals(256, ((Number) r.result()).intValue());
+            } catch (DynamicCnlExecutor.DynamicExecutionException e) {
+                assertEquals(DynamicCnlExecutor.DynamicExecutionException.Kind.TIMEOUT, e.kind(),
+                    "期限边界的失败只能是 TIMEOUT：" + e.getMessage());
+            }
+        }
     }
 }

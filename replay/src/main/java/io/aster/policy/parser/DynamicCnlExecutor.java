@@ -736,7 +736,9 @@ public class DynamicCnlExecutor {
         ResourceLimits limits = ResourceLimits.newBuilder()
             .statementLimit(10_000_000L, null)
             .build();
-        try (Context polyglotContext = Context.newBuilder("aster")
+        Context polyglotContext = null;
+        try {
+            polyglotContext = Context.newBuilder("aster")
                 .engine(SHARED_ENGINE)  // 复用进程级 Engine，避免 per-request AOT 重做
                 .resourceLimits(limits)
                 .allowHostAccess(HostAccess.newBuilder(HostAccess.EXPLICIT)
@@ -750,12 +752,30 @@ public class DynamicCnlExecutor {
                 .allowCreateProcess(false)                  // 禁止创建子进程
                 .allowCreateThread(false)                   // 禁止创建线程
                 .allowNativeAccess(false)                   // 禁止本地代码访问
-                .build()) {
+                .build();
             return invokeUnderWatchdog(polyglotContext, entryJson, context);
         } catch (DynamicExecutionException e) {
             throw e;
         } catch (Exception e) {
             throw new DynamicExecutionException("Polyglot 执行失败: " + e.getMessage(), e);
+        } finally {
+            discard(polyglotContext);
+        }
+    }
+
+    /**
+     * 丢弃本次执行的 Context。关闭失败不改变执行结局：结果已在关闭前转成宿主值；
+     * 期限边界上看门狗可能正在并发关闭同一个 Context，此时这里的 close 会抛「已取消」，
+     * 若照 try-with-resources 语义上抛，就会把已正常完成的执行误报为失败。
+     */
+    private static void discard(Context polyglotContext) {
+        if (polyglotContext == null) {
+            return;
+        }
+        try {
+            polyglotContext.close();
+        } catch (Exception e) {
+            LOG.debugf("关闭 Polyglot Context 失败（可能已被看门狗关闭）: %s", e.getMessage());
         }
     }
 
@@ -763,9 +783,10 @@ public class DynamicCnlExecutor {
      * 在墙钟看门狗下执行入口函数。
      *
      * <p>到点由看门狗 {@code close(true)} 关闭 Context，执行线程随即在安全点抛出取消异常；
-     * 此时不论异常被包装成什么，都统一归为 {@link DynamicExecutionException.Kind#TIMEOUT}，
-     * 让调用方能区分「策略跑超时」与普通执行失败。Context 由调用方的 try-with-resources 丢弃，
-     * 从不复用，故这里无需处理「已关闭 Context 回池」的问题。
+     * 看门狗已触发且失败确由取消引起时，不论异常被包装成什么，都归为
+     * {@link DynamicExecutionException.Kind#TIMEOUT}，让调用方能区分「策略跑超时」与普通执行失败；
+     * 其余失败按真实错误上报。期限边界上 guest 已正常完成的，照常返回结果（见 {@link ExecutionWatchdog.Guard}）。
+     * Context 由调用方在 finally 中丢弃，从不复用，故这里无需处理「已关闭 Context 回池」的问题。
      */
     private static Object invokeUnderWatchdog(Context polyglotContext, String entryJson, Object[] context) {
         long timeoutMs = ExecutionWatchdog.configuredTimeoutMs();
@@ -773,7 +794,7 @@ public class DynamicCnlExecutor {
         try {
             return invokeEntry(polyglotContext, entryJson, context);
         } catch (RuntimeException e) {
-            if (watchdog.disarm()) {
+            if (watchdog.timedOut(e)) {
                 throw DynamicExecutionException.timeout(timeoutMs, e);
             }
             throw e;
