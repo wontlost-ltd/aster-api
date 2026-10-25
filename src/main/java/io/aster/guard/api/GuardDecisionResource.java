@@ -141,12 +141,7 @@ public class GuardDecisionResource {
     ApiQuotaGuard.GuardResult result = apiQuotaGuard.check(tenantId, quotaOwnerId);
     switch (result.verdict()) {
       case FORBIDDEN -> {
-        return Optional.of(Response.status(Response.Status.FORBIDDEN)
-            .entity(Map.of(
-                "error", "api_access_denied",
-                "message", "Free 计划不包含 Policy Execution API。请升级到 Pro/Team 或试用 Trial。"))
-            .type(MediaType.APPLICATION_JSON)
-            .build());
+        return Optional.of(apiAccessDenied());
       }
       case RATE_LIMITED -> {
         return Optional.of(Response.status(Response.Status.TOO_MANY_REQUESTS)
@@ -167,6 +162,10 @@ public class GuardDecisionResource {
     if (rate.allowed()) {
       return Optional.empty();
     }
+    // plan=free（RPS 上限 0）是「无权访问」而非「太快」：与月度配额 FORBIDDEN 同为 403
+    if (rate.forbidden()) {
+      return Optional.of(apiAccessDenied());
+    }
     return Optional.of(Response.status(Response.Status.TOO_MANY_REQUESTS)
         .header("Retry-After", "1")
         .entity(Map.of(
@@ -176,6 +175,15 @@ public class GuardDecisionResource {
             "rps_used", rate.used()))
         .type(MediaType.APPLICATION_JSON)
         .build());
+  }
+
+  private static Response apiAccessDenied() {
+    return Response.status(Response.Status.FORBIDDEN)
+        .entity(Map.of(
+            "error", "api_access_denied",
+            "message", "Free 计划不包含 Policy Execution API。请升级到 Pro/Team 或试用 Trial。"))
+        .type(MediaType.APPLICATION_JSON)
+        .build();
   }
 
   private static int evidenceStatusOf(String code) {

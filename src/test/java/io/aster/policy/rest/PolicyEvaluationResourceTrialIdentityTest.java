@@ -402,6 +402,31 @@ class PolicyEvaluationResourceTrialIdentityTest {
     }
 
     @Test
+    @DisplayName("#393: 月度配额 fail-open 但限流 plan=free（上限 0）→ 403 api_access_denied，而非 429")
+    void quotaGateMapsFreePlanRateRejectionTo403() throws Exception {
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("team-1");
+        RoutingContext rctx = mock(RoutingContext.class);
+        when(rctx.request()).thenReturn(mock(HttpServerRequest.class));
+        when(rctx.response()).thenReturn(mock(HttpServerResponse.class));
+
+        ApiQuotaGuard quota = mock(ApiQuotaGuard.class);
+        when(quota.check(anyString(), anyString())).thenReturn(
+            new ApiQuotaGuard.GuardResult(ApiQuotaGuard.Verdict.ALLOW, 50_000L, 0L, 0, null));
+        when(quota.checkRateAsync(anyString(), anyString(), anyString()))
+            .thenReturn(io.smallrye.mutiny.Uni.createFrom().item(new ApiQuotaGuard.RateCheck(false, 0, 0)));
+
+        PolicyEvaluationResource r = newResource(quota, tc, rctx, teamKeyCtx());
+        io.smallrye.mutiny.Uni<?> gate = (io.smallrye.mutiny.Uni<?>)
+            invoke(r, "quotaGate", new Class<?>[]{String.class}, "/api/v1/policies/evaluate");
+
+        jakarta.ws.rs.WebApplicationException ex = org.junit.jupiter.api.Assertions.assertThrows(
+            jakarta.ws.rs.WebApplicationException.class, () -> gate.await().indefinitely());
+        assertEquals(403, ex.getResponse().getStatus());
+        assertEquals("api_access_denied", ((java.util.Map<?, ?>) ex.getResponse().getEntity()).get("error"));
+    }
+
+    @Test
     @DisplayName("ADR 0015: 异步路径 recordApiCall 7 参按 (quotaOwnerId, userId, tenantId, apiKeyId, …) 顺序上报")
     void recordApiCallWithCapturedIdentityPassesQuotaOwnerFirst() throws Exception {
         ApiQuotaGuard quota = mock(ApiQuotaGuard.class);

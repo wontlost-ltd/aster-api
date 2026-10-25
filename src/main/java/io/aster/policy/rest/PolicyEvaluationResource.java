@@ -1497,6 +1497,9 @@ public class PolicyEvaluationResource {
         return apiQuotaGuard.checkRateAsync(tenantId(), quotaOwnerId(), apiKeyId)
             .invoke(rate -> writeRateHeaders(response, rate))
             .invoke(rate -> {
+                if (rate.forbidden()) {
+                    throw apiAccessDenied();
+                }
                 if (!rate.allowed()) {
                     throw rateLimitExceeded(rate);
                 }
@@ -1510,6 +1513,19 @@ public class PolicyEvaluationResource {
         }
         response.putHeader("X-RateLimit-Limit", String.valueOf(rate.limit()));
         response.putHeader("X-RateLimit-Remaining", String.valueOf(Math.max(0, rate.limit() - rate.used())));
+    }
+
+    /** Free 档不开放 API：月度配额 FORBIDDEN 与限流 plan=free 共用同一个 403 响应体。 */
+    private static WebApplicationException apiAccessDenied() {
+        return new WebApplicationException(
+            jakarta.ws.rs.core.Response.status(403)
+                .entity(Map.of(
+                    "error", "api_access_denied",
+                    "message", "Free 计划不包含 Policy Execution API。请升级到 Pro/Team 或试用 Trial。"
+                ))
+                .type(MediaType.APPLICATION_JSON)
+                .build()
+        );
     }
 
     private static WebApplicationException rateLimitExceeded(ApiQuotaGuard.RateCheck rate) {
@@ -1578,15 +1594,7 @@ public class PolicyEvaluationResource {
         }
 
         switch (result.verdict()) {
-            case FORBIDDEN -> throw new WebApplicationException(
-                jakarta.ws.rs.core.Response.status(403)
-                    .entity(Map.of(
-                        "error", "api_access_denied",
-                        "message", "Free 计划不包含 Policy Execution API。请升级到 Pro/Team 或试用 Trial。"
-                    ))
-                    .type(MediaType.APPLICATION_JSON)
-                    .build()
-            );
+            case FORBIDDEN -> throw apiAccessDenied();
             case RATE_LIMITED -> throw new WebApplicationException(
                 jakarta.ws.rs.core.Response.status(429)
                     .entity(Map.of(

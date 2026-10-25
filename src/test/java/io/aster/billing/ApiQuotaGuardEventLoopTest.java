@@ -254,6 +254,20 @@ class ApiQuotaGuardEventLoopTest {
     }
 
     @Test
+    void free_monthlyAndPrecheckMiss_tenantPlanCachedFree_rateGateIsForbiddenNotRateLimited() throws Exception {
+        // 缓存组合：owner 无月度快照、precheck 未命中 → check fail-open 放行；租户 plan 缓存已知为 free
+        String freeTenant = "free-" + UUID.randomUUID();
+        tenantPlans.put(freeTenant, new PlanInfo("free", null, false, 0, 0L, 0L, 0));
+
+        assertThat(checkOnEventLoop(freeTenant).verdict()).isEqualTo(ApiQuotaGuard.Verdict.ALLOW);
+        List<ApiQuotaGuard.RateCheck> results = rateChecksFromEventLoop(freeTenant, 3);
+
+        // 必须表达为「无权访问」（调用方映射 403），而不是「超速」（429）
+        assertThat(results).allMatch(ApiQuotaGuard.RateCheck::forbidden);
+        assertThat(results).noneMatch(ApiQuotaGuard.RateCheck::allowed);
+    }
+
+    @Test
     void hardCap_concurrentInFlightOvershoot_isBoundedByInFlightCount() throws Exception {
         snapshot.setUser(new UserSnapshot(owner, "pro", 5L, "active", null, null));
         await().atMost(WAIT).until(() -> checkOnEventLoop().limit() == 5L);

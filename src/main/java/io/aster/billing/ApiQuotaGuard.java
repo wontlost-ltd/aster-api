@@ -324,6 +324,15 @@ public class ApiQuotaGuard {
     public record RateCheck(boolean allowed, int used, int limit) {
         /** 未参与限流（plan gate 关闭 / 无 key / plan 未知时 fail-open）。 */
         public static final RateCheck UNCHECKED = new RateCheck(true, 0, 0);
+
+        /**
+         * plan 本身不开放 API（free，RPS 上限 0）：语义是「无权访问」而不是「太快」，
+         * 调用方必须映射为与月度配额 FORBIDDEN 相同的 403，而不是 429。
+         * 发生在月度快照与 precheck 都未命中（check 已 fail-open）而租户 plan 缓存已知为 free 时。
+         */
+        public boolean forbidden() {
+            return !allowed && limit == 0;
+        }
     }
 
     /**
