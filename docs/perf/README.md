@@ -11,6 +11,7 @@ regressions can be compared against a known baseline.
 | `loadtest-results.txt` | 2026-05-24 | First sweep — found GraalVM Engine-per-request OOM at c≥4. Before/after numbers for `fix(eval): share GraalVM Engine`. |
 | `bench-results.txt` | 2026-05-24 | 3 container sizes × 2 endpoints × 5 concurrencies. Source for the "Medium is sweet spot" recommendation. |
 | `k8s-bench-results.txt` | 2026-05-24 | K8s-recommended spec (2 CPU / 1 GB heap), 10 min sustained at c=16 and c=64. Source for the 5000万次/天 daily throughput estimate. |
+| `prod-loadtest-20261026.md` | 2026-10-26 | **生产环境**全链路压测（Cloudflare → Tunnel → Traefik → aster-api）：evaluate 稳定 ≈50 RPS、匿名读 ≈150 RPS，瓶颈分析、并发用户估算与按优先级的扩展方案（中文）。 |
 
 ## Headline numbers — `/api/v1/policies/evaluate` (DB-backed, prod path)
 
