@@ -133,9 +133,9 @@ class UiMessagesServiceTest {
     // ──────────────────────────────────────── ADR 0021 运行时覆盖层
 
     @Test
-    @DisplayName("无 Redis：resolveEntry 回退 classpath（handleReload 仍从 classpath 加载）")
+    @DisplayName("无 Redis：reload 回退 classpath（handleReload 仍从 classpath 加载）")
     void noRedisFallsBackToClasspath() {
-        // 无 Redis → loadFromRedis MISS → resolveEntry 回退 classpath。
+        // 无 Redis → loadFromRedis MISS → reload 回退 classpath。
         UiMessagesService svc = new UiMessagesService();
         svc.handleReload("{\"locale\":\"en-US\"}");
         assertThat(svc.get("en-US")).isPresent();

@@ -44,7 +44,8 @@ public class RedisBroadcastSupervisor {
     /** 退订等待上限：停机路径上逐频道同步退订，取短值以免拖慢停机。 */
     static final Duration UNSUBSCRIBE_TIMEOUT = Duration.ofSeconds(2);
 
-    static final ResilientRedisSubscriber.Backoff DEFAULT_BACKOFF = new ResilientRedisSubscriber.Backoff(
+    /** Redis 瞬时故障的统一重试退避（1s → 60s，带抖动）；订阅之外的 Redis 读重试（如 ui-messages 覆盖层）也复用它。 */
+    public static final ResilientRedisSubscriber.Backoff DEFAULT_BACKOFF = new ResilientRedisSubscriber.Backoff(
         Duration.ofSeconds(1), Duration.ofSeconds(60), () -> ThreadLocalRandom.current().nextDouble());
 
     /** 为频道构造一次性订阅动作；测试可替换为假实现。 */
