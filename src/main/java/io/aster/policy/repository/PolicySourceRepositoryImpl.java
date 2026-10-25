@@ -95,4 +95,15 @@ public class PolicySourceRepositoryImpl implements PolicySourceRepository {
 
         return PolicyCatalog.<PolicyCatalog>list("tenantId", tenantId);
     }
+
+    @Override
+    public List<PolicyVersion> findDefaultActiveVersions(int limit) {
+        if (limit <= 0) {
+            return Collections.emptyList();
+        }
+        return PolicyVersion.<PolicyVersion>find(
+            "active = true and id in (select c.defaultVersionId from PolicyCatalog c) "
+                + "order by activatedAt desc nulls last, id desc"
+        ).page(0, limit).list();
+    }
 }

@@ -61,4 +61,12 @@ public interface PolicySourceRepository {
      * @return 租户下全部策略目录
      */
     List<PolicyCatalog> findByTenant(String tenantId);
+
+    /**
+     * 编译缓存预热候选：各策略目录当前的默认且启用的版本，按最近激活优先。
+     *
+     * @param limit 最多返回条数
+     * @return 候选版本（可能少于 limit）
+     */
+    List<PolicyVersion> findDefaultActiveVersions(int limit);
 }

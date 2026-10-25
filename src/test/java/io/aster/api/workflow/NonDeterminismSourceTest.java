@@ -121,11 +121,14 @@ class NonDeterminismSourceTest {
         //   不持久化、不参与 workflow 确定性重放，安全）
         // - GuardDecisionService: waitSeconds 轮询的单调截止时钟（ADR 0040 §3.1），
         //   只决定何时停止回读，不持久化、不参与 workflow 确定性重放
+        // - CompiledPolicyWarmup: 启动编译预热的单调截止时钟（issue #392），只决定何时停止预热
+        //   与 readiness 何时放行，不持久化、不参与 workflow 确定性重放
         Assertions.assertThat(nanoMatches.keySet())
                 .containsExactlyInAnyOrder(
                         "src/main/java/io/aster/policy/api/PolicyEvaluationService.java",
                         "src/main/java/io/aster/policy/cache/PolicyVersionResolutionCache.java",
-                        "src/main/java/io/aster/guard/GuardDecisionService.java"
+                        "src/main/java/io/aster/guard/GuardDecisionService.java",
+                        "src/main/java/io/aster/policy/cache/CompiledPolicyWarmup.java"
                 );
     }
 
