@@ -68,10 +68,10 @@ R3–R5 之后，3 台 master 上的 **etcd 就绪检查失败持续 20 分钟�
 
 | 编号 | 问题 | 影响 |
 |---|---|---|
-| aster-api#391 | ui-messages 启动时 Redis 读取超时后永不补读，`/api/v1/messages/{locale}` 在该副本 404；每次冷启动都复现 | 两副本返回不一致；cloud 侧有三级回退，用户界面基本不受影响 |
-| aster-api#392 | 冷缓存下多个版本并发首次评估，`compileOnce` 事务提交失败 → 500 | 每次发版/扩容/重启的冷启动窗口内客户可见错误 |
-| aster-api#393 | 配额快照在 event-loop 上调用阻塞 Redis；`checkRate` 在 event-loop 上同步等待外呼 | 本地计数器从不递增、200% 硬上限失效；evaluate 吞吐被限制在约 50 RPS |
-| 执行时限缺口 | `DynamicCnlExecutor`（`/evaluate-source`、`/evaluate-json`、What-If）缺少墙钟上限；Aster 语言图灵完备，深递归/指数分支策略可长时间占用执行许可与 CPU | 匿名试用端点可被少量请求长时间占满（修复见对应 PR） |
+| aster-api#391（修复 PR #395） | ui-messages 启动时 Redis 读取超时后永不补读，`/api/v1/messages/{locale}` 在该副本 404；每次冷启动都复现。根因：classpath 基础文案实际存在，Redis 读错误被当作「无文案」导致内存为空 | 两副本返回不一致；cloud 侧有三级回退，用户界面基本不受影响 |
+| aster-api#392（修复 PR #398） | 冷缓存下多个版本并发首次评估，`compileOnce` 事务提交失败 → 500。本地未能复现原始 500；修复消除结构性诱因（编译移出事务、持连接时间从秒级降到毫秒级）并加就绪前预热 | 每次发版/扩容/重启的冷启动窗口内客户可见错误 |
+| aster-api#393（修复 PR #397） | 配额快照在 event-loop 上调用阻塞 Redis；`checkRate` 在 event-loop 上同步等待外呼 | 本地计数器从不递增、200% 硬上限失效；evaluate 吞吐被限制在约 50 RPS |
+| 执行时限缺口（修复 PR #396） | `DynamicCnlExecutor`（`/evaluate-source`、`/evaluate-json`、What-If）缺少墙钟上限；Aster 语言图灵完备，深递归/指数分支策略可长时间占用执行许可与 CPU | 匿名试用端点可被少量请求长时间占满；修复后统一 5s 墙钟上限、超时 422 `execution_timeout` 并及时归还许可 |
 | API key 快照失效 | 直接删除 key/用户的数据库行后，Redis `aq:apikey:*` 快照（TTL 1h）仍可让该 key 通过鉴权最长 1 小时 | 仅在绕过正常撤销流程（如直接删库、账户清除）时出现 |
 | HPA 配置 | requests 100m 使 70% CPU 目标形同虚设；80% 内存目标对 JVM（堆不回缩）意味着**永不缩容**（压测后停在 6 副本，`ceil(6×69/80)=6`） | 资源浪费、扩容风暴 |
 
