@@ -143,6 +143,18 @@ class GuardDecisionResourceQuotaTest {
   }
 
   @Test
+  void 限流裁决为free档时返回403_api_access_denied而非429() {
+    // 月度配额已 fail-open 放行，但限流按 plan=free（上限 0）拒绝：语义是无权访问
+    when(apiQuotaGuard.checkRate(TENANT, API_KEY_ID)).thenReturn(new ApiQuotaGuard.RateCheck(false, 0, 0));
+
+    Response resp = post(MODULE);
+
+    assertThat(resp.statusCode()).isEqualTo(403);
+    assertThat(resp.jsonPath().getString("error")).isEqualTo("api_access_denied");
+    verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), any(), anyLong());
+  }
+
+  @Test
   void 成功决策计量一次() {
     Response resp = post(MODULE);
 

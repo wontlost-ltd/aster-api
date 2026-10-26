@@ -10,18 +10,11 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.time.YearMonth;
-import java.time.ZoneOffset;
-import java.util.HexFormat;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -38,6 +31,18 @@ import java.util.concurrent.TimeUnit;
  *   - apiCallsLimit==-1 → 永远放行（Enterprise）
  *
  * 调用次数记录由 recordAsync(...) 异步走，不阻塞热路径。
+ *
+ * <p>线程模型（#393）：
+ * <ul>
+ *   <li>{@link #check}（月度配额）在 Vert.x event-loop 上同步调用，只读进程内视图——视图由
+ *       {@link io.aster.billing.snapshot.LocalQuotaSnapshotService#peekOwner} 异步从 Redis 加载；</li>
+ *   <li>{@link #checkRateAsync}（每秒限流）返回 {@code Uni}，由调用方组合进请求链：裁决来自 Redis
+ *       原子 INCR 的回包，热路径不阻塞；{@link #checkRate} 是同一逻辑的同步版，仅供 worker 线程。</li>
+ * </ul>
+ *
+ * <p>200% 硬上限不是原子封顶：check 读用量与成功后的 INCR 分离，并发中的请求可能同时看到
+ * 「未超限」而全部放行，超出量以「判定时已在途的请求数」为上界，此后的 check 立即 429。
+ * 这与产品口径一致——100%~200% 本就是放行区间，硬上限防的是持续滥用而非单次并发尖峰。
  */
 @ApplicationScoped
 public class ApiQuotaGuard {
@@ -73,6 +78,9 @@ public class ApiQuotaGuard {
 
     @Inject
     io.aster.billing.snapshot.LocalQuotaSnapshotService snapshot;
+
+    @Inject
+    ApiKeyRateLimiter rateLimiter;
     // P0-R19: WebClient DCL consolidated into SharedWebClient
 
     /**
@@ -86,9 +94,7 @@ public class ApiQuotaGuard {
      *   2. {@link java.net.http.HttpClient}（{@link io.aster.common.http.SharedHttpClient}
      *      共享单例）替代 WebClient，{@code send()} 同步阻塞 + 复用 keep-alive
      *      连接 + TLS session resumption。
-     *   3. event-loop 检测：caller 在 vert.x-eventloop-thread-N 上时丢到 4-worker
-     *      offload pool 跑，本线程同步 get() 等结果（caller 终归在 RESTEasy 调度，
-     *      不在 event loop）。
+     *   3. cache miss 时立即 fail-open，precheck 丢到 4-worker pool 后台预热。
      *   4. precheck timeout 收紧到 1.5s（fail-open 是兜底，cf 边缘正常 ~200ms，
      *      等 10s 比立刻 fail-open 更糟）。
      */
@@ -128,12 +134,12 @@ public class ApiQuotaGuard {
     }
 
     /**
-     * 同步检查（< 5ms hot path）：本地 redis snapshot 优先
+     * 同步检查（纯内存，event-loop 安全）：本地 snapshot 视图优先
      *
      * SNAP-5 改造：
-     *   1. 先查 redis user snapshot（命中 → 0 cloud RTT）
+     *   1. 先查进程内配额视图（由 Redis user snapshot + 月度计数异步加载，命中 → 0 RTT）
      *   2. miss → lazy fetch cloud /precheck + 写 redis（首次 + 降级路径）
-     *   3. 月度计数从 redis counter:user:{id}:m:{period} 读（双写真源）
+     *   3. 月度计数取 redis counter:user:{id}:m:{period}（双写真源），本副本 INCR 回包即时回写
      *
      * <p>ADR 0015 §3：快照、计数器、precheck 与 Caffeine 全部按 {@code quotaOwnerId} 取键——
      * 个人 key 即调用者 userId，团队 key 为 team owner，成员调用共用 owner 的月度池。
@@ -159,14 +165,15 @@ public class ApiQuotaGuard {
         long used;
         boolean apiAccessAllowed;
         boolean unlimited;
-        java.util.Optional<io.aster.billing.snapshot.UserSnapshot> local = snapshot.getUser(quotaOwnerId);
+        java.util.Optional<io.aster.billing.snapshot.LocalQuotaSnapshotService.LocalQuota> local =
+            snapshot.peekOwner(quotaOwnerId);
 
         if (local.isPresent()) {
             if (currentSpan != null) {
                 currentSpan.setAttribute("aster.quota.source", "local");
             }
             // Hot path: redis 命中
-            io.aster.billing.snapshot.UserSnapshot s = local.get();
+            io.aster.billing.snapshot.UserSnapshot s = local.get().user();
             limit = s.apiCallsLimit();
             apiAccessAllowed = s.apiAccessAllowed();
             unlimited = s.unlimitedApi();
@@ -179,7 +186,7 @@ public class ApiQuotaGuard {
             // monthlyUsed 给本地 counter 播种的修法会引入 double-count 风险，
             // 需更大改动，不在本次范围。如需收紧：UserSnapshot 携带 baseline
             // monthlyUsed，此处取 max(localCounter, baseline)。
-            used = snapshot.getCounter(quotaOwnerId);
+            used = local.get().used();
         } else {
             // R32 hotfix v3: 先查进程内 Caffeine（5min TTL），命中即 0 RTT。
             PrecheckResult cached = precheckCache == null ? null
@@ -242,95 +249,91 @@ public class ApiQuotaGuard {
     }
 
     /**
-     * 同步检查 per-API-key per-second 限流（< 50ms；任何故障 fail-open）。
+     * 异步检查 per-API-key per-second 限流（event-loop 安全，调用方须组合进请求 Uni）。
      *
-     * R32 hotfix v3：原来用 Vert.x WebClient + 700ms future.get，event-loop
-     * 上调用同样会被回调排队卡死。改成 SharedHttpClient + 同步 send()
-     * + event-loop 检测 offload。HMAC 签名链路不变。
+     * <p>#393 之前每个请求都把 cloud {@code /api/internal/api/rate-check} 的同步 HTTP 丢进
+     * 4 线程池，再在 event-loop 上 {@code Future.get(1s)} 等结果：既阻塞 event-loop，又把
+     * 每个 evaluate 绑上 ~100ms 出站 RTT。现由 {@link ApiKeyRateLimiter} 按同一算法在本服务
+     * Redis 上原子计数裁决。
+     *
+     * <p>plan 取值（不阻塞）：租户 plan 缓存 → 配额 owner 的本地快照 → 都未知则本次 fail-open
+     * （与旧实现「plan 查询失败即放行」一致，后台预热完成后下一次请求即按真实档位限流）。
+     * 不能拿 {@code lookupPlan} 的 fail-open 值（pro）去限流：那会把 enterprise 冷启动限成 10 RPS。
+     * Free 档不靠这里拦截——月度 {@link #check} 对 apiCallsLimit==0 直接 403。
+     */
+    public io.smallrye.mutiny.Uni<RateCheck> checkRateAsync(String tenantId, String quotaOwnerId, String apiKeyId) {
+        if (!config.enabled() || apiKeyId == null || apiKeyId.isBlank()) {
+            return io.smallrye.mutiny.Uni.createFrom().item(RateCheck.UNCHECKED);
+        }
+        String plan = knownPlan(tenantId, quotaOwnerId);
+        if (plan == null) {
+            return io.smallrye.mutiny.Uni.createFrom().item(RateCheck.UNCHECKED);
+        }
+        return resumeOnCaller(rateLimiter.acquire(apiKeyId, plan));
+    }
+
+    /**
+     * 让裁决结果回到调用方的 Vert.x（duplicated）上下文再向下游发射。
+     *
+     * <p>Redis 回包通常本就在该上下文，但超时分支由 Mutiny 的定时线程触发；若不切回，调用方
+     * 后续的 chain（读 routingContext / 请求作用域 bean、抢 evaluate-source 许可）会跑在
+     * 非请求线程上。assembly 时不在 Vert.x 上下文（单测 / worker）则原样返回。
+     */
+    static <T> io.smallrye.mutiny.Uni<T> resumeOnCaller(io.smallrye.mutiny.Uni<T> uni) {
+        io.vertx.core.Context caller = io.vertx.core.Vertx.currentContext();
+        if (caller == null) {
+            return uni;
+        }
+        return uni.emitOn(task -> {
+            if (io.vertx.core.Vertx.currentContext() == caller) {
+                task.run();
+            } else {
+                caller.runOnContext(ignored -> task.run());
+            }
+        });
+    }
+
+    /**
+     * 同步版每秒限流——<b>仅限 worker 线程</b>（如返回 {@code Response} 的 GuardDecisionResource）：
+     * worker 上 {@code lookupPlan} 可同步取到真实 plan，限流裁决本身带短超时与本地兜底，不会久等。
      */
     public RateCheck checkRate(String tenantId, String apiKeyId) {
-        if (apiKeyId == null || apiKeyId.isBlank()) {
-            return new RateCheck(true, 0, 0);
+        if (!config.enabled() || apiKeyId == null || apiKeyId.isBlank()) {
+            return RateCheck.UNCHECKED;
         }
         String plan;
         try {
             plan = planGateService.lookupPlan(tenantId).plan();
         } catch (Exception e) {
-            return new RateCheck(true, 0, 0);
+            return RateCheck.UNCHECKED;
         }
+        return rateLimiter.acquire(apiKeyId, plan).await().atMost(java.time.Duration.ofSeconds(2));
+    }
+
+    /** 非阻塞取已确认的 plan：租户缓存优先，其次配额 owner 快照；都未知返回 null。 */
+    private String knownPlan(String tenantId, String quotaOwnerId) {
         try {
-            String threadName = Thread.currentThread().getName();
-            if (threadName != null && threadName.startsWith("vert.x-eventloop") && precheckPool != null) {
-                // 关键：offload 后必须带超时 get()，否则 event-loop 线程会卡在
-                // 队列等待上 —— precheckPool 只有 4 线程且与 precheck warmup 共享，
-                // 高并发 cache-miss / cloud 抖动时任务可能排队，无超时 get() 会把
-                // 阻塞从"单个慢请求"放大成"整个 event-loop 停摆"，延迟扩散到
-                // 不相关请求。HTTP 自身超时 700ms，这里给 1s 上限（含排队 + 调度
-                // 余量），超时按 fail-open 处理（rate-check 是软控制，真正的访问
-                // 鉴权在 ApiKeyVerifierService）。
-                java.util.concurrent.Future<RateCheck> f =
-                    precheckPool.submit(() -> checkRateSync(apiKeyId, plan));
-                try {
-                    return f.get(1, java.util.concurrent.TimeUnit.SECONDS);
-                } catch (java.util.concurrent.TimeoutException te) {
-                    f.cancel(true);
-                    LOG.debugf("checkRate offload 超时(>1s)，按 fail-open 放行 apiKeyId=%.8s", apiKeyId);
-                    return new RateCheck(true, 0, 0);
-                }
-            }
-            return checkRateSync(apiKeyId, plan);
+            return planGateService.peekPlan(tenantId).map(PlanInfo::plan)
+                .or(() -> snapshot.peekOwner(quotaOwnerId).map(q -> q.user().plan()))
+                .orElse(null);
         } catch (Exception e) {
-            return new RateCheck(true, 0, 0);
+            return null;
         }
     }
 
-    private RateCheck checkRateSync(String apiKeyId, String plan) {
-        try {
-            URI baseUri = URI.create(config.cloudInternalUrl());
-            String path = "/api/internal/api/rate-check";
-            URI fullUri = baseUri.resolve(path);
+    public record RateCheck(boolean allowed, int used, int limit) {
+        /** 未参与限流（plan gate 关闭 / 无 key / plan 未知时 fail-open）。 */
+        public static final RateCheck UNCHECKED = new RateCheck(true, 0, 0);
 
-            String bodyJson = new JsonObject()
-                .put("apiKeyId", apiKeyId)
-                .put("plan", plan)
-                .encode();
-
-            // v2 签名：绑定 nonce + bodyHash（见 InternalCallSigner）。
-            // 旧 3 字段 canonical 不绑 body，一次签名即可换 body 无限重放。
-            var signed = config.hmacKey()
-                .map(k -> InternalCallSigner.sign(k, "POST", path, bodyJson))
-                .orElse(new InternalCallSigner.Signed(
-                    String.valueOf(System.currentTimeMillis() / 1000), "", ""));
-            String timestamp = signed.timestamp();
-            String signature = signed.signature();
-
-            HttpRequest request = HttpRequest.newBuilder()
-                .uri(fullUri)
-                .timeout(Duration.ofMillis(700))
-                .header("X-Aster-Timestamp", String.valueOf(timestamp))
-                .header("X-Aster-Signature", signature)
-                .header("X-Aster-Nonce", signed.nonce())
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(bodyJson, StandardCharsets.UTF_8))
-                .build();
-
-            HttpResponse<String> resp = sharedHttpClient.client()
-                .send(request, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() != 200) {
-                return new RateCheck(true, 0, 0);
-            }
-            JsonObject json = new JsonObject(resp.body());
-            return new RateCheck(
-                json.getBoolean("allowed", true),
-                json.getInteger("used", 0),
-                json.getInteger("limit", 0)
-            );
-        } catch (Exception e) {
-            return new RateCheck(true, 0, 0);
+        /**
+         * plan 本身不开放 API（free，RPS 上限 0）：语义是「无权访问」而不是「太快」，
+         * 调用方必须映射为与月度配额 FORBIDDEN 相同的 403，而不是 429。
+         * 发生在月度快照与 precheck 都未命中（check 已 fail-open）而租户 plan 缓存已知为 free 时。
+         */
+        public boolean forbidden() {
+            return !allowed && limit == 0;
         }
     }
-
-    public record RateCheck(boolean allowed, int used, int limit) {}
 
     /**
      * 异步记录一次调用 — fire-and-forget，不阻塞业务路径
@@ -346,13 +349,13 @@ public class ApiQuotaGuard {
         if (!config.enabled()) {
             return;
         }
-        // SNAP-5 双写步骤 1：本地 redis INCR（同步，hot path 真源，0 RTT）
+        // SNAP-5 双写步骤 1：本地 redis INCR（响应式 fire-and-forget，回包回写本地视图）
         // 仅 success 计数（与 cloud apiCallRecords 表 status='success' 过滤一致）。
         // 计数器按配额归属累加，必须与 check() 读取的键一致，否则团队 key 的用量永远读不到。
         String counterKey = quotaOwnerId != null ? quotaOwnerId : userId;
         if ("success".equals(status) && counterKey != null) {
             try {
-                snapshot.incrementCounter(counterKey);
+                snapshot.incrementCounter(counterKey).subscribe().with(ignored -> { });
             } catch (Exception e) {
                 LOG.warnf("local counter incr failed quotaOwnerId=%s: %s", counterKey, e.getMessage());
             }
@@ -508,16 +511,6 @@ public class ApiQuotaGuard {
 
     private WebClient getClient() {
         return sharedWebClient.client();
-    }
-
-    private static String sign(String key, String message) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            return HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException("HMAC 签名失败", e);
-        }
     }
 
     private static String urlEncode(String s) {

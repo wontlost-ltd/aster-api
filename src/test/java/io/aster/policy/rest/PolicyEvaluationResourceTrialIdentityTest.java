@@ -268,8 +268,13 @@ class PolicyEvaluationResourceTrialIdentityTest {
             invoke(r, "enforceApiQuota", new Class<?>[]{String.class},
                 "/api/v1/policies/evaluate-source");
 
+        // 完整闸门（含异步每秒限流）同样整体旁路
+        ((io.smallrye.mutiny.Uni<?>) invoke(r, "quotaGate", new Class<?>[]{String.class},
+            "/api/v1/policies/evaluate-source")).await().indefinitely();
+
         verify(quota, never()).check(anyString(), anyString());
         verify(quota, never()).checkRate(anyString(), anyString());
+        verify(quota, never()).checkRateAsync(any(), any(), any());
 
         verify(resp, never()).putHeader(eqMatch("X-Quota-Limit"), anyString());
         verify(resp, never()).putHeader(eqMatch("X-Quota-Remaining"), anyString());
@@ -383,15 +388,42 @@ class PolicyEvaluationResourceTrialIdentityTest {
         ApiQuotaGuard quota = mock(ApiQuotaGuard.class);
         when(quota.check(anyString(), anyString())).thenReturn(
             new ApiQuotaGuard.GuardResult(ApiQuotaGuard.Verdict.ALLOW, 1000L, 10L, 1, null));
-        when(quota.checkRate(anyString(), anyString())).thenReturn(new ApiQuotaGuard.RateCheck(true, 1, 10));
+        when(quota.checkRateAsync(anyString(), anyString(), anyString()))
+            .thenReturn(io.smallrye.mutiny.Uni.createFrom().item(new ApiQuotaGuard.RateCheck(true, 1, 10)));
 
         PolicyEvaluationResource r = newResource(quota, tc, rctx, teamKeyCtx());
-        invoke(r, "enforceApiQuota", new Class<?>[]{String.class}, "/api/v1/policies/evaluate");
+        ((io.smallrye.mutiny.Uni<?>) invoke(r, "quotaGate", new Class<?>[]{String.class}, "/api/v1/policies/evaluate"))
+            .await().indefinitely();
 
         verify(quota, times(1)).check("team-1", "owner-1");
         verify(quota, never()).check(anyString(), eqMatch("member-1"));
-        // 每 key 限流桶不变：仍按 (tenantId, apiKeyId)
-        verify(quota, times(1)).checkRate("team-1", "key-1");
+        // 每 key 限流桶不变：仍按 (tenantId, apiKeyId)；owner 只用于在 plan 缓存未命中时取档位
+        verify(quota, times(1)).checkRateAsync("team-1", "owner-1", "key-1");
+    }
+
+    @Test
+    @DisplayName("#393: 月度配额 fail-open 但限流 plan=free（上限 0）→ 403 api_access_denied，而非 429")
+    void quotaGateMapsFreePlanRateRejectionTo403() throws Exception {
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("team-1");
+        RoutingContext rctx = mock(RoutingContext.class);
+        when(rctx.request()).thenReturn(mock(HttpServerRequest.class));
+        when(rctx.response()).thenReturn(mock(HttpServerResponse.class));
+
+        ApiQuotaGuard quota = mock(ApiQuotaGuard.class);
+        when(quota.check(anyString(), anyString())).thenReturn(
+            new ApiQuotaGuard.GuardResult(ApiQuotaGuard.Verdict.ALLOW, 50_000L, 0L, 0, null));
+        when(quota.checkRateAsync(anyString(), anyString(), anyString()))
+            .thenReturn(io.smallrye.mutiny.Uni.createFrom().item(new ApiQuotaGuard.RateCheck(false, 0, 0)));
+
+        PolicyEvaluationResource r = newResource(quota, tc, rctx, teamKeyCtx());
+        io.smallrye.mutiny.Uni<?> gate = (io.smallrye.mutiny.Uni<?>)
+            invoke(r, "quotaGate", new Class<?>[]{String.class}, "/api/v1/policies/evaluate");
+
+        jakarta.ws.rs.WebApplicationException ex = org.junit.jupiter.api.Assertions.assertThrows(
+            jakarta.ws.rs.WebApplicationException.class, () -> gate.await().indefinitely());
+        assertEquals(403, ex.getResponse().getStatus());
+        assertEquals("api_access_denied", ((java.util.Map<?, ?>) ex.getResponse().getEntity()).get("error"));
     }
 
     @Test
