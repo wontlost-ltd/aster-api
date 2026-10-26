@@ -745,6 +745,20 @@ class InternalCallerFilterTest {
             InternalCallerFilter.classify("/api/v1/policies/export/cedarX", false, false, false, false, true));
     }
 
+    // aster-cloud#604：源码编译双通道，带内部调用头才要求 HMAC，否则保持匿名只读放行。
+    @Test
+    void compileRequiresHmacOnlyWithInternalCallerHeaders() {
+        assertEquals(Classification.REQUIRE_HMAC,
+            InternalCallerFilter.classify("/api/v1/policies/compile", false, false, false, false, true));
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/policies/compile", false, false, false, false, false));
+        // public/trial 旁路只作用于 evaluate-source，不会把带内部头的编译请求降级为旁路
+        assertEquals(Classification.REQUIRE_HMAC,
+            InternalCallerFilter.classify("/api/v1/policies/compile", true, true, true, true, true));
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/policies/compileX", false, false, false, false, true));
+    }
+
     // ADR 0042 §4.2：from-evidence 恒要求 HMAC；审批与决策回读仅在带内部调用头时要求 HMAC。
     @Test
     void guardFromEvidenceAlwaysRequiresHmac() {

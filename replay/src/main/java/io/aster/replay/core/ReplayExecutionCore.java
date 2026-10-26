@@ -142,8 +142,11 @@ public final class ReplayExecutionCore {
      * <p>ADR 0014 线C：发布的策略可携带其快照领域词汇，使执行端规范化阶段
      * 能翻译用户自定义术语。词汇为空或格式非法时返回 null（退化为仅内置），
      * 不阻断执行——执行端解析仍可在 builtin 词汇下进行。
+     *
+     * <p>公开为静态方法，供编译端点（保存门禁）复用同一构建口径，保证「编译通过」与「执行
+     * 可解析」对同一份词汇得出一致结论。
      */
-    private IdentifierIndex buildVocabularyIndex(Map<String, Object> vocabulary) {
+    public static IdentifierIndex buildVocabularyIndex(Map<String, Object> vocabulary) {
         if (vocabulary == null || vocabulary.isEmpty()) {
             return null;
         }

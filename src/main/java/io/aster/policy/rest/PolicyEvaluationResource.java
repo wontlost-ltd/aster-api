@@ -517,6 +517,8 @@ public class PolicyEvaluationResource {
     ) {
         // ADR 0041 §3：agent 在执行前校验（先于配额与并发闸门），非法即 400——不执行、不计费、不落链
         final AgentIdentity agent = validatedAgent(request.agent());
+        // 词汇表大小/形状先于配额与并发闸门校验：超限即 400，不计费、不占许可。
+        requireVocabularyWithinBounds(request.vocabulary());
         // ★simulate 必须绑定 HMAC 内部调用者（与 replayCapture 同门控，第九轮 P0-1b）：
         //   它是一个**免计费**开关，若信任裸 query boolean，任何外部调用方
         //   加个 ?simulate=true 就能白嫖配额、且不留 API 调用记录。
@@ -933,14 +935,27 @@ public class PolicyEvaluationResource {
      * 与 IDE compile-on-type 使用。匿名只读（同 /schema）：豁免 API-key 边界，
      * 防护靠 @Size 上限 + 匿名并发闸 + 限流。返回结构化 diagnostics（1-based 行列），
      * 前端 Monaco 可精确标错。
+     *
+     * <p>双通道：带内部调用头（cloud BFF）的请求由 InternalCallerFilter 强制验签，验签通过且
+     * body 声明 {@code allowStructural=true} 时结构词别名按已授权编译；其余调用方行为不变。
      */
     @POST
     @Path("/compile")
     @AnonymousAllowed
     public Uni<CompileResponse> compile(@Valid CompileRequest request) {
-        LOG.infof("Compiling CNL source (locale=%s, hasAliases=%b)",
+        LOG.infof("Compiling CNL source (locale=%s, hasAliases=%b, hasVocabulary=%b)",
             request.getLocaleOrDefault(),
-            request.aliasSet() != null && !request.aliasSet().isEmpty());
+            request.aliasSet() != null && !request.aliasSet().isEmpty(),
+            request.vocabulary() != null && !request.vocabulary().isEmpty());
+        // 结构词别名信任（aster-cloud#604）：请求体的 allowStructural 只是「请求」，必须叠加
+        // 「HMAC 已验签」才生效——与 evaluate-source 的 aliasesTrusted 同一信任口径
+        // （InternalCallerFilter 只在签名真正通过后盖章）。cloud BFF 仅在服务端核对过用户的
+        // 结构词授权后才发 true；匿名/未签名调用方即使传 true 也按未授权编译，结构词别名照旧被拒。
+        // 在切 worker 线程前读取请求上下文属性。
+        final boolean allowStructural = Boolean.TRUE.equals(request.allowStructural())
+            && io.aster.security.apikey.InternalCallerFilter.isHmacVerified(jaxrsCtx);
+        // 词汇表超限在抢匿名解析许可前就拒绝（400），与 evaluate-source 共用同一校验器。
+        requireVocabularyWithinBounds(request.vocabulary());
 
         return Uni.createFrom().item(() -> {
             if (!tryAcquireAnonParse()) {
@@ -976,8 +991,11 @@ public class PolicyEvaluationResource {
                         java.util.List.of(CompileDiagnostic.error(1, 1, "别名集无法处理，无法编译")),
                         "别名集序列化失败: " + se.getMessage());
                 }
+                // 领域词汇索引与执行端（ReplayExecutionCore）同一构建口径。
+                aster.core.identifier.IdentifierIndex vocabIndex =
+                    io.aster.replay.core.ReplayExecutionCore.buildVocabularyIndex(request.vocabulary());
                 CompilationResult result = policyCompiler.compile(
-                    request.source(), request.getLocaleOrDefault(), aliasSetJson);
+                    request.source(), request.getLocaleOrDefault(), aliasSetJson, vocabIndex, allowStructural);
                 return toCompileResponse(result);
             } catch (jakarta.ws.rs.BadRequestException bre) {
                 throw bre; // 400 直接上抛，不吞成编译失败
@@ -1069,6 +1087,23 @@ public class PolicyEvaluationResource {
     private static final int MAX_ALIASES_PER_KIND = 64;
     private static final int MAX_ALIAS_PHRASE_LENGTH = 256;
     private static final int MAX_ALIAS_KIND_LENGTH = 128;
+
+    /**
+     * 词汇表超出 {@link io.aster.policy.rest.model.VocabularyBounds} 上限时抛 400
+     * （{@code vocabulary_too_large}）。compile 与 evaluate-source 共用，保证两条路径口径一致。
+     */
+    static void requireVocabularyWithinBounds(Map<String, Object> vocabulary) {
+        String error = io.aster.policy.rest.model.VocabularyBounds.validate(vocabulary);
+        if (error == null) {
+            return;
+        }
+        throw new jakarta.ws.rs.BadRequestException(
+            jakarta.ws.rs.core.Response.status(400)
+                .type(MediaType.APPLICATION_JSON)
+                .entity(Map.of("error", io.aster.policy.rest.model.VocabularyBounds.ERROR_CODE,
+                    "message", error))
+                .build());
+    }
 
     /**
      * 校验 aliasSet 大小边界。超限返回错误消息（调用方回 400），否则返回 null。
