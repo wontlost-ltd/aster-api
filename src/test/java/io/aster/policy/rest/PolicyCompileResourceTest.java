@@ -74,6 +74,45 @@ public class PolicyCompileResourceTest {
             .body("success", is(true));
     }
 
+    // 领域词汇（ADR 0014 线C）：保存门禁带词汇编译，本地化术语翻成规范名后通过；
+    // 不带词汇时同一源码仍按改造前编译失败。body 形同 cloud 发送的 DomainVocabulary JSON。
+    private static final String VOCAB_SOURCE =
+        "Module insurance.custom.\\n\\nDefine Driver has age as Int.\\n\\n"
+        + "Rule evaluate given driver as Fahrer, produce Int:\\n  Return driver.alter.";
+    private static final String VOCAB_JSON = """
+        { "id": "insurance.custom", "name": "Custom", "locale": "en-US", "version": "user",
+          "structs": [ { "canonical": "Driver", "localized": "Fahrer", "kind": "struct" } ],
+          "fields": [ { "canonical": "age", "localized": "alter", "kind": "field", "parent": "Driver" } ],
+          "functions": [], "enumValues": [] }""";
+
+    @Test
+    public void compileLocalizedSource_withVocabulary_succeeds() {
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body("{ \"source\": \"" + VOCAB_SOURCE + "\", \"locale\": \"en-US\", \"vocabulary\": "
+                + VOCAB_JSON + " }")
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200)
+            .body("success", is(true));
+    }
+
+    @Test
+    public void compileLocalizedSource_withoutVocabulary_failsAsBefore() {
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body("{ \"source\": \"" + VOCAB_SOURCE + "\", \"locale\": \"en-US\" }")
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200)
+            .body("success", is(false))
+            .body("diagnostics", not(empty()));
+    }
+
     @Test
     public void compileBlankSource_returns400() {
         given()

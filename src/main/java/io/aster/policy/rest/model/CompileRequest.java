@@ -28,7 +28,19 @@ public record CompileRequest(
     // 用户自定义关键词别名（kind-name → 短语列表），可选。与执行/schema 一致：
     // 依赖别名的源码必须带 aliasSet 编译，否则会被误判为解析错误（前后端语义分裂）。
     @JsonProperty("aliasSet")
-    Map<String, List<String>> aliasSet
+    Map<String, List<String>> aliasSet,
+
+    // 请求把 aliasSet 中的结构词别名（Module/Rule/If/Otherwise/Match/When/Return 等）按已授权处理，可选。
+    // 仅是「请求」而非「授权」：只有 HMAC 已验签的内部调用方（cloud BFF，已在服务端核对
+    // 用户的结构词授权）传 true 才生效；匿名/未签名调用方传 true 一律忽略，按未授权编译。
+    @JsonProperty("allowStructural")
+    Boolean allowStructural,
+
+    // 领域词汇表（可选，ADR 0014 线C），形同 SourcePolicyRequest.vocabulary（DomainVocabulary JSON）。
+    // 保存门禁须与执行用同一份词汇编译，否则用本地化领域术语写的源码会在保存时被误判为解析错误。
+    // 为 null/空时与不带词汇编译完全一致；格式非法时退化为仅内置词汇（与执行端口径一致）。
+    @JsonProperty("vocabulary")
+    Map<String, Object> vocabulary
 ) {
     public String getLocaleOrDefault() {
         return locale == null || locale.isBlank() ? "en-US" : locale.trim();

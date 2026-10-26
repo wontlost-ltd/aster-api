@@ -933,14 +933,25 @@ public class PolicyEvaluationResource {
      * 与 IDE compile-on-type 使用。匿名只读（同 /schema）：豁免 API-key 边界，
      * 防护靠 @Size 上限 + 匿名并发闸 + 限流。返回结构化 diagnostics（1-based 行列），
      * 前端 Monaco 可精确标错。
+     *
+     * <p>双通道：带内部调用头（cloud BFF）的请求由 InternalCallerFilter 强制验签，验签通过且
+     * body 声明 {@code allowStructural=true} 时结构词别名按已授权编译；其余调用方行为不变。
      */
     @POST
     @Path("/compile")
     @AnonymousAllowed
     public Uni<CompileResponse> compile(@Valid CompileRequest request) {
-        LOG.infof("Compiling CNL source (locale=%s, hasAliases=%b)",
+        LOG.infof("Compiling CNL source (locale=%s, hasAliases=%b, hasVocabulary=%b)",
             request.getLocaleOrDefault(),
-            request.aliasSet() != null && !request.aliasSet().isEmpty());
+            request.aliasSet() != null && !request.aliasSet().isEmpty(),
+            request.vocabulary() != null && !request.vocabulary().isEmpty());
+        // 结构词别名信任（aster-cloud#604）：请求体的 allowStructural 只是「请求」，必须叠加
+        // 「HMAC 已验签」才生效——与 evaluate-source 的 aliasesTrusted 同一信任口径
+        // （InternalCallerFilter 只在签名真正通过后盖章）。cloud BFF 仅在服务端核对过用户的
+        // 结构词授权后才发 true；匿名/未签名调用方即使传 true 也按未授权编译，结构词别名照旧被拒。
+        // 在切 worker 线程前读取请求上下文属性。
+        final boolean allowStructural = Boolean.TRUE.equals(request.allowStructural())
+            && io.aster.security.apikey.InternalCallerFilter.isHmacVerified(jaxrsCtx);
 
         return Uni.createFrom().item(() -> {
             if (!tryAcquireAnonParse()) {
@@ -976,8 +987,11 @@ public class PolicyEvaluationResource {
                         java.util.List.of(CompileDiagnostic.error(1, 1, "别名集无法处理，无法编译")),
                         "别名集序列化失败: " + se.getMessage());
                 }
+                // 领域词汇索引与执行端（ReplayExecutionCore）同一构建口径。
+                aster.core.identifier.IdentifierIndex vocabIndex =
+                    io.aster.replay.core.ReplayExecutionCore.buildVocabularyIndex(request.vocabulary());
                 CompilationResult result = policyCompiler.compile(
-                    request.source(), request.getLocaleOrDefault(), aliasSetJson);
+                    request.source(), request.getLocaleOrDefault(), aliasSetJson, vocabIndex, allowStructural);
                 return toCompileResponse(result);
             } catch (jakarta.ws.rs.BadRequestException bre) {
                 throw bre; // 400 直接上抛，不吞成编译失败
