@@ -798,11 +798,24 @@ public class PolicyEvaluationResource {
                 if (!effectiveSimulate) {
                     businessMetrics.endPolicyEvaluation(sample);
                 }
-                LOG.errorf(e, "Dynamic CNL execution failed: %s", e.getMessage());
+                // 看门狗超时是预期内的策略问题：WARN 一行、不打堆栈；其余执行失败保留完整堆栈
+                boolean timedOut = e.kind() == DynamicCnlExecutor.DynamicExecutionException.Kind.TIMEOUT;
+                if (timedOut) {
+                    LOG.warnf("Dynamic CNL execution timed out: %s", e.getMessage());
+                } else {
+                    LOG.errorf(e, "Dynamic CNL execution failed: %s", e.getMessage());
+                }
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
                     System.currentTimeMillis() - apiCallStart, tenantId, performedBy, apiKeyIdSnap, quotaOwnerSnap);
+                }
+                // 被墙钟看门狗中止：回 422 + execution_timeout（与 /evaluate-json 同一归因口径），
+                // 而不是混进 200 + error 的普通执行失败，调用方据 code 即可识别「策略跑超时」。
+                if (timedOut) {
+                    throw failureException(EvaluationFailure.classify(e),
+                        System.currentTimeMillis() - apiCallStart,
+                        evidence == null ? null : evidence.correlationId());
                 }
                 return EvaluationResponse.error("CNL 动态执行失败: " + e.getMessage())
                     .withEvidence(evidence == null ? null : evidence.correlationId());

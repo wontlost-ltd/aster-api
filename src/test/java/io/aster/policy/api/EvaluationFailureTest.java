@@ -55,6 +55,16 @@ class EvaluationFailureTest {
     }
 
     @Test
+    void 看门狗超时_422_execution_timeout_被包装也能识别() {
+        Throwable wrapped = new CompletionException(new RuntimeException("x",
+            DynamicExecutionException.timeout(5_000, new IllegalStateException("internal detail"))));
+        EvaluationFailure f = EvaluationFailure.classify(wrapped);
+        assertThat(f.status()).isEqualTo(422);
+        assertThat(f.code()).isEqualTo("execution_timeout");
+        assertThat(f.message()).contains("5000ms").doesNotContain("internal detail");
+    }
+
+    @Test
     void 其它失败_500_固定文案_不透出内部消息() {
         EvaluationFailure f = EvaluationFailure.classify(new DynamicExecutionException(
             "Core IR 执行失败: at org.graalvm.Internal.secret(Foo.java:1)", new IllegalStateException("db password=x")));

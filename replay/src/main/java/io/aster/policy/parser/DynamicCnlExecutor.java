@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.api.convert.NamedContextMapper;
 import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.module.ModuleResolutionException;
+import io.aster.policy.runtime.ExecutionWatchdog;
 import io.aster.replay.core.module.ModuleGraphResolver;
 import io.aster.replay.core.parser.ReplayMappers;
 import org.graalvm.polyglot.Context;
@@ -702,9 +703,11 @@ public class DynamicCnlExecutor {
         } catch (IllegalArgumentException e) {
             throw new DynamicExecutionException(e.getMessage(), e);
         }
-        // 审计 #98（Low，DEFERRED）：此处构建的 Polyglot Context 无墙钟/CPU 看门狗
-        // （context.close(true)）。当前安全，因为 DSL 无循环/迭代构造，执行必然有界。
-        // 一旦语言引入循环/迭代，必须在此加执行超时看门狗。本 PR 不改，仅记录 defer（见 #98）。
+        // 执行上界（审计 #98）：Aster 没有循环语法，但允许无界递归（图灵完备），
+        // 「无循环 ⇒ 执行必然有界」不成立——浅而宽的指数分支递归不会栈溢出，却能运行数小时，
+        // 并一直占着调用方（/evaluate-source 的并发许可、What-If 的容量许可）。
+        // 唯一可靠的上界是墙钟看门狗：见 invokeUnderWatchdog，与生产 TrufflePolicyRuntime 同一机制、
+        // 同一配置（ExecutionWatchdog.TIMEOUT_PROPERTY），到点 close(true) 中止执行并丢弃 Context。
         // 沙箱权限（红队 P1-D：从 allowPublicAccess(true) 收紧，向生产 TrufflePolicyRuntime
         // 的 HostAccess.EXPLICIT 靠拢）。
         // 真正的危险面是 allowPublicAccess(true)——它放开**所有** public 方法/字段/构造器的
@@ -726,14 +729,16 @@ public class DynamicCnlExecutor {
         //
         //     ★这同时意味着 TrufflePolicyRuntime 的 P1-R22 审计项
         //     （「+ ResourceLimits 防 DoS」）也是无效防护——生产 /evaluate
-        //     自那次审计起就一直以为自己有执行上限。已另行记录，需单独处理。
+        //     的真实上界同样来自墙钟看门狗（ExecutionWatchdog），而非 statementLimit。
         //
-        //     What-If 重跑的真实执行上界改由 ReplayBatchService 的
-        //     wall-clock 超时提供（ADR 0034 §12.4）。
+        //     本执行器（含 What-If 重跑）的真实执行上界由 invokeUnderWatchdog 的
+        //     墙钟看门狗提供（ADR 0034 §12.4）。
         ResourceLimits limits = ResourceLimits.newBuilder()
             .statementLimit(10_000_000L, null)
             .build();
-        try (Context polyglotContext = Context.newBuilder("aster")
+        Context polyglotContext = null;
+        try {
+            polyglotContext = Context.newBuilder("aster")
                 .engine(SHARED_ENGINE)  // 复用进程级 Engine，避免 per-request AOT 重做
                 .resourceLimits(limits)
                 .allowHostAccess(HostAccess.newBuilder(HostAccess.EXPLICIT)
@@ -747,89 +752,134 @@ public class DynamicCnlExecutor {
                 .allowCreateProcess(false)                  // 禁止创建子进程
                 .allowCreateThread(false)                   // 禁止创建线程
                 .allowNativeAccess(false)                   // 禁止本地代码访问
-                .build()) {
-
-            // 内置函数（算术 / 比较 / 逻辑 / 字符串拼接）由 aster-lang-truffle 的
-            // Builtins 静态初始化块权威注册——含 int/double 提升、浮点除法、`+`
-            // dual-mode 字符串拼接、运算符符号→canonical 名归一化。此处不再重复注册：
-            // 历史上 aster-api 维护了一份并行的、仅整数/仅数值的拷贝（registerBuiltins），
-            // 它把字符串强转 Number 而抛 ClassCastException（如 `"Hello, " + name`），
-            // 且 REGISTRY 是共享静态表，重复 register 会**覆盖**掉 truffle 的正确实现。
-            // 删除后由 truffle 唯一负责。
-
-            // 评估 Core IR JSON - 返回入口函数的 LambdaValue 或无参函数的执行结果
-            Value evalResult = polyglotContext.eval(sourceFor(entryJson));
-
-            LOG.debugf("Polyglot eval 返回: canExecute=%b, isNull=%b, isHostObject=%b",
-                evalResult.canExecute(), evalResult.isNull(), evalResult.isHostObject());
-
-            Object result;
-            if (evalResult.canExecute()) {
-                // 返回值是可执行的函数，传参调用
-                Value execResult;
-                try {
-                    if (context == null || context.length == 0) {
-                        execResult = evalResult.execute();
-                    } else {
-                        execResult = evalResult.execute(context);
-                    }
-                } catch (NullPointerException | org.graalvm.polyglot.PolyglotException e) {
-                    String msg = e.getMessage();
-                    if (msg != null && msg.contains("null")) {
-                        // Polyglot 无法转换 null 返回值，视为函数无匹配结果
-                        throw new DynamicExecutionException(
-                            "函数返回 null（可能是 Match 语句无匹配分支或条件未覆盖所有情况）");
-                    }
-                    throw new DynamicExecutionException("Polyglot 执行失败: " + msg, e);
-                }
-                result = convertValue(execResult);
-            } else if (evalResult.isHostObject()) {
-                // 尝试获取底层 Java 对象
-                Object hostObject = evalResult.asHostObject();
-                LOG.debugf("Host object 类型: %s", hostObject.getClass().getName());
-
-                if (hostObject instanceof aster.truffle.nodes.LambdaValue lambdaValue) {
-                    // 直接调用 LambdaValue.apply()
-                    LOG.infof("检测到 LambdaValue，直接调用 apply 方法");
-                    Object[] args = context != null ? context : new Object[0];
-                    result = lambdaValue.apply(args, null);
-                } else {
-                    // 其他 host object，直接返回
-                    result = hostObject;
-                }
-            } else if (evalResult.hasMembers() && evalResult.hasMember("apply")) {
-                // 检测到类 LambdaValue 对象（有 apply 成员），尝试调用 apply 方法
-                LOG.infof("检测到具有 apply 成员的对象，尝试调用 apply");
-                try {
-                    Value applyMember = evalResult.getMember("apply");
-                    if (applyMember.canExecute()) {
-                        Value execResult;
-                        if (context == null || context.length == 0) {
-                            execResult = applyMember.execute();
-                        } else {
-                            execResult = applyMember.execute(context);
-                        }
-                        result = convertValue(execResult);
-                    } else {
-                        // apply 不可执行，尝试通过 as(Class) 获取 LambdaValue
-                        result = invokeLambdaViaReflection(evalResult, context);
-                    }
-                } catch (Exception e) {
-                    LOG.warnf("调用 apply 成员失败: %s, 尝试反射调用", e.getMessage());
-                    result = invokeLambdaViaReflection(evalResult, context);
-                }
-            } else {
-                // 返回值是无参函数的执行结果，直接使用
-                result = convertValue(evalResult);
-            }
-
-            return result;
-
+                .build();
+            return invokeUnderWatchdog(polyglotContext, entryJson, context);
         } catch (DynamicExecutionException e) {
             throw e;
         } catch (Exception e) {
             throw new DynamicExecutionException("Polyglot 执行失败: " + e.getMessage(), e);
+        } finally {
+            discard(polyglotContext);
         }
+    }
+
+    /**
+     * 丢弃本次执行的 Context。关闭失败不改变执行结局：结果已在关闭前转成宿主值；
+     * 期限边界上看门狗可能正在并发关闭同一个 Context，此时这里的 close 会抛「已取消」，
+     * 若照 try-with-resources 语义上抛，就会把已正常完成的执行误报为失败。
+     */
+    private static void discard(Context polyglotContext) {
+        if (polyglotContext == null) {
+            return;
+        }
+        try {
+            polyglotContext.close();
+        } catch (Exception e) {
+            LOG.debugf("关闭 Polyglot Context 失败（可能已被看门狗关闭）: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * 在墙钟看门狗下执行入口函数。
+     *
+     * <p>到点由看门狗 {@code close(true)} 关闭 Context，执行线程随即在安全点抛出取消异常；
+     * 看门狗已触发且失败确由取消引起时，不论异常被包装成什么，都归为
+     * {@link DynamicExecutionException.Kind#TIMEOUT}，让调用方能区分「策略跑超时」与普通执行失败；
+     * 其余失败按真实错误上报。期限边界上 guest 已正常完成的，照常返回结果（见 {@link ExecutionWatchdog.Guard}）。
+     * Context 由调用方在 finally 中丢弃，从不复用，故这里无需处理「已关闭 Context 回池」的问题。
+     */
+    private static Object invokeUnderWatchdog(Context polyglotContext, String entryJson, Object[] context) {
+        long timeoutMs = ExecutionWatchdog.configuredTimeoutMs();
+        ExecutionWatchdog.Guard watchdog = ExecutionWatchdog.arm(polyglotContext, timeoutMs);
+        try {
+            return invokeEntry(polyglotContext, entryJson, context);
+        } catch (RuntimeException e) {
+            if (watchdog.timedOut(e)) {
+                throw DynamicExecutionException.timeout(timeoutMs, e);
+            }
+            throw e;
+        } finally {
+            watchdog.disarm();
+        }
+    }
+
+    /** 评估 Core IR 并按返回值形态调用入口函数。 */
+    private static Object invokeEntry(Context polyglotContext, String entryJson, Object[] context) {
+        // 内置函数（算术 / 比较 / 逻辑 / 字符串拼接）由 aster-lang-truffle 的
+        // Builtins 静态初始化块权威注册——含 int/double 提升、浮点除法、`+`
+        // dual-mode 字符串拼接、运算符符号→canonical 名归一化。此处不再重复注册：
+        // 历史上 aster-api 维护了一份并行的、仅整数/仅数值的拷贝（registerBuiltins），
+        // 它把字符串强转 Number 而抛 ClassCastException（如 `"Hello, " + name`），
+        // 且 REGISTRY 是共享静态表，重复 register 会**覆盖**掉 truffle 的正确实现。
+        // 删除后由 truffle 唯一负责。
+
+        // 评估 Core IR JSON - 返回入口函数的 LambdaValue 或无参函数的执行结果
+        Value evalResult = polyglotContext.eval(sourceFor(entryJson));
+
+        LOG.debugf("Polyglot eval 返回: canExecute=%b, isNull=%b, isHostObject=%b",
+            evalResult.canExecute(), evalResult.isNull(), evalResult.isHostObject());
+
+        Object result;
+        if (evalResult.canExecute()) {
+            // 返回值是可执行的函数，传参调用
+            Value execResult;
+            try {
+                if (context == null || context.length == 0) {
+                    execResult = evalResult.execute();
+                } else {
+                    execResult = evalResult.execute(context);
+                }
+            } catch (NullPointerException | org.graalvm.polyglot.PolyglotException e) {
+                String msg = e.getMessage();
+                if (msg != null && msg.contains("null")) {
+                    // Polyglot 无法转换 null 返回值，视为函数无匹配结果
+                    throw new DynamicExecutionException(
+                        "函数返回 null（可能是 Match 语句无匹配分支或条件未覆盖所有情况）");
+                }
+                throw new DynamicExecutionException("Polyglot 执行失败: " + msg, e);
+            }
+            result = convertValue(execResult);
+        } else if (evalResult.isHostObject()) {
+            // 尝试获取底层 Java 对象
+            Object hostObject = evalResult.asHostObject();
+            LOG.debugf("Host object 类型: %s", hostObject.getClass().getName());
+
+            if (hostObject instanceof aster.truffle.nodes.LambdaValue lambdaValue) {
+                // 直接调用 LambdaValue.apply()
+                LOG.infof("检测到 LambdaValue，直接调用 apply 方法");
+                Object[] args = context != null ? context : new Object[0];
+                result = lambdaValue.apply(args, null);
+            } else {
+                // 其他 host object，直接返回
+                result = hostObject;
+            }
+        } else if (evalResult.hasMembers() && evalResult.hasMember("apply")) {
+            // 检测到类 LambdaValue 对象（有 apply 成员），尝试调用 apply 方法
+            LOG.infof("检测到具有 apply 成员的对象，尝试调用 apply");
+            try {
+                Value applyMember = evalResult.getMember("apply");
+                if (applyMember.canExecute()) {
+                    Value execResult;
+                    if (context == null || context.length == 0) {
+                        execResult = applyMember.execute();
+                    } else {
+                        execResult = applyMember.execute(context);
+                    }
+                    result = convertValue(execResult);
+                } else {
+                    // apply 不可执行，尝试通过 as(Class) 获取 LambdaValue
+                    result = invokeLambdaViaReflection(evalResult, context);
+                }
+            } catch (Exception e) {
+                LOG.warnf("调用 apply 成员失败: %s, 尝试反射调用", e.getMessage());
+                result = invokeLambdaViaReflection(evalResult, context);
+            }
+        } else {
+            // 返回值是无参函数的执行结果，直接使用
+            result = convertValue(evalResult);
+        }
+
+        return result;
     }
 
     /**
@@ -947,7 +997,9 @@ public class DynamicCnlExecutor {
             /** 请求携带的策略体或上下文不合法。 */
             INVALID_INPUT,
             /** 指定的目标函数不存在。 */
-            FUNCTION_NOT_FOUND
+            FUNCTION_NOT_FOUND,
+            /** 执行超过墙钟上限，已被看门狗中止。 */
+            TIMEOUT
         }
 
         private final Kind kind;
@@ -972,6 +1024,12 @@ public class DynamicCnlExecutor {
 
         public Kind kind() {
             return kind;
+        }
+
+        /** 看门狗中止执行时的统一异常：消息只含上限值，不透出 guest 栈或内部细节。 */
+        public static DynamicExecutionException timeout(long timeoutMs, Throwable cause) {
+            return new DynamicExecutionException(
+                "策略执行超过 " + timeoutMs + "ms 墙钟上限，已被中止", cause, Kind.TIMEOUT);
         }
     }
 

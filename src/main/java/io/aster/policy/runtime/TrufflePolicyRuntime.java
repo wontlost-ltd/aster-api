@@ -35,26 +35,13 @@ public class TrufflePolicyRuntime {
     private ResourceLimits pooledLimits;
 
     /**
-     * 单次策略执行的 wall-clock 上界（毫秒）。
+     * 单次策略执行的 wall-clock 上界（毫秒），由 {@link ExecutionWatchdog} 强制执行。
      *
      * <p>这是**真实**的执行上界——statementLimit 在本语言上不触发（见 init() 的实测记录）。
-     * 取值参照 What-If 路径（ReplayBatchService）的同类超时：合法策略典型 &lt; 50ms，
-     * 5s 留足冷启动与 GC 抖动的余量，同时把失控执行的影响限制在单个请求。
+     * 与 DynamicCnlExecutor（/evaluate-source、/evaluate-json、What-If）读同一个系统属性、同一缺省值；
+     * 本路径在类加载时读取一次。
      */
-    private static final long EXECUTION_TIMEOUT_MS = Long.getLong(
-        "aster.policy.execution-timeout-ms", 5_000L);
-
-    /**
-     * 看门狗调度器：到点用 {@code ctx.close(true)} 中断执行中的 guest 代码。
-     *
-     * <p>daemon 线程，单线程即可——它只负责“到点踹一脚”，不承载业务。
-     */
-    private static final java.util.concurrent.ScheduledExecutorService WATCHDOG =
-        java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "aster-policy-watchdog");
-            t.setDaemon(true);
-            return t;
-        });
+    private static final long EXECUTION_TIMEOUT_MS = ExecutionWatchdog.configuredTimeoutMs();
 
     // Core IR JSON → 已构建的 Truffle Source（cached=true）。
     // 此前 execute() 每次都 ctx.eval("aster", coreJson) 传 raw String，GraalVM 每次把 coreJson
@@ -118,10 +105,10 @@ public class TrufflePolicyRuntime {
         // 路径（ReplayBatchService.replayOne）已经采用的手段一致，那边同样是在
         // 发现 statementLimit 不触发后改回来的。
         //
-        // 威胁面评估（比原注释描述的小）：AsterParser.g4 无任何循环结构
-        // （无 while/for each/repeat），「恶意策略写无限循环」在本语言里**无法表达**。
-        // 剩余无界路径是**递归**——已由 JVM 栈溢出兜住（上面实测 <200ms 即抛），
-        // 以及深层表达式展开等非语言层构造，由 wall-clock 超时兜底。
+        // 威胁面评估：AsterParser.g4 虽无 while/for each/repeat 等循环结构，但语言允许**无界递归**，
+        // 是图灵完备的——「循环无法表达」不等于「执行必然有界」。深递归会被 JVM 栈溢出兜住
+        // （上面实测 <200ms 即抛），但浅而宽的指数分支递归（每层两次自调用，几十层深）不会栈溢出，
+        // 却可以运行数小时。这类执行**只能**由 wall-clock 看门狗（ExecutionWatchdog）停下。
         ResourceLimits limits = ResourceLimits.newBuilder()
             .statementLimit(10_000_000L, null)
             .build();
@@ -155,17 +142,8 @@ public class TrufflePolicyRuntime {
             ctx = contextPool.take();
 
             // 2. 看门狗：到点用 ctx.close(true) 中断**正在执行**的 Truffle 代码。
-            //    这是真实上界的来源（statementLimit 不触发，见 init() 注释）。
-            //    ★用 close(true) 而不是 Thread.interrupt()：Truffle 不响应 Java
-            //    中断，只有 close(cancelIfExecuting=true) 能把执行中的 guest 代码停下。
-            final Context watched = ctx;
-            java.util.concurrent.ScheduledFuture<?> watchdog = WATCHDOG.schedule(() -> {
-                try {
-                    watched.close(true);
-                } catch (Exception ignored) {
-                    // 关闭本身失败不该再抛——此时已在超时路径上
-                }
-            }, EXECUTION_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            //    这是真实上界的来源（statementLimit 不触发，见 init() 注释；机制见 ExecutionWatchdog）。
+            ExecutionWatchdog.Guard watchdog = ExecutionWatchdog.arm(ctx, EXECUTION_TIMEOUT_MS);
 
             try {
                 // 3. 评估 Core IR（用按内容缓存的 cached Source，避免每次重新 parse coreJson）
@@ -177,8 +155,8 @@ public class TrufflePolicyRuntime {
                 long executionTime = System.currentTimeMillis() - startTime;
                 return ExecutionResult.success(result, executionTime);
             } finally {
-                // 没超时就取消看门狗；已经跑过则 cancel 返回 false
-                if (!watchdog.cancel(false)) {
+                // 没超时就解除看门狗；已经触发则 Context 已被关闭，不能回池
+                if (watchdog.disarm()) {
                     contextTainted = true;
                 }
             }
@@ -238,7 +216,7 @@ public class TrufflePolicyRuntime {
     /**
      * 判断异常是否已让该 Context 不可再用。
      *
-     * <p>资源耗尽（含 JVM 栈溢出——递归策略的实际兜底）与 Context 被取消/关闭后，
+     * <p>资源耗尽（含 JVM 栈溢出——仅兜住深递归，宽分支递归靠看门狗）与 Context 被取消/关闭后，
      * 该 Context 的内部状态不保证可继续承载新的执行，回池即污染。
      */
     // 包级可见：供单测直接验证分类规则。这条规则是「失败后池是否可用」的全部依据，
