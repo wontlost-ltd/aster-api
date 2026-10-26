@@ -13,8 +13,6 @@ import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.io.IOAccess;
 import org.jboss.logging.Logger;
 
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
@@ -275,82 +273,27 @@ public class TrufflePolicyRuntime {
     /**
      * 执行函数并转换结果
      */
-    private Object executeFunction(Value evalResult, Object[] contextArgs) {
+    private Object executeFunction(Value evalResult, Object[] hostArgs) {
+        // 入参转成 guest 原生集合，与 DynamicCnlExecutor 同口径（aster-cloud#639，见 PolyglotValues）
+        Object[] contextArgs = PolyglotValues.toGuestArgs(hostArgs);
         if (evalResult.canExecute()) {
             // 返回值是可执行的函数，传参调用
-            Value execResult;
-            if (contextArgs == null || contextArgs.length == 0) {
-                execResult = evalResult.execute();
-            } else {
-                execResult = evalResult.execute(contextArgs);
-            }
-            return convertValue(execResult);
+            Value execResult = evalResult.execute(contextArgs);
+            return PolyglotValues.toHost(execResult);
         } else if (evalResult.isHostObject()) {
             // 尝试获取底层 Java 对象
             Object hostObject = evalResult.asHostObject();
 
             if (hostObject instanceof aster.truffle.nodes.LambdaValue lambdaValue) {
                 // 直接调用 LambdaValue.apply()
-                Object[] args = contextArgs != null ? contextArgs : new Object[0];
-                return lambdaValue.apply(args, null);
+                return lambdaValue.apply(contextArgs, null);
             } else {
                 return hostObject;
             }
         } else {
             // 直接返回结果
-            return convertValue(evalResult);
+            return PolyglotValues.toHost(evalResult);
         }
-    }
-
-    /**
-     * 转换 Truffle Value 为 Java 对象
-     */
-    private Object convertValue(Value value) {
-        if (value == null || value.isNull()) {
-            return null;
-        }
-
-        if (value.isBoolean()) {
-            return value.asBoolean();
-        }
-        if (value.isNumber()) {
-            if (value.fitsInInt()) {
-                return value.asInt();
-            } else if (value.fitsInLong()) {
-                return value.asLong();
-            } else if (value.fitsInDouble()) {
-                return value.asDouble();
-            }
-        }
-        if (value.isString()) {
-            return value.asString();
-        }
-        if (value.hasArrayElements()) {
-            long size = value.getArraySize();
-            Object[] array = new Object[(int) size];
-            for (int i = 0; i < size; i++) {
-                array[i] = convertValue(value.getArrayElement(i));
-            }
-            return array;
-        }
-        if (value.hasMembers()) {
-            // 转换为 Java Map，确保可被 Jackson 序列化
-            Map<String, Object> map = new HashMap<>();
-            for (String key : value.getMemberKeys()) {
-                Value memberValue = value.getMember(key);
-                map.put(key, convertValue(memberValue));
-            }
-            return map;
-        }
-
-        // 返回 host object 或尝试转字符串
-        if (value.isHostObject()) {
-            return value.asHostObject();
-        }
-
-        // 无法转换的 Value 类型，返回其字符串表示以避免序列化问题
-        LOG.warnf("无法转换 Truffle Value 类型: %s，返回字符串表示", value.getMetaObject());
-        return value.toString();
     }
 
     @PreDestroy

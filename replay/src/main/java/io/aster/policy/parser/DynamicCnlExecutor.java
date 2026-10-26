@@ -11,6 +11,7 @@ import io.aster.policy.api.convert.NamedContextMapper;
 import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.module.ModuleResolutionException;
 import io.aster.policy.runtime.ExecutionWatchdog;
+import io.aster.policy.runtime.PolyglotValues;
 import io.aster.replay.core.module.ModuleGraphResolver;
 import io.aster.replay.core.parser.ReplayMappers;
 import org.graalvm.polyglot.Context;
@@ -815,6 +816,9 @@ public class DynamicCnlExecutor {
 
         // 评估 Core IR JSON - 返回入口函数的 LambdaValue 或无参函数的执行结果
         Value evalResult = polyglotContext.eval(sourceFor(entryJson));
+        // 入参先转成 guest 原生集合：原样传 Java Map 会被包成 host object，规则原样返回它时
+        // 结果读成 {} 且 trace 不可回放（aster-cloud#639，见 PolyglotValues）
+        Object[] guestArgs = PolyglotValues.toGuestArgs(context);
 
         LOG.debugf("Polyglot eval 返回: canExecute=%b, isNull=%b, isHostObject=%b",
             evalResult.canExecute(), evalResult.isNull(), evalResult.isHostObject());
@@ -824,11 +828,7 @@ public class DynamicCnlExecutor {
             // 返回值是可执行的函数，传参调用
             Value execResult;
             try {
-                if (context == null || context.length == 0) {
-                    execResult = evalResult.execute();
-                } else {
-                    execResult = evalResult.execute(context);
-                }
+                execResult = evalResult.execute(guestArgs);
             } catch (NullPointerException | org.graalvm.polyglot.PolyglotException e) {
                 String msg = e.getMessage();
                 if (msg != null && msg.contains("null")) {
@@ -838,7 +838,7 @@ public class DynamicCnlExecutor {
                 }
                 throw new DynamicExecutionException("Polyglot 执行失败: " + msg, e);
             }
-            result = convertValue(execResult);
+            result = PolyglotValues.toHost(execResult);
         } else if (evalResult.isHostObject()) {
             // 尝试获取底层 Java 对象
             Object hostObject = evalResult.asHostObject();
@@ -847,8 +847,7 @@ public class DynamicCnlExecutor {
             if (hostObject instanceof aster.truffle.nodes.LambdaValue lambdaValue) {
                 // 直接调用 LambdaValue.apply()
                 LOG.infof("检测到 LambdaValue，直接调用 apply 方法");
-                Object[] args = context != null ? context : new Object[0];
-                result = lambdaValue.apply(args, null);
+                result = lambdaValue.apply(guestArgs, null);
             } else {
                 // 其他 host object，直接返回
                 result = hostObject;
@@ -859,24 +858,19 @@ public class DynamicCnlExecutor {
             try {
                 Value applyMember = evalResult.getMember("apply");
                 if (applyMember.canExecute()) {
-                    Value execResult;
-                    if (context == null || context.length == 0) {
-                        execResult = applyMember.execute();
-                    } else {
-                        execResult = applyMember.execute(context);
-                    }
-                    result = convertValue(execResult);
+                    Value execResult = applyMember.execute(guestArgs);
+                    result = PolyglotValues.toHost(execResult);
                 } else {
                     // apply 不可执行，尝试通过 as(Class) 获取 LambdaValue
-                    result = invokeLambdaViaReflection(evalResult, context);
+                    result = invokeLambdaViaReflection(evalResult, guestArgs);
                 }
             } catch (Exception e) {
                 LOG.warnf("调用 apply 成员失败: %s, 尝试反射调用", e.getMessage());
-                result = invokeLambdaViaReflection(evalResult, context);
+                result = invokeLambdaViaReflection(evalResult, guestArgs);
             }
         } else {
             // 返回值是无参函数的执行结果，直接使用
-            result = convertValue(evalResult);
+            result = PolyglotValues.toHost(evalResult);
         }
 
         return result;
@@ -917,47 +911,6 @@ public class DynamicCnlExecutor {
         }
 
         throw new DynamicExecutionException("无法执行 LambdaValue: 不支持的 Polyglot 值类型");
-    }
-
-    /**
-     * 转换 Polyglot Value 为 Java 对象
-     */
-    private static Object convertValue(Value value) {
-        if (value == null || value.isNull()) {
-            return null;
-        }
-        if (value.isBoolean()) {
-            return value.asBoolean();
-        }
-        if (value.isNumber()) {
-            if (value.fitsInInt()) {
-                return value.asInt();
-            } else if (value.fitsInLong()) {
-                return value.asLong();
-            } else {
-                return value.asDouble();
-            }
-        }
-        if (value.isString()) {
-            return value.asString();
-        }
-        if (value.hasArrayElements()) {
-            int size = (int) value.getArraySize();
-            Object[] array = new Object[size];
-            for (int i = 0; i < size; i++) {
-                array[i] = convertValue(value.getArrayElement(i));
-            }
-            return array;
-        }
-        if (value.hasMembers()) {
-            java.util.Map<String, Object> map = new java.util.HashMap<>();
-            for (String key : value.getMemberKeys()) {
-                map.put(key, convertValue(value.getMember(key)));
-            }
-            return map;
-        }
-        // 默认返回字符串表示
-        return value.toString();
     }
 
     /**
