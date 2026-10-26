@@ -143,6 +143,36 @@ class InputPassthroughResultTest {
         assertThat(map.get("address")).isEqualTo(Map.of("city", "Wellington"));
     }
 
+    /**
+     * 入参转成 guest 原生映射后，带 {@code __type} 的入参可被构造器模式匹配（aster-cloud#639 的已接受行为变化）：
+     * 此前入参是 host object，{@code When Person(...)} 一律匹配不上；现在按 {@code __type} 判定、按字段顺序绑定。
+     */
+    @Test
+    void 带类型标记的入参可被构造器模式匹配_类型不符或缺失则不匹配() {
+        String source = """
+            Module issue639.match.
+
+            Define Person has name as Text, age as Int.
+
+            Rule greet given person as Person, produce Text:
+              Match person:
+                When Person(name, age), Return name.
+                When other, Return "no match".
+            """;
+        Map<String, Object> tagged = new LinkedHashMap<>();
+        tagged.put("__type", "Person");
+        tagged.put("name", "Ann");
+        tagged.put("age", 30);
+        Map<String, Object> otherType = new LinkedHashMap<>(tagged);
+        otherType.put("__type", "Robot");
+        Map<String, Object> untagged = new LinkedHashMap<>(tagged);
+        untagged.remove("__type");
+
+        assertThat(run(source, "greet", Map.of("person", tagged))).isEqualTo("Ann");
+        assertThat(run(source, "greet", Map.of("person", otherType))).isEqualTo("no match");
+        assertThat(run(source, "greet", Map.of("person", untagged))).isEqualTo("no match");
+    }
+
     @Test
     void 原样返回入参的执行可回放且重放一致() {
         String source = "Module issue639.replay.\n\n" + PERSON_TYPES + """

@@ -172,6 +172,12 @@ public final class PolyglotValues {
 
         // ── guest → 宿主 ──────────────────────────────────────────
 
+        /**
+         * guest 值不做身份环检测：Aster 的集合是不可变值（{@code List.append}/{@code Map.put} 等内置函数
+         * 均复制后返回新集合，{@code AsterListValue}/{@code AsterMapValue} 的 interop 写入一律拒绝），
+         * guest 侧构造不出环；且 polyglot {@link Value} 每次读取都是新包装，身份比较本就不可靠。
+         * 栈深由 {@link #MAX_DEPTH} 兜底——即便出现环，也只会以 {@code output_too_deep} 失败，不会栈溢出。
+         */
         Object toHost(Value value, int depth) {
             if (value == null || value.isNull()) {
                 return null;

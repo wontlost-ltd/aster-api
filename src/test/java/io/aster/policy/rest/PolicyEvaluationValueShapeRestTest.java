@@ -150,4 +150,23 @@ class PolicyEvaluationValueShapeRestTest {
         assertEchoed(evaluateSource(nested(PolyglotValues.MAX_DEPTH)), nested(PolyglotValues.MAX_DEPTH));
         assertTooDeep(evaluateSource(nested(PolyglotValues.MAX_DEPTH + 1)));
     }
+
+    @Test
+    void 批量_形态违例单条内联input_too_deep_其余条目照常成功() throws Exception {
+        deploy();
+        Map<String, Object> ok = Map.of("score", 1);
+        String body = json(Map.of("requests", List.of(
+            Map.of("policyModule", MODULE, "policyFunction", "echo", "context", List.of(nested(PolyglotValues.MAX_DEPTH + 1))),
+            Map.of("policyModule", MODULE, "policyFunction", "echo", "context", List.of(ok)))));
+
+        Response resp = given().header("X-Tenant-Id", TENANT).contentType(ContentType.JSON).body(body)
+            .when().post("/api/v1/policies/evaluate/batch");
+
+        assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+        assertThat(resp.jsonPath().getInt("successCount")).isEqualTo(1);
+        assertThat(resp.jsonPath().getInt("failureCount")).isEqualTo(1);
+        assertThat(resp.jsonPath().getList("results.code")).contains("input_too_deep");
+        assertThat(MAPPER.readTree(resp.asString()).get("results").findValues("result"))
+            .contains(MAPPER.valueToTree(ok));
+    }
 }
