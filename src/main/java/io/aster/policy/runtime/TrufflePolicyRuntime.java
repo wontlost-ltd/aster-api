@@ -132,6 +132,9 @@ public class TrufflePolicyRuntime {
         CompilationMetadata metadata
     ) {
         long startTime = System.currentTimeMillis();
+        // 入参在取 Context 之前转换：形态违例（过深 / 成环 / 非字符串键）直接以 ValueShapeException
+        // 上抛给 REST 层回 400，不占用池中 Context，也不被下方的通用 catch 降级成执行失败
+        Object[] guestArgs = PolyglotValues.toGuestArgs(contextArgs);
         Context ctx = null;
         boolean contextTainted = false;
 
@@ -148,7 +151,7 @@ public class TrufflePolicyRuntime {
                 Value evalResult = ctx.eval(sourceFor(coreJson));
 
                 // 4. 执行函数
-                Object result = executeFunction(evalResult, contextArgs);
+                Object result = executeFunction(evalResult, guestArgs);
 
                 long executionTime = System.currentTimeMillis() - startTime;
                 return ExecutionResult.success(result, executionTime);
@@ -163,6 +166,9 @@ public class TrufflePolicyRuntime {
             Thread.currentThread().interrupt();
             LOG.errorf(e, "获取 Context 被中断");
             return ExecutionResult.failure("执行被中断: " + e.getMessage());
+        } catch (ValueShapeException e) {
+            // 结果形态违例（过深 / 成环 / 非字符串键）：Context 完好照常回池，原样上抛由 REST 层回 422
+            throw e;
         } catch (Exception e) {
             // ★资源耗尽 / 被看门狗取消的 Context **不可复用**，必须重建。
             //   原实现在 finally 里无条件 offer 回池，一个被 close 的 Context
@@ -271,11 +277,9 @@ public class TrufflePolicyRuntime {
     }
 
     /**
-     * 执行函数并转换结果
+     * 执行函数并转换结果。{@code contextArgs} 已是 guest 原生值（见 {@link PolyglotValues#toGuestArgs}）。
      */
-    private Object executeFunction(Value evalResult, Object[] hostArgs) {
-        // 入参转成 guest 原生集合，与 DynamicCnlExecutor 同口径（aster-cloud#639，见 PolyglotValues）
-        Object[] contextArgs = PolyglotValues.toGuestArgs(hostArgs);
+    private Object executeFunction(Value evalResult, Object[] contextArgs) {
         if (evalResult.canExecute()) {
             // 返回值是可执行的函数，传参调用
             Value execResult = evalResult.execute(contextArgs);

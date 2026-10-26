@@ -818,8 +818,10 @@ public class PolicyEvaluationResource {
                 }
                 // 看门狗超时是预期内的策略问题：WARN 一行、不打堆栈；其余执行失败保留完整堆栈
                 boolean timedOut = e.kind() == DynamicCnlExecutor.DynamicExecutionException.Kind.TIMEOUT;
-                if (timedOut) {
-                    LOG.warnf("Dynamic CNL execution timed out: %s", e.getMessage());
+                // 值边界形态违例（入参过深 / 成环 / 非字符串键等）同属预期内的请求问题，同样不打堆栈
+                boolean shapeViolation = e instanceof io.aster.policy.runtime.ValueShapeException;
+                if (timedOut || shapeViolation) {
+                    LOG.warnf("Dynamic CNL execution rejected: %s", e.getMessage());
                 } else {
                     LOG.errorf(e, "Dynamic CNL execution failed: %s", e.getMessage());
                 }
@@ -830,7 +832,8 @@ public class PolicyEvaluationResource {
                 }
                 // 被墙钟看门狗中止：回 422 + execution_timeout（与 /evaluate-json 同一归因口径），
                 // 而不是混进 200 + error 的普通执行失败，调用方据 code 即可识别「策略跑超时」。
-                if (timedOut) {
+                // 形态违例同理：入参 400 / 出参 422 + 细分 code（input_too_deep 等，aster-cloud#639）
+                if (timedOut || shapeViolation) {
                     throw failureException(EvaluationFailure.classify(e),
                         System.currentTimeMillis() - apiCallStart,
                         evidence == null ? null : evidence.correlationId());

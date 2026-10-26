@@ -864,6 +864,9 @@ public class DynamicCnlExecutor {
                     // apply 不可执行，尝试通过 as(Class) 获取 LambdaValue
                     result = invokeLambdaViaReflection(evalResult, guestArgs);
                 }
+            } catch (DynamicExecutionException e) {
+                // 结果形态违例（ValueShapeException 等）是确定的失败，不能被反射兜底吞掉
+                throw e;
             } catch (Exception e) {
                 LOG.warnf("调用 apply 成员失败: %s, 尝试反射调用", e.getMessage());
                 result = invokeLambdaViaReflection(evalResult, guestArgs);
