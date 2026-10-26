@@ -25,7 +25,6 @@ import org.jboss.logging.Logger;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Optional;
 
 /**
  * PolicyCompiler 负责将策略版本映射到 Core IR JSON。
@@ -230,33 +229,67 @@ public class PolicyCompiler {
 
         // 1. 尝试从 PolicyArtifact 读取
         if (policySourceRepository != null) {
-            Optional<PolicyArtifact> artifact = policySourceRepository.findCoreJsonArtifact(policyVersionId);
-            if (artifact.isPresent()) {
-                CompilationResult result = buildSuccessResultFromArtifact(artifact.get());
-                if (result.isSuccess()) {
-                    LOG.debugf("从 PolicyArtifact 读取 Core JSON: versionId=%d", policyVersionId);
-                    return result;
-                }
+            CompilationResult fromArtifact = fromArtifact(policyVersionId,
+                policySourceRepository.findCoreJsonArtifact(policyVersionId).orElse(null));
+            if (fromArtifact != null) {
+                return fromArtifact;
             }
         }
 
-        // 2. 尝试从 PolicyVersion.coreJson 读取
-        Optional<PolicyVersion> optVersion = policySourceRepository.findVersionById(policyVersionId);
-        if (optVersion.isEmpty()) {
+        // 2/3. PolicyVersion.coreJson，其次动态编译 CNL 源代码
+        return fromVersion(policyVersionId, policySourceRepository.findVersionById(policyVersionId).orElse(null));
+    }
+
+    /**
+     * 编译输入快照：{@link #loadSource} 在事务内读出，之后可脱离事务与连接使用
+     * （两个实体的字段都是即时加载的普通列）。artifact 可为 null。
+     */
+    public record VersionSource(PolicyVersion version, PolicyArtifact artifact) {}
+
+    /** 读取编译所需的产物（须在事务内调用），只做 DB 读取，不编译。 */
+    public VersionSource loadSource(PolicyVersion version) {
+        PolicyArtifact artifact = version == null || version.id == null
+            ? null : policySourceRepository.findCoreJsonArtifact(version.id).orElse(null);
+        return new VersionSource(version, artifact);
+    }
+
+    /**
+     * 与 {@link #compile(Long)} 同优先级、同缓存（按 versionId），但输入由调用方预先读好：
+     * 方法本身零 DB 访问，可在事务外执行 CPU 密集的编译，编译期间不占 JDBC 连接。
+     */
+    @CacheResult(cacheName = "policy-compile-by-version")
+    public CompilationResult compile(@CacheKey Long policyVersionId, VersionSource source) {
+        if (policyVersionId == null) {
+            return CompilationResult.failure("策略版本ID不能为空");
+        }
+        CompilationResult fromArtifact = fromArtifact(policyVersionId, source.artifact());
+        return fromArtifact != null ? fromArtifact : fromVersion(policyVersionId, source.version());
+    }
+
+    /** 产物可用时返回其结果，否则返回 null 让调用方回退到版本本身。 */
+    private CompilationResult fromArtifact(Long policyVersionId, PolicyArtifact artifact) {
+        if (artifact == null) {
+            return null;
+        }
+        CompilationResult result = buildSuccessResultFromArtifact(artifact);
+        if (!result.isSuccess()) {
+            return null;
+        }
+        LOG.debugf("从 PolicyArtifact 读取 Core JSON: versionId=%d", policyVersionId);
+        return result;
+    }
+
+    private CompilationResult fromVersion(Long policyVersionId, PolicyVersion version) {
+        if (version == null) {
             return CompilationResult.failure(String.format("策略版本不存在: versionId=%d", policyVersionId));
         }
-        PolicyVersion version = optVersion.get();
-
         if (version.coreJson != null && !version.coreJson.isBlank()) {
             LOG.debugf("从 PolicyVersion.coreJson 读取: versionId=%d", policyVersionId);
             return CompilationResult.success(version.coreJson, CompilationMetadata.empty());
         }
-
-        // 3. 从 CNL 源代码动态编译
         if (version.content == null || version.content.isBlank()) {
             return CompilationResult.failure(String.format("策略版本 %d 没有可用的 CNL 源代码", policyVersionId));
         }
-
         LOG.infof("动态编译 CNL 源代码: versionId=%d, locale=%s, hasAliases=%b",
             policyVersionId, version.locale, version.aliasSet != null);
         return compile(version.content, version.locale, version.aliasSet);

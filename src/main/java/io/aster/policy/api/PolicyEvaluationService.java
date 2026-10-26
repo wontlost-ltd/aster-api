@@ -248,8 +248,7 @@ public class PolicyEvaluationService {
     }
 
     /**
-     * 编译缓存未命中：在独立事务中加载策略源并编译，同一版本的并发未命中合并为一次
-     * （single-flight）。执行放在事务之外，连接只在加载与编译期间占用；结果在完成编译的线程上
+     * 编译缓存未命中：同一版本的并发未命中合并为一次（single-flight）。结果在完成编译的线程上
      * 发出，用 emitOn 把各等待者分回 worker pool。
      */
     private Uni<io.aster.policy.cache.CompiledPolicy> compileOnce(PolicyCacheKey cacheKey) {
@@ -257,9 +256,52 @@ public class PolicyEvaluationService {
             + cacheKey.getPolicyFunction() + ":" + cacheKey.getVersionId();
         LOG.debugf("使用动态执行路径: %s.%s", cacheKey.getPolicyModule(), cacheKey.getPolicyFunction());
         return compilations.run(key, () -> Uni.createFrom()
-                .item(() -> QuarkusTransaction.requiringNew().call(() -> loadAndCompile(cacheKey)))
+                .item(() -> loadAndCompile(cacheKey))
                 .runSubscriptionOn(Infrastructure.getDefaultWorkerPool()))
             .emitOn(Infrastructure.getDefaultWorkerPool());
+    }
+
+    /**
+     * 加载 + 编译分两段（issue #392）：DB 读取在一个只含查询的短事务里完成，CPU 密集的类型检查与
+     * 编译在任何事务之外执行。此前整段编译（冷启动 0.5 CPU 下约 2–3s）都包在 requiringNew 事务里，
+     * 期间一直占着一条 JDBC 连接（池仅 8 条），事务从开始到提交横跨整个编译；冷启动并发首次评估时
+     * 提交阶段出现 Agroal "Enlisted connection used without active transaction"（事务在提交时
+     * 已不被视为活跃）→ 500。现在事务只覆盖几次查询，编译期间不持有事务与连接。
+     * suspendingExisting 保证编译段即使被传播进了外部事务上下文也不在其中运行。
+     */
+    private io.aster.policy.cache.CompiledPolicy loadAndCompile(PolicyCacheKey cacheKey) {
+        CompileInput input = QuarkusTransaction.requiringNew().call(() -> loadCompileInput(cacheKey));
+        return outsideTransaction(() -> compileInput(cacheKey, input));
+    }
+
+    /** 挂起（若有）当前事务执行 work；suspendingExisting 会把业务异常再包一层，这里还原，保持 REST 层归因不变。 */
+    private static <T> T outsideTransaction(java.util.concurrent.Callable<T> work) {
+        try {
+            return QuarkusTransaction.suspendingExisting().call(work);
+        } catch (io.quarkus.narayana.jta.QuarkusTransactionException e) {
+            if (e.getCause() instanceof RuntimeException cause) {
+                throw cause;
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 编译所需的全部 DB 读取结果（已脱离事务的快照）。cached 非空时无需再编译，source 为 null。
+     */
+    private record CompileInput(PolicyVersion version,
+                                io.aster.policy.compiler.PolicyExecutionGate.Prefetch gate,
+                                io.aster.policy.cache.CompiledPolicy cached,
+                                PolicyCompiler.VersionSource source) {}
+
+    /**
+     * 预热一个版本的编译缓存（启动预热用）：与请求同走 single-flight，预热期间到达的同版本请求直接
+     * 加入这次编译而不重复编译。返回的 Uni 在编译完成（成功或失败）时结束。
+     */
+    public Uni<Void> warmUpCompiled(PolicyVersion version) {
+        PolicyCacheKey cacheKey = new PolicyCacheKey(version.tenantId, version.moduleName,
+            version.functionName, String.valueOf(version.id), new Object[0]);
+        return compileOnce(cacheKey).replaceWithVoid();
     }
 
     /**
@@ -322,91 +364,97 @@ public class PolicyEvaluationService {
     }
 
     /**
-     * 动态路径：从数据库加载策略版本并取得编译结果（编译缓存优先，未命中则编译并回填）。须在事务内调用。
+     * 读阶段（须在事务内调用）：解析版本、门禁读取、编译缓存探测与编译产物读取，只做查询。
      */
-    private io.aster.policy.cache.CompiledPolicy loadAndCompile(PolicyCacheKey cacheKey) {
-        try {
-            // 1. 从数据库加载策略版本。
-            // 热路径优化：cacheKey 已带 versionId（动态加载模式下 evaluatePolicy 已解析过活跃
-            // 版本，见 loadVersionId + versionResolutionCache）时，直接按 id 单查 findVersionById，
-            // **跳过 findActiveCatalog + findActiveVersion 的重复解析**（后者=catalog.findByIdOptional
-            // + version.find 两次往返），避免与 evaluatePolicy 里已做的版本解析重复。
-            // 仅 versionId 缺失（非动态加载路径）才回退到按 module/function 解析活跃版本。
-            java.util.Optional<PolicyVersion> version;
-            String preResolvedVersionId = cacheKey.getVersionId();
-            Long preResolvedVersionIdLong = null;
-            if (preResolvedVersionId != null) {
-                // versionId 正常来自 loadVersionId 的 String.valueOf(version.id)（数字）；防御性捕获
-                // 非数字（PolicyCacheKey 未约束 versionId 类型），非数字则回退按活跃版本解析。
-                try {
-                    preResolvedVersionIdLong = Long.valueOf(preResolvedVersionId);
-                } catch (NumberFormatException nfe) {
-                    preResolvedVersionIdLong = null;
+    private CompileInput loadCompileInput(PolicyCacheKey cacheKey) {
+        return wrapFailure(cacheKey, () -> {
+            PolicyVersion version = resolveVersion(cacheKey);
+            var gate = executionGate.prefetch(version.id);
+            // 编译缓存命中仍要先过门禁：门禁结论可能随工具链变化，缓存只省编译
+            io.aster.policy.cache.CompiledPolicy cached = compiledPolicyCache.get(
+                cacheKey.getTenantId(), cacheKey.getPolicyModule(), cacheKey.getPolicyFunction(),
+                String.valueOf(version.id)).orElse(null);
+            PolicyCompiler.VersionSource source = cached == null ? policyCompiler.loadSource(version) : null;
+            return new CompileInput(version, gate, cached, source);
+        });
+    }
+
+    /**
+     * 解析本次要执行的版本：cacheKey 已带 versionId（动态加载模式下 evaluatePolicy 已解析过活跃版本）
+     * 时按 id 单查并校验归属；否则按 module/function 解析活跃版本。不存在 → 404，有版本但不可执行 → 409。
+     */
+    private PolicyVersion resolveVersion(PolicyCacheKey cacheKey) {
+        java.util.Optional<PolicyVersion> version;
+        String preResolvedVersionId = cacheKey.getVersionId();
+        Long preResolvedVersionIdLong = null;
+        if (preResolvedVersionId != null) {
+            // versionId 正常来自 loadVersionId 的 String.valueOf(version.id)（数字）；防御性捕获
+            // 非数字（PolicyCacheKey 未约束 versionId 类型），非数字则回退按活跃版本解析。
+            try {
+                preResolvedVersionIdLong = Long.valueOf(preResolvedVersionId);
+            } catch (NumberFormatException nfe) {
+                preResolvedVersionIdLong = null;
+            }
+        }
+        if (preResolvedVersionIdLong != null) {
+            version = policySourceRepository.findVersionById(preResolvedVersionIdLong);
+            // ★租户隔离铁律（IDOR）：findVersionById 是裸主键查询，不带租户约束。必须显式校验
+            // 查回的版本归属当前 cacheKey 的租户 + module/function 一致——否则被污染的 versionId
+            // 可让 A 租户请求加载 B 租户版本。校验失败即当作未找到（不泄漏存在性）。
+            if (version.isPresent()) {
+                PolicyVersion v = version.get();
+                boolean sameTenant = java.util.Objects.equals(v.tenantId, cacheKey.getTenantId());
+                boolean sameModule = java.util.Objects.equals(v.moduleName, cacheKey.getPolicyModule());
+                boolean sameFunction = java.util.Objects.equals(v.functionName, cacheKey.getPolicyFunction());
+                if (!sameTenant || !sameModule || !sameFunction) {
+                    version = java.util.Optional.empty();
                 }
             }
-            if (preResolvedVersionIdLong != null) {
-                version = policySourceRepository.findVersionById(preResolvedVersionIdLong);
-                // ★租户隔离铁律（IDOR）：findVersionById 是裸主键查询，不带租户约束。必须显式校验
-                // 查回的版本归属当前 cacheKey 的租户 + module/function 一致——否则被污染的 versionId
-                // 可让 A 租户请求加载 B 租户版本。校验失败即当作未找到（不泄漏存在性）。
-                if (version.isPresent()) {
-                    PolicyVersion v = version.get();
-                    boolean sameTenant = java.util.Objects.equals(v.tenantId, cacheKey.getTenantId());
-                    boolean sameModule = java.util.Objects.equals(v.moduleName, cacheKey.getPolicyModule());
-                    boolean sameFunction = java.util.Objects.equals(v.functionName, cacheKey.getPolicyFunction());
-                    if (!sameTenant || !sameModule || !sameFunction) {
-                        version = java.util.Optional.empty();
-                    }
-                }
-                if (version.isEmpty()) {
-                    // 与「不存在」同口径回 404，不泄漏其它租户版本的存在性
-                    throw PolicyNotExecutableException.policyNotFound(
+            if (version.isEmpty()) {
+                // 与「不存在」同口径回 404，不泄漏其它租户版本的存在性
+                throw PolicyNotExecutableException.policyNotFound(
+                    cacheKey.getPolicyModule(), cacheKey.getPolicyFunction());
+            }
+        } else {
+            java.util.Optional<PolicyCatalog> catalog = policySourceRepository.findActiveCatalog(
+                cacheKey.getTenantId(),
+                cacheKey.getPolicyModule(),
+                cacheKey.getPolicyFunction()
+            );
+
+            // 没有目录或没有激活的默认版本：再看是否存在任何版本，区分「不存在」(404)
+            // 与「有版本但都未批准/激活」(409)。后者此前被包装成笼统的评估失败，原因丢失。
+            version = catalog.flatMap(c -> policySourceRepository.findActiveVersion(c.id));
+            if (version.isEmpty()) {
+                throw policySourceRepository.hasAnyVersion(cacheKey.getTenantId(),
+                        cacheKey.getPolicyModule(), cacheKey.getPolicyFunction())
+                    ? PolicyNotExecutableException.noExecutableVersion(
+                        cacheKey.getPolicyModule(), cacheKey.getPolicyFunction())
+                    : PolicyNotExecutableException.policyNotFound(
                         cacheKey.getPolicyModule(), cacheKey.getPolicyFunction());
-                }
-            } else {
-                java.util.Optional<PolicyCatalog> catalog = policySourceRepository.findActiveCatalog(
-                    cacheKey.getTenantId(),
-                    cacheKey.getPolicyModule(),
-                    cacheKey.getPolicyFunction()
-                );
-
-                // 没有目录或没有激活的默认版本：再看是否存在任何版本，区分「不存在」(404)
-                // 与「有版本但都未批准/激活」(409)。后者此前被包装成笼统的评估失败，原因丢失。
-                version = catalog.flatMap(c -> policySourceRepository.findActiveVersion(c.id));
-                if (version.isEmpty()) {
-                    throw policySourceRepository.hasAnyVersion(cacheKey.getTenantId(),
-                            cacheKey.getPolicyModule(), cacheKey.getPolicyFunction())
-                        ? PolicyNotExecutableException.noExecutableVersion(
-                            cacheKey.getPolicyModule(), cacheKey.getPolicyFunction())
-                        : PolicyNotExecutableException.policyNotFound(
-                            cacheKey.getPolicyModule(), cacheKey.getPolicyFunction());
-                }
             }
+        }
 
-            String versionId = String.valueOf(version.get().id);
+        return version.get();
+    }
 
-            var gateDecision = executionGate.check(version.get().id);
+    /**
+     * 编译阶段（在事务外调用）：门禁判定（必要时同步类型检查，落库走自己的短事务）、编译并回填缓存。
+     * 零 DB 读取，不持有任何 JDBC 连接。
+     */
+    private io.aster.policy.cache.CompiledPolicy compileInput(PolicyCacheKey cacheKey, CompileInput input) {
+        return wrapFailure(cacheKey, () -> {
+            var gateDecision = executionGate.check(input.gate());
             if (!gateDecision.allowed()) {
                 io.aster.policy.compiler.PolicyExecutionGate.reject(gateDecision);
             }
-
-            // 2. 检查编译缓存
-            java.util.Optional<io.aster.policy.cache.CompiledPolicy> cachedPolicy =
-                compiledPolicyCache.get(
-                    cacheKey.getTenantId(),
-                    cacheKey.getPolicyModule(),
-                    cacheKey.getPolicyFunction(),
-                    versionId
-                );
-
-            if (cachedPolicy.isPresent()) {
+            if (input.cached() != null) {
                 LOG.debugf("使用缓存的编译结果: %s.%s (version=%s)",
-                    cacheKey.getPolicyModule(), cacheKey.getPolicyFunction(), versionId);
-                return cachedPolicy.get();
+                    cacheKey.getPolicyModule(), cacheKey.getPolicyFunction(), input.cached().getVersionId());
+                return input.cached();
             }
-
-            // 缓存未命中，编译策略并缓存
-            CompilationResult compilationResult = policyCompiler.compile(version.get().id);
+            PolicyVersion version = input.version();
+            CompilationResult compilationResult = policyCompiler.compile(version.id, input.source());
             if (!compilationResult.isSuccess()) {
                 throw new RuntimeException(String.format(
                     "策略编译失败: %s.%s - %s",
@@ -415,24 +463,7 @@ public class PolicyEvaluationService {
                     compilationResult.getErrors()
                 ));
             }
-            // coreJson 是整个模块的 IR，而 Truffle 只会执行 main 或第一个函数。编译期一次性把
-            // 目标函数排到最前并缓存（缓存键已含 function），热路径不再解析 IR；
-            // 目标不存在或被 main 抢占时抛 EntryFunctionException，不静默执行别的函数。
-            // 选择失败对同一版本是确定的：作为失败条目缓存，否则配置错误的部署每个请求都会重新编译。
-            io.aster.policy.cache.CompiledPolicy compiledPolicy;
-            try {
-                String entryCoreJson = io.aster.policy.parser.CoreIrEntrySelector.withEntry(
-                    compilationResult.getCoreJson(), cacheKey.getPolicyFunction());
-                compiledPolicy = new io.aster.policy.cache.CompiledPolicy(
-                    versionId,
-                    version.get().sourceHash,
-                    entryCoreJson,
-                    compilationResult.getMetadata()
-                );
-            } catch (io.aster.policy.parser.EntryFunctionException e) {
-                compiledPolicy = io.aster.policy.cache.CompiledPolicy.entryFailure(
-                    versionId, version.get().sourceHash, e.getMessage());
-            }
+            io.aster.policy.cache.CompiledPolicy compiledPolicy = toCompiledPolicy(cacheKey, version, compilationResult);
             compiledPolicyCache.put(
                 cacheKey.getTenantId(),
                 cacheKey.getPolicyModule(),
@@ -440,9 +471,33 @@ public class PolicyEvaluationService {
                 compiledPolicy
             );
             return compiledPolicy;
+        });
+    }
 
+    /**
+     * coreJson 是整个模块的 IR，而 Truffle 只会执行 main 或第一个函数。编译期一次性把
+     * 目标函数排到最前并缓存（缓存键已含 function），热路径不再解析 IR；
+     * 目标不存在或被 main 抢占时抛 EntryFunctionException，不静默执行别的函数。
+     * 选择失败对同一版本是确定的：作为失败条目缓存，否则配置错误的部署每个请求都会重新编译。
+     */
+    private static io.aster.policy.cache.CompiledPolicy toCompiledPolicy(PolicyCacheKey cacheKey,
+            PolicyVersion version, CompilationResult compilationResult) {
+        String versionId = String.valueOf(version.id);
+        try {
+            String entryCoreJson = io.aster.policy.parser.CoreIrEntrySelector.withEntry(
+                compilationResult.getCoreJson(), cacheKey.getPolicyFunction());
+            return new io.aster.policy.cache.CompiledPolicy(
+                versionId, version.sourceHash, entryCoreJson, compilationResult.getMetadata());
+        } catch (io.aster.policy.parser.EntryFunctionException e) {
+            return io.aster.policy.cache.CompiledPolicy.entryFailure(versionId, version.sourceHash, e.getMessage());
+        }
+    }
+
+    /** 已归因的业务状态（404 / 409）原样上抛，其余包装成带策略名的执行异常，供 REST 层统一归因。 */
+    private static <T> T wrapFailure(PolicyCacheKey cacheKey, java.util.concurrent.Callable<T> work) {
+        try {
+            return work.call();
         } catch (PolicyNotExecutableException e) {
-            // 已归因的业务状态原样上抛，供 REST 层映射为 404 / 409
             throw e;
         } catch (Exception e) {
             throw new RuntimeException(String.format(

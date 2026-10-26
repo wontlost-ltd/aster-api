@@ -205,7 +205,7 @@ class PolicyEvaluationFunctionSelectionTest {
                 .hasMessageContaining("'nosuch'");
         }
 
-        verify(policyCompiler, times(1)).compile(anyLong());
+        verify(policyCompiler, times(1)).compile(anyLong(), org.mockito.ArgumentMatchers.any());
     }
 
     @Test
