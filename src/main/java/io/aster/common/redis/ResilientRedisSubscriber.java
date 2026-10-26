@@ -43,7 +43,7 @@ public final class ResilientRedisSubscriber {
      */
     public record Backoff(Duration initial, Duration max, DoubleSupplier random) {
 
-        long delayMillis(int failures) {
+        public long delayMillis(int failures) {
             int shift = Math.min(Math.max(failures - 1, 0), 20);
             long capped = Math.min(initial.toMillis() << shift, max.toMillis());
             long half = capped / 2;
