@@ -517,6 +517,8 @@ public class PolicyEvaluationResource {
     ) {
         // ADR 0041 §3：agent 在执行前校验（先于配额与并发闸门），非法即 400——不执行、不计费、不落链
         final AgentIdentity agent = validatedAgent(request.agent());
+        // 词汇表大小/形状先于配额与并发闸门校验：超限即 400，不计费、不占许可。
+        requireVocabularyWithinBounds(request.vocabulary());
         // ★simulate 必须绑定 HMAC 内部调用者（与 replayCapture 同门控，第九轮 P0-1b）：
         //   它是一个**免计费**开关，若信任裸 query boolean，任何外部调用方
         //   加个 ?simulate=true 就能白嫖配额、且不留 API 调用记录。
@@ -952,6 +954,8 @@ public class PolicyEvaluationResource {
         // 在切 worker 线程前读取请求上下文属性。
         final boolean allowStructural = Boolean.TRUE.equals(request.allowStructural())
             && io.aster.security.apikey.InternalCallerFilter.isHmacVerified(jaxrsCtx);
+        // 词汇表超限在抢匿名解析许可前就拒绝（400），与 evaluate-source 共用同一校验器。
+        requireVocabularyWithinBounds(request.vocabulary());
 
         return Uni.createFrom().item(() -> {
             if (!tryAcquireAnonParse()) {
@@ -1083,6 +1087,23 @@ public class PolicyEvaluationResource {
     private static final int MAX_ALIASES_PER_KIND = 64;
     private static final int MAX_ALIAS_PHRASE_LENGTH = 256;
     private static final int MAX_ALIAS_KIND_LENGTH = 128;
+
+    /**
+     * 词汇表超出 {@link io.aster.policy.rest.model.VocabularyBounds} 上限时抛 400
+     * （{@code vocabulary_too_large}）。compile 与 evaluate-source 共用，保证两条路径口径一致。
+     */
+    static void requireVocabularyWithinBounds(Map<String, Object> vocabulary) {
+        String error = io.aster.policy.rest.model.VocabularyBounds.validate(vocabulary);
+        if (error == null) {
+            return;
+        }
+        throw new jakarta.ws.rs.BadRequestException(
+            jakarta.ws.rs.core.Response.status(400)
+                .type(MediaType.APPLICATION_JSON)
+                .entity(Map.of("error", io.aster.policy.rest.model.VocabularyBounds.ERROR_CODE,
+                    "message", error))
+                .build());
+    }
 
     /**
      * 校验 aliasSet 大小边界。超限返回错误消息（调用方回 400），否则返回 null。
