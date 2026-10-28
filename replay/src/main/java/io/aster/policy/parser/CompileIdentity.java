@@ -23,13 +23,16 @@ public final class CompileIdentity {
     private CompileIdentity() {
     }
 
+    /** 进程内恒定，类加载时算一次。 */
+    private static final String TOOLCHAIN_ID = "abi=" + aster.core.lexicon.LexiconAbiVersion.V1.version
+        + ";core=" + coreEngineVersion()
+        + ";validator=" + UserAliasValidator.VERSION
+        + ";resolver=" + RESOLVER_VERSION
+        + ";casefold=" + CaseFold.VERSION;
+
     /** 影响编译结果的引擎分量：词法 ABI、core 实现版本、别名校验器、解析算法与折叠表版本。 */
     public static String toolchainId() {
-        return "abi=" + aster.core.lexicon.LexiconAbiVersion.V1.version
-            + ";core=" + coreEngineVersion()
-            + ";validator=" + UserAliasValidator.VERSION
-            + ";resolver=" + RESOLVER_VERSION
-            + ";casefold=" + CaseFold.VERSION;
+        return TOOLCHAIN_ID;
     }
 
     /** sha256(canonicalJson)；无词汇为空串。 */

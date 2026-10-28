@@ -8,6 +8,7 @@ import io.aster.policy.cedar.CedarExportService;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
+import io.aster.policy.parser.CompileIdentity;
 import io.aster.policy.rest.model.CedarExportRequest;
 import io.aster.policy.rest.model.CedarExportResponse;
 import io.aster.policy.rest.model.CnlSourceLimits;
@@ -116,9 +117,10 @@ public class CedarExportResource {
         }
         CedarExportOutcome outcome = exportService.exportSource(
             input.source(), input.locale(), input.aliasSetJson(), input.scopes(), input.functionName());
-        CedarExportResponse body = toResponse(outcome);
+        String scopesHash = CompileIdentity.scopesHash(input.scopes());
+        CedarExportResponse body = toResponse(outcome, scopesHash);
         if (outcome.exportable()) {
-            audit(outcome, input.versionId(), request.claimedRef(), tenantId);
+            audit(outcome, scopesHash, input.versionId(), request.claimedRef(), tenantId);
         }
         return Response.ok(body).build();
     }
@@ -199,18 +201,21 @@ public class CedarExportResource {
         });
     }
 
-    private static CedarExportResponse toResponse(CedarExportOutcome o) {
+    private static CedarExportResponse toResponse(CedarExportOutcome o, String scopesHash) {
         JsonNode schema = o.schemaJson() == null ? null : readJson(o.schemaJson());
         return new CedarExportResponse(o.exportable(), o.policies(), schema, o.ruleId(), o.profile(), o.controls(),
             new CedarExportResponse.Probes(o.probeCount(), o.probesAgreed()), o.diagnostics(), o.sourceHash(),
-            o.moduleName(), o.schemaJson());
+            o.moduleName(), o.schemaJson(), scopesHash);
     }
 
     /** 同步入链；失败即整次请求失败（500），导出结果不返回给调用方。 */
-    private void audit(CedarExportOutcome o, Long versionId, Map<String, String> claimedRef, String tenantId) {
+    private void audit(CedarExportOutcome o, String scopesHash, Long versionId, Map<String, String> claimedRef,
+                       String tenantId) {
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("target", "cedar");
         metadata.put("sourceHash", o.sourceHash());
+        // 同一源码在不同词汇下导出不同策略：词汇身份与源码哈希一起留痕（ADR 0051）
+        metadata.put("scopesHash", scopesHash);
         metadata.put("policiesHash", sha256(o.policies()));
         metadata.put("schemaHash", sha256(o.schemaJson()));
         metadata.put("ruleId", o.ruleId());

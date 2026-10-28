@@ -519,6 +519,8 @@ public class DynamicCnlExecutor {
             );
 
         } catch (InProcessCnlParser.CnlParseException e) {
+            // 用户源码编译不过（语法 / E8xx）：WARN 一行，不打堆栈
+            LOG.warnf("动态执行的源码未能编译: %s", e.getMessage());
             throw new DynamicExecutionException("CNL 解析失败: " + e.getMessage(), e);
         } catch (ModuleResolutionException e) {
             throw new ModuleExecutionException(e);

@@ -13,6 +13,9 @@ import java.util.List;
  * <p>{@code moduleName} 为编译器给出的模块名（供下载文件命名，编译失败时为 null）；
  * {@code schemaText} 为经严格校验并计入审计 {@code schemaHash} 的 schema 原文，调用方应原样保存，
  * 不要用 {@code schema} 重新序列化（键序与转义可能不同，哈希即不再相等）。{@code schema} 为同一内容的解析形态，保留兼容。
+ *
+ * <p>{@code scopesHash} 为编译所用领域词汇的 sha256(canonicalJson)，无词汇为空串（ADR 0051）：同一源码在不同词汇下
+ * 导出的策略不同，溯源须同时看 {@code sourceHash} 与 {@code scopesHash}。
  */
 public record CedarExportResponse(
     boolean exportable,
@@ -25,7 +28,8 @@ public record CedarExportResponse(
     List<CompileDiagnostic> diagnostics,
     String sourceHash,
     String moduleName,
-    String schemaText
+    String schemaText,
+    String scopesHash
 ) {
     public record Probes(int count, int agreed) {
     }

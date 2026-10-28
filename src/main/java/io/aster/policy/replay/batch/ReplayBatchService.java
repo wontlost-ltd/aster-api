@@ -607,9 +607,15 @@ public class ReplayBatchService {
         //   必定失败，导致每次 What-If 都以 TARGET_VERSION_MISSING 收场。
         var target = versionSourceClient.fetch(snap.targetVersionId(), snap.userId())
             .orElseThrow(() -> new TargetVersionMissingException(snap.targetVersionId()));
-        // 目标版本冻结的词汇按段构建一次，本段各条共用（ADR 0051）
-        aster.core.identifier.VocabularyScopes targetScopes =
-            io.aster.replay.core.ReplayExecutionCore.buildVocabularyScopes(target.vocabulary());
+        // 目标版本冻结的词汇按段构建一次，本段各条共用（ADR 0051）；与其它入口一样先过大小上限，
+        // 超限时本段各条归为词汇不可用，而不是退化为无词汇后误报成编译错误
+        String vocabularyError = io.aster.policy.rest.model.VocabularyBounds.validate(target.vocabulary());
+        if (vocabularyError != null) {
+            Log.warnf("目标版本词汇超出上限，本段按词汇不可用处理：versionId=%s %s",
+                snap.targetVersionId(), vocabularyError);
+        }
+        aster.core.identifier.VocabularyScopes targetScopes = vocabularyError != null ? null
+            : io.aster.replay.core.ReplayExecutionCore.buildVocabularyScopes(target.vocabulary());
 
         // ★只拉**本段**，不再每段拉全量窗口（ADR 0034 §12.4）。
         //   上一版是 O(N²)：500 段 × 10000 条 = 5,000,000 个对象、约 5000 次 HTTP。
@@ -639,8 +645,10 @@ public class ReplayBatchService {
                 item.targetOutcome = ReplayOutcome.ERROR.name();
                 continue;
             }
-            ReplayBatchRunner.ItemResult r =
-                replayOne(e, frozenBase(item), target, targetScopes, snap.tenantId());
+            ReplayBatchRunner.ItemResult r = vocabularyError != null
+                ? ReplayBatchRunner.ItemResult.failed(e.executionId(), frozenBase(item).outcome(),
+                    frozenBase(item).legacy(), ReplayFailureKind.VOCABULARY_UNAVAILABLE)
+                : replayOne(e, frozenBase(item), target, targetScopes, snap.tenantId());
             item.success = r.failureKind() == null;
             item.failureKind = r.failureKind() == null ? null : r.failureKind().name();
             item.targetApproved = r.failureKind() == null ? r.targetApproved() : null;
@@ -957,6 +965,11 @@ public class ReplayBatchService {
         if (ex instanceof java.util.concurrent.TimeoutException || msg.contains("timeout")) {
             return ReplayFailureKind.TIMEOUT;
         }
+        // 目标源码语法错误或名称解析失败（E8xx）：是目标版本编译不过，不是历史输入的问题。
+        //   按异常类型沿 cause 链判定，消息文本（中文、含码）不可靠
+        if (isTargetCompileFailure(ex)) {
+            return ReplayFailureKind.TARGET_COMPILE_ERROR;
+        }
         if (msg.contains("vocabulary") || msg.contains("alias")) {
             return ReplayFailureKind.VOCABULARY_UNAVAILABLE;
         }
@@ -969,6 +982,15 @@ public class ReplayBatchService {
         return ReplayFailureKind.INPUT_INCOMPATIBLE;
     }
 
+
+    private static boolean isTargetCompileFailure(Throwable ex) {
+        for (Throwable t = ex; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof io.aster.policy.parser.InProcessCnlParser.CnlParseException) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     private static boolean isWatchdogTimeout(Throwable ex) {
         for (Throwable t = ex; t != null; t = t.getCause() == t ? null : t.getCause()) {
