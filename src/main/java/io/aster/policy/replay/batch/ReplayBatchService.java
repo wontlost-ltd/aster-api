@@ -607,6 +607,9 @@ public class ReplayBatchService {
         //   必定失败，导致每次 What-If 都以 TARGET_VERSION_MISSING 收场。
         var target = versionSourceClient.fetch(snap.targetVersionId(), snap.userId())
             .orElseThrow(() -> new TargetVersionMissingException(snap.targetVersionId()));
+        // 目标版本冻结的词汇按段构建一次，本段各条共用（ADR 0051）
+        aster.core.identifier.VocabularyScopes targetScopes =
+            io.aster.replay.core.ReplayExecutionCore.buildVocabularyScopes(target.vocabulary());
 
         // ★只拉**本段**，不再每段拉全量窗口（ADR 0034 §12.4）。
         //   上一版是 O(N²)：500 段 × 10000 条 = 5,000,000 个对象、约 5000 次 HTTP。
@@ -637,7 +640,7 @@ public class ReplayBatchService {
                 continue;
             }
             ReplayBatchRunner.ItemResult r =
-                replayOne(e, frozenBase(item), target, snap.tenantId());
+                replayOne(e, frozenBase(item), target, targetScopes, snap.tenantId());
             item.success = r.failureKind() == null;
             item.failureKind = r.failureKind() == null ? null : r.failureKind().name();
             item.targetApproved = r.failureKind() == null ? r.targetApproved() : null;
@@ -873,6 +876,7 @@ public class ReplayBatchService {
         ExecutionWindowClient.WindowedExecution e,
         ReplayOutcome.Base base,
         PolicyVersionSourceClient.VersionSource target,
+        aster.core.identifier.VocabularyScopes targetScopes,
         String tenantId) {
 
         try {
@@ -884,7 +888,7 @@ public class ReplayBatchService {
                 runWithTimeout(() -> replayExecutor.execute(
                     tenantId, target.content(), e.input(),
                     e.functionName(), e.locale(),
-                    /* vocabIndex */ null,
+                    targetScopes,
                     /* legacyEvaluateSentinel */ false,
                     /* aliasSet */ java.util.Map.of(),
                     /* aliasesTrusted */ true)));

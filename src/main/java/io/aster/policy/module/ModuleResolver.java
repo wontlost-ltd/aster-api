@@ -2,7 +2,6 @@ package io.aster.policy.module;
 
 import aster.core.ast.Decl;
 import aster.core.ir.CoreModel;
-import aster.core.lowering.CoreLowering;
 import aster.core.module.ModuleGraph;
 import aster.core.module.ModuleKey;
 import io.aster.policy.entity.PolicyVersion;
@@ -178,7 +177,7 @@ public class ModuleResolver implements ModuleGraphResolver {
 
         try {
             InProcessCnlParser.ParseResult parseResult = InProcessCnlParser.parse(content, locale, null);
-            CoreModel.Module coreModule = new CoreLowering().lowerModule(parseResult.module());
+            CoreModel.Module coreModule = parseResult.core();
             ParsedModule parsed = new ParsedModule(coreModule, importsOf(parseResult.module()));
             cache.put(cacheKey, parsed);
             LOG.debugf("Resolved module import %s@%d for tenant %s", key.moduleName(), key.version(), tenantId);

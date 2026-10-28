@@ -107,15 +107,15 @@ public class PolicyVersionService {
      * 这保证同一别名集总产出同一 source envelope（可复现/跨租户一致）。
      *
      * @param aliasSet        结构化别名集，null/空=无用户别名
-     * @param identifierIndex 领域词汇索引（别名↔标识符碰撞校验），可为 null
+     * @param scopes          领域词汇作用域（别名↔标识符碰撞校验），可为 null
      */
     @Transactional
     public PolicyVersion createVersion(UUID catalogId, String sourceCnl, String locale,
                                        String sourceKind, String authorRole,
                                        java.util.Map<aster.core.lexicon.SemanticTokenKind, java.util.List<String>> aliasSet,
-                                       aster.core.identifier.IdentifierIndex identifierIndex) {
+                                       aster.core.identifier.VocabularyScopes scopes) {
         io.aster.policy.parser.UserAliasValidator.Result vr =
-            io.aster.policy.parser.UserAliasValidator.validate(aliasSet, locale, identifierIndex);
+            io.aster.policy.parser.UserAliasValidator.validate(aliasSet, locale, scopes);
         if (!vr.valid()) {
             throw new IllegalArgumentException("用户自定义别名校验失败: " + String.join("; ", vr.errors()));
         }
@@ -204,8 +204,8 @@ public class PolicyVersionService {
             throw new IllegalArgumentException("aliasSet JSON 非法或含未知 kind: " + e.getMessage());
         }
         // 语义校验（Codex 三轮复核：String 入口也必须校验，不能只验 canonical 形）。
-        // 白名单/多词/不遮蔽——撞领域词汇的碰撞校验需 IdentifierIndex，请用结构化入口
-        // createVersion(...Map, IdentifierIndex)；此处至少挡敏感 kind/单词/遮蔽。
+        // 白名单/多词/不遮蔽——撞领域词汇的碰撞校验需词汇作用域，请用结构化入口
+        // createVersion(...Map, VocabularyScopes)；此处至少挡敏感 kind/单词/遮蔽。
         io.aster.policy.parser.UserAliasValidator.Result vr =
             io.aster.policy.parser.UserAliasValidator.validate(parsed, locale, null);
         if (!vr.valid()) {

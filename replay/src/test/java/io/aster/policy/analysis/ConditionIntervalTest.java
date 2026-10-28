@@ -26,7 +26,7 @@ class ConditionIntervalTest {
 
     /** 解析一段 CNL，取出第一个 If 的条件表达式。 */
     private static Expr firstIfCond(String condition) {
-        String src = "Module m.\n\nRule r given x as Number produce Number:\n"
+        String src = "Module m.\n\nRule r given x as Int, y as Int produce Int:\n"
             + "  If " + condition + ":\n    Return 1.\n  Return 0.\n";
         var res = InProcessCnlParser.parse(src);
         for (Decl d : res.module().decls()) {

@@ -150,9 +150,11 @@ class PolicyCompilerTest {
     void typecheckRejectsUnknownField() {
         var result = policyCompiler.compile(typedPolicy(true), "en");
         assertThat(result.isSuccess()).isFalse();
+        // ADR 0051：接收者类型已知时未知字段由名称解析（R2）先报 E801，不再到类型检查的 E011
         assertThat(result.getDiagnostics()).anySatisfy(d -> {
-            assertThat(d.code()).isEqualTo("E011");
-            assertThat(d.message()).contains("Unknown field 'creditScor' for LoanApplication");
+            assertThat(d.code()).isEqualTo("E801");
+            assertThat(d.message()).contains("creditScor");
+            assertThat(d.blocking()).isTrue();
         });
     }
 

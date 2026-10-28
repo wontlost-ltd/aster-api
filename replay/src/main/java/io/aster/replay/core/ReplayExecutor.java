@@ -15,11 +15,11 @@ import java.util.Map;
  */
 public interface ReplayExecutor {
     /**
-     * ★收「已建」vocabIndex + aliasSet（与 DynamicCnlExecutor 一致）——raw→已建的
+     * ★收「已建」词汇作用域 + aliasSet（与 DynamicCnlExecutor 一致）——raw→已建的
      * 构建逻辑归 core 的 ReplayExecutionCore（byte-parity 单一份），executor 收结果。
      *
      * @param aliasesTrusted 由调用方（adapter）从已验证的调用上下文派生，非业务输入。
-     * @param vocabIndex     已建的 IdentifierIndex（core 用 buildVocabularyIndex 建）。
+     * @param vocabularyScopes 已建的词汇作用域（core 用 buildVocabularyScopes 建），null=无词汇。
      * @param aliasSet       已建的 kind→phrases 映射（core 用 buildAliasSet 建）。
      */
     ReplayExecutorResult execute(
@@ -28,7 +28,7 @@ public interface ReplayExecutor {
             Object context,
             String functionName,
             String locale,
-            aster.core.identifier.IdentifierIndex vocabIndex,
+            aster.core.identifier.VocabularyScopes vocabularyScopes,
             boolean legacyEvaluateSentinel,
             Map<SemanticTokenKind, List<String>> aliasSet,
             boolean aliasesTrusted);

@@ -23,12 +23,12 @@ public final class StandaloneReplayExecutor implements ReplayExecutor {
     public ReplayExecutorResult execute(
             String tenantId, String source, Object context,
             String functionName, String locale,
-            aster.core.identifier.IdentifierIndex vocabIndex,
+            aster.core.identifier.VocabularyScopes vocabularyScopes,
             boolean legacyEvaluateSentinel,
             Map<SemanticTokenKind, List<String>> aliasSet, boolean aliasesTrusted) {
         DynamicCnlExecutor.ExecutionResult r = executor.executeWithTenantContext(
                 tenantId, source, context, functionName, locale,
-                vocabIndex, legacyEvaluateSentinel, aliasSet, aliasesTrusted);
+                vocabularyScopes, legacyEvaluateSentinel, aliasSet, aliasesTrusted);
         return new ReplayExecutorResult(r.result(), r.moduleName(), r.functionName(), r.executionTimeMs(),
                 r.ruleId(), r.controls(), r.profile());
     }

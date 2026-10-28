@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RuleConflictAnalyzerTest {
 
     private static List<RuleConflictAnalyzer.Finding> analyze(String body) {
-        String src = "Module m.\n\nRule r given x as Number produce Number:\n" + body;
+        String src = "Module m.\n\nRule r given x as Int produce Int:\n" + body;
         return RuleConflictAnalyzer.analyze(InProcessCnlParser.parse(src).module());
     }
 
@@ -153,7 +153,7 @@ class RuleConflictAnalyzerTest {
     @Test
     void 关键_不同变量之间不产生交叉误报() {
         // x 与 y 的约束互不影响
-        var src = "Module m.\n\nRule r given x as Number, y as Number produce Number:\n"
+        var src = "Module m.\n\nRule r given x as Int, y as Int produce Int:\n"
             + "  If x is greater than 100:\n"
             + "    If y is less than 50:\n"
             + "      Return 1.\n"

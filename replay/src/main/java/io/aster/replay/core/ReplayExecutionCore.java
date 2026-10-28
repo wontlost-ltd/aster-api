@@ -1,7 +1,6 @@
 package io.aster.replay.core;
 
-import aster.core.identifier.DomainVocabulary;
-import aster.core.identifier.IdentifierIndex;
+import aster.core.identifier.VocabularyScopes;
 import aster.core.identifier.VocabularyLoader;
 import aster.core.lexicon.SemanticTokenKind;
 import aster.truffle.trace.TraceAccess;
@@ -25,7 +24,7 @@ import java.util.logging.Logger;
  *
  * <p>三阶段对应 evaluateSource 原有的三段编排：
  * <ol>
- *   <li>{@link #execute}：建 vocabIndex/aliasSet → arm trace → 调 executor → finally drain。
+ *   <li>{@link #execute}：建 vocabularyScopes/aliasSet → arm trace → 调 executor → finally drain。
  *       executor 抛出的异常<b>原样透传</b>（不捕获、不包装）——finally 已保证 drain 先执行，
  *       随后同一异常实例继续向上抛，由调用方（aster-api resource）现有四类 catch 处理。</li>
  *   <li>{@link #buildDecisionTrace}：把 drain 出的原始 steps 转成 {@link DecisionTrace}。</li>
@@ -38,7 +37,7 @@ public final class ReplayExecutionCore {
     private static final Logger LOG = Logger.getLogger(ReplayExecutionCore.class.getName());
 
     /**
-     * 阶段一：执行 replay。建 vocabIndex（先）/aliasSet（后，保原有调用顺序）、
+     * 阶段一：执行 replay。建词汇作用域（先）/aliasSet（后，保原有调用顺序）、
      * 按 {@code trace || effectiveReplayCapture} 决定是否 arm trace collector、
      * 调 {@code executor.execute(...)}，finally 中 drain。
      *
@@ -47,7 +46,7 @@ public final class ReplayExecutionCore {
      * 调用方不会看到 {@link ExecutionPhaseResult}。
      */
     public ExecutionPhaseResult execute(ReplayExecutionRequest req, ReplayExecutor executor) {
-        IdentifierIndex vocabIndex = buildVocabularyIndex(req.vocabulary());
+        VocabularyScopes vocabularyScopes = buildVocabularyScopes(req.vocabulary());
         Map<SemanticTokenKind, List<String>> aliasSet = buildAliasSet(req.aliasSet());
 
         boolean captureTraceSteps = req.trace() || req.effectiveReplayCapture();
@@ -68,7 +67,7 @@ public final class ReplayExecutionCore {
                 req.context(),
                 req.functionName(),
                 req.locale(),
-                vocabIndex,
+                vocabularyScopes,
                 req.legacyEvaluateSentinel(),
                 aliasSet,
                 req.aliasesTrusted());
@@ -137,27 +136,32 @@ public final class ReplayExecutionCore {
     // ---------------------------------------------------------------
 
     /**
-     * 把请求携带的领域词汇表（Map 形式）构建为 IdentifierIndex。
+     * 把请求携带的领域词汇表（Map 形式）构建为按角色组织的 {@link VocabularyScopes}（ADR 0051）。
      *
-     * <p>ADR 0014 线C：发布的策略可携带其快照领域词汇，使执行端规范化阶段
-     * 能翻译用户自定义术语。词汇为空或格式非法时返回 null（退化为仅内置），
-     * 不阻断执行——执行端解析仍可在 builtin 词汇下进行。
+     * <p>词汇为空、没有任何条目（含只有元数据）或格式非法时返回 null，与无词汇一致，不阻断执行；
+     * 此时引用本地化名称的源码会在名称解析阶段以 E8xx 失败，而不是被静默改写。
+     * 调用方须先经 {@code VocabularyBounds} 校验大小再调用本方法。
      *
-     * <p>公开为静态方法，供编译端点（保存门禁）复用同一构建口径，保证「编译通过」与「执行
-     * 可解析」对同一份词汇得出一致结论。
+     * <p>公开为静态方法，供编译端点（保存门禁）与 Cedar 导出复用同一构建口径，保证「编译通过」与
+     * 「执行可解析」对同一份词汇得出一致结论。
      */
-    public static IdentifierIndex buildVocabularyIndex(Map<String, Object> vocabulary) {
+    public static VocabularyScopes buildVocabularyScopes(Map<String, Object> vocabulary) {
         if (vocabulary == null || vocabulary.isEmpty()) {
             return null;
         }
         try {
-            DomainVocabulary vocab = VocabularyLoader.loadFromMap(vocabulary);
-            return IdentifierIndex.build(vocab);
+            VocabularyScopes scopes = VocabularyScopes.build(VocabularyLoader.loadFromMap(vocabulary));
+            return isEmpty(scopes) ? null : scopes;
         } catch (Exception e) {
-            // 词汇格式非法不应阻断执行，记录并退化为仅内置。
-            LOG.warning(() -> "领域词汇表解析失败，退化为仅内置词汇: " + e.getMessage());
+            // 词汇格式非法不应阻断执行，记录并退化为无词汇。
+            LOG.warning(() -> "领域词汇表解析失败，退化为无词汇: " + e.getMessage());
             return null;
         }
+    }
+
+    private static boolean isEmpty(VocabularyScopes s) {
+        return s.types().isEmpty() && s.fields().isEmpty() && s.enumMembers().isEmpty()
+            && s.functions().isEmpty() && s.literals().isEmpty();
     }
 
     /**

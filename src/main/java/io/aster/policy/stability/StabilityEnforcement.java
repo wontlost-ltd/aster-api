@@ -2,7 +2,6 @@ package io.aster.policy.stability;
 
 import aster.core.ir.CoreModel;
 import aster.core.lexicon.SemanticTokenKind;
-import aster.core.lowering.CoreLowering;
 import aster.core.stability.StabilityGate;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -281,7 +280,7 @@ public class StabilityEnforcement {
             (aliasSet == null || aliasSet.isEmpty())
                 ? io.aster.policy.parser.InProcessCnlParser.parse(source, locale)
                 : io.aster.policy.parser.InProcessCnlParser.parseWithUserAliases(source, locale, null, aliasSet);
-        return new CoreLowering().lowerModule(parseResult.module());
+        return parseResult.core();
     }
 
     public void enforceVersion(Long versionId, String policyId, String tenantId,

@@ -1,15 +1,20 @@
 package io.aster.policy.parser;
 
-import aster.core.ast.Decl;
 import aster.core.ast.Module;
 import aster.core.canonicalizer.Canonicalizer;
-import aster.core.identifier.IdentifierIndex;
+import aster.core.identifier.VocabularyScopes;
+import aster.core.ir.CoreModel;
 import aster.core.lexicon.Lexicon;
 import aster.core.lexicon.LexiconRegistry;
 import aster.core.lexicon.SemanticTokenKind;
 import aster.core.parser.AstBuilder;
 import aster.core.parser.AsterCustomLexer;
 import aster.core.parser.AsterParser;
+import aster.core.resolve.ImportedDeclarations;
+import aster.core.resolve.NameResolution;
+import aster.core.resolve.NameResolutionException;
+import aster.core.resolve.ResolutionContext;
+import aster.core.typecheck.model.Diagnostic;
 import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
@@ -23,6 +28,9 @@ import java.util.Map;
  *
  * 使用 ANTLR 直接解析 CNL 源代码，替代通过 CLI 工具调用的方式。
  * 这使得 Quarkus Policy API 可以在没有 aster-convert CLI 的环境中运行。
+ *
+ * <p>ADR 0051：解析之后紧接名称解析（R1 → lower → R2），产出只含规范名的 Core。R2 依赖 lower 在
+ * 同一进程内登记的解析标记，因此调用方必须使用 {@link ParseResult#core()}，不得自行重新 lower AST。
  */
 public class InProcessCnlParser {
 
@@ -30,13 +38,22 @@ public class InProcessCnlParser {
 
     /**
      * CNL 解析结果
+     *
+     * @param module           R1 之后的 AST（标识符保持原写法，带解析结果）；供需要源码位置的分析使用
+     * @param moduleName       模块名（无模块头时取首个函数名）
+     * @param functionNames    全部函数的规范名
+     * @param entryFunctionName 带 @entry 的函数规范名，无则为 null
+     * @param core             名称解析后的 Core（只含规范名）
+     * @param warnings         名称解析的 warning 级诊断（W8xx）
      */
     public record ParseResult(
         Module module,
         String moduleName,
         String firstFunctionName,
         List<String> functionNames,
-        String entryFunctionName
+        String entryFunctionName,
+        CoreModel.Module core,
+        List<Diagnostic> warnings
     ) {}
 
     /**
@@ -63,21 +80,19 @@ public class InProcessCnlParser {
     }
 
     /**
-     * 解析 CNL 源代码（支持多语言 + 领域词汇翻译）
+     * 解析 CNL 源代码并按位置解析领域词汇（ADR 0051）
      *
-     * <p>ADR 0014 线C：发布的策略在执行端也需识别用户自定义领域术语。调用方
-     * 传入由策略快照词汇构建的 {@link IdentifierIndex} 时，规范化阶段会执行
-     * 标识符翻译（step 8.5），把本地化术语翻成规范化名称；为 null 时行为与
-     * 仅内置一致（不做用户词翻译）。
+     * <p>词汇不再在解析前做文本替换：canonicalize 只展开字面量宏，类型 / 字段 / 枚举成员 / 函数名
+     * 在 AST 与 Core 上按所在位置的角色解析；源码局部名（参数、Let 等）永不被词汇改写。
      *
      * @param source 源代码
      * @param locale 语言代码，null 表示默认英语
-     * @param identifierIndex 领域词汇索引，null 表示不做用户词翻译
+     * @param scopes 领域词汇作用域，null 表示无词汇
      * @return 解析结果
-     * @throws CnlParseException 解析失败时抛出
+     * @throws CnlParseException 语法错误，或名称解析出现 error（{@link NameResolutionFailure}）
      */
-    public static ParseResult parse(String source, String locale, IdentifierIndex identifierIndex) {
-        return parseUnsafeWithAliases(source, locale, identifierIndex, null);
+    public static ParseResult parse(String source, String locale, VocabularyScopes scopes) {
+        return parseUnsafeWithAliases(source, locale, scopes, null);
     }
 
     /**
@@ -89,12 +104,12 @@ public class InProcessCnlParser {
      * Critical-1：校验必须前置，不能靠调用方纪律）。
      *
      * @param aliasSet 用户自定义别名（应来自不可变版本快照、经审批、进哈希覆盖）
-     * @param identifierIndex 领域词汇索引（用于别名↔标识符碰撞校验），可为 null
+     * @param scopes   领域词汇作用域（名称解析 + 别名↔标识符碰撞校验），可为 null
      */
     public static ParseResult parseWithUserAliases(String source, String locale,
-                                                   IdentifierIndex identifierIndex,
+                                                   VocabularyScopes scopes,
                                                    Map<SemanticTokenKind, List<String>> aliasSet) {
-        return parseWithUserAliases(source, locale, identifierIndex, aliasSet, false);
+        return parseWithUserAliases(source, locale, scopes, aliasSet, false);
     }
 
     /**
@@ -108,14 +123,14 @@ public class InProcessCnlParser {
      * @param allowStructural 是否放开结构词别名校验（冻结可信版本执行时 true）
      */
     public static ParseResult parseWithUserAliases(String source, String locale,
-                                                   IdentifierIndex identifierIndex,
+                                                   VocabularyScopes scopes,
                                                    Map<SemanticTokenKind, List<String>> aliasSet,
                                                    boolean allowStructural) {
-        UserAliasValidator.Result vr = UserAliasValidator.validate(aliasSet, locale, identifierIndex, allowStructural);
+        UserAliasValidator.Result vr = UserAliasValidator.validate(aliasSet, locale, scopes, allowStructural);
         if (!vr.valid()) {
             throw new CnlParseException("用户自定义别名校验失败: " + String.join("; ", vr.errors()));
         }
-        return parseUnsafeWithAliases(source, locale, identifierIndex, aliasSet);
+        return parseUnsafeWithAliases(source, locale, scopes, aliasSet);
     }
 
     /**
@@ -128,7 +143,7 @@ public class InProcessCnlParser {
      *
      * @param aliasSet kind → 别名列表，null/空表示无用户别名
      */
-    static ParseResult parseUnsafeWithAliases(String source, String locale, IdentifierIndex identifierIndex,
+    static ParseResult parseUnsafeWithAliases(String source, String locale, VocabularyScopes scopes,
                                               Map<SemanticTokenKind, List<String>> aliasSet) {
         if (source == null || source.isBlank()) {
             throw new CnlParseException("CNL 源代码不能为空");
@@ -140,10 +155,8 @@ public class InProcessCnlParser {
 
             // 所有语言都需要规范化，因为即使是英语也需要将关键词运算符（如 "greater than"）翻译为符号（如 ">"）
             // ANTLR 解析器只支持符号运算符，不支持关键词形式
-            // 提供 identifierIndex 时启用领域标识符翻译（ADR 0014 线C）。
-            Canonicalizer canonicalizer = identifierIndex != null
-                ? new Canonicalizer(lexicon, identifierIndex)
-                : new Canonicalizer(lexicon);
+            // 词汇在此只提供字面量宏；标识符按位置解析见下方第 6 步（ADR 0051）。
+            Canonicalizer canonicalizer = new Canonicalizer(lexicon, scopes);
             String canonicalizedSource = canonicalizer.canonicalize(source);
             LOG.debugf("CNL 规范化完成: locale=%s, 原始长度=%d, 规范化后长度=%d",
                 locale, source.length(), canonicalizedSource.length());
@@ -197,15 +210,17 @@ public class InProcessCnlParser {
                 throw new CnlParseException("无法构建 AST 模块");
             }
 
-            // 6. 提取函数名称
-            List<String> functionNames = extractFunctionNames(module);
-            String firstFunctionName = functionNames.isEmpty() ? null : functionNames.get(0);
-            // 6.1 提取 @entry 标记的入口函数名（ADR 0015 阶段2）。唯一性由
-            //     aster-lang-core TypeChecker 校验，此处仅取首个匹配。
-            String entryFunctionName = extractEntryFunctionName(module);
+            // 6. 名称解析（R1 → lower → R2）：任一 E8xx 即失败，不产出 IR
+            NameResolution.ResolvedCore resolved = resolveNames(module, scopes);
+            CoreModel.Module core = resolved.core();
 
-            // 7. 提取模块名称（如果没有模块头，使用函数名作为默认）
-            String moduleName = module.name();
+            // 7. 提取函数名称（规范名，取自 Core）；@entry 唯一性由 TypeChecker 校验，此处取首个
+            List<String> functionNames = functionNamesOf(core);
+            String firstFunctionName = functionNames.isEmpty() ? null : functionNames.get(0);
+            String entryFunctionName = entryFunctionNameOf(core);
+
+            // 8. 提取模块名称（如果没有模块头，使用函数名作为默认）
+            String moduleName = core.name;
             if (moduleName == null || moduleName.isBlank()) {
                 if (firstFunctionName != null && !firstFunctionName.isBlank()) {
                     moduleName = firstFunctionName;
@@ -217,7 +232,11 @@ public class InProcessCnlParser {
 
             LOG.infof("CNL 解析成功: module=%s, function=%s", moduleName, firstFunctionName);
 
-            return new ParseResult(module, moduleName, firstFunctionName, functionNames, entryFunctionName);
+            List<Diagnostic> warnings = resolved.diagnostics().stream()
+                .filter(d -> d.severity() != Diagnostic.Severity.ERROR)
+                .toList();
+            return new ParseResult(module, moduleName, firstFunctionName, functionNames, entryFunctionName,
+                core, warnings);
 
         } catch (CnlParseException e) {
             throw e;
@@ -227,47 +246,42 @@ public class InProcessCnlParser {
         }
     }
 
-    /**
-     * 从模块中提取全部函数名称
-     */
-    private static List<String> extractFunctionNames(Module module) {
-        if (module.decls() == null || module.decls().isEmpty()) {
+    /** R1 → lower → R2。导入模块的声明只能经别名限定访问（MODULE 段不解析），故无需导入声明表。 */
+    private static NameResolution.ResolvedCore resolveNames(Module ast, VocabularyScopes scopes) {
+        NameResolution.ResolvedCore resolved =
+            NameResolution.resolveAndLower(ast, new ResolutionContext(scopes, ImportedDeclarations.NONE));
+        if (NameResolution.hasErrors(resolved.diagnostics())) {
+            throw new NameResolutionFailure(resolved.diagnostics());
+        }
+        return resolved;
+    }
+
+    private static List<String> functionNamesOf(CoreModel.Module core) {
+        if (core.decls == null) {
             return List.of();
         }
-
-        return module.decls().stream()
-            .filter(decl -> decl instanceof Decl.Func)
-            .map(decl -> ((Decl.Func) decl).name())
+        return core.decls.stream()
+            .filter(CoreModel.Func.class::isInstance)
+            .map(d -> ((CoreModel.Func) d).name)
             .toList();
     }
 
-    /**
-     * 提取带 @entry 注解的入口函数名（无则返回 null）。
-     *
-     * <p>@entry 唯一性由 aster-lang-core TypeChecker 校验，此处取首个匹配即可。
-     */
-    private static String extractEntryFunctionName(Module module) {
-        if (module.decls() == null || module.decls().isEmpty()) {
+    private static String entryFunctionNameOf(CoreModel.Module core) {
+        if (core.decls == null) {
             return null;
         }
-        return module.decls().stream()
-            .filter(decl -> decl instanceof Decl.Func)
-            .map(decl -> (Decl.Func) decl)
+        return core.decls.stream()
+            .filter(CoreModel.Func.class::isInstance)
+            .map(CoreModel.Func.class::cast)
             .filter(InProcessCnlParser::hasEntryAnnotation)
-            .map(Decl.Func::name)
+            .map(f -> f.name)
             .findFirst()
             .orElse(null);
     }
 
-    /**
-     * 判断函数是否带 @entry 注解。
-     */
-    private static boolean hasEntryAnnotation(Decl.Func func) {
-        if (func.annotations() == null) {
-            return false;
-        }
-        return func.annotations().stream()
-            .anyMatch(ann -> "entry".equals(ann.name()));
+    private static boolean hasEntryAnnotation(CoreModel.Func func) {
+        return func.annotations != null
+            && func.annotations.stream().anyMatch(ann -> ann != null && "entry".equals(ann.name));
     }
 
     /**
@@ -332,6 +346,37 @@ public class InProcessCnlParser {
             // 对于不支持的 locale，回退到英语
             LOG.warnf("Unsupported locale '%s', falling back to en-US", locale);
             return registry.getDefault();
+        }
+    }
+
+    /**
+     * 名称解析失败（ADR 0051 E8xx）。归入 {@link CnlParseException}，使既有按「源码无法编译」处理的
+     * 入口无需特判；编译端点通过 {@link #resolutionDiagnostics()} 拿到带码与位置的原始诊断。
+     */
+    public static final class NameResolutionFailure extends CnlParseException {
+        private static final long serialVersionUID = 1L;
+
+        private final transient List<Diagnostic> resolutionDiagnostics;
+
+        NameResolutionFailure(List<Diagnostic> diagnostics) {
+            this(new NameResolutionException(diagnostics));
+        }
+
+        private NameResolutionFailure(NameResolutionException errors) {
+            super("名称解析失败 — " + errors.getMessage().replace("\n", "; "),
+                errors.diagnostics().stream().map(NameResolutionFailure::toListenerDiagnostic).toList());
+            this.resolutionDiagnostics = errors.diagnostics();
+        }
+
+        /** 只含 error 级诊断（code + 位置 + 消息）。 */
+        public List<Diagnostic> resolutionDiagnostics() {
+            return resolutionDiagnostics;
+        }
+
+        private static CnlErrorListener.Diagnostic toListenerDiagnostic(Diagnostic d) {
+            int line = d.span().map(o -> o.start == null ? 1 : o.start.line).orElse(1);
+            int col = d.span().map(o -> o.start == null ? 1 : o.start.col).orElse(1);
+            return new CnlErrorListener.Diagnostic(line, col, d.code().code() + " " + d.message());
         }
     }
 

@@ -1,9 +1,7 @@
 package io.aster.policy.api.schema;
 
-import aster.core.ast.Module;
 import aster.core.inference.TypeInference;
 import aster.core.ir.CoreModel;
-import aster.core.lowering.CoreLowering;
 import io.aster.policy.parser.InProcessCnlParser;
 import org.jboss.logging.Logger;
 
@@ -93,7 +91,6 @@ public class ParameterSchemaExtractor {
         try {
             // 1. 解析 CNL → AST
             InProcessCnlParser.ParseResult parseResult = InProcessCnlParser.parse(source, locale);
-            Module astModule = parseResult.module();
 
             // 2. 确定目标函数
             String targetFunction = functionName;
@@ -104,9 +101,8 @@ public class ParameterSchemaExtractor {
                 return SchemaResult.error("CNL 中未找到函数定义");
             }
 
-            // 3. 降级 AST → Core IR
-            CoreLowering lowering = new CoreLowering();
-            CoreModel.Module coreModule = lowering.lowerModule(astModule);
+            // 3. 名称解析后的 Core IR（parser 内已完成 R1 → lower → R2）
+            CoreModel.Module coreModule = parseResult.core();
 
             // 4. 构建类型映射（用于解析结构体字段）
             Map<String, CoreModel.Data> dataTypes = buildDataTypeMap(coreModule);

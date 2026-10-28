@@ -291,6 +291,43 @@ class ReplayBatchEndToEndIT {
         assertThat(itemColumn(batchId, "v3", "target_approved")).isEqualTo("false");
     }
 
+    /** ADR 0051 §1 复现 3/4：参数与类型同词、同一本地化字段名 alter 在两个 struct 中对应不同规范字段。 */
+    private static final String GERMAN_TARGET = """
+        Modul M.
+
+        Definiere Fahrer hat alter als Ganzzahl.
+
+        Definiere Fahrzeug hat alter als Ganzzahl.
+
+        Regel decide gegeben fahrer als Fahrer, wagen als Fahrzeug, liefert Boolesch:
+          gib zurueck fahrer.alter groesser als wagen.alter.
+        """;
+
+    private ExecutionWindowClient.WindowedExecution execGerman(String id, int age, int vehicleAge, String decision) {
+        return new ExecutionWindowClient.WindowedExecution(
+            id, Map.of("fahrer", Map.of("age", age), "wagen", Map.of("vehicleAge", vehicleAge)), decision, true,
+            "decide", "de-DE", new JsonObject(), String.valueOf(targetVersionRowId), null);
+    }
+
+    /** ADR 0051：目标版本携带词汇快照时，What-If 重跑按位置解析后得出正确结论。 */
+    @Test
+    void 德语目标版本带词汇时按位置解析重跑() {
+        stubWindow(List.of(execGerman("g1", 30, 5, "approved"), execGerman("g2", 3, 5, "approved")));
+        Map<String, Object> vocabulary = io.aster.policy.parser.GermanReproductions.SAME_FIELD_TWO_STRUCTS.vocabulary();
+        Mockito.when(versionSourceClient.fetch(Mockito.anyString(), Mockito.anyString()))
+            .thenReturn(java.util.Optional.of(new PolicyVersionSourceClient.VersionSource(
+                "pv-2", "p-e2e", 2, GERMAN_TARGET, vocabulary)));
+        UUID batchId = seedPendingBatch();
+        service.claimNextPending();
+        service.runBatch(batchId);
+        JsonObject summary = summaryOf(batchId);
+        assertThat(itemColumn(batchId, "g1", "success")).isEqualTo("true");
+        assertThat(itemColumn(batchId, "g1", "target_approved")).isEqualTo("true");
+        assertThat(itemColumn(batchId, "g2", "target_approved")).isEqualTo("false");
+        assertThat(summary.getInteger("changed")).isEqualTo(1);
+        assertThat(summary.getInteger("newlyRejected")).isEqualTo(1);
+    }
+
     /** 目标版本返回值输出（Int），不是准入决策 → 解读为 INDETERMINATE。 */
     private static final String VALUE_TARGET =
         "Module M.\n\nRule decide given amount as Int, produce Int:\n  Return amount.\n";

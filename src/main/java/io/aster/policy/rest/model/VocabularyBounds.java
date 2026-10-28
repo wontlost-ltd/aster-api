@@ -7,7 +7,7 @@ import java.util.Map;
  * 请求体领域词汇表（DomainVocabulary JSON）的大小与形状上限，供 /compile 与 /evaluate-source 共用。
  *
  * <p>词汇表是独立的 body 字段，不受源码 16 KiB 上限约束；全局 body 上限只限总字节，
- * 挡不住「大量短条目」或「异常嵌套」放大 {@code VocabularyLoader} / {@code IdentifierIndex.build}
+ * 挡不住「大量短条目」或「异常嵌套」放大 {@code VocabularyLoader} / {@code VocabularyScopes.build}
  * 的反序列化与建索引成本。故在进入词汇解析前按结构快速拒绝（400）。
  *
  * <p>期望形状：顶层对象 → 分组数组（structs/fields/functions/enumValues/literals）→ 映射对象

@@ -11,8 +11,10 @@ import io.aster.policy.event.EventType;
 import io.aster.policy.rest.model.CedarExportRequest;
 import io.aster.policy.rest.model.CedarExportResponse;
 import io.aster.policy.rest.model.CnlSourceLimits;
+import io.aster.policy.rest.model.VocabularyBounds;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
+import io.aster.replay.core.ReplayExecutionCore;
 import io.aster.security.apikey.InternalCallerFilter;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.smallrye.common.annotation.Blocking;
@@ -63,8 +65,9 @@ public class CedarExportResource {
     /** ApiKeyAuthFilter 验证 key 后写入的已验证租户属性。 */
     private static final String API_KEY_TENANT_PROP = "aster.apikey.tenantId";
 
-    /** 一次导出的编译输入：源码模式取自请求，版本模式取自已保存版本。 */
-    private record ExportInput(String source, String locale, String aliasSetJson, String functionName, Long versionId) {
+    /** 一次导出的编译输入：源码模式取自请求，版本模式取自已保存版本（版本不带词汇）。 */
+    private record ExportInput(String source, String locale, String aliasSetJson,
+                               aster.core.identifier.VocabularyScopes scopes, String functionName, Long versionId) {
     }
 
     @Inject CedarExportService exportService;
@@ -88,6 +91,12 @@ public class CedarExportResource {
             return Response.status(Response.Status.BAD_REQUEST)
                 .entity(Map.of("error", "alias_set_too_large", "message", aliasError)).build();
         }
+        // 词汇表超限在抢并发许可前拒绝，与 /compile、/evaluate-source 同一校验器
+        String vocabularyError = VocabularyBounds.validate(request.vocabulary());
+        if (vocabularyError != null) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                .entity(Map.of("error", VocabularyBounds.ERROR_CODE, "message", vocabularyError)).build();
+        }
         if (!gate.tryAcquire()) {
             LOG.warnf("Cedar 导出拒绝：并发达到上限 %d，返回 503", gate.limit());
             throw busy(gate.limit());
@@ -106,7 +115,7 @@ public class CedarExportResource {
             return error(Response.Status.NOT_FOUND, "version not found");
         }
         CedarExportOutcome outcome = exportService.exportSource(
-            input.source(), input.locale(), input.aliasSetJson(), input.functionName());
+            input.source(), input.locale(), input.aliasSetJson(), input.scopes(), input.functionName());
         CedarExportResponse body = toResponse(outcome);
         if (outcome.exportable()) {
             audit(outcome, input.versionId(), request.claimedRef(), tenantId);
@@ -175,7 +184,7 @@ public class CedarExportResource {
         String aliasSetJson = request.aliasSet() == null || request.aliasSet().isEmpty()
             ? null : writeJson(request.aliasSet());
         return new ExportInput(request.source(), request.getLocaleOrDefault(), aliasSetJson,
-            request.functionName(), null);
+            ReplayExecutionCore.buildVocabularyScopes(request.vocabulary()), request.functionName(), null);
     }
 
     /** 版本模式：只在本租户内查找，找不到返回 null；编译输入全部取自版本本身。 */
@@ -186,7 +195,7 @@ public class CedarExportResource {
                 return null;
             }
             String locale = v.locale == null || v.locale.isBlank() ? DEFAULT_LOCALE : v.locale;
-            return new ExportInput(v.content, locale, v.aliasSet, v.functionName, v.id);
+            return new ExportInput(v.content, locale, v.aliasSet, null, v.functionName, v.id);
         });
     }
 

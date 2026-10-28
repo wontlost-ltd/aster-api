@@ -23,17 +23,17 @@ public class ReplayExecutorAdapter implements ReplayExecutor {
     @Inject
     DynamicCnlExecutor dynamicCnlExecutor;
 
-    // ★收「已建」vocabIndex/aliasSet（core 建好传入），adapter 只透传 + 映射结果。
+    // ★收「已建」词汇作用域/aliasSet（core 建好传入），adapter 只透传 + 映射结果。
     @Override
     public ReplayExecutorResult execute(
             String tenantId, String source, Object context,
             String functionName, String locale,
-            aster.core.identifier.IdentifierIndex vocabIndex,
+            aster.core.identifier.VocabularyScopes vocabularyScopes,
             boolean legacyEvaluateSentinel,
             Map<SemanticTokenKind, List<String>> aliasSet, boolean aliasesTrusted) {
         DynamicCnlExecutor.ExecutionResult r = dynamicCnlExecutor.executeWithTenantContext(
                 tenantId, source, context, functionName, locale,
-                vocabIndex, legacyEvaluateSentinel, aliasSet, aliasesTrusted);
+                vocabularyScopes, legacyEvaluateSentinel, aliasSet, aliasesTrusted);
         return new ReplayExecutorResult(r.result(), r.moduleName(), r.functionName(), r.executionTimeMs(),
                 r.ruleId(), r.controls(), r.profile());
     }

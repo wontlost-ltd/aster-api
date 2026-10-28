@@ -11,6 +11,8 @@ import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.policy.compiler.PolicyCompiler;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.parser.DynamicCnlExecutor;
+import io.aster.policy.parser.GermanReproductions;
+import io.aster.replay.core.ReplayExecutionCore;
 import io.aster.policy.rest.model.CompileDiagnostic;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -39,7 +41,7 @@ class CedarExportServiceTest {
 
     @Test
     void sampleExportsAndAllProbesAgree() {
-        var out = service.exportSource(read("cedar/guard-cedar-sample.aster"), "en-US", null, null);
+        var out = service.exportSource(read("cedar/guard-cedar-sample.aster"), "en-US", null, null, null);
         assertThat(out.exportable()).as("%s", out.diagnostics()).isTrue();
         assertThat(out.ruleId()).isEqualTo("GCS-001");
         assertThat(out.moduleName()).isEqualTo("guard.cedar.sample");
@@ -49,9 +51,29 @@ class CedarExportServiceTest {
 
     @Test
     void probePolicyFromGuardTestExports() {
-        var out = service.exportSource(DeployedMapParamProbeTest.SOURCE, "en-US", null, "decide");
+        var out = service.exportSource(DeployedMapParamProbeTest.SOURCE, "en-US", null, null, "decide");
         assertThat(out.exportable()).as("%s", out.diagnostics()).isTrue();
         assertThat(out.probeCount()).isPositive().isEqualTo(out.probesAgreed());
+    }
+
+    @Test
+    void germanSourceWithVocabularyExportsOverResolvedCoreIr() {
+        // ADR 0051 §8：导出基于 R2 之后的 Core IR——类型、字段、规则名均为规范名，探针全部一致
+        var scopes = ReplayExecutionCore.buildVocabularyScopes(GermanReproductions.GUARD_VOCABULARY);
+        var out = service.exportSource(GermanReproductions.GUARD_SOURCE, "de-DE", null, scopes, null);
+        assertThat(out.exportable()).as("%s", out.diagnostics()).isTrue();
+        assertThat(out.functionName()).isEqualTo("decide");
+        assertThat(out.ruleId()).isEqualTo("DE-001");
+        assertThat(out.probeCount()).isPositive().isEqualTo(out.probesAgreed());
+        assertThat(out.policies()).contains("\"refund\"").doesNotContain("aktion").doesNotContain("Anfrage");
+    }
+
+    @Test
+    void germanSourceWithoutVocabularyIsNotExportable() {
+        // 无词汇时本地化名称不解析为规范 guard 形态，不得导出
+        var out = service.exportSource(GermanReproductions.GUARD_SOURCE, "de-DE", null, null, null);
+        assertThat(out.exportable()).isFalse();
+        assertThat(out.diagnostics()).isNotEmpty();
     }
 
     @Test
@@ -112,7 +134,7 @@ class CedarExportServiceTest {
     void profileViolationBlocksExport() {
         String src = "Module m.\nProfile \"governed\".\n\n" + GUARD_DEFINE
             + "Rule decide given req as GuardRequest, produce Verdict:\n  Return Verdict.allow().\n";
-        var out = service.exportSource(src, "en-US", null, "decide");
+        var out = service.exportSource(src, "en-US", null, null, "decide");
         assertThat(out.exportable()).isFalse();
         assertThat(out.diagnostics()).extracting(CompileDiagnostic::code).contains("E706");
     }
@@ -120,7 +142,7 @@ class CedarExportServiceTest {
     @Test
     void missingContextKeyAgreesAsDeny() {
         // 样本第一条读 context.amount 的 Let：探针中 amount 缺失时 Aster 抛错，Cedar 必须 Deny 且无决定性策略
-        var out = service.exportSource(read("cedar/guard-cedar-sample.aster"), "en-US", null, null);
+        var out = service.exportSource(read("cedar/guard-cedar-sample.aster"), "en-US", null, null, null);
         assertThat(out.probesAgreed()).isEqualTo(out.probeCount());
     }
 
@@ -128,7 +150,7 @@ class CedarExportServiceTest {
     void missingFunctionNameWithTwoCandidatesIsE720() {
         String rule = "@id(\"R-%s\")\nRule %s given req as GuardRequest, produce Verdict:\n  Return Verdict.allow().\n\n";
         String src = "Module two.\n\n" + GUARD_DEFINE + rule.formatted("1", "first") + rule.formatted("2", "second");
-        var out = service.exportSource(src, "en-US", null, null);
+        var out = service.exportSource(src, "en-US", null, null, null);
         assertThat(out.exportable()).isFalse();
         assertThat(out.diagnostics()).extracting(CompileDiagnostic::code).containsExactly("E720");
         assertThat(out.diagnostics().get(0).message()).contains("function name required");
