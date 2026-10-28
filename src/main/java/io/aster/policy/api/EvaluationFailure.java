@@ -2,6 +2,7 @@ package io.aster.policy.api;
 
 import io.aster.policy.parser.DynamicCnlExecutor;
 import io.aster.policy.parser.EntryFunctionException;
+import io.aster.policy.runtime.ValueShapeException;
 
 /**
  * 评估失败到 HTTP 状态与机器可读错误码的映射（/evaluate、/evaluate-json、/evaluate/batch 共用）。
@@ -63,6 +64,10 @@ public record EvaluationFailure(int status, String code, String message) {
             return e.isMissingFunction()
                 ? new EvaluationFailure(404, FUNCTION_NOT_FOUND, e.getMessage())
                 : new EvaluationFailure(400, FUNCTION_NOT_EXECUTABLE, e.getMessage());
+        }
+        if (t instanceof ValueShapeException e) {
+            // 值边界形态违例（aster-cloud#639）：入参 400 / 出参 422，code 为稳定的细分错误码
+            return new EvaluationFailure(e.httpStatus(), e.code(), e.getMessage());
         }
         if (t instanceof DynamicCnlExecutor.DynamicExecutionException e) {
             return switch (e.kind()) {
