@@ -48,11 +48,20 @@ public class PolicyVersionEnvelopeVerifier {
         }
         String recomputed = PolicyVersion.computeSourceEnvelope(
             v.content, v.aliasSet, v.locale, v.sourceToolchainId, v.compileScopesJson());
-        if (recomputed.equals(v.sourceEnvelopeSha256)) {
+        if (recomputed.equals(v.sourceEnvelopeSha256) || matchesPreResolverFormat(v)) {
             return new VerifyResult(v.id, VerifyResult.Status.INTACT, null);
         }
         return new VerifyResult(v.id, VerifyResult.Status.TAMPERED,
             "envelope 重算不符：content/alias_set/locale 可能被篡改");
+    }
+
+    /**
+     * 尚未迁移（resolverVersion 为 NULL）的存量行保留 ADR 0051 之前的 4 段 envelope（ADR 0051 §9）：
+     * 迁移失败被归档的行刻意不动旧产物，按旧格式重算才不会误报篡改。已迁移行只认 5 段。
+     */
+    private static boolean matchesPreResolverFormat(PolicyVersion v) {
+        return v.resolverVersion == null && PolicyVersion.computeLegacySourceEnvelope(
+            v.content, v.aliasSet, v.locale, v.sourceToolchainId).equals(v.sourceEnvelopeSha256);
     }
 
     /**

@@ -165,6 +165,8 @@ public class PolicyVersionService {
         version.sourceToolchainId = toolchain;
         version.sourceEnvelopeSha256 = PolicyVersion.computeSourceEnvelope(
             sourceCnl, version.aliasSet, locale, toolchain, version.compileScopesJson());
+        // 新建行直接按位置解析规则产出（5 段 envelope），存量重编译任务无需再处理（ADR 0051 §9）。
+        version.resolverVersion = io.aster.policy.admin.ResolverMigrationService.RESOLVER_VERSION;
 
         // P0-C 稳定性门禁（ADR 0031 M3）：保存 surface——regulated tenant strict（命中白名单才可存
         // Experimental），普通 tenant warn（不阻断）。tenantId 来自 catalog 归属（非 body 自报）。

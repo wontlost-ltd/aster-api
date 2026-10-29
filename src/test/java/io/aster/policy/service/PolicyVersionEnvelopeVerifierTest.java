@@ -80,4 +80,31 @@ class PolicyVersionEnvelopeVerifierTest {
         v.sourceToolchainId = null;
         assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.SKIPPED_LEGACY, verifier.verify(v).status());
     }
+
+    @Test
+    void preResolverRowWithFourSegmentEnvelopeIsIntact() {
+        // ADR 0051 §9：迁移失败被归档的存量行保留旧 4 段 envelope，resolverVersion 为 NULL，按迁移前格式校验
+        PolicyVersion v = new PolicyVersion();
+        v.id = 3L;
+        v.content = "Module M.";
+        v.locale = "en-US";
+        v.sourceToolchainId = "abi=1.0;core=dev";
+        v.sourceEnvelopeSha256 = PolicyVersion.computeLegacySourceEnvelope("Module M.", null, "en-US", "abi=1.0;core=dev");
+        assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.INTACT, verifier.verify(v).status());
+        v.content = "Module Evil.";
+        assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.TAMPERED, verifier.verify(v).status());
+    }
+
+    @Test
+    void migratedRowMustUseFiveSegmentEnvelope() {
+        // 已迁移行（resolverVersion=1）不接受旧格式：把 envelope 换回 4 段即判篡改
+        PolicyVersion v = new PolicyVersion();
+        v.id = 4L;
+        v.content = "Module M.";
+        v.locale = "en-US";
+        v.sourceToolchainId = "abi=1.0;core=dev";
+        v.resolverVersion = 1;
+        v.sourceEnvelopeSha256 = PolicyVersion.computeLegacySourceEnvelope("Module M.", null, "en-US", "abi=1.0;core=dev");
+        assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.TAMPERED, verifier.verify(v).status());
+    }
 }

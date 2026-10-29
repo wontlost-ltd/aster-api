@@ -310,6 +310,26 @@ public class PolicyVersion extends PanacheEntityBase {
     @Column(name = "locale", length = 20)
     public String locale;
 
+    /**
+     * 产出本行 envelope 与 Core IR 的名称解析版本（ADR 0051 §9）。
+     * 1 = 按位置解析（新建行或存量重编译成功）；NULL = 迁移前的存量行（envelope 为旧 4 段格式）。
+     */
+    @Column(name = "resolver_version")
+    public Integer resolverVersion;
+
+    /** 最近一次存量重编译失败的原因；成功时清空。 */
+    @Column(name = "resolver_migration_error", columnDefinition = "TEXT")
+    public String resolverMigrationError;
+
+    /** 是否由存量重编译任务归档（人工/业务归档恒为 false，只有本标记为 true 的行会在成功后恢复状态）。 */
+    @Column(name = "archived_by_resolver_migration", nullable = false)
+    public Boolean archivedByResolverMigration = false;
+
+    /** 存量重编译任务归档前的状态，成功后据此恢复。 */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status_before_archive", length = 32)
+    public VersionStatus statusBeforeArchive;
+
     // 无参构造函数（JPA 要求）
     public PolicyVersion() {
     }
@@ -414,9 +434,23 @@ public class PolicyVersion extends PanacheEntityBase {
      */
     public static String computeSourceEnvelope(String content, String aliasSetJson,
                                                String locale, String toolchainId, String scopesJson) {
+        return digestFields(content, aliasSetJson, locale, toolchainId, scopesJson);
+    }
+
+    /**
+     * ADR 0051 之前的 4 段 envelope（无词汇段）。只用于校验尚未迁移、或迁移失败被归档而保留旧产物的存量行，
+     * 新行一律用 {@link #computeSourceEnvelope}。
+     */
+    public static String computeLegacySourceEnvelope(String content, String aliasSetJson,
+                                                     String locale, String toolchainId) {
+        return digestFields(content, aliasSetJson, locale, toolchainId);
+    }
+
+    /** 每段写 {@code <UTF-8 字节数>:<字节>|} 后整体 SHA-256；null 视为空串。 */
+    private static String digestFields(String... fields) {
         try {
             java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            for (String field : new String[]{content, aliasSetJson, locale, toolchainId, scopesJson}) {
+            for (String field : fields) {
                 byte[] b = (field == null ? "" : field).getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 digest.update(Integer.toString(b.length).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
                 digest.update((byte) ':');

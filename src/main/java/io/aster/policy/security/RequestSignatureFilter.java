@@ -46,7 +46,8 @@ public class RequestSignatureFilter {
                 || isMessagesAdminPath(path)
                 || isByokAllowlistAdminPath(path)
                 || isPolicyVersionSourceHashAdminPath(path)
-                || isRevalidationAdminPath(path)) {
+                || isRevalidationAdminPath(path)
+                || isResolverMigrationAdminPath(path)) {
             return Uni.createFrom().voidItem();
         }
 
@@ -140,6 +141,12 @@ public class RequestSignatureFilter {
     /** 重验 admin 端点（runs / runs/{id} / invalid）由资源内 AdminHmacVerifier 验签。 */
     private static boolean isRevalidationAdminPath(String path) {
         return path.startsWith("/api/v1/admin/revalidation/") || path.startsWith("api/v1/admin/revalidation/");
+    }
+
+    /** 存量重编译 admin 端点（ADR 0051 §9）由资源内 AdminHmacVerifier 验签。精确匹配。 */
+    private static boolean isResolverMigrationAdminPath(String path) {
+        return "/api/v1/admin/resolver-migration/run".equals(path)
+            || "api/v1/admin/resolver-migration/run".equals(path);
     }
 
     /** 策略哈希 admin 读端点由资源内 AdminHmacVerifier 验签。 */
