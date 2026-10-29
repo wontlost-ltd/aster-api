@@ -6,6 +6,7 @@ import io.aster.policy.compiler.PolicyCompiler;
 import io.aster.policy.entity.ArtifactType;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.security.AdminHmacVerifier;
+import io.aster.policy.service.PolicyVersionEnvelopeVerifier;
 import io.aster.policy.stability.ToolchainIdentityProvider;
 import io.quarkus.cache.Cache;
 import io.quarkus.cache.CacheName;
@@ -24,10 +25,10 @@ import java.util.List;
 /**
  * 存量重编译任务（ADR 0051 §9）：把迁移前的策略版本按"按位置解析"的新规则重新编译。
  *
- * <p>扫描 {@code resolver_version IS DISTINCT FROM 1} 的行，按主键升序分批，<b>每行一个事务</b>
+ * <p>扫描 {@code resolver_version IS DISTINCT FROM 1} 的行（先按旧封印核对完整性，不符则只记错误），按主键升序分批，<b>每行一个事务</b>
  * （行锁后复查状态，并发或中断后重跑都收敛到同一结果）：
  * <ul>
- *   <li>成功：写新 Core IR（core_json 与 CORE_JSON 产物）、用当前工具链重算 5 段 envelope 并改写
+ *   <li>成功：写新 Core IR（CORE_JSON 产物；core_json 仅原本非空时改写，原本按需编译的行继续按需编译）、用当前工具链重算 5 段 envelope 并改写
  *       source_toolchain_id、resolver_version=1、清空错误；仅本任务归档过的行恢复 status_before_archive。</li>
  *   <li>编译失败：旧 IR/envelope/工具链串原样保留并记录错误；当前非 ARCHIVED 才记下原状态、归档并置标记；
  *       已是 ARCHIVED（无论来源）只更新错误。resolver_version 保持 NULL，重跑会再试。</li>
@@ -51,18 +52,21 @@ public class ResolverMigrationService {
 
     private static final int MAX_ERROR_LENGTH = 4000;
 
+    /** 旧封印（envelope 或 source_hash）与当前字段不符时记录的错误。 */
+    static final String INTEGRITY_ERROR = "pre-migration integrity mismatch";
+
     private static final String PENDING_SQL = """
         SELECT id FROM policy_versions
-        WHERE resolver_version IS DISTINCT FROM 1 AND id > :cursor
+        WHERE resolver_version IS DISTINCT FROM :rv AND id > :cursor
           AND (CAST(:prefix AS text) IS NULL OR starts_with(policy_id, CAST(:prefix AS text)))
         ORDER BY id LIMIT :limit""";
 
     private static final String SUCCESS_SQL = """
         UPDATE policy_versions SET
-          core_json = CAST(:core AS jsonb),
+          core_json = CASE WHEN core_json IS NULL THEN NULL ELSE CAST(:core AS jsonb) END,
           source_envelope_sha256 = :envelope,
           source_toolchain_id = :toolchain,
-          resolver_version = 1,
+          resolver_version = :rv,
           resolver_migration_error = NULL,
           status = CASE WHEN archived_by_resolver_migration
                         THEN COALESCE(status_before_archive, status) ELSE status END,
@@ -82,6 +86,10 @@ public class ResolverMigrationService {
           lock_version = lock_version + 1
         WHERE id = :id""";
 
+    private static final String INTEGRITY_SQL = """
+        UPDATE policy_versions SET resolver_migration_error = :error, lock_version = lock_version + 1
+        WHERE id = :id""";
+
     private static final String ARTIFACT_SQL = """
         UPDATE policy_artifacts SET content = :content, content_sha256 = :sha
         WHERE policy_version_id = :id AND artifact_type = :type""";
@@ -97,6 +105,7 @@ public class ResolverMigrationService {
     @Inject PolicyCompiler compiler;
     @Inject ToolchainIdentityProvider toolchains;
     @Inject CompiledPolicyCache compiledPolicyCache;
+    @Inject PolicyVersionEnvelopeVerifier envelopeVerifier;
 
     @Inject
     @CacheName("policy-compile-by-version")
@@ -139,7 +148,7 @@ public class ResolverMigrationService {
             Migrated migrated = QuarkusTransaction.requiringNew().call(() -> migrateLocked(id));
             invalidateCaches(migrated.version());
             return migrated.result();
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             LOG.warnf(e, "resolver 迁移行异常，保持待迁移: id=%d", id);
             return new RowResult(id, RowResult.Status.FAILED,
                 truncate(e.getClass().getSimpleName() + ": " + e.getMessage()));
@@ -151,6 +160,10 @@ public class ResolverMigrationService {
         if (v == null || Integer.valueOf(RESOLVER_VERSION).equals(v.resolverVersion)) {
             return new Migrated(new RowResult(id, RowResult.Status.SKIPPED, null), null);
         }
+        if (!sealIntact(v)) {
+            update(INTEGRITY_SQL, id).setParameter("error", INTEGRITY_ERROR).executeUpdate();
+            return new Migrated(new RowResult(id, RowResult.Status.FAILED, INTEGRITY_ERROR), null);
+        }
         CompilationResult compiled = compiler.compile(v.content, v.locale, v.aliasSet);
         if (!compiled.isSuccess()) {
             String error = truncate(String.join("; ", compiled.getErrors()));
@@ -161,6 +174,21 @@ public class ResolverMigrationService {
         return new Migrated(new RowResult(id, RowResult.Status.SUCCEEDED, null), v);
     }
 
+    /**
+     * 迁移前先按旧封印核对完整性：有 envelope 的按其格式重算比对，无 envelope 的比对 source_hash。
+     * 不符说明行已被改动，重新封印会把篡改洗成 INTACT，故不封印、不改链、不归档（篡改不是名称解析失败），
+     * 只记错误留给人工处理。
+     */
+    private boolean sealIntact(PolicyVersion v) {
+        var status = envelopeVerifier.verify(v).status();
+        if (status == PolicyVersionEnvelopeVerifier.VerifyResult.Status.SKIPPED_LEGACY) {
+            String actual = AdminHmacVerifier.sha256Hex(
+                (v.content == null ? "" : v.content).getBytes(StandardCharsets.UTF_8));
+            return actual.equals(v.sourceHash);
+        }
+        return status == PolicyVersionEnvelopeVerifier.VerifyResult.Status.INTACT;
+    }
+
     private void writeSuccess(PolicyVersion v, String coreJson) {
         String toolchain = toolchains.currentToolchainId();
         String envelope = PolicyVersion.computeSourceEnvelope(
@@ -169,6 +197,7 @@ public class ResolverMigrationService {
             .setParameter("core", coreJson)
             .setParameter("envelope", envelope)
             .setParameter("toolchain", toolchain)
+            .setParameter("rv", RESOLVER_VERSION)
             .executeUpdate();
         byte[] content = coreJson.getBytes(StandardCharsets.UTF_8);
         update(ARTIFACT_SQL, v.id)
@@ -200,6 +229,7 @@ public class ResolverMigrationService {
     private List<Long> pendingBatch(long cursor, int batchSize, String prefix) {
         return QuarkusTransaction.requiringNew().call(() -> entityManager.createNativeQuery(PENDING_SQL)
             .setParameter("cursor", cursor)
+            .setParameter("rv", RESOLVER_VERSION)
             .setParameter("prefix", prefix)
             .setParameter("limit", batchSize)
             .getResultList().stream()
@@ -207,13 +237,20 @@ public class ResolverMigrationService {
             .toList());
     }
 
-    /** 成功行的旧编译结果在本节点缓存里失效；迁移在发布窗口执行，其它节点随重启清空。 */
+    /**
+     * 成功行的旧编译结果在本节点缓存里失效；其它节点随发布重启清空。
+     * 行事务已提交，失效失败只影响缓存新鲜度，不改变该行的迁移结果。
+     */
     private void invalidateCaches(PolicyVersion v) {
         if (v == null) {
             return;
         }
-        compileByVersion.invalidate(v.id).await().indefinitely();
-        compiledPolicyCache.invalidate(v.tenantId, v.moduleName, v.functionName);
+        try {
+            compileByVersion.invalidate(v.id).await().indefinitely();
+            compiledPolicyCache.invalidate(v.tenantId, v.moduleName, v.functionName);
+        } catch (RuntimeException e) {
+            LOG.warnf(e, "resolver 迁移已提交，但缓存失效失败: id=%d", v.id);
+        }
     }
 
     private static RunReport summarize(List<RowResult> results) {
@@ -225,8 +262,13 @@ public class ResolverMigrationService {
         return new RunReport(succeeded + failures.size(), succeeded, failures.size(), failures);
     }
 
-    private static String truncate(String error) {
+    static String truncate(String error) {
         String safe = error == null || error.isBlank() ? "unknown error" : error;
-        return safe.length() <= MAX_ERROR_LENGTH ? safe : safe.substring(0, MAX_ERROR_LENGTH);
+        if (safe.length() <= MAX_ERROR_LENGTH) {
+            return safe;
+        }
+        // 截断点落在代理对中间时少截一位，避免留下孤立的高代理
+        int end = Character.isHighSurrogate(safe.charAt(MAX_ERROR_LENGTH - 1)) ? MAX_ERROR_LENGTH - 1 : MAX_ERROR_LENGTH;
+        return safe.substring(0, end);
     }
 }

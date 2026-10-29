@@ -1,8 +1,10 @@
 package io.aster.policy.admin;
 
+import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.entity.VersionStatus;
 import io.aster.policy.service.PolicyVersionEnvelopeVerifier;
+import io.aster.policy.service.PolicyVersionService;
 import io.aster.policy.stability.ToolchainIdentityProvider;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
@@ -15,6 +17,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * 存量重编译任务（ADR 0051 §9）的数据库集成测试。
@@ -33,6 +36,7 @@ class ResolverMigrationServiceTest {
     @Inject ResolverMigrationService migration;
     @Inject EntityManager entityManager;
     @Inject ToolchainIdentityProvider toolchains;
+    @Inject PolicyVersionService versionService;
 
     private final PolicyVersionEnvelopeVerifier verifier = new PolicyVersionEnvelopeVerifier();
 
@@ -41,6 +45,7 @@ class ResolverMigrationServiceTest {
         String prefix = prefix();
         List<Long> ids = seed(prefix + "p", List.of(OK_SRC, OK_SRC + "\n", OK_SRC + "\n\n"),
             List.of(VersionStatus.APPROVED, VersionStatus.DRAFT, VersionStatus.SUBMITTED));
+        sql("UPDATE policy_versions SET core_json = NULL WHERE id = :id", ids.get(2));
 
         var report = migration.run(2, prefix);
 
@@ -53,14 +58,112 @@ class ResolverMigrationServiceTest {
             PolicyVersion v = load(id);
             assertThat(v.resolverVersion).isEqualTo(1);
             assertThat(v.resolverMigrationError).isNull();
-            assertThat(v.coreJson).isNotBlank();
             assertThat(v.sourceToolchainId).isEqualTo(toolchain);
             assertThat(v.sourceEnvelopeSha256).isEqualTo(PolicyVersion.computeSourceEnvelope(
                 v.content, v.aliasSet, v.locale, toolchain, ""));
             assertThat(verifier.verify(v).status()).isEqualTo(PolicyVersionEnvelopeVerifier.VerifyResult.Status.INTACT);
         }
         assertThat(load(ids.get(0)).status).isEqualTo(VersionStatus.APPROVED);
+        assertThat(load(ids.get(0)).coreJson).as("原有 core_json 改写为新 IR").isNotBlank().doesNotContain("legacy");
+        assertThat(load(ids.get(2)).coreJson).as("原本按需编译的行不冻结 IR").isNull();
         assertChainValid(prefix + "p");
+    }
+
+    @Test
+    void tamperedEnvelopeRowIsNotResealedArchivedOrRelinked() {
+        String prefix = prefix();
+        List<Long> ids = seed(prefix + "p", List.of(OK_SRC, OK_SRC + "\n"),
+            List.of(VersionStatus.APPROVED, VersionStatus.DRAFT));
+        sql("UPDATE policy_versions SET content = '" + OK_SRC.replace("3", "4") + "' WHERE id = :id", ids.get(0));
+        PolicyVersion before = load(ids.get(0));
+        String successorPrev = load(ids.get(1)).prevHash;
+
+        var report = migration.run(50, prefix);
+
+        assertThat(report.failures()).singleElement().satisfies(f -> {
+            assertThat(f.id()).isEqualTo(ids.get(0));
+            assertThat(f.error()).isEqualTo(ResolverMigrationService.INTEGRITY_ERROR);
+        });
+        PolicyVersion after = load(ids.get(0));
+        assertThat(after.status).as("篡改不是名称解析失败，不归档").isEqualTo(VersionStatus.APPROVED);
+        assertThat(after.archivedByResolverMigration).isFalse();
+        assertThat(after.resolverVersion).isNull();
+        assertThat(after.resolverMigrationError).isEqualTo(ResolverMigrationService.INTEGRITY_ERROR);
+        assertThat(after.sourceEnvelopeSha256).isEqualTo(before.sourceEnvelopeSha256);
+        assertThat(after.sourceToolchainId).isEqualTo(OLD_TOOLCHAIN);
+        assertThat(after.coreJson).isEqualTo(before.coreJson);
+        assertThat(verifier.verify(after).status()).as("篡改仍可见")
+            .isEqualTo(PolicyVersionEnvelopeVerifier.VerifyResult.Status.TAMPERED);
+        assertThat(load(ids.get(1)).prevHash).isEqualTo(successorPrev);
+    }
+
+    @Test
+    void preEnvelopeRowIsCheckedAgainstSourceHash() {
+        String prefix = prefix();
+        List<Long> ids = seed(prefix + "p", List.of(OK_SRC, OK_SRC + "\n", OK_SRC + "\n\n"),
+            List.of(VersionStatus.APPROVED, VersionStatus.APPROVED, VersionStatus.DRAFT));
+        // 前两行模拟 envelope 特性之前的旧行：链接回落到 source_hash
+        for (Long id : ids.subList(0, 2)) {
+            sql("UPDATE policy_versions SET source_envelope_sha256 = NULL, source_toolchain_id = NULL WHERE id = :id", id);
+        }
+        sql("UPDATE policy_versions SET prev_hash = (SELECT source_hash FROM policy_versions WHERE id = "
+            + ids.get(0) + ") WHERE id = :id", ids.get(1));
+        sql("UPDATE policy_versions SET prev_hash = (SELECT source_hash FROM policy_versions WHERE id = "
+            + ids.get(1) + ") WHERE id = :id", ids.get(2));
+        sql("UPDATE policy_versions SET source_hash = '" + "0".repeat(64) + "' WHERE id = :id", ids.get(1));
+        sql("UPDATE policy_versions SET prev_hash = '" + "0".repeat(64) + "' WHERE id = :id", ids.get(2));
+        assertChainValid(prefix + "p");
+
+        var report = migration.run(50, prefix);
+
+        assertThat(report.succeeded()).isEqualTo(2);
+        assertThat(report.failures()).singleElement().satisfies(f -> {
+            assertThat(f.id()).isEqualTo(ids.get(1));
+            assertThat(f.error()).isEqualTo(ResolverMigrationService.INTEGRITY_ERROR);
+        });
+        PolicyVersion mismatched = load(ids.get(1));
+        assertThat(mismatched.status).isEqualTo(VersionStatus.APPROVED);
+        assertThat(mismatched.archivedByResolverMigration).isFalse();
+        assertThat(mismatched.sourceEnvelopeSha256).as("不重新封印").isNull();
+        assertThat(load(ids.get(0)).resolverVersion).as("source_hash 相符的旧行正常迁移").isEqualTo(1);
+        assertChainValid(prefix + "p");
+    }
+
+    @Test
+    void createVersionWaitsForMigrationLockOnChainTail() throws Exception {
+        String prefix = prefix();
+        java.util.UUID catalogId = QuarkusTransaction.requiringNew().call(() -> {
+            PolicyCatalog c = new PolicyCatalog();
+            c.id = UUID.randomUUID();
+            c.tenantId = "t-rmig";
+            c.moduleName = prefix + "m";
+            c.functionName = "p";
+            c.domain = "finance";
+            c.createdAt = java.time.Instant.now();
+            c.updatedAt = c.createdAt;
+            c.persist();
+            return c.id;
+        });
+        PolicyVersion tail = versionService.createVersion(catalogId, OK_SRC, "en-US");
+        String newLink = "e".repeat(64);
+        var executor = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<PolicyVersion> created = QuarkusTransaction.requiringNew().call(() -> {
+                // 模拟迁移事务：锁住链尾并改写其 envelope，提交前新版本创建必须等待
+                entityManager.find(PolicyVersion.class, tail.id, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+                entityManager.createNativeQuery("UPDATE policy_versions SET source_envelope_sha256 = :e WHERE id = :id")
+                    .setParameter("e", newLink).setParameter("id", tail.id).executeUpdate();
+                var future = executor.submit(() -> versionService.createVersion(catalogId, OK_SRC + "\n", "en-US"));
+                assertThat(catchThrowable(() -> future.get(700, java.util.concurrent.TimeUnit.MILLISECONDS)))
+                    .as("链尾被锁时新版本创建应阻塞").isInstanceOf(java.util.concurrent.TimeoutException.class);
+                return future;
+            });
+            PolicyVersion next = created.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(next.prevHash).as("新版本接在迁移后的链接上").isEqualTo(newLink);
+        } finally {
+            executor.shutdownNow();
+            deleteDualWriteFiles(java.nio.file.Paths.get("target", "policies", prefix + "m"));
+        }
     }
 
     @Test
@@ -181,6 +284,14 @@ class ResolverMigrationServiceTest {
         assertThat(load(ids.get(1)).prevHash).as("迁移前已断的链保持可见").isEqualTo("f".repeat(64));
     }
 
+    @Test
+    void errorTruncationDoesNotSplitSurrogatePairs() {
+        String error = "x".repeat(3999) + "\uD83D\uDE00" + "tail";
+        String truncated = ResolverMigrationService.truncate(error);
+        assertThat(truncated).hasSize(3999);
+        assertThat(Character.isHighSurrogate(truncated.charAt(truncated.length() - 1))).isFalse();
+    }
+
     // ── 夹具 ──────────────────────────────────────────────────────────
 
     private static String prefix() {
@@ -217,10 +328,37 @@ class ResolverMigrationServiceTest {
         });
     }
 
+    /** 模拟合法修复：改源码并同步旧封印（source_hash、4 段 envelope）与后继的 prevHash，使行自洽、链完整。 */
     private void fixContent(Long id, String content) {
-        QuarkusTransaction.requiringNew().run(() -> entityManager
-            .createNativeQuery("UPDATE policy_versions SET content = :c WHERE id = :id")
-            .setParameter("c", content).setParameter("id", id).executeUpdate());
+        String oldEnvelope = load(id).sourceEnvelopeSha256;
+        String envelope = PolicyVersion.computeLegacySourceEnvelope(content, null, "en-US", OLD_TOOLCHAIN);
+        QuarkusTransaction.requiringNew().run(() -> {
+            entityManager.createNativeQuery("UPDATE policy_versions SET content = :c, source_hash = :h, "
+                    + "source_envelope_sha256 = :e WHERE id = :id")
+                .setParameter("c", content).setParameter("id", id).setParameter("e", envelope)
+                .setParameter("h", io.aster.policy.security.AdminHmacVerifier.sha256Hex(
+                    content.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                .executeUpdate();
+            entityManager.createNativeQuery("UPDATE policy_versions SET prev_hash = :e WHERE prev_hash = :old")
+                .setParameter("e", envelope).setParameter("old", oldEnvelope).executeUpdate();
+        });
+    }
+
+    /** 测试 profile 开启了双写，清掉本用例写出的静态策略文件。 */
+    private static void deleteDualWriteFiles(java.nio.file.Path dir) throws java.io.IOException {
+        if (!java.nio.file.Files.exists(dir)) {
+            return;
+        }
+        try (var files = java.nio.file.Files.walk(dir)) {
+            for (var f : files.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                java.nio.file.Files.delete(f);
+            }
+        }
+    }
+
+    private void sql(String statement, Long id) {
+        QuarkusTransaction.requiringNew().run(() -> entityManager.createNativeQuery(statement)
+            .setParameter("id", id).executeUpdate());
     }
 
     private PolicyVersion load(Long id) {

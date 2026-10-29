@@ -483,8 +483,21 @@ public class PolicyVersion extends PanacheEntityBase {
      * 向后兼容。
      */
     private static String findPreviousVersionHash(String policyId) {
-        PolicyVersion prev = find("policyId = ?1 ORDER BY version DESC", policyId).firstResult();
+        PolicyVersion prev = find("policyId = ?1 ORDER BY version DESC, id DESC", policyId).firstResult();
         return prev != null ? prev.chainLink() : null;
+    }
+
+    /**
+     * 给策略的链尾版本加行锁（同一事务内随后构造新版本）。
+     *
+     * <p>新版本的 prevHash 取链尾的 chainLink；存量重编译（ADR 0051 §9）会在行锁内改写某行 envelope
+     * 并把其直接后继的 prevHash 跟上。先锁链尾再读，二者对链尾串行：迁移先提交则读到新链接；
+     * 新版本先提交则迁移随后把它当作后继改写。排序与迁移的后继判定一致（version, id）。
+     */
+    public static void lockChainTail(String policyId) {
+        find("policyId = ?1 ORDER BY version DESC, id DESC", policyId)
+            .withLock(LockModeType.PESSIMISTIC_WRITE)
+            .firstResult();
     }
 
     /**

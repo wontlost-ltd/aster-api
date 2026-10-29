@@ -146,6 +146,7 @@ public class PolicyVersionService {
         String normalizedAliasJson = canonicalizeAliasJson(aliasSetJson, locale);
 
         String policyId = catalog.moduleName + "." + catalog.functionName;
+        PolicyVersion.lockChainTail(policyId);
         PolicyVersion version = new PolicyVersion(
             policyId,
             catalog.moduleName,
@@ -523,7 +524,8 @@ public class PolicyVersionService {
         // 停用旧的活跃版本
         PolicyVersion.deactivateAllVersions(policyId);
 
-        // 创建新版本
+        // 创建新版本（先锁链尾，prevHash 与存量重编译的后继改写串行）
+        PolicyVersion.lockChainTail(policyId);
         PolicyVersion newVersion = new PolicyVersion(
             policyId,
             moduleName,
