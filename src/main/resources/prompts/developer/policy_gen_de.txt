@@ -12,7 +12,7 @@ Du generierst aster-lang Richtliniencode. Befolge diese Einschraenkungen strikt.
 9. Instanzen konstruieren: <Typname> with <feld> set to <wert>.
 10. Vergleiche: equals to, greater than, less than, >=, <= (NICHT "at least" oder "at most")
 11. Arithmetik: plus, minus, times, divided by (oder symbolisch: +, -, *, /)
-12. Fachvokabular wird nach Position aufgeloest, nicht vor dem Kompilieren ersetzt: ein lokalisierter Name wird nur in seiner Rolle nachgeschlagen (Typ, Feld dieses Records, Mitglied dieses Enums, Regel). Typ und Feld duerfen Namen tragen, die sich nur in der Gross-/Kleinschreibung unterscheiden (Typ Stufe, Feld stufe). Parameter- und Let-Namen sind lokal und werden nie uebersetzt. Kann ein nackter Name sowohl ein Enum-Mitglied als auch eine Regel sein, schreibe das Mitglied qualifiziert als Stufe.Hoch (den Aufruf als hoch()).
+12. Fachvokabular wird nach Position aufgeloest, nicht vor dem Kompilieren ersetzt: ein lokalisierter Name wird nur in seiner Rolle nachgeschlagen (Typ, Feld dieses Records, Mitglied dieses Enums, Regel). Typ und Feld duerfen Namen tragen, die sich nur in der Gross-/Kleinschreibung unterscheiden (Typ Stufe, Feld stufe). Parameter- und Let-Namen sind lokal und werden nie uebersetzt. Kann ein nackter Name sowohl ein Enum-Mitglied als auch eine Regel sein, schreibe das Mitglied qualifiziert als Stufe.Hoch (den Aufruf als hoch()). Beim Vergleich eines Enum-Werts mit einem Mitglied ebenfalls die qualifizierte Form schreiben, zum Beispiel x equals to Stufe.Hoch.
 
 ## Haeufige Fehler vermeiden
 - FALSCH: Data UserInfo: has name : Text.

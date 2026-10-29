@@ -7,7 +7,12 @@ import io.aster.policy.service.PolicyVersionEnvelopeVerifier;
 import io.aster.policy.service.PolicyVersionService;
 import io.aster.policy.stability.ToolchainIdentityProvider;
 import io.quarkus.narayana.jta.QuarkusTransaction;
+import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
+import io.aster.policy.compiler.CompilationResult;
+import io.aster.policy.compiler.PolicyCompiler;
+import org.mockito.ArgumentMatchers;
+import org.mockito.Mockito;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
@@ -218,6 +223,30 @@ class ResolverMigrationServiceTest {
                 .isEqualTo(PolicyVersionEnvelopeVerifier.VerifyResult.Status.INTACT);
         }
         assertChainValid(prefix + "p");
+    }
+
+    @Test
+    void compilerInternalFailureIsInfrastructureFailureWithoutArchiveAndRetriesOnRerun() {
+        String prefix = prefix();
+        List<Long> ids = seed(prefix + "p", List.of(OK_SRC), List.of(VersionStatus.APPROVED));
+        PolicyVersion before = load(ids.get(0));
+        PolicyCompiler broken = Mockito.mock(PolicyCompiler.class);
+        Mockito.when(broken.compile(ArgumentMatchers.anyString(), ArgumentMatchers.any(), ArgumentMatchers.any()))
+            .thenReturn(CompilationResult.failure("CNL 编译失败: boom"));
+        QuarkusMock.installMockForType(broken, PolicyCompiler.class);
+
+        var report = migration.run(50, prefix);
+
+        assertThat(report.failed()).isEqualTo(1);
+        assertThat(report.failures()).singleElement().satisfies(f -> assertThat(f.error()).contains("boom"));
+        PolicyVersion row = load(ids.get(0));
+        assertThat(row.status).isEqualTo(VersionStatus.APPROVED);
+        assertThat(row.archivedByResolverMigration).isFalse();
+        assertThat(row.statusBeforeArchive).isNull();
+        assertThat(row.resolverVersion).isNull();
+        assertThat(row.resolverMigrationError).isNull();
+        assertThat(row.coreJson).isEqualTo(before.coreJson);
+        assertThat(row.sourceEnvelopeSha256).isEqualTo(before.sourceEnvelopeSha256);
     }
 
     @Test

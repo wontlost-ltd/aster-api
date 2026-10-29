@@ -45,6 +45,8 @@ class PromptComposerSyntaxTest {
         for (String locale : new String[]{"en", "zh", "de"}) {
             String kept = PromptComposer.syntaxSections(resource("prompts/developer/policy_gen_" + locale + ".txt"));
             assertThat(kept).as(locale).contains("Stufe.Hoch").contains("hoch()");
+            // 比较场景同样要求限定写法
+            assertThat(kept).as(locale).contains("x equals to Stufe.Hoch");
         }
     }
 

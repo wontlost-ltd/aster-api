@@ -5,6 +5,7 @@ import io.aster.policy.compiler.CompilationResult;
 import io.aster.policy.compiler.PolicyCompiler;
 import io.aster.policy.entity.ArtifactType;
 import io.aster.policy.entity.PolicyVersion;
+import io.aster.policy.parser.CompileIdentity;
 import io.aster.policy.security.AdminHmacVerifier;
 import io.aster.policy.service.PolicyVersionEnvelopeVerifier;
 import io.aster.policy.stability.ToolchainIdentityProvider;
@@ -30,7 +31,7 @@ import java.util.List;
  * <ul>
  *   <li>成功：写新 Core IR（CORE_JSON 产物；core_json 仅原本非空时改写，原本按需编译的行继续按需编译）、用当前工具链重算 5 段 envelope 并改写
  *       source_toolchain_id、resolver_version=1、清空错误；仅本任务归档过的行恢复 status_before_archive。</li>
- *   <li>编译失败：旧 IR/envelope/工具链串原样保留并记录错误；当前非 ARCHIVED 才记下原状态、归档并置标记；
+ *   <li>源码编译失败（带 error 级诊断）：旧 IR/envelope/工具链串原样保留并记录错误；当前非 ARCHIVED 才记下原状态、归档并置标记；
  *       已是 ARCHIVED（无论来源）只更新错误。resolver_version 保持 NULL，重跑会再试。</li>
  * </ul>
  *
@@ -46,9 +47,6 @@ import java.util.List;
 public class ResolverMigrationService {
 
     private static final Logger LOG = Logger.getLogger(ResolverMigrationService.class);
-
-    /** 按位置解析规则对应的 resolver 版本。 */
-    public static final int RESOLVER_VERSION = 1;
 
     private static final int MAX_ERROR_LENGTH = 4000;
 
@@ -157,7 +155,7 @@ public class ResolverMigrationService {
 
     private Migrated migrateLocked(long id) {
         PolicyVersion v = entityManager.find(PolicyVersion.class, id, LockModeType.PESSIMISTIC_WRITE);
-        if (v == null || Integer.valueOf(RESOLVER_VERSION).equals(v.resolverVersion)) {
+        if (v == null || Integer.valueOf(CompileIdentity.RESOLVER_VERSION).equals(v.resolverVersion)) {
             return new Migrated(new RowResult(id, RowResult.Status.SKIPPED, null), null);
         }
         if (!sealIntact(v)) {
@@ -165,6 +163,12 @@ public class ResolverMigrationService {
             return new Migrated(new RowResult(id, RowResult.Status.FAILED, INTEGRITY_ERROR), null);
         }
         CompilationResult compiled = compiler.compile(v.content, v.locale, v.aliasSet);
+        if (!compiled.isSuccess() && !carriesSourceDiagnostics(compiled)) {
+            // 没有源码诊断的失败是编译器内部异常（基础设施问题），不是名称解析失败：不归档、不改状态，留待重跑
+            String error = truncate(String.join("; ", compiled.getErrors()));
+            LOG.warnf("resolver 迁移遇到非源码失败，保持待迁移: id=%d error=%s", id, error);
+            return new Migrated(new RowResult(id, RowResult.Status.FAILED, error), null);
+        }
         if (!compiled.isSuccess()) {
             String error = truncate(String.join("; ", compiled.getErrors()));
             update(FAILURE_SQL, id).setParameter("error", error).executeUpdate();
@@ -172,6 +176,11 @@ public class ResolverMigrationService {
         }
         writeSuccess(v, compiled.getCoreJson());
         return new Migrated(new RowResult(id, RowResult.Status.SUCCEEDED, null), v);
+    }
+
+    /** 失败结果带 error 级结构化诊断（解析 / 名称解析 / 类型错误）才算源码本身的问题。 */
+    static boolean carriesSourceDiagnostics(CompilationResult compiled) {
+        return compiled.getDiagnostics().stream().anyMatch(d -> "error".equals(d.severity()));
     }
 
     /**
@@ -197,7 +206,7 @@ public class ResolverMigrationService {
             .setParameter("core", coreJson)
             .setParameter("envelope", envelope)
             .setParameter("toolchain", toolchain)
-            .setParameter("rv", RESOLVER_VERSION)
+            .setParameter("rv", CompileIdentity.RESOLVER_VERSION)
             .executeUpdate();
         byte[] content = coreJson.getBytes(StandardCharsets.UTF_8);
         update(ARTIFACT_SQL, v.id)
@@ -229,7 +238,7 @@ public class ResolverMigrationService {
     private List<Long> pendingBatch(long cursor, int batchSize, String prefix) {
         return QuarkusTransaction.requiringNew().call(() -> entityManager.createNativeQuery(PENDING_SQL)
             .setParameter("cursor", cursor)
-            .setParameter("rv", RESOLVER_VERSION)
+            .setParameter("rv", CompileIdentity.RESOLVER_VERSION)
             .setParameter("prefix", prefix)
             .setParameter("limit", batchSize)
             .getResultList().stream()
