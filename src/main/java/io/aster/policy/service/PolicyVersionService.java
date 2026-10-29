@@ -51,8 +51,8 @@ public class PolicyVersionService {
 
     /**
      * 工具链身份的**唯一**构造源（ADR 0030）：source envelope 侧（本服务）与 runtime evaluate 侧
-     * （PolicyEvaluationResource）共用同一 {@code abi=;core=;validator=;build=} 口径，防两处字符串漂移
-     * 导致「同一构建的 source/runtime 身份串不一致」＝回放地基裂缝。原本服务内私有复制已删。
+     * （PolicyEvaluationResource）统一经 {@link io.aster.policy.stability.ToolchainIdentityProvider#currentToolchainId()}
+     * 取值，格式见该方法，防两处字符串漂移导致同一构建的 source/runtime 身份串不一致。
      */
     @Inject
     io.aster.policy.stability.ToolchainIdentityProvider toolchainIdentityProvider;

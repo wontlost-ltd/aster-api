@@ -197,7 +197,7 @@ public class InProcessCnlParser {
             // 级联错误仅记日志供调试，避免把几十条内部消息糊到用户脸上。
             if (errorListener.hasErrors()) {
                 LOG.debugf("CNL 解析原始错误（全集）: %s", errorListener.getRawErrors());
-                LOG.warnf("CNL 语法错误: %s", errorListener.getErrors());
+                LOG.debugf("CNL 语法错误: %s", errorListener.getErrors());
                 throw new CnlParseException(
                     "CNL 语法错误 — " + errorListener.getErrors(),
                     errorListener.getDiagnostics());
@@ -253,8 +253,8 @@ public class InProcessCnlParser {
             NameResolution.resolveAndLower(ast, new ResolutionContext(scopes, ImportedDeclarations.NONE));
         if (NameResolution.hasErrors(resolved.diagnostics())) {
             NameResolutionFailure failure = new NameResolutionFailure(resolved.diagnostics());
-            // 用户源码问题：WARN 一行，不打堆栈
-            LOG.warnf("CNL %s", failure.getMessage());
+            // 用户源码问题由调用边界按场景记录，解析器自身只留 DEBUG，避免同一错误重复多条
+            LOG.debugf("CNL %s", failure.getMessage());
             throw failure;
         }
         return resolved;

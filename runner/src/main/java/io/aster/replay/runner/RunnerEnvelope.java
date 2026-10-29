@@ -14,7 +14,7 @@ public record RunnerEnvelope(
         ReplayMetadata replayMetadata,   // 仅成功
         String errorCode,         // 仅错误：PARSE/EXECUTION/MODULE/INTERNAL
         String message,           // 仅错误
-        String phase              // 仅错误：parse|execute|trace|metadata
+        String phase              // 仅错误：validate|parse|execute|trace|metadata
 ) {
     public static RunnerEnvelope success(ReplayMetadata rm) {
         return new RunnerEnvelope("SUCCESS", rm, null, null, null);

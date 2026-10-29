@@ -91,5 +91,6 @@ class RunnerVocabularyParityTest {
         JsonNode env = runRunner(big);
         assertEquals("ERROR", env.get("outcome").asText());
         assertEquals("VOCABULARY", env.get("errorCode").asText());
+        assertEquals("validate", env.get("phase").asText(), "上限校验发生在解析之前，phase 应为 validate");
     }
 }
