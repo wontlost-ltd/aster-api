@@ -103,7 +103,7 @@
 | `Name` 点分路径首段 | VALUE_REF 或 TYPE（`E.M` 形式时为 TYPE） | R1 | 首段先按 LOCAL/FUNC，失败再按 TYPE（枚举/数据名限定） |
 | `Name` 点分路径后续段（`x.f.g`） | FIELD_REF | R2 | 按前一段的类型 S 查 `fields[S]` |
 | `E.M`（首段为枚举类型） | MEMBER_REF | R1 | `enumMembers[E]` |
-| `Call` 目标（`f(…)`、`apply f to …`）、函数值引用 | FUNC_REF | R1 | 源码 FUNC_DECL → 词汇 functions → 内置/导入 |
+| `Call` 目标（`f(…)`、`apply f to …`）、函数值引用 | FUNC_REF | R1 | 源码 FUNC_DECL → 词汇 functions → 内置/导入；所有层均无候选时保持原写法、不报 E802（见 §15 R19） |
 | `Construct` 类型名 `X with …` | TYPE | R1 | 同 TYPE |
 | `ConstructField.name`（嵌套构造递归） | FIELD_REF | R1 | `fields[X]`（X 已在 R1 解析） |
 | `Set` 目标（`set x.f to …`） | FIELD_REF | R2 | 同点分路径 |
@@ -210,7 +210,7 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 ## 9. 不做向后兼容的落地步骤
 
 1. **工具链标识**：cloud `cloudToolchainId()` 与 Java `ToolchainIdentityProvider.currentToolchainId()` 同步改为 `abi=1.1;core=<engine>;validator=<v>;resolver=1;casefold=15.1;build=<b>`。`resolver` 随名称解析算法变更递增；`casefold` 为 §6.3 折叠表的 Unicode 版本，升级折叠数据必须同时改变它。envelope 已覆盖 `toolchainId`（第 4 段，已核对实现），加上 §7 新增的第 5 段，旧 envelope 全部失配。
-2. **缓存失效**：aster-api `DynamicCnlExecutor` / `PolicyCompiler` 编译缓存、cloud 类型提取 LRU 与 KV 元数据缓存的键均纳入 `toolchainId` 与 `scopesHash`；发布即全部失效。
+2. **缓存失效**：aster-api `DynamicCnlExecutor` / `PolicyCompiler` 编译缓存、cloud 类型提取 LRU 与 KV 元数据缓存的键均纳入 `toolchainId` 与 `scopesHash`；发布即全部失效（`PolicyCompiler` 的 versionId 缓存例外，见 §15 R35）。
 3. **存量数据（均为测试数据）重编译**——两库的版本是各自独立的产物（aster-api `policy_versions` 与 cloud `"PolicyVersion"` 不共享事务），因此按**每库独立、逐行幂等**执行：
    - 先 `pg_dump` 两库对应表（含 `UserVocabularySnapshot`）作为回滚点；
    - 两张表各加四列（迁移）：`resolverVersion`（默认 NULL，**仅成功时**写入 1）、`resolverMigrationError`（失败原因，成功时清空）、`archivedByResolverMigration`（布尔，默认 false：**仅本任务归档的行**为 true）、`statusBeforeArchive`（本任务归档前的状态）；
@@ -293,7 +293,7 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 - **R36**：`toolchainId` 的 core 分量在 Java 为核心引擎版本（如 `core=1.0.35`），cloud 为 `core=ts`（正文 §9.1 的 `core=<engine>` 据此理解）。
 - **R37**：无词汇或无条目时 `scopesJson` 为 `""`；仅有字面量的词汇仍取完整 `canonicalScopesJson()`（字面量会改变编译输入）。cloud 同。
 - **R40**：cloud 在封存时持久化 `sourceScopesJson`（`""` 表示无），重算信封与 `recordedCompileLocale` 一律使用该存值，不再由实时/快照词汇推导。**R49**：审批时若冻结快照推得的作用域与封存值不一致，则拒绝（本地化文案“词汇自保存后已变更”）。NULL 的存量行先尝试 4 段旧信封摘要。
-- **R35**（偏离 §9.2）：aster-api 的 `PolicyCompiler` versionId 缓存不含词汇作用域，因 api 侧存储的版本不携带词汇。
+- **R35**（偏离 §9 第 2 步）：aster-api 的 `PolicyCompiler` versionId 缓存不含词汇作用域，因 api 侧存储的版本不携带词汇。
 
 ### 15.5 迁移语义（实际实现）
 - 迁移前先做完整性校验（信封校验/`source_hash`）：不一致记为失败（“pre-migration integrity mismatch”），不重新封存；信封存在而 toolchain 为空亦视为不一致。
@@ -304,3 +304,4 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 - **R41/R46**：cloud 拆为两个 PR：PR-A 含 drizzle 迁移（0060/0061）与 schema，PR-B 为其余改动；漂移检查要求 schema 进入 PR-A，零停机做法是用户在合并 PR-A **之前**于生产执行 cloud 的加法 DDL（`IF NOT EXISTS`）；备选为接受短窗口并依赖 db-bootstrap 冷启动的 `ALTER … ADD COLUMN IF NOT EXISTS "sourceScopesJson"` 兜底。core 的前置 PR 须先于 1.0.36 列车合并；api PR 在列车打 tag 之后合并；KV 缓存陈旧窗口 ≤ 1h（文档化）。
 - **R46/R47**：迁移使用**专用镜像** `Dockerfile.resolver-migration`（窄路径过滤、由 image-lock 固定，不属于 PostSync/migrate 门禁）；Job 资源 requests ≤ 25m CPU/128Mi 并设 limits；api 备份用具备序列读权限的凭据。
 - **R48**：迁移 Job 目录置于任何 ApplicationSet glob 之外（`apps/aster-lang-ops/resolver-migration/`），以逐个 generator 的 `git ls-files` 仿真验证；镜像构建作业独立成 workflow，不阻塞 Worker 部署。
+- **R53**：Java 语法在类型名位置接受天城文等无大小写文字的标识符，与 TS 对齐（来自 aster-lang-core#220）。
