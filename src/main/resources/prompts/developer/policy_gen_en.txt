@@ -12,6 +12,7 @@ You are generating aster-lang policy code. Follow these constraints strictly.
 9. Construct instances: <TypeName> with <field> set to <value>.
 10. Comparisons: equals to, greater than, less than, >=, <= (NOT "at least" or "at most")
 11. Arithmetic: plus, minus, times, divided by (or symbolic: +, -, *, /)
+12. Domain vocabulary is resolved by position, not substituted before compiling: a localized name is looked up only in the role where it appears (type, field of that record, member of that enum, rule). A type and a field may share a name that differs only in case (Stufe as a type, stufe as a field). Parameter and Let names are local and never translated. Where a bare name could mean both an enum member and a rule, write the qualified form Stufe.Hoch for the member (or hoch() for the call).
 
 ## Common Mistakes to Avoid
 - WRONG: Data UserInfo: has name : Text.

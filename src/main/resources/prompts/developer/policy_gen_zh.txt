@@ -12,6 +12,7 @@
 9. 构造实例：<类型名> with <字段> set to <值>.
 10. 比较运算：equals to, greater than, less than, >=, <=（不要使用 "at least" 或 "at most"）
 11. 算术运算：plus, minus, times, divided by（或符号：+, -, *, /）
+12. 领域词汇按位置解析，而不是编译前整体替换：本地化名字只在它所处的角色中查找（类型、该记录的字段、该枚举的成员、规则）。类型与字段可以使用仅大小写不同的名字（类型 Stufe、字段 stufe）。参数名与 Let 局部名不查词汇、不翻译。当一个裸名既可能是枚举成员又可能是规则时，成员写成限定形式 Stufe.Hoch（调用写成 hoch()）。
 
 ## 常见错误
 - 错误：Data UserInfo: has name : Text.
