@@ -10,6 +10,7 @@ import io.aster.policy.telemetry.NsmTelemetry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import jakarta.transaction.Transactional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -137,7 +138,8 @@ public class PolicyVersionService {
     @Transactional
     public PolicyVersion createVersion(UUID catalogId, String sourceCnl, String locale,
                                        String sourceKind, String authorRole, String aliasSetJson) {
-        PolicyCatalog catalog = PolicyCatalog.findById(catalogId);
+        // 先锁策略目录行：策略尚无版本时链尾无行可锁，并发首版会各自读到空链而 prevHash 均为 null
+        PolicyCatalog catalog = PolicyCatalog.findById(catalogId, LockModeType.PESSIMISTIC_WRITE);
         if (catalog == null) {
             throw new IllegalArgumentException("策略目录不存在: catalogId=" + catalogId);
         }
