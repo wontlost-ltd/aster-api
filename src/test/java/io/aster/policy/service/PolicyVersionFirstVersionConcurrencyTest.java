@@ -165,6 +165,34 @@ class PolicyVersionFirstVersionConcurrencyTest {
         assertSingleLinearChain(2);
     }
 
+    /** 仅测试用的 @Deprecated 入口与主路径同序（先链锁、再停用旧版本）：并发首版同样只有一个链头。 */
+    @Test
+    @SuppressWarnings("deprecation")
+    void deprecatedEntryConcurrentFirstVersionsFormSingleLinearChain() throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(THREADS);
+        CountDownLatch go = new CountDownLatch(1);
+        try {
+            List<Future<PolicyVersion>> futures = new ArrayList<>();
+            for (int i = 0; i < THREADS; i++) {
+                String content = "// legacy " + i;
+                futures.add(pool.submit(() -> {
+                    go.await();
+                    return versionService.createVersion(policyId, moduleName, "decide", content, "tester", "n");
+                }));
+            }
+            go.countDown();
+            for (Future<PolicyVersion> f : futures) {
+                f.get(60, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertSingleLinearChain(THREADS);
+        long active = PolicyVersion.count("policyId = ?1 and active = true", policyId);
+        assertEquals(1, active, "停用旧版本后应只剩最新一个活跃版本");
+    }
+
     @Test
     void unknownCatalogIsRejected() {
         assertThrows(IllegalArgumentException.class,

@@ -284,7 +284,7 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 - **R20**：点号尾段的“不透明”判定为白名单：dynamic/未类型化、TypeVar、内建标量、Map/Json/Any；别名、包装类型（Option/Maybe/List/TypeApp）与未声明类型名视为 UNKNOWN（走全局候选规则）。`Let y be x` 继承 x 的声明类型。**R30/R31**：无类型注解的函数参数与 lambda 参数视为 UNKNOWN（两引擎一致）。
 - **R21**：期望类型为枚举 E 时，跨层冲突集仅含 LOCAL、模块函数/类型、词汇函数/类型；其他枚举的成员不构成冲突。LOCAL 精确命中优先于成员折叠歧义。§14.1 的“枚举成员 vs 函数/类型”冲突仍为 **E804**（不因精确优先而豁免）。
 - **R49**：相等/不等比较中，若另一操作数为已知枚举，则本操作数以该枚举为期望类型（本地化裸成员可解析）；E802 对值操作数使用非 FUNC_REF 的角色标签；E802/E804 的 help 提示 `Stufe.Hoch` 写法；E804 候选去重。
-- **R53**（无大小写文字的类型名；实现见 aster-lang-core#222，该 PR 合并发版前本条尚未生效）：类型名位置（`Define` 形态的 Data/Enum 声明名、枚举值、类型引用、构造类型名、构造模式名）接受 TYPE_IDENT，以及首字符属无大小写文字的 IDENT。无大小写文字目前仅指天城文 U+0900–U+0963、U+0966–U+097F（不含 danda U+0964/U+0965，与词法器一致）；CJK 已按 TYPE_IDENT 词法化，不在此列。两引擎只在语法层放行，词法分类不变（天城文仍是 IDENT），表达式位置的天城文仍是名字引用。小写拉丁类型名不在本条范围：TS 接受、Java 拒绝的既有分歧保持不变，另行裁决。无括号的无大小写文字模式产出 PatternName，后随 `(` 时产出 PatternCtor。省略 `Define` 的数据声明（Java 独有写法）不在本条范围。
+- **R53**（无大小写文字的类型名；实现见 aster-lang-core#222，该 PR 合并发版前本条尚未生效）：类型名位置（`Define` 形态的 Data/Enum 声明名、枚举值、类型引用、构造模式名；构造表达式的类型名本就接受任意 IDENT，不受本条约束）接受 TYPE_IDENT，以及首字符属无大小写文字的 IDENT。无大小写文字目前仅指天城文 U+0900–U+0963、U+0966–U+097F（不含 danda U+0964/U+0965，与词法器一致）；CJK 已按 TYPE_IDENT 词法化，不在此列。两引擎只在语法层放行，词法分类不变（天城文仍是 IDENT），表达式位置的天城文仍是名字引用。小写拉丁类型名不在本条范围：TS 接受、Java 拒绝的既有分歧保持不变，另行裁决。无括号的无大小写文字模式产出 PatternName，后随 `(` 时产出 PatternCtor。省略 `Define` 的数据声明（Java 独有写法）不在本条范围。
 
 ### 15.3 内建词汇与注册表
 - **R22/R26**：内建词汇的枚举值须带 parent；已在 aster-lang-locales 为 zh/en/de 的 finance-loan、insurance-auto 补全（CreditLevel、LoanType、QuoteStatus、RiskLevel）。TS/Java 注册表对无 parent 的 field/枚举值条目拒绝或跳过（显式注释与测试），作为守卫保留。

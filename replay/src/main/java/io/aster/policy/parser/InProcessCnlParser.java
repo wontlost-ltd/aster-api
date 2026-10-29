@@ -205,12 +205,7 @@ public class InProcessCnlParser {
 
             // 5. 构建 AST
             AstBuilder builder = new AstBuilder();
-            Module module = builder.visitModule(moduleCtx);
-
-            if (module == null) {
-                // 语法已通过却得不到 AST 属内部故障：走下方 catch 记 ERROR 与堆栈，不当作用户源码错误
-                throw new IllegalStateException("无法构建 AST 模块");
-            }
+            Module module = requireModule(builder.visitModule(moduleCtx));
 
             // 6. 名称解析（R1 → lower → R2）：任一 E8xx 即失败，不产出 IR
             NameResolution.ResolvedCore resolved = resolveNames(module, scopes);
@@ -243,9 +238,22 @@ public class InProcessCnlParser {
         } catch (CnlParseException e) {
             throw e;
         } catch (Exception e) {
-            LOG.errorf(e, "CNL 解析失败: %s", e.getMessage());
-            throw new CnlParseException("CNL 解析失败: " + e.getMessage(), e);
+            throw internalFailure(e);
         }
+    }
+
+    /** 语法已通过却得不到 AST 属内部故障（IllegalStateException），不是用户源码错误。 */
+    static Module requireModule(Module module) {
+        if (module == null) {
+            throw new IllegalStateException("无法构建 AST 模块");
+        }
+        return module;
+    }
+
+    /** 非用户源码错误的内部异常：保留 ERROR 与完整堆栈，再包装成 CnlParseException 交给调用方。 */
+    static CnlParseException internalFailure(Exception e) {
+        LOG.errorf(e, "CNL 解析失败: %s", e.getMessage());
+        return new CnlParseException("CNL 解析失败: " + e.getMessage(), e);
     }
 
     /** R1 → lower → R2。导入模块的声明只能经别名限定访问（MODULE 段不解析），故无需导入声明表。 */

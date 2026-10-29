@@ -539,11 +539,11 @@ public class PolicyVersionService {
         String createdBy,
         String notes
     ) {
-        // 停用旧的活跃版本
+        // 先取链锁，与主路径同序：停用旧版本与追加新版本都在锁内，prevHash 与存量重编译的后继改写串行
+        lockPolicyChain(policyId);
         PolicyVersion.deactivateAllVersions(policyId);
 
-        // 创建新版本（先锁链，prevHash 与存量重编译的后继改写串行）
-        lockPolicyChain(policyId);
+        // 创建新版本
         PolicyVersion newVersion = new PolicyVersion(
             policyId,
             moduleName,
