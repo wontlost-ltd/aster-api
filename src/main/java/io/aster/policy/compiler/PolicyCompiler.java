@@ -108,6 +108,16 @@ public class PolicyCompiler {
     public CompilationResult compile(String sourceCnl, String locale, String aliasSetJson,
                                      aster.core.identifier.VocabularyScopes scopes,
                                      boolean allowStructural) {
+        return compileSource(sourceCnl, locale, aliasSetJson, scopes, allowStructural, null);
+    }
+
+    /**
+     * 编译实现。{@code versionId} 非空表示按已存版本的执行路径编译：用户源码的语法/名称解析错误
+     * 属客户端错误，按版本 id 去重后只以 INFO 记一次（不带堆栈）；编辑器等无版本路径只留 DEBUG。
+     */
+    private CompilationResult compileSource(String sourceCnl, String locale, String aliasSetJson,
+                                            aster.core.identifier.VocabularyScopes scopes,
+                                            boolean allowStructural, Long versionId) {
         // 类型检查对所有编译路径一视同仁（编辑器/保存门、运行时求值、Cedar 导出、审批视图）：
         // 上线前清库重建，没有需要宽容的历史版本；aster.compile.typecheck=warn 只是紧急降级口。
         boolean warnOnly = "warn".equalsIgnoreCase(typecheckMode);
@@ -185,13 +195,13 @@ public class PolicyCompiler {
         } catch (InProcessCnlParser.NameResolutionFailure e) {
             // 名称解析错误与类型错误同形：带码、严重级与起止位置，阻断编译
             List<Diagnostic> errors = e.resolutionDiagnostics();
-            LOG.debugf("CNL 名称解析失败: %s", e.getMessage());
+            logUserSourceError(versionId, e);
             return CompilationResult.failure(
                 errors.stream().map(PolicyCompiler::typecheckError).toList(),
                 errors.stream().map(d -> mapTypecheckDiagnostic(d, false)).toList());
         } catch (InProcessCnlParser.CnlParseException e) {
             String message = "CNL 解析失败: " + e.getMessage();
-            LOG.warn(message);
+            logUserSourceError(versionId, e);
             // 透传结构化诊断（含 1-based 行列），供编译端点精确标错。
             List<CompilationResult.Diagnostic> diags = e.getDiagnostics().stream()
                 .map(d -> CompilationResult.Diagnostic.error(d.line(), d.column(), d.message()))
@@ -318,7 +328,27 @@ public class PolicyCompiler {
         }
         LOG.infof("动态编译 CNL 源代码: versionId=%d, locale=%s, hasAliases=%b",
             policyVersionId, version.locale, version.aliasSet != null);
-        return compile(version.content, version.locale, version.aliasSet);
+        return compileSource(version.content, version.locale, version.aliasSet, null, false, policyVersionId);
+    }
+
+    /** 已记录过源码错误的版本 id 上限，超出后淘汰最旧项。失败结果虽按版本缓存，但缓存淘汰或进程重启后会重新编译，故仍需去重。 */
+    private static final int LOGGED_SOURCE_ERROR_CAPACITY = 4096;
+
+    private final java.util.Set<Long> loggedSourceErrorVersions = java.util.Collections.newSetFromMap(
+        java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<Long, Boolean>() {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<Long, Boolean> eldest) {
+                return size() > LOGGED_SOURCE_ERROR_CAPACITY;
+            }
+        }));
+
+    /** 用户源码错误：按版本执行路径每个版本只记一次 INFO（无堆栈），其余路径仅 DEBUG。 */
+    private void logUserSourceError(Long versionId, InProcessCnlParser.CnlParseException e) {
+        if (versionId != null && loggedSourceErrorVersions.add(versionId)) {
+            LOG.infof("策略版本源码编译未通过: versionId=%d, %s", versionId, e.getMessage());
+        } else {
+            LOG.debugf("CNL 编译未通过: %s", e.getMessage());
+        }
     }
 
     /**

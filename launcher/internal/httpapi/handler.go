@@ -81,6 +81,10 @@ func (h *LaunchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// (3) 编排（Unit 2/3.1）。系统性失败（ErrUnavailable/任意 err）→ 503；env 正常 → 按 outcome 映射。
 	env, runErr := h.Orch.Run(r.Context(), req)
 	if runErr != nil {
+		if errors.Is(runErr, orchestrator.ErrRequestTooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorBody{Error: "runner request too large for configmap (limit 1MiB), reduce vocabulary or source"})
+			return
+		}
 		// 任意编排错（含 ErrUnavailable）→ 503（client 归 unavailable）。诊断放 body，不吐 stacktrace。
 		reason := "runner unavailable"
 		if errors.Is(runErr, orchestrator.ErrUnavailable) {

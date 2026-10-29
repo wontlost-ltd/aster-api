@@ -197,7 +197,7 @@ public class InProcessCnlParser {
             // 级联错误仅记日志供调试，避免把几十条内部消息糊到用户脸上。
             if (errorListener.hasErrors()) {
                 LOG.debugf("CNL 解析原始错误（全集）: %s", errorListener.getRawErrors());
-                LOG.warnf("CNL 语法错误: %s", errorListener.getErrors());
+                LOG.debugf("CNL 语法错误: %s", errorListener.getErrors());
                 throw new CnlParseException(
                     "CNL 语法错误 — " + errorListener.getErrors(),
                     errorListener.getDiagnostics());
@@ -205,11 +205,7 @@ public class InProcessCnlParser {
 
             // 5. 构建 AST
             AstBuilder builder = new AstBuilder();
-            Module module = builder.visitModule(moduleCtx);
-
-            if (module == null) {
-                throw new CnlParseException("无法构建 AST 模块");
-            }
+            Module module = requireModule(builder.visitModule(moduleCtx));
 
             // 6. 名称解析（R1 → lower → R2）：任一 E8xx 即失败，不产出 IR
             NameResolution.ResolvedCore resolved = resolveNames(module, scopes);
@@ -242,9 +238,22 @@ public class InProcessCnlParser {
         } catch (CnlParseException e) {
             throw e;
         } catch (Exception e) {
-            LOG.errorf(e, "CNL 解析失败: %s", e.getMessage());
-            throw new CnlParseException("CNL 解析失败: " + e.getMessage(), e);
+            throw internalFailure(e);
         }
+    }
+
+    /** 语法已通过却得不到 AST 属内部故障（IllegalStateException），不是用户源码错误。 */
+    static Module requireModule(Module module) {
+        if (module == null) {
+            throw new IllegalStateException("无法构建 AST 模块");
+        }
+        return module;
+    }
+
+    /** 非用户源码错误的内部异常：保留 ERROR 与完整堆栈，再包装成 CnlParseException 交给调用方。 */
+    static CnlParseException internalFailure(Exception e) {
+        LOG.errorf(e, "CNL 解析失败: %s", e.getMessage());
+        return new CnlParseException("CNL 解析失败: " + e.getMessage(), e);
     }
 
     /** R1 → lower → R2。导入模块的声明只能经别名限定访问（MODULE 段不解析），故无需导入声明表。 */
@@ -253,8 +262,8 @@ public class InProcessCnlParser {
             NameResolution.resolveAndLower(ast, new ResolutionContext(scopes, ImportedDeclarations.NONE));
         if (NameResolution.hasErrors(resolved.diagnostics())) {
             NameResolutionFailure failure = new NameResolutionFailure(resolved.diagnostics());
-            // 用户源码问题：WARN 一行，不打堆栈
-            LOG.warnf("CNL %s", failure.getMessage());
+            // 用户源码问题由调用边界按场景记录，解析器自身只留 DEBUG，避免同一错误重复多条
+            LOG.debugf("CNL %s", failure.getMessage());
             throw failure;
         }
         return resolved;

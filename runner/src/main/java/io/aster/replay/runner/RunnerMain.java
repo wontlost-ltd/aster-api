@@ -6,8 +6,8 @@ import io.aster.policy.api.model.DecisionTrace;
 import io.aster.policy.parser.DynamicCnlExecutor;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.policy.replay.ReplayMetadata;
-import io.aster.replay.core.ExecutionPhaseResult;
 import io.aster.policy.rest.model.VocabularyBounds;
+import io.aster.replay.core.ExecutionPhaseResult;
 import io.aster.replay.core.ReplayExecutionCore;
 import io.aster.replay.core.ReplayExecutionRequest;
 
@@ -67,7 +67,7 @@ public final class RunnerMain {
             // 与 API 各入口一致：先按上限校验词汇，再交给 core 建 scopes。
             String vocabularyError = VocabularyBounds.validate(req.vocabulary());
             if (vocabularyError != null) {
-                return RunnerEnvelope.error("VOCABULARY", vocabularyError, "parse");
+                return RunnerEnvelope.error("VOCABULARY", vocabularyError, "validate");
             }
             ReplayExecutionRequest coreReq = toCoreRequest(req);
             ExecutionPhaseResult phase = core.execute(coreReq, executor);

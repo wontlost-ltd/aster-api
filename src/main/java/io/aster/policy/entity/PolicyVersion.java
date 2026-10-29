@@ -400,7 +400,12 @@ public class PolicyVersion extends PanacheEntityBase {
 
         // 初始化安全字段
         this.sourceHash = computeSourceHash(content);
-        this.prevHash = findPreviousVersionHash(policyId);
+        PolicyVersion tail = findChainTail(policyId);
+        this.prevHash = tail != null ? tail.chainLink() : null;
+        // 版本号取毫秒时间戳；同毫秒内相继创建时顺延，满足 (policy_id, version) 唯一约束与链序
+        if (tail != null && tail.version != null && tail.version >= this.version) {
+            this.version = tail.version + 1;
+        }
         this.status = VersionStatus.DRAFT;
         this.isDefault = false;
     }
@@ -482,9 +487,8 @@ public class PolicyVersion extends PanacheEntityBase {
      * 同步改 source_envelope_sha256 链不变=篡改隐形）。旧版本无 envelope 时回落 sourceHash，
      * 向后兼容。
      */
-    private static String findPreviousVersionHash(String policyId) {
-        PolicyVersion prev = find("policyId = ?1 ORDER BY version DESC, id DESC", policyId).firstResult();
-        return prev != null ? prev.chainLink() : null;
+    private static PolicyVersion findChainTail(String policyId) {
+        return find("policyId = ?1 ORDER BY version DESC, id DESC", policyId).firstResult();
     }
 
     /**

@@ -15,8 +15,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  *   <li>{@code runtimeToolchainId}：本次 evaluate **实际执行**时的工具链（回放地基需要，
  *       ADR 0030：旧策略版本在新运行时执行时两者可能不同，正是要记录它的原因）。</li>
  * </ul>
- * 两者格式相同、语义不同，不要求总相等。抽成共享组件（原 PolicyVersionService private），
- * 供 evaluate 响应契约 + 版本创建统一口径（Codex 设计）。
+ * 两者格式相同、语义不同，不要求总相等。evaluate 响应契约与版本创建共用本组件取值，保证口径一致。
  */
 @ApplicationScoped
 public class ToolchainIdentityProvider {

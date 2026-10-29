@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -268,5 +269,23 @@ func TestLaunchHandler_SignedPrefixUnsignedTailRejected(t *testing.T) {
 	}
 	if orch.gotCalls != 0 {
 		t.Fatalf("超限 body 绝不该调 orchestrator，却调了 %d 次", orch.gotCalls)
+	}
+}
+
+// 编排层报 ErrRequestTooLarge → 413 + 明确信息（而非 503 runner orchestration unavailable）。
+func TestLaunchHandler_RequestTooLargeMapsTo413(t *testing.T) {
+	t.Setenv("ASTER_RUNNER_LAUNCHER_HMAC_KEY", testKey)
+	body := []byte(`{"tenantId":"t1","source":"Module M","input":{},"locale":"en-US","functionName":"f","aliasSet":null}`)
+	orch := &mockOrch{err: fmt.Errorf("%w: 1048600 bytes exceeds limit 1048576", orchestrator.ErrRequestTooLarge)}
+	h := &LaunchHandler{Orch: orch}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, signRequest(t, "t1", "user", body))
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("应 413，得 %d", rec.Code)
+	}
+	var eb errorBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &eb); err != nil || !strings.Contains(eb.Error, "too large") {
+		t.Fatalf("应有明确的体积错误信息，得 %s", rec.Body.String())
 	}
 }

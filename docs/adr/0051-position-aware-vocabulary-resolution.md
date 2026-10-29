@@ -103,7 +103,7 @@
 | `Name` 点分路径首段 | VALUE_REF 或 TYPE（`E.M` 形式时为 TYPE） | R1 | 首段先按 LOCAL/FUNC，失败再按 TYPE（枚举/数据名限定） |
 | `Name` 点分路径后续段（`x.f.g`） | FIELD_REF | R2 | 按前一段的类型 S 查 `fields[S]` |
 | `E.M`（首段为枚举类型） | MEMBER_REF | R1 | `enumMembers[E]` |
-| `Call` 目标（`f(…)`、`apply f to …`）、函数值引用 | FUNC_REF | R1 | 源码 FUNC_DECL → 词汇 functions → 内置/导入 |
+| `Call` 目标（`f(…)`、`apply f to …`）、函数值引用 | FUNC_REF | R1 | 源码 FUNC_DECL → 词汇 functions → 内置/导入；所有层均无候选时保持原写法、不报 E802（见 §15 R19） |
 | `Construct` 类型名 `X with …` | TYPE | R1 | 同 TYPE |
 | `ConstructField.name`（嵌套构造递归） | FIELD_REF | R1 | `fields[X]`（X 已在 R1 解析） |
 | `Set` 目标（`set x.f to …`） | FIELD_REF | R2 | 同点分路径 |
@@ -210,7 +210,7 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 ## 9. 不做向后兼容的落地步骤
 
 1. **工具链标识**：cloud `cloudToolchainId()` 与 Java `ToolchainIdentityProvider.currentToolchainId()` 同步改为 `abi=1.1;core=<engine>;validator=<v>;resolver=1;casefold=15.1;build=<b>`。`resolver` 随名称解析算法变更递增；`casefold` 为 §6.3 折叠表的 Unicode 版本，升级折叠数据必须同时改变它。envelope 已覆盖 `toolchainId`（第 4 段，已核对实现），加上 §7 新增的第 5 段，旧 envelope 全部失配。
-2. **缓存失效**：aster-api `DynamicCnlExecutor` / `PolicyCompiler` 编译缓存、cloud 类型提取 LRU 与 KV 元数据缓存的键均纳入 `toolchainId` 与 `scopesHash`；发布即全部失效。
+2. **缓存失效**：aster-api `DynamicCnlExecutor` / `PolicyCompiler` 编译缓存、cloud 类型提取 LRU 与 KV 元数据缓存的键均纳入 `toolchainId` 与 `scopesHash`；发布即全部失效（`PolicyCompiler` 的 versionId 缓存例外，见 §15 R35）。
 3. **存量数据（均为测试数据）重编译**——两库的版本是各自独立的产物（aster-api `policy_versions` 与 cloud `"PolicyVersion"` 不共享事务），因此按**每库独立、逐行幂等**执行：
    - 先 `pg_dump` 两库对应表（含 `UserVocabularySnapshot`）作为回滚点；
    - 两张表各加四列（迁移）：`resolverVersion`（默认 NULL，**仅成功时**写入 1）、`resolverMigrationError`（失败原因，成功时清空）、`archivedByResolverMigration`（布尔，默认 false：**仅本任务归档的行**为 true）、`statusBeforeArchive`（本任务归档前的状态）；
@@ -284,6 +284,7 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 - **R20**：点号尾段的“不透明”判定为白名单：dynamic/未类型化、TypeVar、内建标量、Map/Json/Any；别名、包装类型（Option/Maybe/List/TypeApp）与未声明类型名视为 UNKNOWN（走全局候选规则）。`Let y be x` 继承 x 的声明类型。**R30/R31**：无类型注解的函数参数与 lambda 参数视为 UNKNOWN（两引擎一致）。
 - **R21**：期望类型为枚举 E 时，跨层冲突集仅含 LOCAL、模块函数/类型、词汇函数/类型；其他枚举的成员不构成冲突。LOCAL 精确命中优先于成员折叠歧义。§14.1 的“枚举成员 vs 函数/类型”冲突仍为 **E804**（不因精确优先而豁免）。
 - **R49**：相等/不等比较中，若另一操作数为已知枚举，则本操作数以该枚举为期望类型（本地化裸成员可解析）；E802 对值操作数使用非 FUNC_REF 的角色标签；E802/E804 的 help 提示 `Stufe.Hoch` 写法；E804 候选去重。
+- **R53**（无大小写文字的类型名；实现见 aster-lang-core#222，该 PR 合并发版前本条尚未生效）：类型名位置（`Define` 形态的 Data/Enum 声明名、枚举值、类型引用、构造模式名；构造表达式的类型名本就接受任意 IDENT，不受本条约束）接受 TYPE_IDENT，以及首字符属无大小写文字的 IDENT。无大小写文字目前仅指天城文 U+0900–U+0963、U+0966–U+097F（不含 danda U+0964/U+0965，与词法器一致）；CJK 已按 TYPE_IDENT 词法化，不在此列。两引擎只在语法层放行，词法分类不变（天城文仍是 IDENT），表达式位置的天城文仍是名字引用。小写拉丁类型名不在本条范围：TS 接受、Java 拒绝的既有分歧保持不变，另行裁决。无括号的无大小写文字模式产出 PatternName，后随 `(` 时产出 PatternCtor。省略 `Define` 的数据声明（Java 独有写法）不在本条范围。
 
 ### 15.3 内建词汇与注册表
 - **R22/R26**：内建词汇的枚举值须带 parent；已在 aster-lang-locales 为 zh/en/de 的 finance-loan、insurance-auto 补全（CreditLevel、LoanType、QuoteStatus、RiskLevel）。TS/Java 注册表对无 parent 的 field/枚举值条目拒绝或跳过（显式注释与测试），作为守卫保留。
@@ -293,11 +294,11 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 - **R36**：`toolchainId` 的 core 分量在 Java 为核心引擎版本（如 `core=1.0.35`），cloud 为 `core=ts`（正文 §9.1 的 `core=<engine>` 据此理解）。
 - **R37**：无词汇或无条目时 `scopesJson` 为 `""`；仅有字面量的词汇仍取完整 `canonicalScopesJson()`（字面量会改变编译输入）。cloud 同。
 - **R40**：cloud 在封存时持久化 `sourceScopesJson`（`""` 表示无），重算信封与 `recordedCompileLocale` 一律使用该存值，不再由实时/快照词汇推导。**R49**：审批时若冻结快照推得的作用域与封存值不一致，则拒绝（本地化文案“词汇自保存后已变更”）。NULL 的存量行先尝试 4 段旧信封摘要。
-- **R35**（偏离 §9.2）：aster-api 的 `PolicyCompiler` versionId 缓存不含词汇作用域，因 api 侧存储的版本不携带词汇。
+- **R35**（偏离 §9 第 2 步）：aster-api 的 `PolicyCompiler` versionId 缓存不含词汇作用域，因 api 侧存储的版本不携带词汇。
 
 ### 15.5 迁移语义（实际实现）
 - 迁移前先做完整性校验（信封校验/`source_hash`）：不一致记为失败（“pre-migration integrity mismatch”），不重新封存；信封存在而 toolchain 为空亦视为不一致。
-- 在 `createVersion` 中对链尾版本加悲观写锁（api 与 cloud 均按 `(version, id)` 降序），迁移时重链（chain relink）；`core_json` 仅在原值非 NULL 时写入。
+- 在 `createVersion` 中先取按 policyId 的事务级 advisory 锁（策略尚无版本时链尾无行可锁；不锁 catalog 行，避免与激活的「版本行 → catalog」顺序成环，且链按 policyId 跨租户共享），再对链尾版本加悲观写锁（api 与 cloud 均按 `(version, id)` 降序），迁移时重链（chain relink）；`core_json` 仅在原值非 NULL 时写入。
 - 失败分类：仅**编译诊断**（含源码/别名输入错误的 400/422 且带诊断）才算解析器失败并归档；其余 4xx/5xx/传输/异常一律为**基础设施失败**（重抛、不归档、退出码非零）。迁移脚本在 `ASTER_POLICY_API_INTERNAL_URL`/签名密钥缺失时 fail closed。
 
 ### 15.6 发布与部署顺序

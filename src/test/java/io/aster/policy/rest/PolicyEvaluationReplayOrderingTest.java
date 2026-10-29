@@ -23,6 +23,7 @@ import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -305,6 +306,37 @@ class PolicyEvaluationReplayOrderingTest {
     // ---------------------------------------------------------------
     // 4. 畸形 CNL 源码 → 现状 HTTP 200（非 400）+ error 字符串；无 replayMetadata；trace 已 drain
     // ---------------------------------------------------------------
+
+    @Test
+    void malformedSource_logsSingleWarnWithoutStackTrace() {
+        // 用户源码语法错误是客户端错误：整条链路只在 REST 边界留一条 WARN，不带堆栈，更不得出现 ERROR。
+        java.util.List<java.util.logging.LogRecord> records =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        java.util.logging.Handler handler = new java.util.logging.Handler() {
+            @Override public void publish(java.util.logging.LogRecord r) { records.add(r); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        handler.setLevel(java.util.logging.Level.ALL);
+        java.util.logging.Logger logger = java.util.logging.Logger.getLogger("io.aster.policy");
+        logger.addHandler(handler);
+        try {
+            hmacVerifiedRequest(MALFORMED_BODY, "case4-log", false, true).then().statusCode(200);
+        } finally {
+            logger.removeHandler(handler);
+        }
+
+        java.util.List<java.util.logging.LogRecord> noisy;
+        synchronized (records) {
+            noisy = records.stream()
+                .filter(r -> r.getLevel().intValue() >= java.util.logging.Level.WARNING.intValue())
+                .toList();
+        }
+        assertEquals(1, noisy.size(), "语法错误只应留 1 条 >=WARN 日志，实际=" + noisy.stream()
+            .map(r -> r.getLevel() + ":" + r.getMessage()).toList());
+        assertEquals(java.util.logging.Level.WARNING, noisy.get(0).getLevel());
+        assertNull(noisy.get(0).getThrown(), "语法错误日志不得带堆栈");
+    }
 
     @Test
     void malformedSource_currentBehaviorIsHttp200WithErrorField_noReplayMetadata() {

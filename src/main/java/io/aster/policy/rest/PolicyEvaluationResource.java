@@ -810,11 +810,12 @@ public class PolicyEvaluationResource {
                 if (!effectiveSimulate) {
                     businessMetrics.endPolicyEvaluation(sample);
                 }
-                // 看门狗超时是预期内的策略问题：WARN 一行、不打堆栈；其余执行失败保留完整堆栈
+                // 看门狗超时与用户源码编译错误是预期内的请求问题：WARN 一行、不打堆栈；其余执行失败保留完整堆栈
+                boolean sourceError = e.getCause() instanceof InProcessCnlParser.CnlParseException;
                 boolean timedOut = e.kind() == DynamicCnlExecutor.DynamicExecutionException.Kind.TIMEOUT;
                 // 值边界形态违例（入参过深 / 成环 / 非字符串键等）同属预期内的请求问题，同样不打堆栈
                 boolean shapeViolation = e instanceof io.aster.policy.runtime.ValueShapeException;
-                if (timedOut || shapeViolation) {
+                if (timedOut || shapeViolation || sourceError) {
                     LOG.warnf("Dynamic CNL execution rejected: %s", e.getMessage());
                 } else {
                     LOG.errorf(e, "Dynamic CNL execution failed: %s", e.getMessage());
@@ -840,7 +841,7 @@ public class PolicyEvaluationResource {
                 if (!effectiveSimulate) {
                     businessMetrics.endPolicyEvaluation(sample);
                 }
-                LOG.errorf(e, "CNL parsing failed: %s", e.getMessage());
+                LOG.warnf("CNL parsing failed: %s", e.getMessage());
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
