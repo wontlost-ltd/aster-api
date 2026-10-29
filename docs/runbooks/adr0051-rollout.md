@@ -234,7 +234,7 @@ gh workflow run release-train.yml --repo aster-cloud/aster-lang-platform --ref m
 
 **aster-api 特性 PR 的门禁**：只在本次列车完成、各兄弟仓 `v1.0.36` tag 与 Maven 制品都已存在之后合并（第 1 节第 10 步）。列车 preflight 只要求 api main 的 pin 已是 1.0.36，这由第 7 步的 pin bump PR 满足，不需要特性代码先进 main。
 
-列车第 5 层的 aster-api:service 部署的是当时 api main 上的代码。按上表，那时 ADR PR 还没合并，部署的是旧代码配新 pin，这是无害的重复部署。第 10 步合并 ADR PR 后，会再走一次 deploy.yml → image-pin → ArgoCD。
+列车第 5 层的 aster-api:service 部署的是当时 api main 上的代码。按上表，那时 ADR PR 还没合并，main 上是旧代码配新 pin：旧代码（如 `InProcessCnlParser` 使用的 `IdentifierIndex`）不能对 core 1.0.36 编译，**这一步部署必然失败**，生产保持原镜像不变。这是预期结果，不影响列车其余层；不要重跑它。第 10 步合并 ADR PR 后，push 会再走一次 deploy.yml → image-pin → ArgoCD，以此为准。
 
 ## 3. cloud PR-B：依赖切回正式版本（裁决 R3）
 

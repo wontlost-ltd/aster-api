@@ -5,6 +5,7 @@ import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.repository.PolicySourceRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.runtime.StartupEvent;
+import io.smallrye.mutiny.TimeoutException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
@@ -82,7 +83,13 @@ public class CompiledPolicyWarmup {
                     LOG.warnf("编译缓存预热超时，已预热 %d/%d 个版本，其余留给首个请求", ok, candidates.size());
                     break;
                 }
-                ok += warmOne(version, remaining) ? 1 : 0;
+                try {
+                    ok += warmOne(version, remaining) ? 1 : 0;
+                } catch (TimeoutException e) {
+                    // 单个版本等满剩余时限即视为整体超时：await 按毫秒截断，可能早于 deadline 少许返回，不能再读时钟判断
+                    LOG.warnf("编译缓存预热超时，已预热 %d/%d 个版本，其余留给首个请求", ok, candidates.size());
+                    break;
+                }
             }
             warmed = ok;
             LOG.infof("编译缓存预热完成: %d/%d 个版本", ok, candidates.size());
@@ -122,6 +129,8 @@ public class CompiledPolicyWarmup {
         try {
             evaluationService.warmUpCompiled(version).await().atMost(remaining);
             return true;
+        } catch (TimeoutException e) {
+            throw e;
         } catch (Exception e) {
             LOG.debugf("预热跳过版本 %d（%s.%s）: %s", version.id, version.moduleName, version.functionName, e.getMessage());
             return false;
