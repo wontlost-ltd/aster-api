@@ -155,8 +155,8 @@
 
 - **规范化**：比较前对写法与词汇条目统一做 **NFC**。
 - **精确匹配**：NFC 后逐码点相等。
-- **折叠匹配**：`fold(s)` = 对 NFC 后的每个码点应用 **Unicode 简单大小写折叠（CaseFolding.txt 中状态 C + S 的映射，不含 F/T）**，Unicode 版本固定为 **15.1**。不使用宿主语言的 `toLowerCase()`（JS 与 Java 的特殊规则不一致，且依赖 locale）。
-- **实现**：折叠表由单一来源生成（`aster-lang-locales` 新增 `case-folding-15.1.json`，构建时分别生成 TS 与 Java 常量表），两引擎共享同一份数据。
+- **折叠匹配**：`fold(s)`（实现中的 foldKey 为 `NFC(逐码点 C+S 折叠(NFC(s)))`，见 §15 R8）= 对 NFC 后的每个码点应用 **Unicode 简单大小写折叠（CaseFolding.txt 中状态 C + S 的映射，不含 F/T）**，Unicode 版本固定为 **15.1**。不使用宿主语言的 `toLowerCase()`（JS 与 Java 的特殊规则不一致，且依赖 locale）。
+- **实现**：折叠表由单一来源生成（`aster-lang-locales` 新增 `casefold/casefold-15.1.json`（见 §15 R6），构建时分别生成 TS 与 Java 常量表），两引擎共享同一份数据。
 - **测试向量**（两引擎同一组，均标明期望；向量文件由 Unicode 15.1 官方 CaseFolding.txt 生成并校验）：
   | 输入对 | 折叠后相等？ | 说明 |
   |---|---|---|
@@ -242,7 +242,7 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 
 ## 12. 实施阶段
 
-1. aster-lang-locales：Unicode 15.1 简单折叠表 + 生成脚本。
+1. aster-lang-locales：Unicode 15.1 简单折叠表（`casefold/casefold-15.1.json`）+ 生成脚本。
 2. aster-lang-ts：R1 + R2 + 诊断 + `buildVocabularyScopes` / `resolvePolicyTypes`；删除文本替换。
 3. aster-lang-core：同构实现。
 4. aster-lang-test：语料自带词汇格式、runner 与门禁改造、新增语料。
@@ -265,3 +265,42 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 5. Unicode 折叠版本 → **以 `casefold=` 分量进入 `toolchainId`；升级即递增 `abi` 并全量重编译**。理由：升级可能改变哪些名字折叠为同一键，必须在每个 envelope 中显式可见，避免静默改变已存版本语义。
 
 注意：第 1 条是唯一会让“今天能编译的源码”在新规则下报错的决定；在不做向后兼容的前提下可接受，§9 迁移任务会在报告中列出受影响的测试策略。
+
+## 15. 实施修订（Implementation amendments）
+
+以下按实现过程中的裁决（R 编号）修订本 ADR；与正文冲突时以本节为准。状态仍为 ACCEPTED。
+
+### 15.1 折叠与序列化
+- **R6**：折叠表文件为 aster-lang-locales 的 `casefold/casefold-15.1.json`（原文 `case-folding-15.1.json` 作废）。
+- **R8**：`foldKey(s) = NFC(逐码点 C+S 折叠(NFC(s)))`，折叠键对 NFC 封闭（如 `Ϊ́ ≡ ΐ`），序列化器对键再做 NFC 为空操作；两引擎一致。
+- **R9**：canonical JSON 字节契约：字符串转义取 `JSON.stringify` 形式（`\"` `\\` `\b` `\f` `\n` `\r` `\t`，其余 < U+0020 为小写 `\u00xx`；U+007F/U+2028/U+2029 原样输出）；数组排序键依次为 `(canonical, written, kind, source, parent)`；`literals` 为 map 形状。`literal_conflict` 与 `member_parent_required` 作为有意新增的校验保留。
+- **R27**：内建类型集合不含 `Number`/`String`（Java 向 TS 对齐），含 `Decimal`、`DateTime`。推断返回类型占位符静默探测，命中即盖章规范名。
+- **R33**：normalizer 会剥离 type/ret/retType，故函数签名的 written/role 不参与 parity 比较（由引擎单测各自覆盖）。
+
+### 15.2 解析规则修订
+- **R16**：写法等于某既有候选的规范名（任意模块/导入枚举的成员、Data 字段、内建/stdlib 函数、已声明函数）时**静默接受**，不报 W801/E801/E802；W801 仅在 `written ≠ canonical` 且经唯一全局候选解析时出现。无期望类型的裸枚举成员：当 written 恰为唯一一个成员的规范名时接受；仅有本地化名则 E802。内建/stdlib 调用目标与 lambda 局部变量永不报 E802。
+- **R18**：解析**保持写法形状**：裸名→裸规范名（`Hoch`→`High`），限定→限定（`Stufe.Hoch`→`Level.High`）。类型检查器与运行时（TS、Java）均接受限定写法 `E.M`（E804/E806 的 help 指向该写法）。
+- **R19**（偏离正文）：FUNC_REF 调用目标在所有层均无候选时保持原写法，R2 **不**报 E802，由类型检查器的未定义函数诊断负责。
+- **R20**：点号尾段的“不透明”判定为白名单：dynamic/未类型化、TypeVar、内建标量、Map/Json/Any；别名、包装类型（Option/Maybe/List/TypeApp）与未声明类型名视为 UNKNOWN（走全局候选规则）。`Let y be x` 继承 x 的声明类型。**R30/R31**：无类型注解的函数参数与 lambda 参数视为 UNKNOWN（两引擎一致）。
+- **R21**：期望类型为枚举 E 时，跨层冲突集仅含 LOCAL、模块函数/类型、词汇函数/类型；其他枚举的成员不构成冲突。LOCAL 精确命中优先于成员折叠歧义。§14.1 的“枚举成员 vs 函数/类型”冲突仍为 **E804**（不因精确优先而豁免）。
+- **R49**：相等/不等比较中，若另一操作数为已知枚举，则本操作数以该枚举为期望类型（本地化裸成员可解析）；E802 对值操作数使用非 FUNC_REF 的角色标签；E802/E804 的 help 提示 `Stufe.Hoch` 写法；E804 候选去重。
+
+### 15.3 内建词汇与注册表
+- **R22/R26**：内建词汇的枚举值须带 parent；已在 aster-lang-locales 为 zh/en/de 的 finance-loan、insurance-auto 补全（CreditLevel、LoanType、QuoteStatus、RiskLevel）。TS/Java 注册表对无 parent 的 field/枚举值条目拒绝或跳过（显式注释与测试），作为守卫保留。
+- **R49**：Java `DomainVocabulary.validate` 与 TS 的按作用域规则对齐（parent 必填，角色+作用域冲突）。
+
+### 15.4 工具链与信封
+- **R36**：`toolchainId` 的 core 分量在 Java 为核心引擎版本（如 `core=1.0.35`），cloud 为 `core=ts`（正文 §9.1 的 `core=<engine>` 据此理解）。
+- **R37**：无词汇或无条目时 `scopesJson` 为 `""`；仅有字面量的词汇仍取完整 `canonicalScopesJson()`（字面量会改变编译输入）。cloud 同。
+- **R40**：cloud 在封存时持久化 `sourceScopesJson`（`""` 表示无），重算信封与 `recordedCompileLocale` 一律使用该存值，不再由实时/快照词汇推导。**R49**：审批时若冻结快照推得的作用域与封存值不一致，则拒绝（本地化文案“词汇自保存后已变更”）。NULL 的存量行先尝试 4 段旧信封摘要。
+- **R35**（偏离 §9.2）：aster-api 的 `PolicyCompiler` versionId 缓存不含词汇作用域，因 api 侧存储的版本不携带词汇。
+
+### 15.5 迁移语义（实际实现）
+- 迁移前先做完整性校验（信封校验/`source_hash`）：不一致记为失败（“pre-migration integrity mismatch”），不重新封存；信封存在而 toolchain 为空亦视为不一致。
+- 在 `createVersion` 中对链尾版本加悲观写锁（api 与 cloud 均按 `(version, id)` 降序），迁移时重链（chain relink）；`core_json` 仅在原值非 NULL 时写入。
+- 失败分类：仅**编译诊断**（含源码/别名输入错误的 400/422 且带诊断）才算解析器失败并归档；其余 4xx/5xx/传输/异常一律为**基础设施失败**（重抛、不归档、退出码非零）。迁移脚本在 `ASTER_POLICY_API_INTERNAL_URL`/签名密钥缺失时 fail closed。
+
+### 15.6 发布与部署顺序
+- **R41/R46**：cloud 拆为两个 PR：PR-A 含 drizzle 迁移（0060/0061）与 schema，PR-B 为其余改动；漂移检查要求 schema 进入 PR-A，零停机做法是用户在合并 PR-A **之前**于生产执行 cloud 的加法 DDL（`IF NOT EXISTS`）；备选为接受短窗口并依赖 db-bootstrap 冷启动的 `ALTER … ADD COLUMN IF NOT EXISTS "sourceScopesJson"` 兜底。core 的前置 PR 须先于 1.0.36 列车合并；api PR 在列车打 tag 之后合并；KV 缓存陈旧窗口 ≤ 1h（文档化）。
+- **R46/R47**：迁移使用**专用镜像** `Dockerfile.resolver-migration`（窄路径过滤、由 image-lock 固定，不属于 PostSync/migrate 门禁）；Job 资源 requests ≤ 25m CPU/128Mi 并设 limits；api 备份用具备序列读权限的凭据。
+- **R48**：迁移 Job 目录置于任何 ApplicationSet glob 之外（`apps/aster-lang-ops/resolver-migration/`），以逐个 generator 的 `git ls-files` 仿真验证；镜像构建作业独立成 workflow，不阻塞 Worker 部署。
