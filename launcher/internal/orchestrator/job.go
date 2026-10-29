@@ -20,8 +20,8 @@ const runnerNamespace = "aster-runner"
 // requestConfigKey 是 ConfigMap 中承载 RunnerRequest JSON 的键。
 const requestConfigKey = "request.json"
 
-// configMapMaxBytes 是 k8s 对单个 ConfigMap 的 Data+BinaryData 总字节上限（键名与值长度之和，
-// 见 apimachinery 校验 MaxSecretSize = 1<<20）。超限时 API server 返回 422 Invalid，无法与集群故障区分，
+// configMapMaxBytes 是 k8s 对单个 ConfigMap 的 Data+BinaryData 总字节上限（MaxSecretSize = 1<<20）。
+// 预检按键名加值长度保守计算，对请求只会略早拒绝。超限时 API server 返回 422 Invalid，无法与集群故障区分，
 // 故在建 Job 之前自行预检。
 const configMapMaxBytes = 1 << 20
 

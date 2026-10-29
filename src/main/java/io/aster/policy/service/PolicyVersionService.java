@@ -10,7 +10,6 @@ import io.aster.policy.telemetry.NsmTelemetry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.LockModeType;
 import jakarta.transaction.Transactional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -126,6 +125,24 @@ public class PolicyVersionService {
     }
 
     /**
+     * 串行化同一 policyId 的版本链追加。
+     *
+     * <p>链与 {@code (policy_id, version)} 唯一约束按 policyId 跨租户共享，而策略目录按租户分行，
+     * 所以不能锁 catalog 行；且激活/回滚的加锁顺序是「版本行 → catalog 行」，先锁 catalog 会与之成环。
+     * 事务级 advisory 锁只有本方法持有，不参与任何行锁顺序：先取 advisory 锁（解决策略尚无版本时
+     * 链尾无行可锁的首版并发），再锁链尾行（与存量重编译的后继改写串行）。
+     * 键为 {@code hashtextextended('policy_versions:' || policyId, 0)} 的 64 位值，带固定前缀，
+     * 与 AuditChainAppender、PostgresEventStore 的 advisory 锁键空间不会有意重叠。
+     */
+    private void lockPolicyChain(String policyId) {
+        entityManager.createNativeQuery(
+                "SELECT pg_advisory_xact_lock(hashtextextended('policy_versions:' || :policyId, 0))")
+            .setParameter("policyId", policyId)
+            .getSingleResult();
+        PolicyVersion.lockChainTail(policyId);
+    }
+
+    /**
      * 创建版本并冻结用户自定义别名集（ADR 0022 方案 D）——String 入口。
      *
      * <p>aliasSetJson 必须**已是规范形**（{@code canonicalJson} 输出）。本方法对其做规范性
@@ -138,8 +155,7 @@ public class PolicyVersionService {
     @Transactional
     public PolicyVersion createVersion(UUID catalogId, String sourceCnl, String locale,
                                        String sourceKind, String authorRole, String aliasSetJson) {
-        // 先锁策略目录行：策略尚无版本时链尾无行可锁，并发首版会各自读到空链而 prevHash 均为 null
-        PolicyCatalog catalog = PolicyCatalog.findById(catalogId, LockModeType.PESSIMISTIC_WRITE);
+        PolicyCatalog catalog = PolicyCatalog.findById(catalogId);
         if (catalog == null) {
             throw new IllegalArgumentException("策略目录不存在: catalogId=" + catalogId);
         }
@@ -148,7 +164,7 @@ public class PolicyVersionService {
         String normalizedAliasJson = canonicalizeAliasJson(aliasSetJson, locale);
 
         String policyId = catalog.moduleName + "." + catalog.functionName;
-        PolicyVersion.lockChainTail(policyId);
+        lockPolicyChain(policyId);
         PolicyVersion version = new PolicyVersion(
             policyId,
             catalog.moduleName,
@@ -526,8 +542,8 @@ public class PolicyVersionService {
         // 停用旧的活跃版本
         PolicyVersion.deactivateAllVersions(policyId);
 
-        // 创建新版本（先锁链尾，prevHash 与存量重编译的后继改写串行）
-        PolicyVersion.lockChainTail(policyId);
+        // 创建新版本（先锁链，prevHash 与存量重编译的后继改写串行）
+        lockPolicyChain(policyId);
         PolicyVersion newVersion = new PolicyVersion(
             policyId,
             moduleName,

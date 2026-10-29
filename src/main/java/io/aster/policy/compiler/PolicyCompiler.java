@@ -331,7 +331,7 @@ public class PolicyCompiler {
         return compileSource(version.content, version.locale, version.aliasSet, null, false, policyVersionId);
     }
 
-    /** 已记录过源码错误的版本 id 上限，超出后淘汰最旧项（失败结果本身另有按版本缓存）。 */
+    /** 已记录过源码错误的版本 id 上限，超出后淘汰最旧项。失败结果虽按版本缓存，但缓存淘汰或进程重启后会重新编译，故仍需去重。 */
     private static final int LOGGED_SOURCE_ERROR_CAPACITY = 4096;
 
     private final java.util.Set<Long> loggedSourceErrorVersions = java.util.Collections.newSetFromMap(

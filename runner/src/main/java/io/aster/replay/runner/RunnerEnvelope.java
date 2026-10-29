@@ -12,7 +12,7 @@ import io.aster.policy.replay.ReplayMetadata;
 public record RunnerEnvelope(
         String outcome,           // "SUCCESS" | "ERROR"
         ReplayMetadata replayMetadata,   // 仅成功
-        String errorCode,         // 仅错误：PARSE/EXECUTION/MODULE/INTERNAL
+        String errorCode,         // 仅错误：PARSE/EXECUTION/MODULE/VOCABULARY/INTERNAL
         String message,           // 仅错误
         String phase              // 仅错误：validate|parse|execute|trace|metadata
 ) {

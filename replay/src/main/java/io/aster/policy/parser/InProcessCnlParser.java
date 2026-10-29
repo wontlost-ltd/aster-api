@@ -208,7 +208,8 @@ public class InProcessCnlParser {
             Module module = builder.visitModule(moduleCtx);
 
             if (module == null) {
-                throw new CnlParseException("无法构建 AST 模块");
+                // 语法已通过却得不到 AST 属内部故障：走下方 catch 记 ERROR 与堆栈，不当作用户源码错误
+                throw new IllegalStateException("无法构建 AST 模块");
             }
 
             // 6. 名称解析（R1 → lower → R2）：任一 E8xx 即失败，不产出 IR
