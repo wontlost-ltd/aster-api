@@ -74,8 +74,8 @@ class NaturalLanguageParserTest {
                 Return Quote with approved set to false, premium set to 0, deductible set to 0, reason set to "Driver under 18".
               If driver.accidents greater than 3
                 Return Quote with approved set to false, premium set to 0, deductible set to 0, reason set to "Too many accidents".
-              Let basePremium be calculateBase with driver, vehicle.
-              Let riskFactor be calculateRisk with driver.
+              Let basePremium be calculateBase(driver, vehicle).
+              Let riskFactor be calculateRisk(driver).
               Let finalPremium be basePremium times riskFactor divided by 100.
               Return Quote with approved set to true, premium set to finalPremium, deductible set to 500, reason set to "Approved".
 
@@ -178,7 +178,7 @@ class NaturalLanguageParserTest {
     }
 
     @Test
-    void testWithCallSyntax() {
+    void testParenthesizedCallSyntax() {
         String source = """
             Module test.
 
@@ -186,7 +186,7 @@ class NaturalLanguageParserTest {
               Return x times 2.
 
             Rule main:
-              Let result be helper with 10.
+              Let result be helper(10).
               Return result.
             """;
 
