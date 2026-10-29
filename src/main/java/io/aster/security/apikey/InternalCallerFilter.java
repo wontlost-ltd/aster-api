@@ -342,15 +342,6 @@ public class InternalCallerFilter {
                     throw forbidden("invalid_signature", p);
                 }
 
-                // 审计 #98（Medium 1）：签名<b>真正</b>通过后才盖可信凭证章。下游只认这个
-                // 属性来决定 aliasesTrusted，绝不看 X-Internal-Caller 头的存在与否。public /
-                // trial 旁路路径在此之前就 return 了，天然不会设置它 → 逃生舱下带垃圾签名的
-                // 调用方拿不到结构词别名信任。
-                ctx.setProperty(HMAC_VERIFIED_PROP, Boolean.TRUE);
-                // Phase 2 BYOK：把已验签 body 字节挂到请求属性，供 resource 从可信 body 解析
-                // _byok envelope（只有走到这里=签名已过的请求才有；旁路路径拿不到）。
-                ctx.setProperty(VERIFIED_BODY_PROP, body);
-
                 // 签名通过后再消费 nonce（防重放）。requestHash 绑定 method/path/query/body，
                 // tenant 维度键（内部调用无浏览器 tenant 时用 "cloud-bff" 占位，跨 pod 唯一）。
                 String query = ctx.getUriInfo().getRequestUri().getQuery();
@@ -359,8 +350,16 @@ public class InternalCallerFilter {
                 String nonceTenant = tenant.isEmpty() ? "cloud-bff" : tenant;
                 nonceService.ensureFresh(nonceTenant, nonce, requestHash);
 
+                // 审计 #98（Medium 1）：签名<b>真正</b>通过后才盖可信凭证章。下游只认这个
+                // 属性来决定 aliasesTrusted 与「内部会话调用不计 API 配额」，绝不看 X-Internal-Caller
+                // 头的存在与否。public / trial 旁路路径在此之前就 return 了，天然不会设置它 → 逃生舱下
+                // 带垃圾签名的调用方拿不到结构词别名信任。
+                // 以下属性都放在 nonce 校验之后，使「属性存在 ⇔ 验签与防重放都已通过」：重放请求拿不到它们。
+                ctx.setProperty(HMAC_VERIFIED_PROP, Boolean.TRUE);
+                // Phase 2 BYOK：把已验签 body 字节挂到请求属性，供 resource 从可信 body 解析
+                // _byok envelope（只有走到这里=签名已过的请求才有；旁路路径拿不到）。
+                ctx.setProperty(VERIFIED_BODY_PROP, body);
                 // 身份只取签过的值（ADR 0042 §4.1）：HMAC 调用者的用户与业务角色不再从未签头回退。
-                // 放在 nonce 校验之后，使「身份属性存在 ⇔ 验签与防重放都已通过」：重放请求拿不到它们。
                 ctx.setProperty(RequestIdentityResolver.PROP_IDENTITY_USER_ID, userId);
                 ctx.setProperty(RequestIdentityResolver.PROP_BUSINESS_ROLES, roles);
                 return null;

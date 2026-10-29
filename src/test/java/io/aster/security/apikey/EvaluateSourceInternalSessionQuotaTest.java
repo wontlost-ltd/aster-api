@@ -108,4 +108,37 @@ class EvaluateSourceInternalSessionQuotaTest {
         assertThat(r.jsonPath().getString("error")).isEqualTo("api_access_denied");
         verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), any(), anyLong());
     }
+
+    @Test
+    void 重放请求不获得配额豁免() throws Exception {
+        String json = body();
+        Map<String, String> h = signed(json);
+        Response first = given().contentType(ContentType.JSON).headers(h).body(json).post(EVALUATE_SOURCE);
+        assertThat(first.statusCode()).as(first.asString()).isEqualTo(200);
+
+        Response replay = given().contentType(ContentType.JSON).headers(h).body(json).post(EVALUATE_SOURCE);
+
+        assertThat(replay.statusCode()).as(replay.asString()).isEqualTo(409);
+        verify(apiQuotaGuard, never()).check(anyString(), anyString());
+        verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), any(), anyLong());
+    }
+
+    @Test
+    void 过期时间戳的签名请求不获得配额豁免() throws Exception {
+        String json = body();
+        long stale = System.currentTimeMillis() / 1000 - 600;
+        String nonce = "stale-" + System.nanoTime();
+        Map<String, String> h = new HashMap<>(signed(json));
+        h.put("X-Aster-Timestamp", Long.toString(stale));
+        h.put("X-Aster-Nonce", nonce);
+        h.put("X-Internal-Signature", InternalCallerSigning.hmac(CompileStructuralAliasHmacTest.HMAC_KEY,
+            InternalCallerSigning.canonical("POST", EVALUATE_SOURCE, "", stale, nonce, json,
+                TENANT, "member", USER, List.of())));
+
+        Response r = given().contentType(ContentType.JSON).headers(h).body(json).post(EVALUATE_SOURCE);
+
+        assertThat(r.statusCode()).as(r.asString()).isEqualTo(403);
+        assertThat(r.jsonPath().getString("reason")).isEqualTo("stale_timestamp");
+        verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), any(), anyLong());
+    }
 }

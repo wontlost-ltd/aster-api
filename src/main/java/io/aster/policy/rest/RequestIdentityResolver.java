@@ -176,13 +176,17 @@ public class RequestIdentityResolver {
     /**
      * 是否为 cloud 代登录会话发起的内部调用：HMAC 已验签（{@code InternalCallerFilter} 盖章）且没有已验证的 API key。
      *
-     * <p>这类调用不是「API 调用」：Free 计划「不含 Policy Execution API」的月度门禁与 API 调用计量都只针对
-     * API key 调用；界面执行的用量（Free 每月 1000 次执行）由 cloud 按 UsageRecord(type=execution) 计并在
-     * 调用前拦截，cloud 的 REST API（Bearer key 打 cloud）同样在 cloud 侧校验 apiAccess 与 API 调用配额后才经
-     * HMAC 转发到这里。
+     * <p>这类调用不按「API 调用」处理：Free 计划「不含 Policy Execution API」的月度门禁与 API 调用计量
+     * 都只针对 API key 调用，本服务对内部会话调用<b>不做任何套餐或用量限制</b>。
      *
-     * <p>判定只认验签章，不看 {@code X-Internal-Caller} 等头是否存在：未签名或签名不对的请求拿不到章，
-     * 仍按 API 调用走配额门禁。
+     * <p><b>豁免的前提（契约）</b>：每一个经 plan-gate HMAC 调用本服务执行类端点（如 {@code /evaluate-source}）
+     * 的 cloud 路由，都必须在 cloud 侧自行做套餐与用量限制——界面执行、secure-execute、会话 evaluate-source
+     * 按执行用量（UsageRecord type=execution，Free 每月 1000 次）拦截并计数，cloud REST API（Bearer key 打
+     * cloud）校验 apiAccess 并按 owner 池（apiCallRecords）计 API 调用。cloud 新增 HMAC 调用方时必须同时补上
+     * cloud 侧配额，否则它在这里不受任何计量。
+     *
+     * <p>判定只认验签章（验签与 nonce 防重放都通过后才盖），不看 {@code X-Internal-Caller} 等头是否存在：
+     * 未签名、签名不对或重放的请求拿不到章，仍按 API 调用走配额门禁。
      */
     public boolean internalSessionCall() {
         return InternalCallerFilter.isHmacVerified(jaxrsCtx) && apiKeyId() == null;
