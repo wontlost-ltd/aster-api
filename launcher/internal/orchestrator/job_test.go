@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -159,5 +160,65 @@ func TestRunnerRequest_VocabularyRoundTrip(t *testing.T) {
 	noVocab, _ := json.Marshal(testReq())
 	if strings.Contains(string(noVocab), "vocabulary") {
 		t.Fatalf("无词汇请求不应出现 vocabulary 键: %s", noVocab)
+	}
+}
+
+// 构造序列化后恰好 target 字节的请求（source 填充 'a'，不含需转义字符）。
+func reqSerializedTo(t *testing.T, target int) RunnerRequest {
+	t.Helper()
+	req := testReq()
+	req.Source = ""
+	base, err := marshalRunnerRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Source = strings.Repeat("a", target-len(base))
+	got, _ := marshalRunnerRequest(req)
+	if len(got) != target {
+		t.Fatalf("构造体积失败: got=%d want=%d", len(got), target)
+	}
+	return req
+}
+
+// 键名也计入 ConfigMap 容量：键+值恰好等于上限放行，多 1 字节即拒绝。
+func TestBuildRunnerJob_ConfigMapSizeBoundary(t *testing.T) {
+	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	limit := configMapMaxBytes - len(requestConfigKey)
+
+	if _, cm, err := buildRunnerJob(reqSerializedTo(t, limit), digest); err != nil {
+		t.Fatalf("恰好等于上限应放行: %v", err)
+	} else if len(cm.Data[requestConfigKey])+len(requestConfigKey) != configMapMaxBytes {
+		t.Fatalf("ConfigMap 体积与预期不符")
+	}
+
+	job, cm, err := buildRunnerJob(reqSerializedTo(t, limit+1), digest)
+	if !errors.Is(err, ErrRequestTooLarge) {
+		t.Fatalf("超限 1 字节应返回 ErrRequestTooLarge，得 %v", err)
+	}
+	if errors.Is(err, ErrUnavailable) {
+		t.Fatal("超限不得被归为 ErrUnavailable")
+	}
+	if job != nil || cm != nil {
+		t.Fatal("超限时不应产出 Job/ConfigMap")
+	}
+}
+
+// 关闭 HTML 转义后 < > & 保持 1 字节，且 JSON 语义不变。
+func TestMarshalRunnerRequest_NoHTMLEscape(t *testing.T) {
+	req := testReq()
+	req.Source = "if a < b && b > c"
+	b, err := marshalRunnerRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `\u00`) {
+		t.Fatalf("不应出现 HTML 转义: %s", b)
+	}
+	if strings.HasSuffix(string(b), "\n") {
+		t.Fatal("不应带 Encoder 追加的换行")
+	}
+	var back RunnerRequest
+	if err := json.Unmarshal(b, &back); err != nil || back.Source != req.Source {
+		t.Fatalf("往返不一致: %v %q", err, back.Source)
 	}
 }

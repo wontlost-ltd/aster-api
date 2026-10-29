@@ -30,6 +30,9 @@ var ErrUnavailable = errors.New("runner job unavailable")
 func runJob(ctx context.Context, clientset kubernetes.Interface, req RunnerRequest, digest string) (env RunnerEnvelope, retErr error) {
 	job, cm, err := buildRunnerJob(req, digest)
 	if err != nil {
+		if errors.Is(err, ErrRequestTooLarge) {
+			return RunnerEnvelope{}, err // 请求问题而非集群故障，原样上抛供 handler 回 413
+		}
 		return RunnerEnvelope{}, fmt.Errorf("%w: build job: %v", ErrUnavailable, err)
 	}
 

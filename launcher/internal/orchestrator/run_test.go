@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,5 +180,22 @@ func TestReconcileExitAndOutcome(t *testing.T) {
 		if tc.wantErr && err != nil && !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("exit=%d outcome=%q 错误应 wrap ErrUnavailable，得 %v", tc.exit, tc.outcome, err)
 		}
+	}
+}
+
+// 超限请求在建 Job 之前被拒：返回 ErrRequestTooLarge（非 ErrUnavailable），集群里不留 Job。
+func TestRunJob_RequestTooLargeRejectedBeforeCreate(t *testing.T) {
+	const digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	cs := fake.NewSimpleClientset()
+	req := testReq()
+	req.Source = strings.Repeat("a", configMapMaxBytes)
+
+	_, err := runJob(context.Background(), cs, req, digest)
+	if !errors.Is(err, ErrRequestTooLarge) || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("期望 ErrRequestTooLarge 且非 ErrUnavailable，得 %v", err)
+	}
+	jobs, _ := cs.BatchV1().Jobs(runnerNamespace).List(context.Background(), metav1.ListOptions{})
+	if len(jobs.Items) != 0 {
+		t.Fatalf("超限不应创建 Job，得 %d 个", len(jobs.Items))
 	}
 }

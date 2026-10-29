@@ -1,7 +1,9 @@
 package orchestrator
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -14,6 +16,30 @@ const runnerImageRepo = "docker.io/wontlost/aster-replay-runner"
 
 // runnerNamespace 是 launcher 建 Job 的目标 ns（与 launcher 同 ns，2b-seed 已建）。
 const runnerNamespace = "aster-runner"
+
+// requestConfigKey 是 ConfigMap 中承载 RunnerRequest JSON 的键。
+const requestConfigKey = "request.json"
+
+// configMapMaxBytes 是 k8s 对单个 ConfigMap 的 Data+BinaryData 总字节上限（键名与值长度之和，
+// 见 apimachinery 校验 MaxSecretSize = 1<<20）。超限时 API server 返回 422 Invalid，无法与集群故障区分，
+// 故在建 Job 之前自行预检。
+const configMapMaxBytes = 1 << 20
+
+// ErrRequestTooLarge 表示 RunnerRequest 序列化后超过 ConfigMap 容量；是调用方可修正的请求问题
+// （缩减源码/词汇），不属于编排层不可用，handler 映射为 413。
+var ErrRequestTooLarge = errors.New("runner request too large for configmap")
+
+// marshalRunnerRequest 序列化 RunnerRequest。关闭 HTML 转义：默认的 `<`、`>`、`&` 会膨胀成 6 字节
+// 的 \uXXXX 转义，白白占用 ConfigMap 容量；JSON 语义不变，runner 侧解析结果一致。
+func marshalRunnerRequest(req RunnerRequest) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(req); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
 
 // buildRunnerJob 造一个 digest-pinned runner Job + per-invocation ConfigMap。
 // ★Fork C：ConfigMap 持 request.json → initContainer copy 到 emptyDir /work → 主容器
@@ -30,9 +56,12 @@ func buildRunnerJob(req RunnerRequest, digest string) (*batchv1.Job, *corev1.Con
 	jobName := newJobName()
 
 	// request.json：runner 逐字读 stdin 的 RunnerRequest JSON（aliasSet 显式 null 对齐 Java）。
-	reqJSON, err := json.Marshal(req)
+	reqJSON, err := marshalRunnerRequest(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal runner request: %w", err)
+	}
+	if size := len(requestConfigKey) + len(reqJSON); size > configMapMaxBytes {
+		return nil, nil, fmt.Errorf("%w: %d bytes exceeds limit %d", ErrRequestTooLarge, size, configMapMaxBytes)
 	}
 
 	falsePtr := boolPtr(false)
@@ -46,7 +75,7 @@ func buildRunnerJob(req RunnerRequest, digest string) (*batchv1.Job, *corev1.Con
 			Name:      jobName, // 与 Job 同名，便于关联
 			Namespace: runnerNamespace,
 		},
-		Data: map[string]string{"request.json": string(reqJSON)},
+		Data: map[string]string{requestConfigKey: string(reqJSON)},
 	}
 
 	job := &batchv1.Job{
