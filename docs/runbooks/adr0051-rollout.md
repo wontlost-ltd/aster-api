@@ -62,7 +62,7 @@
 | 9 | **发布列车**（见第 2 节） | 派发前确认 core main 已含 #215（`git log origin/main --oneline \| grep 244`）；preflight 全部通过；所有 tag 与制品都可见 |
 | 10 | **aster-api ADR 0051 PR** | **硬门禁：只在列车完成、各兄弟仓 `v1.0.36` tag 与 Maven 制品都已存在之后合并**：api CI 按 `sibling-ref` 检出兄弟仓 tag，tag 存在前 CI 无法变绿。合并后 push 会触发 deploy.yml，经 image-pin 和 ArgoCD 部署；新 pod 启动时由 Flyway 执行 V6.34.0 |
 | 11 | **aster-cloud PR-B**（其余全部代码，含独立的 resolver 迁移镜像，见第 3 节） | ts 1.0.38 已在 npm 上可见；CI 绿；lsp 镜像的 image-pin 已合并；Worker 已部署；resolver 迁移镜像已构建，k3s lane 已按第 3 节接入 |
-| 12 | **触发迁移 Job**（第 4 节），然后执行 `rollout restart` | api pod 已是新镜像；Worker 是 PR-B；k3s `apps/aster-lang/cloud/resolver-migration` 的 digest 来自含 PR-B 代码的构建 |
+| 12 | **触发迁移 Job**（第 4 节），然后执行 `rollout restart` | api pod 已是新镜像；Worker 是 PR-B；k3s `apps/aster-lang-ops/resolver-migration` 的 digest 来自含 PR-B 代码的构建 |
 
 ### cloud 迁移列的上线方式（裁决 R41，经 R46 修订）
 
@@ -214,21 +214,43 @@ gh workflow run release-train.yml --repo aster-cloud/aster-lang-platform --ref m
      - deps 阶段按应用锁文件完整安装，把引擎包 npm pack 出来（与应用同字节），并取 dotenv、drizzle-orm、postgres、prom-client、tsx 的精确版本；
      - 运行阶段只装这些依赖，再拷入 `tsconfig.json`、`src/` 和脚本；
      - `Dockerfile.resolver-migration.dockerignore` 排除测试代码；
-     - CMD 为 `node --conditions=import --import tsx scripts/resolver-migration.ts`，与 k3s Job 第 3 步逐字一致。
-   - **CI**：cloud `ci.yml` 中的 `build-resolver-migration-image` 和 `image-pin-pr-resolver-migration`。
-     - 只在以下变化时构建、签名，并由 image-pin bot 更新 k3s 的 pin：Dockerfile 及其 dockerignore、`scripts/resolver-migration.ts`、`src/services/policy/resolver-migration.ts`、package.json 中的引擎钉版；
-     - 两个 job 都设了 `continue-on-error`，失败不会影响 CI 结论，也不会影响 Worker 部署；
+     - CMD 为 `node --conditions=import --import tsx scripts/resolver-migration.ts`，与 k3s Job 第 3 步逐字一致；
+     - deps 阶段用 `--platform=$BUILDPLATFORM` 在构建机原生平台运行，多架构构建时 pnpm install 不走 QEMU。引擎是纯 JS，deps 阶段只产出与平台无关的 tgz 和版本清单。
+     - **传递依赖不锁定**（低风险）：运行阶段只把直接依赖钉到锁文件版本（引擎包与应用同字节），它们的传递依赖由 npm 按 semver 范围现场解析，可能与应用锁文件不同。这是一次性 Job，风险低；若出现与应用行为不一致的问题，以应用环境的结果为准，并在镜像里补钉相应依赖。
+   - **CI**：cloud 独立的 workflow `.github/workflows/resolver-migration-image.yml`（不在 `ci.yml` 里），含 `build` 与 `image-pin-pr` 两个 job。
+     - 触发方式：push 到 main 时的路径过滤，再加 `workflow_dispatch`。路径过滤命中 Dockerfile 及其 dockerignore、`scripts/resolver-migration.ts`、`src/services/policy/resolver-migration.ts`、本 workflow 或 `package.json`；其中 package.json 的改动还要再判断是否真的是引擎钉版变化。
+     - 构建后签名，并由 image-pin bot 更新 k3s 的 pin。
+     - 与 CI 和 Worker 部署完全解耦：Deploy Worker 只由 CI workflow 触发，本 workflow 的成败与 dispatch 都不会影响 Worker；
      - 不等待 ArgoCD，也不进迁移门禁。
-   - **闭包内其它模块**（`src/lib/` 等）变化不会触发重建。触发 Job 前，如果自上次构建以来这些模块有改动，就在 main 上手动 dispatch 一次 CI（dispatch 时一律构建）。注意：dispatch 成功后 Deploy Worker 也会按同一 head 再部署一次，代码相同，无害。
+     - cosign 签名身份是这个 workflow 文件：`https://github.com/wontlost-ltd/aster-cloud/.github/workflows/resolver-migration-image.yml@refs/heads/main`。k3s 信任根的 `workflowFile` 与 CIP 的 subject 都按它登记，改名必须三处同改。
+   - **闭包内其它模块**（`src/lib/` 等）变化不会触发重建。触发 Job 前，如果自上次构建以来这些模块有改动，就在 main 上手动 dispatch 这个 workflow，dispatch 时一律构建，只重建镜像，不碰 Worker。
+   - **bot pin PR 因 freshness 失败时的恢复**：k3s 的 verify-image-pin 要求 entry 的 sourceSha 等于 aster-cloud main 当前 HEAD。镜像构建或等待验签期间 main 又前进了，pin PR 就会以 freshness 失败；或者 stale gate 直接跳过开 PR。处理办法：在 main 上手动 dispatch `resolver-migration-image.yml` 重建，新 run 的 sourceSha 就是当时的 HEAD，bot 会从最新 main 重建同一个 `image-pin/aster-resolver-migration` 分支。不要手工改 sourceSha。
    - **首次接入**（新镜像，只做一次）：
      1. 确认 Docker Hub 上 `wontlost/aster-resolver-migration` 仓库存在，CI 的推送凭据有写权限。
      2. PR-B 合并后，CI 首次构建并签名。此时 k3s 还没有真实 entry，bot 的 pin PR 会失败，这是预期的。
-     3. 在 k3s 开**人工**接入 PR（内容已在 k3s 本地提交 `chore(rollout): ADR 0051 resolver 迁移 Job 移出 cloud 应用并改用独立镜像` 中）：
+     3. 在 k3s 开**人工**接入 PR。内容在 k3s 本地提交 `chore(rollout): ADR 0051 resolver 迁移 Job 移出 cloud 应用并改用独立镜像` 和 `fix(rollout): ADR 0051 resolver 迁移 Job 移出所有 ApplicationSet 的匹配范围` 中：
         - `.github/image-pin/allowed-images.yaml` 新条目；
         - 一对 CIP（7 仓 / 14 CIP）；
         - `apps.yaml` 的 `resolver-migration` lane；
-        - `apps/aster-lang/cloud/resolver-migration/{image-lock,kustomization}.yaml`。
+        - `apps/aster-lang-ops/resolver-migration/{image-lock,kustomization}.yaml`。
         合并前，把这两个文件里的 BOOTSTRAP 占位（全零 digest、`BOOTSTRAP-PLACEHOLDER`、runId 0）替换成首次构建 job summary 里的真实 digest、sourceSha、runId。`allowed-images.yaml` 受 push ruleset 保护，只能走人工流程。
+
+        这次 pin 不经 bot、人工写入，所以**合并前必须先自己验签**，确认这个 digest 确实由该 workflow 在那个 sourceSha 上签发（与 verify-image-pin 的判据一致）：
+
+        ```bash
+        DIGEST=sha256:<首次构建 summary 中的 digest>
+        SHA=<首次构建 summary 中的 sourceSha>
+        cosign verify "docker.io/wontlost/aster-resolver-migration@${DIGEST}" \
+          --certificate-identity "https://github.com/wontlost-ltd/aster-cloud/.github/workflows/resolver-migration-image.yml@refs/heads/main" \
+          --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+          --certificate-github-workflow-repository "wontlost-ltd/aster-cloud" \
+          --certificate-github-workflow-ref "refs/heads/main" \
+          --certificate-github-workflow-sha "${SHA}"
+        ```
+
+        验签失败就不要合并。另外确认 image-lock 和 kustomization 中的 digest 相同，且与上面的 `DIGEST` 一致。
+
+        verify-image-pin 对这次变更的 entry 同样做 freshness 检查：要求 sourceSha 等于 aster-cloud main 当前 HEAD。如果首次构建之后 main 已经前进，先在 main 上 dispatch `resolver-migration-image.yml` 重建，再用新一次构建的三项值替换占位，并重新执行上面的验签。
      4. 之后的构建由 bot 自动开 pin PR。
    - **本地验证**（podman，tag 只打在本地，验证后已删除）：
      - 1.0.38 尚未发布，构建上下文是一份副本，在副本里让 deps 阶段额外拷入开发期 tgz。podman 需显式加 `--ignorefile Dockerfile.resolver-migration.dockerignore`；BuildKit 会按 Dockerfile 名自动采用它。
@@ -247,7 +269,7 @@ gh workflow run release-train.yml --repo aster-cloud/aster-lang-platform --ref m
 
 - aster-api 的 pod 都已是新镜像，`kubectl -n aster-cloud rollout status deploy/aster-api` 完成；
 - Worker 已部署 PR-B；
-- k3s `apps/aster-lang/cloud/resolver-migration` 的 resolver 镜像 digest 来自含 PR-B 代码的构建，并且已合入 k3s（见第 3 节第 4 条）。
+- k3s `apps/aster-lang-ops/resolver-migration` 的 resolver 镜像 digest 来自含 PR-B 代码的构建，并且已合入 k3s（见第 3 节第 4 条）。
 
 Job 结束后执行：
 
@@ -262,7 +284,12 @@ cloud 侧：Job 在 k8s 中运行，无法访问 Workers KV（`getKV()` 返回 n
 
 ### 4.2 触发
 
-资源位于 k3s 的 `apps/aster-lang/cloud/resolver-migration/`，**不属于任何 ArgoCD 应用**：ApplicationSet 只发现 `apps/aster-lang/*/kustomization.yaml`，cloud 应用也不引用这个目录。所以全部由人手工 apply。
+资源位于 k3s 的 `apps/aster-lang-ops/resolver-migration/`，**不属于任何 ArgoCD 应用**，全部由人手工 apply。
+
+- 注意：ArgoCD 的 git-files 生成器用的是旧式 glob（`git ls-files -- <pattern>`，`*` 可以跨 `/`）。所以 `apps/aster-lang/*/kustomization.yaml` 会匹配 `apps/aster-lang/` 下**任何深度**的 kustomization。目录曾放在 `apps/aster-lang/cloud/resolver-migration/`，会因此生成重名的 aster-cloud Application（R48）。
+- 现在的目录 `apps/aster-lang-ops/` 不匹配任何 ApplicationSet：既不匹配 aster-lang、wontlost 两个 git-files 生成器，也不在 infrastructure 的 list 生成器里；也没有任何 Application 指向它。
+- 它仍在 `apps/` 下，`find apps` 类守卫（verify-no-floating-tags 等）照常覆盖。
+- **以后不要把它挪回 `apps/aster-lang/` 下的任何位置。**
 
 回滚点 PVC 单独放在 `backup-pvc.yaml`，不在任何 kustomization 里（R47 C1）。原因：local-path 是 WaitForFirstConsumer，没有 Pod 消费前 PVC 一直 Pending。若由 ArgoCD 管理，aster-cloud 应用会长期处于 Progressing，cloud CI 的「Wait for migration applied」（要求 Healthy）在每次部署时都会失败。
 
@@ -286,9 +313,9 @@ kubectl describe nodes | grep -A8 "Allocated resources"
 
 ```bash
 # 1. ConfigMap + suspend 的 CronJob（可重复 apply；pin 更新后重新 apply 即可换镜像）
-kubectl apply -k apps/aster-lang/cloud/resolver-migration
+kubectl apply -k apps/aster-lang-ops/resolver-migration
 # 2. 回滚点 PVC（只在触发前 apply；此时 Pending 属正常，等 Pod 调度后才绑定）
-kubectl apply -f apps/aster-lang/cloud/resolver-migration/backup-pvc.yaml
+kubectl apply -f apps/aster-lang-ops/resolver-migration/backup-pvc.yaml
 # 3. 确认没有正在跑的同类 Job（两侧迁移都幂等，但重复跑会产生两份备份）
 kubectl -n aster-cloud get jobs -l app=aster-adr0051-resolver-migration
 JOB=aster-adr0051-resolver-migration-$(date +%s)
@@ -391,7 +418,7 @@ aster-cloud "PolicyVersion": processed=… succeeded=… failed=… exit=…
 - **清理**：备份拷出并校验通过、确定不需要再跑之后执行。如果回滚窗口内可能还要用这些备份，就留到第 6.4 节再清理。
 
   ```bash
-  kubectl delete -k apps/aster-lang/cloud/resolver-migration     # CronJob + ConfigMap
+  kubectl delete -k apps/aster-lang-ops/resolver-migration     # CronJob + ConfigMap
   kubectl -n aster-cloud delete pvc aster-adr0051-migration-backup
   # 已完成的 Job 由 ttlSecondsAfterFinished（7 天）自动清理；需要提前清理时：
   kubectl -n aster-cloud delete jobs -l app=aster-adr0051-resolver-migration
@@ -567,7 +594,7 @@ COMMIT;
 ### 6.4 收尾
 
 - 回滚完成、确认不再需要备份后，按第 4.3 节「清理」删除 CronJob、ConfigMap 和 PVC。这些资源都不由 ArgoCD 管理，从 git 移除清单不会删除集群里的对象。
-- 再从 git 移除 `apps/aster-lang/cloud/resolver-migration/`，同时移除 `apps.yaml` 的 lane、`allowed-images.yaml` 的条目和那一对 CIP。cloud 的 `ci.yml` 删掉两个 resolver job 和 `Dockerfile.resolver-migration`。
+- 再从 git 移除 `apps/aster-lang-ops/resolver-migration/`，同时移除 `apps.yaml` 的 lane、`allowed-images.yaml` 的条目和那一对 CIP。cloud 删掉 `.github/workflows/resolver-migration-image.yml`、`Dockerfile.resolver-migration` 及其 dockerignore。
 
 ## 7. 发布后跟进清单（来自 SDD 账本）
 
