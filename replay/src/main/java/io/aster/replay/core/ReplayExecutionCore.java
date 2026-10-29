@@ -151,17 +151,12 @@ public final class ReplayExecutionCore {
         }
         try {
             VocabularyScopes scopes = VocabularyScopes.build(VocabularyLoader.loadFromMap(vocabulary));
-            return isEmpty(scopes) ? null : scopes;
+            return io.aster.policy.parser.CompileIdentity.hasEntries(scopes) ? scopes : null;
         } catch (Exception e) {
             // 词汇格式非法不应阻断执行，记录并退化为无词汇。
             LOG.warning(() -> "领域词汇表解析失败，退化为无词汇: " + e.getMessage());
             return null;
         }
-    }
-
-    private static boolean isEmpty(VocabularyScopes s) {
-        return s.types().isEmpty() && s.fields().isEmpty() && s.enumMembers().isEmpty()
-            && s.functions().isEmpty() && s.literals().isEmpty();
     }
 
     /**

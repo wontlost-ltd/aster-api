@@ -6,7 +6,10 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 /**
  * 工具链身份提供者（ADR 0022/0030）——「用哪版引擎编译/执行」的规范化身份串。
  *
- * <p>格式：{@code abi=V1;core=<ver>;validator=<ver>;build=<runtimeBuild>}。
+ * <p>格式（ADR 0051 §9）：{@code abi=1.1;core=java;validator=<v>;resolver=1;casefold=15.1;build=<runtimeBuild>}，
+ * 即 {@link io.aster.policy.parser.CompileIdentity#toolchainId()} 追加进程级 build 段——编译缓存键与对外身份同源。
+ * core 段是引擎名（cloud 为 ts）；引擎实现版本由 build（镜像 sha）钉住，展示用版本见
+ * {@link io.aster.policy.parser.CompileIdentity#coreEngineVersion()}。
  * <ul>
  *   <li>{@code sourceToolchainId}：策略版本创建/编译时的工具链（进 source envelope，
  *       PolicyVersionService 已用）。</li>
@@ -24,14 +27,6 @@ public class ToolchainIdentityProvider {
 
     /** 当前运行时工具链身份（evaluate 执行侧 + 版本创建侧统一口径）。 */
     public String currentToolchainId() {
-        return "abi=" + aster.core.lexicon.LexiconAbiVersion.V1.version
-            + ";core=" + coreEngineVersion()
-            + ";validator=" + io.aster.policy.parser.UserAliasValidator.VERSION
-            + ";build=" + runtimeBuild;
-    }
-
-    private static String coreEngineVersion() {
-        String v = aster.core.canonicalizer.Canonicalizer.class.getPackage().getImplementationVersion();
-        return (v == null || v.isBlank()) ? "dev" : v;
+        return io.aster.policy.parser.CompileIdentity.toolchainId() + ";build=" + runtimeBuild;
     }
 }

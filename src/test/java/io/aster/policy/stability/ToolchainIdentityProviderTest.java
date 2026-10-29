@@ -7,11 +7,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * ToolchainIdentityProvider 单元测试（S0 / m1.5 层1：build/core 真值）。
  *
- * <p>验证工具链身份串 {@code abi=;core=;validator=;build=} 的两个「真值」维度：
+ * <p>验证工具链身份串 {@code abi=;core=;validator=;resolver=;casefold=;build=} 的格式与两个「真值」维度：
  * <ul>
  *   <li>build —— 由 {@code aster.runtime.build} 配置注入（部署时 = 产出镜像的 github.sha，
  *       烘进镜像 ENV ASTER_RUNTIME_BUILD → MicroProfile relaxed binding）；本地/未注入时保持 dev。</li>
- *   <li>core —— 由 aster-lang-core jar MANIFEST 的 Implementation-Version 决定（core build.gradle.kts
+ *   <li>core 引擎版本 —— 由 aster-lang-core jar MANIFEST 的 Implementation-Version 决定（core build.gradle.kts
  *       stamp）；本测试断言运行时 classpath 上的 core 已带真实版本（非 dev），证明 stamp 生效。</li>
  * </ul>
  * ★这是签字级回放地基的一部分：build/core 谎报会让「同 toolchainId 应产同输出」不变量破裂。
@@ -31,8 +31,8 @@ class ToolchainIdentityProviderTest {
         String id = providerWithBuild(sha).currentToolchainId();
         assertThat(id).contains(";build=" + sha);
         assertThat(id).startsWith("abi=");
-        // 结构完整：四段齐全。
-        assertThat(id).contains(";core=").contains(";validator=");
+        // 结构完整：各段齐全。
+        assertThat(id).contains(";core=").contains(";validator=").contains(";resolver=").contains(";casefold=");
     }
 
     @Test
@@ -43,17 +43,28 @@ class ToolchainIdentityProviderTest {
     }
 
     @Test
+    void toolchainIdFollowsAdr0051Format() {
+        // ADR 0051 §9：abi=1.1;core=java;validator=<v>;resolver=1;casefold=15.1;build=<b>（cloud 侧为 core=ts）。
+        String id = providerWithBuild("abc123").currentToolchainId();
+        assertThat(id).matches("^abi=1\\.1;core=java;validator=[^;]+;resolver=1;casefold=15\\.1;build=[^;]+$");
+    }
+
+    @Test
+    void toolchainIdIsCompileIdentityPlusBuild() {
+        // 单一来源：编译缓存键用的 CompileIdentity.toolchainId() 与对外身份只差进程级 build 段。
+        assertThat(providerWithBuild("b1").currentToolchainId())
+            .isEqualTo(io.aster.policy.parser.CompileIdentity.toolchainId() + ";build=b1");
+    }
+
+    @Test
     void coreVersionIsStampedNotDev() {
-        // ★Part 3 验证：aster-lang-core jar MANIFEST 已 stamp Implementation-Version → core= 段为真实
-        // 引擎版本（如 1.0.x），非 dev。若 core jar 未 stamp（回归），此断言失败。
-        String id = providerWithBuild("test").currentToolchainId();
-        // 提取 core= 段值。
-        String core = id.replaceAll(".*;core=", "").replaceAll(";.*", "");
-        assertThat(core)
+        // ★Part 3 验证：aster-lang-core jar MANIFEST 已 stamp Implementation-Version → 引擎版本为真实
+        // 语义版本（如 1.0.x），非 dev。toolchainId 的 core 段改为引擎名后，版本由 CompileIdentity 单独暴露。
+        assertThat(io.aster.policy.parser.CompileIdentity.coreEngineVersion())
             .as("core 引擎版本应来自 jar MANIFEST Implementation-Version（非 dev 回退）")
             .isNotBlank()
             .isNotEqualTo("dev")
-            .matches("\\d+\\.\\d+\\.\\d+.*"); // 语义版本形态，如 1.0.14
+            .matches("\\d+\\.\\d+\\.\\d+.*");
     }
 
     @Test

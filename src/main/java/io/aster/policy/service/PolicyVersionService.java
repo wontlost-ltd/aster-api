@@ -107,7 +107,8 @@ public class PolicyVersionService {
      * 这保证同一别名集总产出同一 source envelope（可复现/跨租户一致）。
      *
      * @param aliasSet        结构化别名集，null/空=无用户别名
-     * @param scopes          领域词汇作用域（别名↔标识符碰撞校验），可为 null
+     * @param scopes          领域词汇作用域，只用于别名↔标识符碰撞校验，可为 null；不进 envelope——
+     *                        版本不冻结词汇、按版本编译也不用词汇（见 {@link PolicyVersion#compileScopesJson()}）
      */
     @Transactional
     public PolicyVersion createVersion(UUID catalogId, String sourceCnl, String locale,
@@ -163,7 +164,7 @@ public class PolicyVersionService {
         String toolchain = toolchainIdentityProvider.currentToolchainId();
         version.sourceToolchainId = toolchain;
         version.sourceEnvelopeSha256 = PolicyVersion.computeSourceEnvelope(
-            sourceCnl, version.aliasSet, locale, toolchain);
+            sourceCnl, version.aliasSet, locale, toolchain, version.compileScopesJson());
 
         // P0-C 稳定性门禁（ADR 0031 M3）：保存 surface——regulated tenant strict（命中白名单才可存
         // Experimental），普通 tenant warn（不阻断）。tenantId 来自 catalog 归属（非 body 自报）。

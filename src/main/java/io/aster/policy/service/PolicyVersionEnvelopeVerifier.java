@@ -47,7 +47,7 @@ public class PolicyVersionEnvelopeVerifier {
                 "无 envelope/toolchain（旧版本），由哈希链覆盖");
         }
         String recomputed = PolicyVersion.computeSourceEnvelope(
-            v.content, v.aliasSet, v.locale, v.sourceToolchainId);
+            v.content, v.aliasSet, v.locale, v.sourceToolchainId, v.compileScopesJson());
         if (recomputed.equals(v.sourceEnvelopeSha256)) {
             return new VerifyResult(v.id, VerifyResult.Status.INTACT, null);
         }

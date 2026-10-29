@@ -1,5 +1,6 @@
 package io.aster.policy.rest;
 
+import io.aster.policy.parser.CompileIdentity;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
 import io.aster.policy.stability.ToolchainIdentityProvider;
@@ -18,9 +19,9 @@ import jakarta.ws.rs.core.MediaType;
  *
  * <p><b>数据来源（都不新造）</b>：
  * <ul>
- *   <li>{@code engine} —— {@link ToolchainIdentityProvider#currentToolchainId()} 里的
- *       core 版本，运行时从 core jar 的 {@code Implementation-Version} 读，
- *       即**实际加载的**引擎版本（而非 build.gradle 里可能陈旧的声明值）。</li>
+ *   <li>{@code engine} —— {@link CompileIdentity#coreEngineVersion()}：运行时从 core jar 的
+ *       {@code Implementation-Version} 读，即**实际加载的**引擎版本（而非 build.gradle 里可能陈旧的声明值）。
+ *       toolchainId 的 core 段只是引擎名（java），不再携带版本。</li>
  *   <li>{@code toolchain} —— 完整工具链身份串，与写进 Execution 的
  *       {@code runtimeToolchainId} **同一口径**，便于把弹框显示值与审计记录对上。</li>
  * </ul>
@@ -42,29 +43,12 @@ public class VersionResource {
      * 版本信息。
      *
      * @param engine    引擎（aster-lang-core）版本，取不到时为 {@code "dev"}
-     * @param toolchain 完整工具链身份串（abi/core/validator/build）
+     * @param toolchain 完整工具链身份串（abi/core/validator/resolver/casefold/build）
      */
     public record VersionInfo(String engine, String toolchain) {}
 
     @GET
     public VersionInfo version() {
-        String id = toolchain.currentToolchainId();
-        return new VersionInfo(coreVersionOf(id), id);
-    }
-
-    /**
-     * 从工具链身份串里取 {@code core=} 段。
-     *
-     * <p>不直接调 ToolchainIdentityProvider 的私有 coreEngineVersion()，也不再各自反射一次——
-     * 以 currentToolchainId() 为单一来源解析，保证「弹框显示的引擎版本」与「写进审计的
-     * runtimeToolchainId」永远同源，不会因两处各自实现而漂移。
-     */
-    private static String coreVersionOf(String toolchainId) {
-        for (String seg : toolchainId.split(";")) {
-            if (seg.startsWith("core=")) {
-                return seg.substring("core=".length());
-            }
-        }
-        return "dev";
+        return new VersionInfo(CompileIdentity.coreEngineVersion(), toolchain.currentToolchainId());
     }
 }

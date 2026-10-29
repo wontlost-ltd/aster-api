@@ -203,8 +203,8 @@ public class PolicyVersion extends PanacheEntityBase {
     public String aliasSet;
 
     /**
-     * 完整编译输入的 SHA-256（ADR 0022 §11.5 C1）。
-     * 覆盖 content + aliasSet + locale + 工具链身份，防"源码哈希对得上、别名被替换"篡改。
+     * 完整编译输入的 SHA-256（ADR 0022 §11.5 C1，ADR 0051 §7）。
+     * 覆盖 content + aliasSet + locale + 工具链身份 + 词汇作用域，防"源码哈希对得上、别名被替换"篡改。
      * 与只哈希 content 的 {@link #sourceHash} 互补：sourceHash 是版本身份/链，
      * sourceEnvelopeSha256 是完整编译输入的审计真相。NULL=本特性前创建的旧版本。
      */
@@ -399,32 +399,25 @@ public class PolicyVersion extends PanacheEntityBase {
     }
 
     /**
-     * 计算完整编译输入的 SHA-256 信封哈希（ADR 0022 §11.5 C1）。
+     * 计算完整编译输入的 SHA-256 信封哈希（ADR 0022 §11.5 C1，ADR 0051 §7 扩为 5 段）。
      *
-     * <p>覆盖决定编译产物的全部输入，防"源码哈希对得上、别名被替换"篡改：
-     * content + aliasSet（规范 JSON）+ locale + 工具链身份。用**确定性字段序列**
-     * （固定字段顺序 + 长度前缀分隔，杜绝字段间歧义/注入），UTF-8 + SHA-256。
+     * <p>覆盖决定编译产物的全部输入，防"源码哈希对得上、别名或词汇被替换"篡改：
+     * content + aliasSet（规范 JSON）+ locale + 工具链身份 + 词汇作用域（规范 JSON）。
+     * 每段写 {@code <UTF-8 字节数>:<字节>|}，段序固定，杜绝字段间歧义；null 视为空串。
+     * 算法与 cloud {@code computeSourceEnvelope} 逐字节一致，由共享向量 envelope-vectors.json 钉住。
      *
-     * <p>aliasSet 应已是规范形（{@code UserAliasValidator} 保证 alias==normalize(alias)），
-     * 这里只对传入字符串做 null 归一与长度前缀，不再二次解析。
-     *
-     * @param content        源码文本
-     * @param aliasSetJson   版本冻结的 aliasSet JSON（null 视为空）
-     * @param locale         编译 locale
-     * @param toolchainId     工具链身份串（compiler/canonicalizer/lexicon/validator 版本+hash）
+     * @param content      源码文本
+     * @param aliasSetJson 版本冻结的 aliasSet JSON（已是规范形，这里不再二次解析）
+     * @param locale       编译 locale
+     * @param toolchainId  工具链身份串
+     * @param scopesJson   {@link io.aster.policy.parser.CompileIdentity#scopesJson} 的结果；无词汇为空串
      */
     public static String computeSourceEnvelope(String content, String aliasSetJson,
-                                               String locale, String toolchainId) {
+                                               String locale, String toolchainId, String scopesJson) {
         try {
             java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            // 长度前缀分隔：每段写 "<len>:<utf8bytes>"，避免拼接歧义（如 a|b vs ""|a|b）。
-            for (String field : new String[]{
-                content == null ? "" : content,
-                aliasSetJson == null ? "" : aliasSetJson,
-                locale == null ? "" : locale,
-                toolchainId == null ? "" : toolchainId
-            }) {
-                byte[] b = field.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            for (String field : new String[]{content, aliasSetJson, locale, toolchainId, scopesJson}) {
+                byte[] b = (field == null ? "" : field).getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 digest.update(Integer.toString(b.length).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
                 digest.update((byte) ':');
                 digest.update(b);
@@ -434,6 +427,17 @@ public class PolicyVersion extends PanacheEntityBase {
         } catch (Exception e) {
             throw new RuntimeException("Failed to compute source envelope", e);
         }
+    }
+
+    /**
+     * 本版本 envelope 的词汇段（ADR 0051 §7 第 5 段）。
+     *
+     * <p>api 侧版本不存词汇，按版本编译（{@code PolicyCompiler#compile(Long)}）也不传词汇，
+     * 实际编译输入里没有词汇，故恒为空串。创建与校验都取这里，二者不会分叉；
+     * 若将来 api 版本要冻结词汇，须同时加列并让编译与本方法读同一快照。
+     */
+    public String compileScopesJson() {
+        return io.aster.policy.parser.CompileIdentity.scopesJson(null);
     }
 
     /**
