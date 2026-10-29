@@ -6,10 +6,9 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 /**
  * 工具链身份提供者（ADR 0022/0030）——「用哪版引擎编译/执行」的规范化身份串。
  *
- * <p>格式（ADR 0051 §9）：{@code abi=1.1;core=java;validator=<v>;resolver=1;casefold=15.1;build=<runtimeBuild>}，
+ * <p>格式（ADR 0051 §9）：{@code abi=1.1;core=<core 引擎版本>;validator=<v>;resolver=1;casefold=15.1;build=<runtimeBuild>}，
  * 即 {@link io.aster.policy.parser.CompileIdentity#toolchainId()} 追加进程级 build 段——编译缓存键与对外身份同源。
- * core 段是引擎名（cloud 为 ts）；引擎实现版本由 build（镜像 sha）钉住，展示用版本见
- * {@link io.aster.policy.parser.CompileIdentity#coreEngineVersion()}。
+ * core 段取 core jar 的 Implementation-Version，未 stamp 时为 dev（由 {@link ToolchainIdentityGuard} 发现）。
  * <ul>
  *   <li>{@code sourceToolchainId}：策略版本创建/编译时的工具链（进 source envelope，
  *       PolicyVersionService 已用）。</li>

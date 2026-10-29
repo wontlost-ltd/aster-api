@@ -24,9 +24,6 @@ public final class CompileIdentity {
     /** Core IR ABI 版本（与 TS CORE_IR_ABI 一致）：按位置解析改变了 IR 契约。 */
     public static final String CORE_IR_ABI = "1.1";
 
-    /** 引擎名：区分 Java 与 TS（cloud 为 ts）实现。 */
-    public static final String ENGINE = "java";
-
     /** 名称解析算法版本：R1/R2 规则变化时递增。 */
     public static final int RESOLVER_VERSION = 1;
 
@@ -35,12 +32,12 @@ public final class CompileIdentity {
 
     /** 进程内恒定，类加载时算一次。 */
     private static final String TOOLCHAIN_ID = "abi=" + CORE_IR_ABI
-        + ";core=" + ENGINE
+        + ";core=" + coreEngineVersion()
         + ";validator=" + UserAliasValidator.VERSION
         + ";resolver=" + RESOLVER_VERSION
         + ";casefold=" + CaseFold.VERSION;
 
-    /** 影响编译结果的分量：IR ABI、引擎、别名校验器、解析算法与折叠表版本。 */
+    /** 影响编译结果的分量：IR ABI、core 引擎版本、别名校验器、解析算法与折叠表版本。 */
     public static String toolchainId() {
         return TOOLCHAIN_ID;
     }

@@ -59,7 +59,7 @@ class PolicyVersionAliasIntegrationTest extends BasePolicyVersionServiceTest {
         PolicyVersion reloaded = PolicyVersion.findById(v.id);
 
         assertTrue(reloaded.sourceToolchainId.matches(
-            "^abi=1\\.1;core=java;validator=[^;]+;resolver=1;casefold=15\\.1;build=[^;]+$"), reloaded.sourceToolchainId);
+            "^abi=1\\.1;core=[^;]+;validator=[^;]+;resolver=1;casefold=15\\.1;build=[^;]+$"), reloaded.sourceToolchainId);
         assertEquals(PolicyVersion.computeSourceEnvelope(reloaded.content, reloaded.aliasSet, reloaded.locale,
             reloaded.sourceToolchainId, ""), reloaded.sourceEnvelopeSha256);
         assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.INTACT,
