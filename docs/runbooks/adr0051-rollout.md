@@ -18,11 +18,11 @@
 | 制品 | 现版本 | 本次 | 说明 |
 |---|---|---|---|
 | platform catalog / 生态 Maven（core、runtime、validation、test:jvm、locales、hi、truffle） | 1.0.35 | **1.0.36** | lockstep：runtime、validation、hi 源码无变更，也重新打 tag |
-| `@aster-cloud/aster-lang-ts` | 1.0.37 | **1.0.38** | |
+| `@aster-cloud/aster-lang-ts` | 1.0.37 | **1.1.0** | 包入口移除 `lowerModule` 与未检查的 `resolveAndLower`（ts a9a1edc），API 不兼容，所以升次版本位 |
 | `@aster-cloud/aster-lang-test` | 1.0.3 | **1.1.0** | `normalizeIr` 改为选项对象，签名不兼容，所以升次版本位。tag 为 `npm-v1.1.0`，aster-lang-test#168 的撞 tag 问题已由 `npm-v*` 前缀解决 |
 | `@aster-cloud/ui-messages`（-hi） | 1.0.24 | 1.0.24 | 无变更 |
 | aster-api | pin 1.0.35 | pin **1.0.36** | settings.gradle、`setup-aster-build` 的 `sibling-ref: v1.0.36` 都要改 |
-| aster-cloud | ts 1.0.37 | ts **1.0.38** | 不在列车内；`package.json` 与 `lsp-package.json` 都要改 |
+| aster-cloud | ts 1.0.37 | ts **1.1.0** | 不在列车内；`package.json` 与 `lsp-package.json` 都要改 |
 
 版本计划已提交在 aster-lang-platform 的 `release-plan.json` 与 `build.gradle.kts`（提交 `chore(release): ADR 0051 版本计划`）。
 
@@ -33,6 +33,10 @@
 - core #215（若同版发布）：移除 `f with x, y` 调用形式；构造字段只接受 `set to`；`X with f = v` 改为在编译期报错。
 - `Number`、`Boolean`、`String` 不再被接受为类型名，请使用 `Float`、`Bool`、`Text`（R27）。
 - test npm 1.1.0：`normalizeIr(node, options)`，options 为 `{ originMode?, includeResolution? }`。
+- **ts npm 1.1.0（CHANGELOG 必须写明，属破坏性变更）**：包入口 `@aster-cloud/aster-lang-ts` 不再导出 `lowerModule`，也不再导出未经检查的 `resolveAndLower`（ts a9a1edc）。
+  - 公开出口只保留带名称解析检查的 `resolveAndLowerChecked`、`compile`、`resolvePolicyTypes`。
+  - 迁移方式：`parseSource` 之后调用 `resolveAndLowerChecked(ast)`；遇到 E8xx 时它抛出 `NameResolutionError`。
+  - Java 侧的 `CoreLowering.lowerModule`、`NameResolution.resolveAndLower` 已标注为内部 API（core 3fa5095）。
 - 内置词汇（finance-loan、insurance-auto）中无父枚举的值补上了父枚举：CreditLevel、LoanType、QuoteStatus、RiskLevel。
 
 ## 0. 准备（发布窗口前）
@@ -52,16 +56,16 @@
 | 步骤 | 仓库 / PR | 放行条件 |
 |---|---|---|
 | 1 | **aster-cloud PR-A**：`drizzle/0060_policy_version_scopes_json.sql`、`drizzle/0061_resolver_migration_columns.sql`、`drizzle/meta/*` 与 `src/db/schema.ts` 的列定义（必须含 schema.ts，原因见下文）。**推荐先按方案 (a) 在生产手工加列，再合 PR-A** | 方案 (a) 的 DDL 已执行且核实 5 列存在；CI 绿；image-pin PR 合并；ArgoCD PostSync 迁移 Job 成功（drizzle 只补记录）。用下面的 SQL 核实 |
-| 2 | **aster-lang-locales** | CI 绿 |
+| 2 | **aster-lang-locales**（必须包含 0024c66 内置词汇枚举值补 parent、9272fe7 E802/E805 中文帮助） | CI 绿。**硬门禁：先于 core ADR PR 合入 locales main**（见下文「locales 先于 core」） |
 | 3 | **aster-lang-core #215**（`fix/reject-with-call-244`），然后是 **aster-lang-core ADR 0051 PR**（先 rebase 到 #215 之后的 main） | **硬门禁：#215 必须在 1.0.36 列车之前合入 core main**（原因见下文）；两个 PR 的 CI 都绿；rebase 后重跑 tier1 parity |
 | 4 | **aster-lang-truffle** | CI 绿。truffle CI 会检出 core main 并 publishToMavenLocal，所以必须在 core 合并之后 |
-| 5 | **aster-lang-ts**。**先在特性分支上新增一个提交** `chore(release): aster-lang-ts 1.0.37 → 1.0.38`，只改 `package.json` 的 version（这个提交现在还不存在；做法同 ts#241） | CI 绿；parity 测试读取 `../aster-lang-core` 的 error_codes.json，所以必须在 core 之后；check-artifact `ts:npm` 期望 1.0.38 |
+| 5 | **aster-lang-ts**。**先在特性分支上新增一个提交** `chore(release): aster-lang-ts 1.0.37 → 1.1.0`，改 `package.json` 的 version，并在 CHANGELOG 写明移除的导出（见「发布说明要点」）。这个提交现在还不存在，做法同 ts#241 | CI 绿；parity 测试读取 `../aster-lang-core` 的 error_codes.json，所以必须在 core 之后；check-artifact `ts:npm` 期望 1.1.0 |
 | 6 | **aster-lang-test**。**先在特性分支上新增一个提交**，把 `packages/js/package.json` 的 version 从 1.0.3 改为 1.1.0（这个提交现在还不存在），并在 changelog 记下 `normalizeIr` 签名变更 | CI 绿（tier1 parity：解析、IR、eval 全部一致）；check-artifact `test:npm` 期望 1.1.0 |
 | 7 | **生态 pin bump PR**：core、runtime、validation、test（packages/jvm）、locales、hi、truffle、aster-api 的 platform pin 1.0.35 → 1.0.36；aster-api 同时把 `setup-aster-build` 的 `sibling-ref` 改为 `v1.0.36` | 沿用 1.0.35 的做法（core#214、api#388 等），在列车前一起合并 |
 | 8 | **aster-lang-platform**（`chore(release): ADR 0051 版本计划`） | 本仓 CI：check-artifact、run-train.test.sh、catalog 构建 |
 | 9 | **发布列车**（见第 2 节） | 派发前确认 core main 已含 #215（`git log origin/main --oneline \| grep 244`）；preflight 全部通过；所有 tag 与制品都可见 |
 | 10 | **aster-api ADR 0051 PR** | **硬门禁：只在列车完成、各兄弟仓 `v1.0.36` tag 与 Maven 制品都已存在之后合并**：api CI 按 `sibling-ref` 检出兄弟仓 tag，tag 存在前 CI 无法变绿。合并后 push 会触发 deploy.yml，经 image-pin 和 ArgoCD 部署；新 pod 启动时由 Flyway 执行 V6.34.0 |
-| 11 | **aster-cloud PR-B**（其余全部代码，含独立的 resolver 迁移镜像，见第 3 节） | ts 1.0.38 已在 npm 上可见；CI 绿；lsp 镜像的 image-pin 已合并；Worker 已部署；resolver 迁移镜像已构建，k3s lane 已按第 3 节接入 |
+| 11 | **aster-cloud PR-B**（其余全部代码，含独立的 resolver 迁移镜像，见第 3 节） | ts 1.1.0 已在 npm 上可见；CI 绿；lsp 镜像的 image-pin 已合并；Worker 已部署；resolver 迁移镜像已构建，k3s lane 已按第 3 节接入 |
 | 12 | **触发迁移 Job**（第 4 节），然后执行 `rollout restart` | api pod 已是新镜像；Worker 是 PR-B；k3s `apps/aster-lang-ops/resolver-migration` 的 digest 来自含 PR-B 代码的构建 |
 
 ### cloud 迁移列的上线方式（裁决 R41，经 R46 修订）
@@ -142,6 +146,36 @@ SELECT id, created_at FROM drizzle.__drizzle_migrations ORDER BY id DESC LIMIT 3
 -- 期望最新两条 created_at = 1793242575570（0061）、1793236549259（0060）
 ```
 
+### locales 先于 core（R50 门禁）
+
+**原因**：core 98f03b0 新增的 Java `DomainVocabulary.validate` 会拒绝枚举值没有 parent 的词汇。旧版 locales（≤ 1.0.35）中，finance-loan、insurance-auto 有 14 个枚举值没有 parent。如果 core 1.0.36 搭配旧 locales，会出现两个后果：
+- core CI 有 19 个测试失败；
+- 运行时用旧 locales jar 的环境会丢失这两套内置词汇，校验拒绝后不会注册。
+
+**按顺序执行的门禁**：
+1. locales 的 ADR 0051 PR（含 0024c66 与 9272fe7）**先合入 locales main**，然后才能合入 core 的 ADR PR。core 的 CI 和 release workflow 都会检出 sibling `aster-lang-locales` 源码并 publishToMavenLocal，所以 locales main 先就位，core CI 才能变绿。
+   - 验证：core PR 的 CI 日志里 sibling locales 检出的 SHA 是 locales main 上包含这两个提交的版本（`git merge-base --is-ancestor 9272fe7 <SHA>`），而且 CI 全绿。
+2. platform catalog 1.0.36（第 8 步）合入 main，各仓的 pin bump 合入（第 7 步）。这样任何消费方取到的 core 1.0.36 都与 locales 1.0.36 成对出现，因为 catalog 中 core 与 locales-en/zh/de 共用 `asterLang`。
+3. 列车里 locales:maven 1.0.36 与 core:maven 1.0.36 同版发布。
+   - 字面上无法做到「locales 先于 core 发布」：locales 编译依赖 core（locales 根 `build.gradle.kts` 中的 `asterLibs.findLibrary("core")`），所以 `releaseOrder` 里 core 在第 2 层、locales 在第 3 层，同一个 lockstep 版本无法颠倒。
+   - 起保护作用的是两点：一是第 1 条，core 发布用的就是修好的 locales 源码；二是第 2 条，catalog 保证成对。
+   - 第 3 层完成之前不要部署任何消费方（aster-api 的特性 PR 本来就排在列车之后）。
+   - 如果一定要「已发布的 locales 先于 core」，只能拆成两次列车：先发一个只含 locales 数据修复的 1.0.36（core 不含 98f03b0），再发 ADR 0051 的 1.0.37。所有版本号都会 +1，需要单独裁决。
+4. **发布后验证**：已发布的 locales jar 中，枚举值都带有 parent。
+
+   ```bash
+   # 取 GitHub Packages 上 cloud.aster-lang:aster-lang-locales-en:1.0.36 的 jar（或本地 ~/.m2 / gradle 缓存）
+   unzip -p aster-lang-locales-en-1.0.36.jar vocabularies/finance-loan-en-US.json | grep -c '"parent"'
+   # 期望能看到 CreditLevel / LoanType；对 insurance-auto 同样检查 QuoteStatus / RiskLevel
+   ```
+
+**本地验证**：core 默认解析的是已发布的 locales jar，在 1.0.35 pin 下会复现那 19 个失败。用 composite build 指向本地 locales 源码可以验证修复：
+
+```bash
+cd aster-lang-core
+ASTER_LOCALES_DIR=../aster-lang-locales ./gradlew test   # 或 -PasterLocalesDir=../aster-lang-locales
+```
+
 ### aster-lang-core #215 与本次发布的关系
 
 - #215 修复的问题：Java 引擎把 `X with f = v`（de `mit`，aster-lang-ts#244）回退解析为普通调用。结果是编译通过，运行时报 `Unknown call target`。TS 引擎一直拒绝这种写法。
@@ -195,7 +229,7 @@ gh workflow run release-train.yml --repo aster-cloud/aster-lang-platform --ref m
 
 - 每仓都有 `v1.0.36` tag；
 - GitHub Packages 中 `cloud.aster-lang.*` 都有 1.0.36；
-- npm `@aster-cloud/aster-lang-ts@1.0.38` 可见；
+- npm `@aster-cloud/aster-lang-ts@1.1.0` 可见；
 - npm `@aster-cloud/aster-lang-test@1.1.0` 可见，tag 为 `npm-v1.1.0`。
 
 **aster-api 特性 PR 的门禁**：只在本次列车完成、各兄弟仓 `v1.0.36` tag 与 Maven 制品都已存在之后合并（第 1 节第 10 步）。列车 preflight 只要求 api main 的 pin 已是 1.0.36，这由第 7 步的 pin bump PR 满足，不需要特性代码先进 main。
@@ -206,7 +240,7 @@ gh workflow run release-train.yml --repo aster-cloud/aster-lang-platform --ref m
 
 开发期 cloud 用的是本地包 `file:.e2e-local/aster-lang-ts-local.tgz`。PR-B 合并前要完成以下几项：
 
-1. `package.json` 与 `lsp-package.json` 都改为 `"@aster-cloud/aster-lang-ts": "1.0.38"`，写精确版本。`scripts/check-lsp-pin.mjs` 比较的是两边的字符串。
+1. `package.json` 与 `lsp-package.json` 都改为 `"@aster-cloud/aster-lang-ts": "1.1.0"`，写精确版本。`scripts/check-lsp-pin.mjs` 比较的是两边的字符串。
 2. 执行 `pnpm install` 重新生成 `pnpm-lock.yaml`，确认锁文件里不再有 `file:.e2e-local`。
 3. `node scripts/check-lsp-pin.mjs` 退出码为 0。开发期唯一的两个已知失败用例是 check-lsp-pin（on-prem 与 saas），切换后应当消失。`pnpm test:run` 应全绿。
 4. **resolver 迁移用独立的一次性镜像**（R47），不复用 aster-cloud-migrate。如果复用，迁移镜像要拷入 `src/`，几乎每次 push 都会产出新 digest，进而触发 pin PR、sync、PostSync，以及受门控的 Worker 部署。迁移镜像保持只做 drizzle 迁移。
@@ -253,13 +287,13 @@ gh workflow run release-train.yml --repo aster-cloud/aster-lang-platform --ref m
         verify-image-pin 对这次变更的 entry 同样做 freshness 检查：要求 sourceSha 等于 aster-cloud main 当前 HEAD。如果首次构建之后 main 已经前进，先在 main 上 dispatch `resolver-migration-image.yml` 重建，再用新一次构建的三项值替换占位，并重新执行上面的验签。
      4. 之后的构建由 bot 自动开 pin PR。
    - **本地验证**（podman，tag 只打在本地，验证后已删除）：
-     - 1.0.38 尚未发布，构建上下文是一份副本，在副本里让 deps 阶段额外拷入开发期 tgz。podman 需显式加 `--ignorefile Dockerfile.resolver-migration.dockerignore`；BuildKit 会按 Dockerfile 名自动采用它。
+     - 1.1.0 尚未发布，构建上下文是一份副本，在副本里让 deps 阶段额外拷入开发期 tgz。podman 需显式加 `--ignorefile Dockerfile.resolver-migration.dockerignore`；BuildKit 会按 Dockerfile 名自动采用它。
      - 镜像内没有测试代码，约 240 MB。
      - 运行条件：只读根文件系统、uid 1000、`/tmp` 为 tmpfs。结果：
        - `--help` 正常；
        - 缺少环境变量时以退出码 2 拒绝运行；
        - 对迁移到最新的本地库插入一行后，脚本向桩服务发出带签名的 `/api/v1/policies/compile`：桩返回 503 时，该行判为 infrastructure，退出码 1，行未被改动；桩返回带 E802 诊断的 422 时，该行被归档（`statusBeforeArchive = APPROVED`），归入 `e8xx`，退出码 0。
-5. **关掉 auto-upgrade 自动开出的升级 PR**。ts 1.0.38 发布后，`auto-upgrade.yml` 会按 npm latest 自动开 `chore(deps): upgrade @aster-cloud/aster-lang-ts to 1.0.38` 之类的 PR。旧 main 搭配新引擎会失败（全局替换 API 已删除），不能合并。依赖升级由 PR-B 承担。aster-dev 也用同一份升级脚本，那边也要拦住或同步适配。
+5. **关掉 auto-upgrade 自动开出的升级 PR**。ts 1.1.0 发布后，`auto-upgrade.yml` 会按 npm latest 自动开 `chore(deps): upgrade @aster-cloud/aster-lang-ts to 1.1.0` 之类的 PR。旧 main 搭配新引擎会失败（全局替换 API 已删除），不能合并。依赖升级由 PR-B 承担。aster-dev 也用同一份升级脚本，那边也要拦住或同步适配。
 
 ## 4. 存量重编译 Job
 
