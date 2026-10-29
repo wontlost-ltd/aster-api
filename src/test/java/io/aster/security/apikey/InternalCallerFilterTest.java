@@ -520,6 +520,9 @@ class InternalCallerFilterTest {
         }
         verify(c, never()).setProperty(eq(RequestIdentityResolver.PROP_IDENTITY_USER_ID), any());
         verify(c, never()).setProperty(eq(RequestIdentityResolver.PROP_BUSINESS_ROLES), any());
+        // 验签章兼作「免 API 计量」凭证：重放请求不得拿到它，哪怕异常已中止请求
+        verify(c, never()).setProperty(eq(InternalCallerFilter.HMAC_VERIFIED_PROP), any());
+        verify(c, never()).setProperty(eq(InternalCallerFilter.VERIFIED_BODY_PROP), any());
     }
 
     @Test

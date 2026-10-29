@@ -81,14 +81,21 @@ public class GuardDecisionResource {
     String apiKeyId = identityResolver.apiKeyId();
     // 月度配额按归属取键（ADR 0015 §3）：团队 key 计入 team owner 的池。
     String quotaOwnerId = identityResolver.quotaOwnerId();
-    Optional<Response> quotaRejection = quotaRejection(tenantId, quotaOwnerId, apiKeyId);
+    // 套餐门禁与计量只针对 API 调用；HMAC 已验签、无 API key 的内部会话调用两者都不经过。
+    // 当前过滤器配置下该分支不可达：POST /api/v1/guard/decisions 不在 InternalCallerFilter 的验签路径里，
+    // 拿不到验签章（ApiKeyAuthFilter 恒要求 Bearer）。保留它是为了与 /evaluate* 同口径，
+    // 将来若给本端点开 HMAC 通道，cloud 侧须同时补上配额（见 RequestIdentityResolver#internalSessionCall）。
+    boolean apiCall = !identityResolver.internalSessionCall();
+    Optional<Response> quotaRejection = apiCall ? quotaRejection(tenantId, quotaOwnerId, apiKeyId) : Optional.empty();
     if (quotaRejection.isPresent()) {
       return quotaRejection.get();
     }
     try {
       GuardDecisionResponse decision = service.decide(tenantId, performedBy, apiKeyId, req, idempotencyKey);
-      apiQuotaGuard.recordAsync(quotaOwnerId, performedBy, tenantId, apiKeyId, PATH, "success",
-          System.currentTimeMillis() - startTime);
+      if (apiCall) {
+        apiQuotaGuard.recordAsync(quotaOwnerId, performedBy, tenantId, apiKeyId, PATH, "success",
+            System.currentTimeMillis() - startTime);
+      }
       return Response.ok(decision).build();
     } catch (GuardInvalidActionException bad) {
       return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_action", bad.getMessage());

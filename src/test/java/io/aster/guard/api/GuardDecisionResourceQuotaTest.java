@@ -173,4 +173,32 @@ class GuardDecisionResourceQuotaTest {
     assertThat(resp.statusCode()).isEqualTo(404);
     verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), any(), anyLong());
   }
+
+  @Test
+  void 已验签内部会话调用不受API套餐门禁且不计量() {
+    // 无 API key、HMAC 已验签：不是 API 调用，Free 快照的 FORBIDDEN 不适用，也不计入 API 用量
+    when(identityResolver.apiKeyId()).thenReturn(null);
+    when(identityResolver.internalSessionCall()).thenReturn(true);
+    when(apiQuotaGuard.check(anyString(), anyString()))
+        .thenReturn(new ApiQuotaGuard.GuardResult(ApiQuotaGuard.Verdict.FORBIDDEN, 0L, 0L, 0, null));
+
+    Response resp = post(MODULE);
+
+    assertThat(resp.statusCode()).isEqualTo(200);
+    verify(apiQuotaGuard, never()).check(any(), any());
+    verify(apiQuotaGuard, never()).checkRate(any(), any());
+    verify(apiQuotaGuard, never()).recordAsync(any(), any(), any(), any(), any(), any(), anyLong());
+  }
+
+  @Test
+  void 无key且未验签的调用仍受API套餐门禁() {
+    when(identityResolver.apiKeyId()).thenReturn(null);
+    when(apiQuotaGuard.check(TENANT, OWNER))
+        .thenReturn(new ApiQuotaGuard.GuardResult(ApiQuotaGuard.Verdict.FORBIDDEN, 0L, 0L, 0, null));
+
+    Response resp = post(MODULE);
+
+    assertThat(resp.statusCode()).isEqualTo(403);
+    assertThat(resp.jsonPath().getString("error")).isEqualTo("api_access_denied");
+  }
 }

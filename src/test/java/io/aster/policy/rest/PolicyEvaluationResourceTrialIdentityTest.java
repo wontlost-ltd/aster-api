@@ -18,6 +18,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -427,17 +428,88 @@ class PolicyEvaluationResourceTrialIdentityTest {
     }
 
     @Test
-    @DisplayName("ADR 0015: 异步路径 recordApiCall 7 参按 (quotaOwnerId, userId, tenantId, apiKeyId, …) 顺序上报")
+    @DisplayName("ADR 0015: 异步路径 recordApiCall 按 (quotaOwnerId, userId, tenantId, apiKeyId, …) 顺序上报捕获的身份")
     void recordApiCallWithCapturedIdentityPassesQuotaOwnerFirst() throws Exception {
         ApiQuotaGuard quota = mock(ApiQuotaGuard.class);
-        PolicyEvaluationResource r = newResource(quota, new TenantContext(), mock(RoutingContext.class));
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("team-1");
+        RoutingContext rctx = mock(RoutingContext.class);
+        when(rctx.request()).thenReturn(mock(HttpServerRequest.class));
+        PolicyEvaluationResource r = newResource(quota, tc, rctx, teamKeyCtx());
 
-        invoke(r, "recordApiCall",
-            new Class<?>[]{String.class, String.class, long.class, String.class, String.class, String.class, String.class},
-            "/api/v1/policies/evaluate", "success", 7L, "team-1", "member-1", "key-1", "owner-1");
+        recordApiCall(r, invoke(r, "captureIdentity", new Class<?>[]{}), 7L);
 
         verify(quota).recordAsync("owner-1", "member-1", "team-1", "key-1",
             "/api/v1/policies/evaluate", "success", 7L);
+    }
+
+    private static void recordApiCall(PolicyEvaluationResource r, Object identity, long latencyMs) throws Exception {
+        invoke(r, "recordApiCall",
+            new Class<?>[]{String.class, String.class, long.class, identity.getClass()},
+            "/api/v1/policies/evaluate", "success", latencyMs, identity);
+    }
+
+    /** cloud 代登录会话：InternalCallerFilter 验签通过后盖章，签过的 X-User-Id 是 user-free，无 API key。 */
+    private static ContainerRequestContext hmacSessionCtx() {
+        ContainerRequestContext c = mock(ContainerRequestContext.class);
+        when(c.getProperty(io.aster.security.apikey.InternalCallerFilter.HMAC_VERIFIED_PROP)).thenReturn(Boolean.TRUE);
+        when(c.getProperty(RequestIdentityResolver.PROP_IDENTITY_USER_ID)).thenReturn("user-free");
+        return c;
+    }
+
+    @Test
+    @DisplayName("Free 界面执行：HMAC 内部会话调用不查 API 月度配额（Free 快照的 FORBIDDEN 不适用）")
+    void enforceApiQuotaSkipsHmacSessionWithoutApiKey() throws Exception {
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("tenant-free");
+        RoutingContext rctx = mock(RoutingContext.class);
+        when(rctx.request()).thenReturn(mock(HttpServerRequest.class));
+        when(rctx.response()).thenReturn(mock(HttpServerResponse.class));
+        ApiQuotaGuard quota = mock(ApiQuotaGuard.class);
+        when(quota.check(anyString(), anyString())).thenReturn(
+            new ApiQuotaGuard.GuardResult(ApiQuotaGuard.Verdict.FORBIDDEN, 0L, 0L, 0, null));
+
+        PolicyEvaluationResource r = newResource(quota, tc, rctx, hmacSessionCtx());
+        ((io.smallrye.mutiny.Uni<?>) invoke(r, "quotaGate", new Class<?>[]{String.class},
+            "/api/v1/policies/evaluate-source")).await().indefinitely();
+
+        verify(quota, never()).check(anyString(), anyString());
+        verify(quota, never()).checkRateAsync(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Free 界面执行：HMAC 内部会话调用不计入 API 调用用量")
+    void recordApiCallSkipsHmacSessionWithoutApiKey() throws Exception {
+        ApiQuotaGuard quota = mock(ApiQuotaGuard.class);
+        RoutingContext rctx = mock(RoutingContext.class);
+        when(rctx.request()).thenReturn(mock(HttpServerRequest.class));
+        PolicyEvaluationResource r = newResource(quota, new TenantContext(), rctx, hmacSessionCtx());
+
+        recordApiCall(r, invoke(r, "captureIdentity", new Class<?>[]{}), 7L);
+
+        verify(quota, never()).recordAsync(any(), any(), any(), any(), any(), any(), anyLong());
+    }
+
+    @Test
+    @DisplayName("HMAC 章与已验证 API key 同时存在 → 仍按 API 调用查配额（API key 限制不放宽）")
+    void enforceApiQuotaStillGatesApiKeyEvenWithHmacStamp() throws Exception {
+        TenantContext tc = new TenantContext();
+        tc.setCurrentTenant("team-1");
+        RoutingContext rctx = mock(RoutingContext.class);
+        when(rctx.request()).thenReturn(mock(HttpServerRequest.class));
+        when(rctx.response()).thenReturn(mock(HttpServerResponse.class));
+        ContainerRequestContext ctx = teamKeyCtx();
+        when(ctx.getProperty(io.aster.security.apikey.InternalCallerFilter.HMAC_VERIFIED_PROP)).thenReturn(Boolean.TRUE);
+        ApiQuotaGuard quota = mock(ApiQuotaGuard.class);
+        when(quota.check(anyString(), anyString())).thenReturn(
+            new ApiQuotaGuard.GuardResult(ApiQuotaGuard.Verdict.FORBIDDEN, 0L, 0L, 0, null));
+
+        PolicyEvaluationResource r = newResource(quota, tc, rctx, ctx);
+        java.lang.reflect.InvocationTargetException ex = org.junit.jupiter.api.Assertions.assertThrows(
+            java.lang.reflect.InvocationTargetException.class,
+            () -> invoke(r, "quotaGate", new Class<?>[]{String.class}, "/api/v1/policies/evaluate"));
+        assertEquals(403, ((jakarta.ws.rs.WebApplicationException) ex.getCause()).getResponse().getStatus());
+        verify(quota, times(1)).check("team-1", "owner-1");
     }
 
     // Mockito eq helper for String — keeps imports tight in this test

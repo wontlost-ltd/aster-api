@@ -1,6 +1,7 @@
 package io.aster.policy.rest;
 
 import io.aster.policy.tenant.TenantContext;
+import io.aster.security.apikey.InternalCallerFilter;
 import io.vertx.ext.web.RoutingContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -170,6 +171,25 @@ public class RequestIdentityResolver {
         // 拿不到已验证身份时返回 null（无 key 的请求本就返回 null），调用方据此按
         // 「无 API key」处理，而不是按一个伪造的 key 处理。
         return jaxrsProperty(PROP_API_KEY_ID);
+    }
+
+    /**
+     * 是否为 cloud 代登录会话发起的内部调用：HMAC 已验签（{@code InternalCallerFilter} 盖章）且没有已验证的 API key。
+     *
+     * <p>这类调用不按「API 调用」处理：Free 计划「不含 Policy Execution API」的月度门禁与 API 调用计量
+     * 都只针对 API key 调用，本服务对内部会话调用<b>不做任何套餐或用量限制</b>。
+     *
+     * <p><b>豁免的前提（契约）</b>：每一个经 plan-gate HMAC 调用本服务执行类端点（如 {@code /evaluate-source}）
+     * 的 cloud 路由，都必须在 cloud 侧自行做套餐与用量限制——界面执行、secure-execute、会话 evaluate-source
+     * 按执行用量（UsageRecord type=execution，Free 每月 1000 次）拦截并计数，cloud REST API（Bearer key 打
+     * cloud）校验 apiAccess 并按 owner 池（apiCallRecords）计 API 调用。cloud 新增 HMAC 调用方时必须同时补上
+     * cloud 侧配额，否则它在这里不受任何计量。
+     *
+     * <p>判定只认验签章（验签与 nonce 防重放都通过后才盖），不看 {@code X-Internal-Caller} 等头是否存在：
+     * 未签名、签名不对或重放的请求拿不到章，仍按 API 调用走配额门禁。
+     */
+    public boolean internalSessionCall() {
+        return InternalCallerFilter.isHmacVerified(jaxrsCtx) && apiKeyId() == null;
     }
 
     /** 配额归属：团队 key 为 team owner，个人 key 等于 performedBy；属性缺失（旧 cloud / 无 key）回退 performedBy。 */
