@@ -33,4 +33,19 @@ class RunnerRequestTest {
         RunnerRequest req = mapper.readValue(json, RunnerRequest.class);
         assertNull(req.aliasSet());
     }
+
+    @Test
+    void parsesVocabularyAndDefaultsToNull() throws Exception {
+        String withVocab = """
+            {"tenantId":"t1","source":"x","input":{},"locale":"de-DE","functionName":"r",
+             "aliasSet":null,"vocabulary":{"id":"v","structs":[{"canonical":"Driver","localized":"Fahrer","kind":"struct"}]}}
+            """;
+        RunnerRequest req = mapper.readValue(withVocab, RunnerRequest.class);
+        assertEquals("v", req.vocabulary().get("id"));
+
+        String without = """
+            {"tenantId":"t1","source":"x","input":{},"locale":"en","functionName":"r","aliasSet":null}
+            """;
+        assertNull(mapper.readValue(without, RunnerRequest.class).vocabulary());
+    }
 }
