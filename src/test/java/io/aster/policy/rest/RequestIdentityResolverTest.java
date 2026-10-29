@@ -1,6 +1,7 @@
 package io.aster.policy.rest;
 
 import io.aster.policy.tenant.TenantContext;
+import io.aster.security.apikey.InternalCallerFilter;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.ext.web.RoutingContext;
 import jakarta.ws.rs.container.ContainerRequestContext;
@@ -11,7 +12,9 @@ import java.lang.reflect.Field;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -295,5 +298,40 @@ class RequestIdentityResolverTest {
         assertEquals(List.of(), resolver(new TenantContext(), mock(ContainerRequestContext.class),
             rctxWith("X-User-Business-Roles", null)).businessRoles());
         assertEquals(List.of(), resolver(new TenantContext(), null, null).businessRoles());
+    }
+
+    // ── internalSessionCall（Free 计划界面执行 hotfix）──────────────────────
+
+    @Test
+    @DisplayName("HMAC 已验签且无 API key → 内部会话调用（不计 API 配额）")
+    void internalSessionWhenHmacVerifiedWithoutApiKey() throws Exception {
+        ContainerRequestContext ctx = mock(ContainerRequestContext.class);
+        when(ctx.getProperty(InternalCallerFilter.HMAC_VERIFIED_PROP)).thenReturn(Boolean.TRUE);
+
+        assertTrue(resolver(new TenantContext(), ctx, null).internalSessionCall());
+    }
+
+    @Test
+    @DisplayName("带已验证 API key → 不是内部会话调用，即使同时盖了 HMAC 章")
+    void notInternalSessionWhenApiKeyPresent() throws Exception {
+        ContainerRequestContext ctx = ctxWith(RequestIdentityResolver.PROP_API_KEY_ID, "key-1");
+        when(ctx.getProperty(InternalCallerFilter.HMAC_VERIFIED_PROP)).thenReturn(Boolean.TRUE);
+
+        assertFalse(resolver(new TenantContext(), ctx, null).internalSessionCall());
+    }
+
+    @Test
+    @DisplayName("未验签（只带 X-Internal-Caller 等头）→ 不是内部会话调用，仍按 API 调用计")
+    void notInternalSessionWithoutHmacStamp() throws Exception {
+        RoutingContext rctx = rctxWith("X-Internal-Caller", "cloud-bff");
+        assertFalse(resolver(new TenantContext(), mock(ContainerRequestContext.class), rctx).internalSessionCall());
+        assertFalse(resolver(new TenantContext(), null, rctx).internalSessionCall());
+    }
+
+    @Test
+    @DisplayName("HMAC 章必须是 Boolean.TRUE：字符串等其它值不算")
+    void notInternalSessionWhenStampIsNotBooleanTrue() throws Exception {
+        assertFalse(resolver(new TenantContext(),
+            ctxWith(InternalCallerFilter.HMAC_VERIFIED_PROP, "true"), null).internalSessionCall());
     }
 }

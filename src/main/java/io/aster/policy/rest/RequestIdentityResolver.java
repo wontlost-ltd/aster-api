@@ -1,6 +1,7 @@
 package io.aster.policy.rest;
 
 import io.aster.policy.tenant.TenantContext;
+import io.aster.security.apikey.InternalCallerFilter;
 import io.vertx.ext.web.RoutingContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -170,6 +171,21 @@ public class RequestIdentityResolver {
         // 拿不到已验证身份时返回 null（无 key 的请求本就返回 null），调用方据此按
         // 「无 API key」处理，而不是按一个伪造的 key 处理。
         return jaxrsProperty(PROP_API_KEY_ID);
+    }
+
+    /**
+     * 是否为 cloud 代登录会话发起的内部调用：HMAC 已验签（{@code InternalCallerFilter} 盖章）且没有已验证的 API key。
+     *
+     * <p>这类调用不是「API 调用」：Free 计划「不含 Policy Execution API」的月度门禁与 API 调用计量都只针对
+     * API key 调用；界面执行的用量（Free 每月 1000 次执行）由 cloud 按 UsageRecord(type=execution) 计并在
+     * 调用前拦截，cloud 的 REST API（Bearer key 打 cloud）同样在 cloud 侧校验 apiAccess 与 API 调用配额后才经
+     * HMAC 转发到这里。
+     *
+     * <p>判定只认验签章，不看 {@code X-Internal-Caller} 等头是否存在：未签名或签名不对的请求拿不到章，
+     * 仍按 API 调用走配额门禁。
+     */
+    public boolean internalSessionCall() {
+        return InternalCallerFilter.isHmacVerified(jaxrsCtx) && apiKeyId() == null;
     }
 
     /** 配额归属：团队 key 为 team owner，个人 key 等于 performedBy；属性缺失（旧 cloud / 无 key）回退 performedBy。 */
