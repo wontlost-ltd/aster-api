@@ -51,32 +51,84 @@
 
 | 步骤 | 仓库 / PR | 放行条件 |
 |---|---|---|
-| 1 | **aster-cloud PR-A**：仅 `drizzle/0060_policy_version_scopes_json.sql`、`drizzle/0061_resolver_migration_columns.sql`、`drizzle/meta/*`，加上 `src/db/schema.ts` 的列定义（见下文说明） | CI 绿；image-pin PR 合并；ArgoCD PostSync 迁移 Job 成功。用下面的 SQL 确认 5 列已存在 |
+| 1 | **aster-cloud PR-A**：`drizzle/0060_policy_version_scopes_json.sql`、`drizzle/0061_resolver_migration_columns.sql`、`drizzle/meta/*` 与 `src/db/schema.ts` 的列定义（必须含 schema.ts，原因见下文）。**推荐先按方案 (a) 在生产手工加列，再合 PR-A** | 方案 (a) 的 DDL 已执行且核实 5 列存在；CI 绿；image-pin PR 合并；ArgoCD PostSync 迁移 Job 成功（drizzle 只补记录）。用下面的 SQL 核实 |
 | 2 | **aster-lang-locales** | CI 绿 |
-| 3 | **aster-lang-core #215**（`fix/reject-with-call-244`），然后是 **aster-lang-core ADR 0051 PR**（先 rebase 到 #215 之后的 main） | 两个 PR 的 CI 都绿；rebase 后重跑 tier1 parity |
+| 3 | **aster-lang-core #215**（`fix/reject-with-call-244`），然后是 **aster-lang-core ADR 0051 PR**（先 rebase 到 #215 之后的 main） | **硬门禁：#215 必须在 1.0.36 列车之前合入 core main**（原因见下文）；两个 PR 的 CI 都绿；rebase 后重跑 tier1 parity |
 | 4 | **aster-lang-truffle** | CI 绿。truffle CI 会检出 core main 并 publishToMavenLocal，所以必须在 core 合并之后 |
 | 5 | **aster-lang-ts**（含 `package.json` 1.0.37 → 1.0.38 的提交） | CI 绿；parity 测试读取 `../aster-lang-core` 的 error_codes.json，所以必须在 core 之后 |
 | 6 | **aster-lang-test**（含 `packages/js/package.json` 1.0.3 → 1.1.0） | CI 绿（tier1 parity：解析、IR、eval 全部一致） |
 | 7 | **生态 pin bump PR**：core、runtime、validation、test（packages/jvm）、locales、hi、truffle、aster-api 的 platform pin 1.0.35 → 1.0.36；aster-api 同时把 `setup-aster-build` 的 `sibling-ref` 改为 `v1.0.36` | 沿用 1.0.35 的做法（core#214、api#388 等），在列车前一起合并 |
 | 8 | **aster-lang-platform**（`chore(release): ADR 0051 版本计划`） | 本仓 CI：check-artifact、run-train.test.sh、catalog 构建 |
-| 9 | **发布列车**（见第 2 节） | preflight 全部通过；所有 tag 与制品都可见 |
-| 10 | **aster-api ADR 0051 PR** | 必须在 `v1.0.36` tag 出现之后合并：api CI 按 `sibling-ref` 检出兄弟仓 tag，tag 存在前 CI 无法变绿。合并后 push 会触发 deploy.yml，经 image-pin 和 ArgoCD 部署；新 pod 启动时由 Flyway 执行 V6.34.0 |
+| 9 | **发布列车**（见第 2 节） | 派发前确认 core main 已含 #215（`git log origin/main --oneline \| grep 244`）；preflight 全部通过；所有 tag 与制品都可见 |
+| 10 | **aster-api ADR 0051 PR** | **硬门禁：只在列车完成、各兄弟仓 `v1.0.36` tag 与 Maven 制品都已存在之后合并**：api CI 按 `sibling-ref` 检出兄弟仓 tag，tag 存在前 CI 无法变绿。合并后 push 会触发 deploy.yml，经 image-pin 和 ArgoCD 部署；新 pod 启动时由 Flyway 执行 V6.34.0 |
 | 11 | **aster-cloud PR-B**（其余全部代码，见第 3 节） | ts 1.0.38 已在 npm 上可见；CI 绿；migrate、lsp 镜像的 image-pin 已合并；Worker 已部署 |
 | 12 | **触发迁移 Job**（第 4 节），然后执行 `rollout restart` | api pod 已是新镜像；Worker 是 PR-B；migrate 镜像 digest 已是 PR-B 构建的版本 |
 
-### 为什么 cloud 必须拆成 PR-A / PR-B（裁决 R41）
+### cloud 迁移列的上线方式（裁决 R41，经 R46 修订）
 
-- Worker 发布很快，几分钟内就上线；drizzle 迁移则要走 migrate 镜像构建 → image-pin PR → ArgoCD PostSync Job 这条链，会晚一些。
-- PR-B 的代码对 `"PolicyVersion"` 做整行查询，会选到 `sourceScopesJson` 和 4 个 resolver 列。只要列还没加上，这些查询就全部 500。
-- db-bootstrap 冷启动补列只是兜底，它覆盖不到只走 API 的路由。真正的控制手段是先让迁移在生产落地并核实，再发代码。
-- 2026-10-24 起 Worker 改由 CI 门控，部署会等「Wait for migration applied」。拆分仍然保留，原因有两点：一是迁移能被单独验证；二是代码出问题时，可以只回退 PR-B，不碰数据库结构。
+为什么要先让列落地，再发 PR-B 代码：
 
-**PR-A 必须包含 `src/db/schema.ts` 的列定义**：
+- Worker 发布很快，几分钟内就上线；drizzle 迁移要走 migrate 镜像构建 → image-pin PR → ArgoCD PostSync Job 这条链，会晚一些。
+- schema.ts 一旦声明了新列，drizzle 对 `"PolicyVersion"` 的整行查询和插入都会带上 `sourceScopesJson` 与 4 个 resolver 列。列不存在时，这些语句全部 500。
+- 2026-10-24 起 Worker 由 CI 门控（第 0 节第 4 条），部署会等「Wait for migration applied」。但门控可能被绕过：stalegate 跳过、break-glass 本地部署、`ENABLE_CI_WORKER_DEPLOY` 被关闭。所以不能只依赖门控。
 
-- 裁决 R41 原文写的是 PR-A 不含 schema.ts，但这样走不通。cloud CI 的 `build` job 里有「Check Drizzle schema drift」检查，它对比 schema.ts 与 drizzle/meta 的最新快照。PR-A 带了 0061 快照却不改 schema.ts，`pnpm db:generate` 会生成删列迁移，build 就会失败。
-- `build-migrate-image` 依赖 `build`。build 失败，迁移镜像就不会构建，迁移永远不会落地，形成死锁。
-- `scripts/ci/check-migration-split.mjs` 把 `src/db/schema.ts` 和 `drizzle/meta/` 视为迁移的一部分，所以「SQL + meta + schema.ts」仍然是一个纯迁移 PR，不需要 `migration-and-code` 标签。
-- schema.ts 进入 PR-A 后，整行查询会立刻选到新列。这依赖第 0 节第 4 条的 CI 门控：Worker 部署要等迁移 Healthy。合并前务必确认这个门控有效。
+**PR-A 必须包含 `src/db/schema.ts` 的列定义**（R41 原文「PR-A 不含 schema.ts」不可行）：
+
+- cloud CI 的 `build` job 有「Check Drizzle schema drift」检查，比对 schema.ts 与 drizzle/meta 最新快照。PR-A 带 0061 快照而不改 schema.ts，`pnpm db:generate` 会生成删列迁移，build 失败。
+- `build-migrate-image` 依赖 `build`。build 失败，迁移镜像不会构建，迁移永远落不了地，形成死锁。
+- `scripts/ci/check-migration-split.mjs` 把 `src/db/schema.ts` 与 `drizzle/meta/` 视为迁移的一部分，所以「SQL + meta + schema.ts」仍是纯迁移 PR，不需要 `migration-and-code` 标签。
+
+既然 schema.ts 必须随 PR-A 上线，下面两种方式二选一。
+
+#### 方案 (a)（推荐）：合并 PR-A 之前，先在生产手工执行加列 DDL，零停机
+
+这段 DDL 与 0060、0061 的 SQL 逐句相同，全部是 `ADD COLUMN IF NOT EXISTS`：
+
+- 只改目录（catalog），不重写表：可空列无默认值；`archivedByResolverMigration` 的常量默认值 false 在 PG 11 及以上走 fast default。
+- 只短暂持有 ACCESS EXCLUSIVE 锁，所以加了 `lock_timeout`。超时就重试，不要去掉 lock_timeout。
+
+用表 owner 执行。`"PolicyVersion"` 的 owner 是 aster-cloud-db-credentials 的账号，即 drizzle 迁移所用账号：
+
+```sql
+\set ON_ERROR_STOP on
+SET lock_timeout = '5s';
+BEGIN;
+-- = drizzle/0060_policy_version_scopes_json.sql
+ALTER TABLE "PolicyVersion" ADD COLUMN IF NOT EXISTS "sourceScopesJson" text;
+-- = drizzle/0061_resolver_migration_columns.sql
+ALTER TABLE "PolicyVersion" ADD COLUMN IF NOT EXISTS "resolverVersion" integer;
+ALTER TABLE "PolicyVersion" ADD COLUMN IF NOT EXISTS "resolverMigrationError" text;
+ALTER TABLE "PolicyVersion" ADD COLUMN IF NOT EXISTS "archivedByResolverMigration" boolean DEFAULT false NOT NULL;
+ALTER TABLE "PolicyVersion" ADD COLUMN IF NOT EXISTS "statusBeforeArchive" "PolicyVersionStatus";
+COMMIT;
+```
+
+之后合并 PR-A，PostSync migrate Job 会照常运行，结果是空操作加补记录。原因：
+
+- drizzle-orm 的 migrator 只比较 `drizzle.__drizzle_migrations` 中最新一条的 `created_at` 与 journal 的 `when`。0060（1793236549259）、0061（1793242575570）比库里最新的 0059 新，所以会执行这两个文件。
+- 执行时每条 `ADD COLUMN IF NOT EXISTS` 只报 NOTICE「already exists, skipping」，不报错。随后写入两条迁移记录，hash 取 SQL 文件内容，与是否手工加过列无关。
+- 之后再次 sync 时，库里最新记录已是 0061，不再执行任何迁移。不会失败，也不会重复应用。
+
+本地已用 PG 16 加上 PR 版本的 migrate 镜像完整演练过一遍：
+
+1. 迁移到 0059；
+2. 手工执行上面的 DDL；
+3. 跑完整的 drizzle 迁移：5 条 NOTICE 跳过，记录从 61 条增加到 63 条，max(created_at) = 1793242575570；
+4. 再跑一次：记录数不变，成功。
+
+#### 方案 (b)：不手工加列，接受一个只由 db-bootstrap 冷启动补列兜底的短窗口
+
+- 窗口：PR-A 的 Worker 已部署、PostSync 迁移尚未落地的这段时间。CI 门控生效时，这个窗口接近 0；门控被绕过时，可能是几分钟到几十分钟。
+- 兜底范围：db-bootstrap 的 `ensureSchemaApplied` 只在 dashboard 布局渲染（`src/app/[locale]/(dashboard)/layout.tsx`）和登录路径（`src/auth.ts`）里被调用。只要窗口内任何用户打开一次控制台或登录一次，它就会对全库执行同样的 `ADD COLUMN IF NOT EXISTS`，窗口随即结束。
+- 但 PR-A 只含迁移，**补列代码要到 PR-B 才上线**。若选 (b)，要么把 `src/lib/db-bootstrap.ts` 的补列一并放进 PR-A（这样 PR-A 就成了迁移加代码的 PR，必须打 `migration-and-code` 标签并写 `## 迁移窗口容错` 小节），要么接受窗口内完全没有兜底。
+- 窗口内会 500 的是所有不经 dashboard、直接读写 `"PolicyVersion"` 的路由：
+  - `/api/v1/policies/[id]/execute`、`/api/v1/policies/[id]/versions/[version]/approve`（API key 客户端）；
+  - `/api/internal/policy-versions`：aster-api 的 What-If、Cedar 导出、runner 都经它取版本；
+  - `/api/policies/[id]`（含版本读写）、`/api/policies/[id]/execute`、`/api/policies/[id]/executions/[execId]/verify-parity`；
+  - 以及调用 version-manager 的服务端路径，例如定时回归。
+- 页面路由会在渲染 dashboard 布局时先触发补列，所以基本不受影响。
+
+**建议用方案 (a)**：一次 DDL、几秒钟，换来零 500 窗口，而且不依赖门控或兜底是否生效。
 
 PR-A 落地后的核实 SQL（aster_cloud，任何只读账号均可）：
 
@@ -96,7 +148,7 @@ SELECT id, created_at FROM drizzle.__drizzle_migrations ORDER BY id DESC LIMIT 3
 - 两次迁移都用 Java 编译：aster-api 端点在进程内编译；cloud 脚本则经 aster-api `/api/v1/policies/compile` 编译。所以：
   - **#215 已合入**：这类版本编译失败，被迁移归档，进入分诊；cloud 归入 `triage.invalidConstructForm`，api 归入 `other`。
   - **#215 未合入**：这类版本迁移「成功」并被重新封印，但执行时仍然失败。同时 cloud 保存门禁（TS）会拒绝它们，结果两边不一致。
-- 因此 **#215 必须与 ADR 0051 同在 1.0.36 发布**，并且先于 core ADR PR 合并。本地试合并（ADR 分支 + #215）没有文本冲突。rebase 后要重跑 `./gradlew check` 与 tier1 parity。
+- 因此 **#215 必须在 1.0.36 列车派发之前合入 core main**，与 ADR 0051 同在 1.0.36 发布，并且先于 core ADR PR 合并。若列车前 #215 还没合入，就推迟列车，不要先发 ADR 0051、再补 #215。本地试合并（ADR 分支 + #215）没有文本冲突。rebase 后要重跑 `./gradlew check` 与 tier1 parity。
 - #215 的诊断文案是 "Expected 'set to' in construction"。cloud 分诊的 `invalidConstructForm` 是启发式判断（P005 + 源码正则）。#215 合入后，用一条 `mit f = v` 样例确认 aster-api 返回的诊断码；如果不是 P005，这些行会落到 `otherCompile`，人工归类即可。
 
 ## 2. 发布列车
@@ -146,20 +198,32 @@ gh workflow run release-train.yml --repo aster-cloud/aster-lang-platform --ref m
 - npm `@aster-cloud/aster-lang-ts@1.0.38` 可见；
 - npm `@aster-cloud/aster-lang-test@1.1.0` 可见，tag 为 `npm-v1.1.0`。
 
+**aster-api 特性 PR 的门禁**：只在本次列车完成、各兄弟仓 `v1.0.36` tag 与 Maven 制品都已存在之后合并（第 1 节第 10 步）。列车 preflight 只要求 api main 的 pin 已是 1.0.36，这由第 7 步的 pin bump PR 满足，不需要特性代码先进 main。
+
 列车第 5 层的 aster-api:service 部署的是当时 api main 上的代码。按上表，那时 ADR PR 还没合并，部署的是旧代码配新 pin，这是无害的重复部署。第 10 步合并 ADR PR 后，会再走一次 deploy.yml → image-pin → ArgoCD。
 
 ## 3. cloud PR-B：依赖切回正式版本（裁决 R3）
 
 开发期 cloud 用的是本地包 `file:.e2e-local/aster-lang-ts-local.tgz`。PR-B 合并前要完成以下几项：
 
-1. `package.json` 与 `lsp-package.json` 都改为 `"@aster-cloud/aster-lang-ts": "1.0.38"`，写精确版本。`scripts/check-lsp-pin.mjs` 比较的是两边的字符串。
+1. `package.json`、`lsp-package.json`、`migrate-package.json` 三处都改为 `"@aster-cloud/aster-lang-ts": "1.0.38"`，写精确版本。`scripts/check-lsp-pin.mjs` 逐字比较这三处，auto-upgrade 的 bump-pins 也会一并改写它们。
 2. 执行 `pnpm install` 重新生成 `pnpm-lock.yaml`，确认锁文件里不再有 `file:.e2e-local`。
-3. `node scripts/check-lsp-pin.mjs` 退出码为 0。开发期唯一的两个已知失败用例是 check-lsp-pin（on-prem 与 saas），切换后应当消失。`pnpm test:run` 应全绿。
-4. **扩展 `Dockerfile.migrate`**。现有 migrate 镜像只拷贝了 `drizzle/` 和 `scripts/migrate.ts`，没有 resolver 迁移脚本及其依赖。迁移 Job 的第 3 步在这个镜像里执行 `node --conditions=import --import tsx scripts/resolver-migration.ts`，所以镜像里需要：
-   - `scripts/resolver-migration.ts`、`src/`、`tsconfig.json`（tsx 靠它解析 `@/` 路径别名）；
-   - 生产依赖：`@aster-cloud/aster-lang-ts`、drizzle-orm、postgres、dotenv、tsx 等。
+3. `node scripts/check-lsp-pin.mjs` 退出码为 0。开发期已知的 4 个失败用例是 check-lsp-pin 的 lsp 与 migrate 两项，各在 on-prem 和 saas 下失败一次，切换后应当全部消失。`pnpm test:run` 应全绿。
+4. **迁移镜像已包含 resolver 迁移脚本**（cloud 提交 `chore(migrate-image): 迁移镜像包含 resolver 迁移脚本（ADR 0051）`，随 PR-B 合入）：
+   - `Dockerfile.migrate` 按 `migrate-package.json` 精确钉版、用 npm 安装依赖：aster-lang-ts、dotenv、prom-client、drizzle-orm、postgres、tsx 等；
+   - 拷入 `tsconfig.json`（tsx 靠它解析 `@/` 别名）、`src/` 和 `scripts/resolver-migration.ts`；
+   - drizzle 迁移的 CMD 不变。
 
-   也可以在镜像构建时预先打包成单文件，再相应修改 k3s CronJob 的命令。验证方法：用该镜像执行 `pnpm ops:resolver-migration --help`，或执行等价的 node 命令，输出 USAGE、退出码为 0。
+   k3s Job 第 3 步的命令与镜像内入口逐字一致：`node --conditions=import --import tsx scripts/resolver-migration.ts`（workingDir `/app`）。
+
+   本地已用 podman 构建验证，tag 只打在本地。构建时把 aster-lang-ts 临时指向开发期的 tgz，因为 1.0.38 还没发布。在只读根文件系统、uid 1000、`/tmp` 为 tmpfs 的条件下：
+   - `--help` 正常输出；
+   - 缺少环境变量时以退出码 2 拒绝运行；
+   - 对本地 PG 先用该镜像的默认 CMD 跑完全部 drizzle 迁移，再跑 resolver 迁移：空表时 processed=0，退出码 0；
+   - 插入一行后，脚本向桩服务发出带签名的 `/api/v1/policies/compile`，桩返回 503，该行被判为 infrastructure，退出码 1，行未被改动。
+
+   镜像约 640 MB。
+   触发 Job 前，核对 k3s image-lock 里 aster-cloud-migrate 的 sourceSha 是含该提交的 main。
 5. **关掉 auto-upgrade 自动开出的升级 PR**。ts 1.0.38 发布后，`auto-upgrade.yml` 会按 npm latest 自动开 `chore(deps): upgrade @aster-cloud/aster-lang-ts to 1.0.38` 之类的 PR。旧 main 搭配新引擎会失败（全局替换 API 已删除），不能合并。依赖升级由 PR-B 承担。aster-dev 也用同一份升级脚本，那边也要拦住或同步适配。
 
 ## 4. 存量重编译 Job
@@ -201,7 +265,10 @@ Pod 内按以下顺序执行，任何一步失败 Pod 即失败，不自动重�
    - 先确认两库的新列已存在，缺列时以退出码 2 拒绝运行；
    - 对 aster_api 的 `policy_versions`、`policy_artifacts` 和 aster_cloud 的 `"PolicyVersion"`、`"UserVocabularySnapshot"` 做 `pg_dump -Fc`，同时导出逐行 CSV；
    - 写入 PVC `aster-adr0051-migration-backup` 下的 `/backup/adr0051/<UTC 时间戳>/`，附带 `pending-before.txt` 和 `SHA256SUMS`。
-   - aster_api 用 aster_migrator（表 owner）导出，因为 pg_dump 需要读取序列。
+   - aster_api 用 `aster-api-migrator-credentials`（aster_migrator，也就是 Flyway 用的表 owner）导出，只读使用。原因：`pg_dump -t policy_versions` 会一并导出表自带序列 `policy_versions_id_seq` 的状态，执行 `SELECT last_value FROM …_seq`，这需要序列的 SELECT 权限。运行时账号 aster_api_user 只有表的增删改查和序列 USAGE 权限，pg_dump 会报 `permission denied for sequence`。
+     - 本地 PG 16 用同样的权限布局验证过：运行时类角色失败；owner 类角色成功。
+     - 不改用 `--data-only` 加补授权，是为了不为一次备份去改生产权限。
+   - aster_cloud 的表 owner 就是 aster-cloud-db-credentials 的账号，直接使用。
 2. **api-migration**：
    - 调用 `POST /api/v1/admin/resolver-migration/run?batchSize=50`。签名用 admin HMAC，密钥是 `aster-api-plan-gate-credentials/hmac-key`；
    - 直连集群内地址 `http://aster-api.aster-cloud.svc.cluster.local`；
