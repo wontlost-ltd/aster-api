@@ -153,7 +153,22 @@ class CedarExportServiceTest {
         var out = service.exportSource(src, "en-US", null, null, null);
         assertThat(out.exportable()).isFalse();
         assertThat(out.diagnostics()).extracting(CompileDiagnostic::code).containsExactly("E720");
-        assertThat(out.diagnostics().get(0).message()).contains("function name required");
+        assertThat(out.diagnostics().get(0).message())
+            .contains("several rules can be exported (first, second)")
+            .contains("choose one");
+    }
+
+    /** 2026-10-30 生产复测 H：没有 guard 形态的规则时，E720 曾报 "function name required"，误导用户去找函数名。 */
+    @Test
+    void noGuardShapedRuleIsE720WithShapeReason() {
+        String src = "Module verdict.only.\n\nDefine Fahrer has alter as Int.\n\n"
+            + "@id(\"V-1\")\nRule decide given f as Fahrer, produce Verdict:\n  Return Verdict.allow().\n";
+        var out = service.exportSource(src, "en-US", null, null, null);
+        assertThat(out.exportable()).isFalse();
+        assertThat(out.diagnostics()).extracting(CompileDiagnostic::code).containsExactly("E720");
+        assertThat(out.diagnostics().get(0).message())
+            .contains("no rule has the guard request shape")
+            .doesNotContain("function name required");
     }
 
     @Test
