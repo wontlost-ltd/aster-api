@@ -382,10 +382,16 @@ Pod 内按以下顺序执行，任何一步失败 Pod 即失败，不自动重�
    - 直连集群内地址 `http://aster-api.aster-cloud.svc.cluster.local`；
    - 端点是同步的，一次处理完所有待迁移行。Job 按轮调用，`processed == 0` 或 `succeeded == 0` 时停止，最多 5 轮；
    - 结果写入 `api-report.json`；
-   - 端点对行级基础设施异常（数据库错误等）也返回 200，error 形如 `<异常类名>: <消息>`，即匹配 `^\w+(Exception|Error): `。这些行没有被归档、保持待迁移，单独归入 `infrastructure`，本步以退出码 1 结束，第 3 步不会运行。修复后重新触发即可。
+   - 有些失败行端点**不会归档**，而是保持待迁移，但 HTTP 仍返回 200。端点响应的 failures 只有 `{ id, error }`，没有「是否已归档」的字段，所以脚本只能按 aster-api 写出的错误文本归类：
+     - 行级异常，例如数据库错误：error 形如 `<异常类名>: <消息>`；
+     - 不带源码诊断的编译失败：aster-api dbc3761 起不再归档这类行，error 为 `CNL 编译失败: <消息>` 或 `CNL 源代码不能为空`。
+
+     这两类都归入 `infrastructure`；完整性不一致的行另归 `integrityMismatch`。两组合计写入报告的 `needsAttention`。
+   - 本步自身只在 HTTP 错误、传输错误或配置缺失时失败，**不会因为 needsAttention 提前失败**，以免挡住第 3 步的 cloud 迁移。
 3. **cloud-migration**：
    - 执行 cloud 迁移脚本，`--report cloud-report.json`；
    - 然后打印汇总，并写入 `SUMMARY.txt`。
+   - Job 的最终退出码由汇总决定：cloud 脚本非 0 时用它的退出码；否则 aster-api 的 needsAttention 大于 0 时为 1；都没有则为 0。
 
 ### 4.3 读报告
 
@@ -402,8 +408,8 @@ aster-cloud "PolicyVersion": processed=… succeeded=… failed=… exit=…
 | 分组 | 含义 | 处理 |
 |---|---|---|
 | `e8xx` | 依赖旧全局替换的本地化策略。api 版本不带词汇，按设计编译失败并被归档（`archived_by_resolver_migration = true`） | 这是设计内结果。用户改写，或在 cloud 侧用词汇重建 |
-| `integrityMismatch` | `pre-migration integrity mismatch`：旧封印对不上（篡改证据，或 envelope 有值但工具链串为空） | **行没有被归档，也没有被改动**。每次重跑都会再报，必须人工调查 |
-| `infrastructure` | 行级基础设施异常（error 匹配 `^\w+(Exception|Error): `，例如数据库错误），行没有被归档，保持待迁移 | 修复后重跑；本步以退出码 1 结束 |
+| `integrityMismatch` | `pre-migration integrity mismatch`：旧封印对不上（篡改证据，或 envelope 有值但工具链串为空） | **行没有被归档，也没有被改动**。计入 needsAttention，Job 最终以 1 结束；每次重跑都会再报，必须人工调查 |
+| `infrastructure` | 未归档、保持待迁移的非源码失败：行级异常（error 匹配 `^\w+(Exception|Error): `，例如数据库错误），以及不带源码诊断的编译失败（`CNL 编译失败: …`、`CNL 源代码不能为空`，即编译器内部异常，dbc3761 起不再归档） | 计入 needsAttention，Job 最终以 1 结束。看 aster-api 日志里的 `resolver 迁移遇到非源码失败` 或 `resolver 迁移行异常`，修复后重跑；如果同一批行持续出现，就逐条人工排查 |
 | `other` | 其它编译失败，例如 #215 之后的 `with f = v` | 逐条看 `error` |
 
 **cloud 侧**（`cloud-report.json` 的 `triage`，脚本 `--help` 里有同样的说明）：
@@ -421,17 +427,18 @@ aster-cloud "PolicyVersion": processed=… succeeded=… failed=… exit=…
 **退出码与重跑**：
 
 - 退出码：
-  - api-migration：0 = 拿到报告，失败行都是设计内结果；1 = HTTP 或传输错误，或者有行级基础设施异常；2 = 配置缺失。
+  - api-migration（init 容器）：0 = 拿到报告，包括存在 needsAttention 的情况；1 = HTTP 或传输错误；2 = 配置缺失。
+  - Job 的最终退出码：由 `summary.mjs` 决定，规则见第 4.2 节第 3 步。
   - cloud 脚本：0 = 每一行都有结论；1 = 存在基础设施故障；2 = 配置缺失或脚本错误。
 - **重跑是幂等的**：成功行会被跳过；失败行（`resolverVersion` 为 NULL）会被重试；行在加锁后会复查。按 4.2 重新 `create job` 即可，每次都会生成一份新的备份目录。
 - **如果多次重跑仍以退出码 1 结束，而且 `infrastructure` 里一直是同一批行，说明不是瞬时故障**，必须人工排查（R45 遗留项），不要无限重跑。
-- 设计内的编译失败（E8xx、无效构造写法、E801、词条非法、完整性不一致）不会让 Job 失败。**以下情况 Job 会失败**：
+- 带源码诊断、已被归档的编译失败（E8xx、无效构造写法、E801、词条非法等）是设计内结果，不会让 Job 失败。**以下情况 Job 会失败**：
   - api 侧的 HTTP 或传输错误；
-  - api 侧的行级基础设施异常（`infrastructure`）；
+  - api 侧有未归档、保持待迁移的行，即 `infrastructure` 加 `integrityMismatch`（needsAttention）；
   - cloud 侧的 `infrastructure`；
   - 配置缺失。
 
-  所以 Job 成功 = 两侧都没有基础设施问题，每一行都有结论。
+  cloud 侧的 `integrityMismatch` 沿用 cloud 脚本自身的口径，不改变退出码，但同样需要人工复核。所以 Job 成功意味着：aster-api 侧每一行要么迁移成功，要么带源码诊断被归档；cloud 侧没有基础设施故障。
 
 **收尾**：
 
