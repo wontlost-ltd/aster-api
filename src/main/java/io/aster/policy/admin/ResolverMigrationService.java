@@ -175,18 +175,18 @@ public class ResolverMigrationService {
     }
 
     /**
-     * 迁移前先按旧封印核对完整性：有 envelope 的按其格式重算比对，无 envelope 的比对 source_hash。
+     * 迁移前先按旧封印核对完整性：有 envelope 的按其格式重算比对（缺工具链串即视为不符），无 envelope 的比对 source_hash。
      * 不符说明行已被改动，重新封印会把篡改洗成 INTACT，故不封印、不改链、不归档（篡改不是名称解析失败），
      * 只记错误留给人工处理。
      */
     private boolean sealIntact(PolicyVersion v) {
-        var status = envelopeVerifier.verify(v).status();
-        if (status == PolicyVersionEnvelopeVerifier.VerifyResult.Status.SKIPPED_LEGACY) {
+        if (v.sourceEnvelopeSha256 == null || v.sourceEnvelopeSha256.isBlank()) {
             String actual = AdminHmacVerifier.sha256Hex(
                 (v.content == null ? "" : v.content).getBytes(StandardCharsets.UTF_8));
             return actual.equals(v.sourceHash);
         }
-        return status == PolicyVersionEnvelopeVerifier.VerifyResult.Status.INTACT;
+        // 有 envelope 却缺工具链串时校验器返回 SKIPPED_LEGACY：无法重算旧封印，alias_set 等可能已被改动，按不一致处理
+        return envelopeVerifier.verify(v).status() == PolicyVersionEnvelopeVerifier.VerifyResult.Status.INTACT;
     }
 
     private void writeSuccess(PolicyVersion v, String coreJson) {

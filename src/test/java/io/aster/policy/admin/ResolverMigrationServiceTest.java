@@ -130,6 +130,27 @@ class ResolverMigrationServiceTest {
     }
 
     @Test
+    void envelopeWithoutToolchainIsIntegrityMismatch() {
+        String prefix = prefix();
+        List<Long> ids = seed(prefix + "p", List.of(OK_SRC), List.of(VersionStatus.APPROVED));
+        // 有 envelope 但工具链串缺失、alias_set 被改：source_hash 仍与 content 相符，也不得重新封印
+        sql("UPDATE policy_versions SET source_toolchain_id = NULL, "
+            + "alias_set = '{\"TIMES\":[\"multiplied by\"]}' WHERE id = :id", ids.get(0));
+        PolicyVersion before = load(ids.get(0));
+
+        var report = migration.run(50, prefix);
+
+        assertThat(report.failures()).singleElement().satisfies(f ->
+            assertThat(f.error()).isEqualTo(ResolverMigrationService.INTEGRITY_ERROR));
+        PolicyVersion after = load(ids.get(0));
+        assertThat(after.status).isEqualTo(VersionStatus.APPROVED);
+        assertThat(after.archivedByResolverMigration).isFalse();
+        assertThat(after.resolverVersion).isNull();
+        assertThat(after.sourceEnvelopeSha256).isEqualTo(before.sourceEnvelopeSha256);
+        assertThat(after.sourceToolchainId).isNull();
+    }
+
+    @Test
     void createVersionWaitsForMigrationLockOnChainTail() throws Exception {
         String prefix = prefix();
         java.util.UUID catalogId = QuarkusTransaction.requiringNew().call(() -> {
