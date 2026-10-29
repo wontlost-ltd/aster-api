@@ -80,9 +80,11 @@ public class CedarExportService {
                 sourceHash, errors);
         }
         CoreModel.Module module = readModule(compiled.getCoreJson());
-        String fn = (functionName == null || functionName.isBlank()) ? soleGuardFunction(module) : functionName;
+        boolean unnamed = functionName == null || functionName.isBlank();
+        List<String> candidates = unnamed ? guardFunctions(module) : List.of();
+        String fn = !unnamed ? functionName : candidates.size() == 1 ? candidates.get(0) : null;
         if (fn == null) {
-            Diagnostic required = GuardShape.notExportable(module.name, "function name required", module.origin);
+            Diagnostic required = GuardShape.notExportable(module.name, functionRequiredReason(candidates), module.origin);
             return new CedarExportOutcome(false, null, null, module.name, null, null, module.profile, List.of(), 0, 0,
                 sourceHash, List.of(toCompileDiagnostic(required)));
         }
@@ -225,15 +227,26 @@ public class CedarExportService {
     // ---------- 辅助 ----------
 
     // 未指定函数名时，只接受模块中唯一一个通过 guard 形状检查的函数
-    private static String soleGuardFunction(CoreModel.Module module) {
+    /** 模块中可通过 GuardShape 的函数名（声明顺序）。 */
+    private static List<String> guardFunctions(CoreModel.Module module) {
         if (module.decls == null) {
-            return null;
+            return List.of();
         }
-        List<String> candidates = module.decls.stream()
+        return module.decls.stream()
             .filter(d -> d instanceof CoreModel.Func f && GuardShape.check(module, f, new ArrayList<>()).isPresent())
             .map(d -> ((CoreModel.Func) d).name)
             .toList();
-        return candidates.size() == 1 ? candidates.get(0) : null;
+    }
+
+    /**
+     * 未指定函数名且无法唯一确定导出规则时 E720 的原因。
+     * 没有候选时说明缺的是 guard 形态（E720 的 help 列出具体要求），而不是让人去找函数名；
+     * 多个候选时列出它们，供调用方选择。
+     */
+    static String functionRequiredReason(List<String> candidates) {
+        return candidates.isEmpty()
+            ? "no rule has the guard request shape"
+            : "several rules can be exported (" + String.join(", ", candidates) + "); choose one";
     }
 
     private static String ruleLabel(CedarExport exp) {
