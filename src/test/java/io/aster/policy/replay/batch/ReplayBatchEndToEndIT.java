@@ -291,6 +291,84 @@ class ReplayBatchEndToEndIT {
         assertThat(itemColumn(batchId, "v3", "target_approved")).isEqualTo("false");
     }
 
+    /** ADR 0051 §1 复现 3/4：参数与类型同词、同一本地化字段名 alter 在两个 struct 中对应不同规范字段。 */
+    private static final String GERMAN_TARGET = """
+        Modul M.
+
+        Definiere Fahrer hat alter als Ganzzahl.
+
+        Definiere Fahrzeug hat alter als Ganzzahl.
+
+        Regel decide gegeben fahrer als Fahrer, wagen als Fahrzeug, liefert Boolesch:
+          gib zurueck fahrer.alter groesser als wagen.alter.
+        """;
+
+    private ExecutionWindowClient.WindowedExecution execGerman(String id, int age, int vehicleAge, String decision) {
+        return new ExecutionWindowClient.WindowedExecution(
+            id, Map.of("fahrer", Map.of("age", age), "wagen", Map.of("vehicleAge", vehicleAge)), decision, true,
+            "decide", "de-DE", new JsonObject(), String.valueOf(targetVersionRowId), null);
+    }
+
+    /** ADR 0051：目标版本携带词汇快照时，What-If 重跑按位置解析后得出正确结论。 */
+    @Test
+    void 德语目标版本带词汇时按位置解析重跑() {
+        stubWindow(List.of(execGerman("g1", 30, 5, "approved"), execGerman("g2", 3, 5, "approved")));
+        Map<String, Object> vocabulary = io.aster.policy.parser.GermanReproductions.SAME_FIELD_TWO_STRUCTS.vocabulary();
+        Mockito.when(versionSourceClient.fetch(Mockito.anyString(), Mockito.anyString()))
+            .thenReturn(java.util.Optional.of(new PolicyVersionSourceClient.VersionSource(
+                "pv-2", "p-e2e", 2, GERMAN_TARGET, vocabulary)));
+        UUID batchId = seedPendingBatch();
+        service.claimNextPending();
+        service.runBatch(batchId);
+        JsonObject summary = summaryOf(batchId);
+        assertThat(itemColumn(batchId, "g1", "success")).isEqualTo("true");
+        assertThat(itemColumn(batchId, "g1", "target_approved")).isEqualTo("true");
+        assertThat(itemColumn(batchId, "g2", "target_approved")).isEqualTo("false");
+        assertThat(summary.getInteger("changed")).isEqualTo(1);
+        assertThat(summary.getInteger("newlyRejected")).isEqualTo(1);
+    }
+
+    /** 结构体以规范名声明、规则以本地化名引用：只有带词汇才能解析，无词汇时名称解析 E8xx。 */
+    private static final String GERMAN_TARGET_NEEDS_VOCABULARY = """
+        Modul M.
+
+        Definiere Driver hat age als Ganzzahl.
+
+        Regel decide gegeben fahrer als Fahrer, liefert Boolesch:
+          gib zurueck fahrer.alter groesser als 18.
+        """;
+
+    /** ADR 0051：目标版本编译不过（无词汇时本地化名 E8xx）归为目标编译错误，而不是怪历史输入。 */
+    @Test
+    void 德语目标版本缺词汇时归为目标编译错误() {
+        stubWindow(List.of(new ExecutionWindowClient.WindowedExecution(
+            "c1", Map.of("fahrer", Map.of("age", 30)), "approved", true,
+            "decide", "de-DE", new JsonObject(), String.valueOf(targetVersionRowId), null)));
+        stubTarget(GERMAN_TARGET_NEEDS_VOCABULARY);
+        UUID batchId = seedPendingBatch();
+        service.claimNextPending();
+        service.runBatch(batchId);
+        assertThat(itemColumn(batchId, "c1", "success")).isEqualTo("false");
+        assertThat(itemColumn(batchId, "c1", "failure_kind")).isEqualTo("TARGET_COMPILE_ERROR");
+    }
+
+    /** cloud 下发的词汇同样受 VocabularyBounds 约束：超限归为词汇不可用。 */
+    @Test
+    void 目标版本词汇超限时归为词汇不可用() {
+        stubWindow(List.of(execGerman("v1", 30, 5, "approved")));
+        Map<String, Object> oversized = new java.util.HashMap<>(
+            io.aster.policy.parser.GermanReproductions.SAME_FIELD_TWO_STRUCTS.vocabulary());
+        oversized.put("fields", java.util.Collections.nCopies(
+            io.aster.policy.rest.model.VocabularyBounds.MAX_ENTRIES_PER_SECTION + 1, 1));
+        Mockito.when(versionSourceClient.fetch(Mockito.anyString(), Mockito.anyString()))
+            .thenReturn(java.util.Optional.of(new PolicyVersionSourceClient.VersionSource(
+                "pv-2", "p-e2e", 2, GERMAN_TARGET, oversized)));
+        UUID batchId = seedPendingBatch();
+        service.claimNextPending();
+        service.runBatch(batchId);
+        assertThat(itemColumn(batchId, "v1", "failure_kind")).isEqualTo("VOCABULARY_UNAVAILABLE");
+    }
+
     /** 目标版本返回值输出（Int），不是准入决策 → 解读为 INDETERMINATE。 */
     private static final String VALUE_TARGET =
         "Module M.\n\nRule decide given amount as Int, produce Int:\n  Return amount.\n";

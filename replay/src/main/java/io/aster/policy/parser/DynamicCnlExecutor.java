@@ -3,7 +3,6 @@ package io.aster.policy.parser;
 import aster.core.ast.Module;
 import aster.core.ast.Decl;
 import aster.core.ir.CoreModel;
-import aster.core.lowering.CoreLowering;
 import aster.core.module.LinkException;
 import aster.core.module.ModuleGraphLinker;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -56,7 +55,7 @@ public class DynamicCnlExecutor {
     private static final ConcurrentHashMap<String, Source> sourceCache = new ConcurrentHashMap<>();
 
     // CNL 编译产物缓存：只缓存 parse/lower/serialize 的稳定结果，不缓存执行结果。
-    // key 覆盖 source/locale/aliasSet/identifierIndex/aliasesTrusted；含 import 的模块不写入。
+    // key 覆盖 source/locale/aliasSet/词汇 scopesHash/toolchainId/aliasesTrusted；含 import 的模块不写入。
     private static final ConcurrentHashMap<CoreIrCacheKey, CompiledCoreIr> coreIrCache =
         new ConcurrentHashMap<>();
     private static final AtomicLong coreIrCacheHits = new AtomicLong();
@@ -169,9 +168,9 @@ public class DynamicCnlExecutor {
     }
 
     static String coreIrCacheKeyForTest(
-            String source, String locale, aster.core.identifier.IdentifierIndex identifierIndex,
+            String source, String locale, aster.core.identifier.VocabularyScopes vocabulary,
             Map<aster.core.lexicon.SemanticTokenKind, List<String>> aliasSet, boolean aliasesTrusted) {
-        return coreIrCacheKey(source, locale, identifierIndex, aliasSet, aliasesTrusted).key();
+        return coreIrCacheKey(source, locale, vocabulary, aliasSet, aliasesTrusted).key();
     }
 
     // ── 以下 static execute* 重载仅测试在用（issue #175）───────────────────
@@ -227,41 +226,40 @@ public class DynamicCnlExecutor {
     }
 
     /**
-     * 动态执行 CNL 源代码（支持命名参数格式 + 领域词汇翻译）
+     * 动态执行 CNL 源代码（支持命名参数格式 + 领域词汇）
      *
-     * <p>ADR 0014 线C：发布的策略可携带其快照领域词汇，使执行端的规范化阶段
-     * 能把用户自定义术语翻译为规范化名称。{@code identifierIndex} 为 null 时
-     * 行为与仅内置一致。
+     * <p>ADR 0051：发布的策略携带其快照领域词汇，执行端按位置把本地化名称解析为规范名。
+     * {@code vocabulary} 为 null 时与无词汇一致。
      *
      * @param source 源代码
      * @param context 评估上下文（Map 或 List/Array）
      * @param functionName 要执行的函数名
      * @param locale 语言代码
-     * @param identifierIndex 领域词汇索引，null 表示不做用户词翻译
+     * @param vocabulary 领域词汇作用域，null 表示无词汇
      * @return 执行结果
      */
     public static ExecutionResult executeWithContext(
             String source, Object context, String functionName, String locale,
-            aster.core.identifier.IdentifierIndex identifierIndex) {
-        return executeWithContext(source, context, functionName, locale, identifierIndex, true);
+            aster.core.identifier.VocabularyScopes vocabulary) {
+        return executeWithContext(source, context, functionName, locale, vocabulary, true);
     }
 
     /**
-     * 动态执行 CNL 源代码（支持命名参数格式 + 领域词汇翻译 + 入口兼容开关）
+     * 动态执行 CNL 源代码（支持命名参数格式 + 领域词汇 + 入口兼容开关）
      *
      * @param source 源代码
      * @param context 评估上下文（Map 或 List/Array）
      * @param functionName 要执行的函数名
      * @param locale 语言代码
-     * @param identifierIndex 领域词汇索引，null 表示不做用户词翻译
+     * @param vocabulary 领域词汇作用域，null 表示无词汇
      * @param legacyEvaluateSentinel 是否把显式 evaluate 视为历史自动入口哨兵
      * @return 执行结果
      */
     public static ExecutionResult executeWithContext(
             String source, Object context, String functionName, String locale,
-            aster.core.identifier.IdentifierIndex identifierIndex, boolean legacyEvaluateSentinel) {
+            aster.core.identifier.VocabularyScopes vocabulary, boolean legacyEvaluateSentinel) {
         return executeInternal(
-            source, context, functionName, locale, true, identifierIndex, legacyEvaluateSentinel,
+            source, context, functionName, locale, true, vocabulary, legacyEvaluateSentinel,
             null, null, false);
     }
 
@@ -367,9 +365,9 @@ public class DynamicCnlExecutor {
      */
     public ExecutionResult executeWithTenantContext(
             String tenantId, String source, Object context, String functionName, String locale,
-            aster.core.identifier.IdentifierIndex identifierIndex, boolean legacyEvaluateSentinel) {
+            aster.core.identifier.VocabularyScopes vocabulary, boolean legacyEvaluateSentinel) {
         return executeWithTenantContext(tenantId, source, context, functionName, locale,
-            identifierIndex, legacyEvaluateSentinel, null);
+            vocabulary, legacyEvaluateSentinel, null);
     }
 
     /**
@@ -379,11 +377,11 @@ public class DynamicCnlExecutor {
      */
     public ExecutionResult executeWithTenantContext(
             String tenantId, String source, Object context, String functionName, String locale,
-            aster.core.identifier.IdentifierIndex identifierIndex, boolean legacyEvaluateSentinel,
+            aster.core.identifier.VocabularyScopes vocabulary, boolean legacyEvaluateSentinel,
             Map<aster.core.lexicon.SemanticTokenKind, List<String>> aliasSet) {
         // 兼容重载：aliasSet 视为可信冻结快照（既有内部调用方语义）。
         return executeWithTenantContext(tenantId, source, context, functionName, locale,
-            identifierIndex, legacyEvaluateSentinel, aliasSet, true);
+            vocabulary, legacyEvaluateSentinel, aliasSet, true);
     }
 
     /**
@@ -395,10 +393,10 @@ public class DynamicCnlExecutor {
      */
     public ExecutionResult executeWithTenantContext(
             String tenantId, String source, Object context, String functionName, String locale,
-            aster.core.identifier.IdentifierIndex identifierIndex, boolean legacyEvaluateSentinel,
+            aster.core.identifier.VocabularyScopes vocabulary, boolean legacyEvaluateSentinel,
             Map<aster.core.lexicon.SemanticTokenKind, List<String>> aliasSet, boolean aliasesTrusted) {
         return executeInternal(
-            source, context, functionName, locale, true, identifierIndex, legacyEvaluateSentinel,
+            source, context, functionName, locale, true, vocabulary, legacyEvaluateSentinel,
             tenantId, moduleResolver, modulesEnabled, aliasSet, aliasesTrusted);
     }
 
@@ -410,31 +408,31 @@ public class DynamicCnlExecutor {
      * @param functionName 要执行的函数名
      * @param locale 语言代码
      * @param mapNamedContext 是否需要映射命名上下文
-     * @param identifierIndex 领域词汇索引（null 表示不做用户词翻译）
+     * @param vocabulary 领域词汇作用域（null 表示无词汇）
      * @param legacyEvaluateSentinel 是否把显式 evaluate 视为历史自动入口哨兵
      * @return 执行结果
      */
     private static ExecutionResult executeInternal(
             String source, Object context, String functionName, String locale, boolean mapNamedContext,
-            aster.core.identifier.IdentifierIndex identifierIndex, boolean legacyEvaluateSentinel,
+            aster.core.identifier.VocabularyScopes vocabulary, boolean legacyEvaluateSentinel,
             String tenantId, ModuleGraphResolver moduleResolver, boolean modulesEnabled) {
-        return executeInternal(source, context, functionName, locale, mapNamedContext, identifierIndex,
+        return executeInternal(source, context, functionName, locale, mapNamedContext, vocabulary,
             legacyEvaluateSentinel, tenantId, moduleResolver, modulesEnabled, null, true);
     }
 
     private static ExecutionResult executeInternal(
             String source, Object context, String functionName, String locale, boolean mapNamedContext,
-            aster.core.identifier.IdentifierIndex identifierIndex, boolean legacyEvaluateSentinel,
+            aster.core.identifier.VocabularyScopes vocabulary, boolean legacyEvaluateSentinel,
             String tenantId, ModuleGraphResolver moduleResolver, boolean modulesEnabled,
             Map<aster.core.lexicon.SemanticTokenKind, List<String>> aliasSet) {
         // 兼容重载：默认 aliasSet 可信（既有调用方语义）。
-        return executeInternal(source, context, functionName, locale, mapNamedContext, identifierIndex,
+        return executeInternal(source, context, functionName, locale, mapNamedContext, vocabulary,
             legacyEvaluateSentinel, tenantId, moduleResolver, modulesEnabled, aliasSet, true);
     }
 
     private static ExecutionResult executeInternal(
             String source, Object context, String functionName, String locale, boolean mapNamedContext,
-            aster.core.identifier.IdentifierIndex identifierIndex, boolean legacyEvaluateSentinel,
+            aster.core.identifier.VocabularyScopes vocabulary, boolean legacyEvaluateSentinel,
             String tenantId, ModuleGraphResolver moduleResolver, boolean modulesEnabled,
             Map<aster.core.lexicon.SemanticTokenKind, List<String>> aliasSet, boolean aliasesTrusted) {
         long startTime = System.currentTimeMillis();
@@ -442,7 +440,7 @@ public class DynamicCnlExecutor {
         try {
             // cacheKey == null 表示 lexicon 指纹算不出（罕见异常路径）→ 完全跳过缓存，
             // 直接编译（既不查也不存），保守避免跨 lexicon 版本串用。
-            CoreIrCacheKey cacheKey = coreIrCacheKey(source, locale, identifierIndex, aliasSet, aliasesTrusted);
+            CoreIrCacheKey cacheKey = coreIrCacheKey(source, locale, vocabulary, aliasSet, aliasesTrusted);
             CompiledCoreIr compiled = cacheKey == null ? null : coreIrCache.get(cacheKey);
             if (compiled != null) {
                 coreIrCacheHits.incrementAndGet();
@@ -452,7 +450,7 @@ public class DynamicCnlExecutor {
                     coreIrCacheMisses.incrementAndGet();
                 }
                 compiled = compileCoreIr(
-                    source, locale, identifierIndex, aliasSet, aliasesTrusted,
+                    source, locale, vocabulary, aliasSet, aliasesTrusted,
                     functionName, legacyEvaluateSentinel, tenantId, moduleResolver, modulesEnabled);
                 if (cacheKey != null && compiled.cacheable()) {
                     if (coreIrCache.size() >= CACHE_MAX) {
@@ -521,6 +519,8 @@ public class DynamicCnlExecutor {
             );
 
         } catch (InProcessCnlParser.CnlParseException e) {
+            // 用户源码编译不过（语法 / E8xx）：WARN 一行，不打堆栈
+            LOG.warnf("动态执行的源码未能编译: %s", e.getMessage());
             throw new DynamicExecutionException("CNL 解析失败: " + e.getMessage(), e);
         } catch (ModuleResolutionException e) {
             throw new ModuleExecutionException(e);
@@ -539,28 +539,27 @@ public class DynamicCnlExecutor {
     }
 
     private static CompiledCoreIr compileCoreIr(
-            String source, String locale, aster.core.identifier.IdentifierIndex identifierIndex,
+            String source, String locale, aster.core.identifier.VocabularyScopes vocabulary,
             Map<aster.core.lexicon.SemanticTokenKind, List<String>> aliasSet, boolean aliasesTrusted,
             String functionName, boolean legacyEvaluateSentinel,
             String tenantId, ModuleGraphResolver moduleResolver, boolean modulesEnabled) throws Exception {
-        // 1. 解析 CNL → AST（传入 locale 以支持多语言，传入 index 以翻译用户词）。
+        // 1. 解析 CNL 并按位置解析词汇（传入 locale 以支持多语言，传入词汇作用域）。
         //    带用户别名（ADR 0022）时走 parseWithUserAliases。allowStructural 按 aliasesTrusted：
         //    冻结版本可信=true（结构词已授权）；trial 现场输入=false（结构词需授权，防绕过）。
         LOG.debugf("解析 CNL 源代码... locale=%s, vocab=%s, aliases=%s, trusted=%s",
-            locale, identifierIndex != null, aliasSet != null && !aliasSet.isEmpty(), aliasesTrusted);
+            locale, vocabulary != null, aliasSet != null && !aliasSet.isEmpty(), aliasesTrusted);
         InProcessCnlParser.ParseResult parseResult = (aliasSet != null && !aliasSet.isEmpty())
-            ? InProcessCnlParser.parseWithUserAliases(source, locale, identifierIndex, aliasSet, aliasesTrusted)
-            : InProcessCnlParser.parse(source, locale, identifierIndex);
+            ? InProcessCnlParser.parseWithUserAliases(source, locale, vocabulary, aliasSet, aliasesTrusted)
+            : InProcessCnlParser.parse(source, locale, vocabulary);
         Module astModule = parseResult.module();
+        parseResult.warnings().forEach(w -> LOG.debugf("名称解析警告: %s %s", w.code().code(), w.message()));
 
-        // 先保留原入口诊断顺序：多入口/找不到入口在 lower/link 前报出。
+        // 先保留原入口诊断顺序：多入口/找不到入口在 link 前报出。
         selectTargetFunction(
             functionName, parseResult.functionNames(), parseResult.entryFunctionName(), legacyEvaluateSentinel);
 
-        // 3. 降级 AST → Core IR
-        LOG.debugf("降级 AST → Core IR...");
-        CoreLowering lowering = new CoreLowering();
-        CoreModel.Module coreModule = lowering.lowerModule(astModule);
+        // 3. 名称解析后的 Core IR（parser 内已完成 R1 → lower → R2，不得重新 lower AST）
+        CoreModel.Module coreModule = parseResult.core();
         List<Decl.Import> imports = importsOf(astModule);
         boolean cacheable = imports.isEmpty();
         if (!imports.isEmpty() && modulesEnabled) {
@@ -610,14 +609,15 @@ public class DynamicCnlExecutor {
     }
 
     private static CoreIrCacheKey coreIrCacheKey(
-            String source, String locale, aster.core.identifier.IdentifierIndex identifierIndex,
+            String source, String locale, aster.core.identifier.VocabularyScopes vocabulary,
             Map<aster.core.lexicon.SemanticTokenKind, List<String>> aliasSet, boolean aliasesTrusted) {
         try {
             java.util.TreeMap<String, Object> payload = new java.util.TreeMap<>();
             payload.put("source", source);
             payload.put("locale", locale);
             payload.put("aliasSet", UserAliasValidator.canonicalJson(aliasSet));
-            payload.put("identifierIndex", identifierIndexFingerprint(identifierIndex));
+            payload.put("scopesHash", CompileIdentity.scopesHash(vocabulary));
+            payload.put("toolchainId", CompileIdentity.toolchainId());
             payload.put("aliasesTrusted", aliasesTrusted);
             // lexicon 是可热插拔/下线的：同一 locale 在 lexicon 被替换/禁用/恢复后 parse 结果会变。
             // 纳入当前 locale 实际解析用的 lexicon 内容指纹，使 lexicon 变更后旧 Core IR 自然失效
@@ -633,18 +633,6 @@ public class DynamicCnlExecutor {
         } catch (Exception e) {
             throw new DynamicExecutionException("构建 Core IR 缓存 key 失败: " + e.getMessage(), e);
         }
-    }
-
-    private static String identifierIndexFingerprint(
-            aster.core.identifier.IdentifierIndex identifierIndex) throws Exception {
-        if (identifierIndex == null) {
-            return null;
-        }
-        java.util.TreeMap<String, Object> payload = new java.util.TreeMap<>();
-        payload.put("vocabulary", identifierIndex.getVocabulary());
-        payload.put("toCanonical", new java.util.TreeMap<>(identifierIndex.getToCanonicalMap()));
-        payload.put("toLocalized", new java.util.TreeMap<>(identifierIndex.getToLocalizedMap()));
-        return MAPPER.writeValueAsString(payload);
     }
 
     private static String sha256(String value) throws Exception {

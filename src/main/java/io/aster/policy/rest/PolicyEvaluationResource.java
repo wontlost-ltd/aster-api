@@ -994,11 +994,11 @@ public class PolicyEvaluationResource {
                         java.util.List.of(CompileDiagnostic.error(1, 1, "别名集无法处理，无法编译")),
                         "别名集序列化失败: " + se.getMessage());
                 }
-                // 领域词汇索引与执行端（ReplayExecutionCore）同一构建口径。
-                aster.core.identifier.IdentifierIndex vocabIndex =
-                    io.aster.replay.core.ReplayExecutionCore.buildVocabularyIndex(request.vocabulary());
+                // 领域词汇作用域与执行端（ReplayExecutionCore）同一构建口径（ADR 0051）。
+                aster.core.identifier.VocabularyScopes scopes =
+                    io.aster.replay.core.ReplayExecutionCore.buildVocabularyScopes(request.vocabulary());
                 CompilationResult result = policyCompiler.compile(
-                    request.source(), request.getLocaleOrDefault(), aliasSetJson, vocabIndex, allowStructural);
+                    request.source(), request.getLocaleOrDefault(), aliasSetJson, scopes, allowStructural);
                 return toCompileResponse(result);
             } catch (jakarta.ws.rs.BadRequestException bre) {
                 throw bre; // 400 直接上抛，不吞成编译失败

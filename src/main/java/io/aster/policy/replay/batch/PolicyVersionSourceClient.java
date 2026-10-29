@@ -3,6 +3,7 @@ package io.aster.policy.replay.batch;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.Optional;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -52,8 +53,18 @@ public class PolicyVersionSourceClient {
     @Inject
     io.aster.common.http.SharedWebClient sharedWebClient;
 
-    /** 一个策略版本的源码。 */
-    public record VersionSource(String versionId, String policyId, int version, String content) {
+    /**
+     * 一个策略版本的源码。
+     *
+     * @param vocabulary 版本冻结的领域词汇（DomainVocabulary JSON，ADR 0051）；cloud 未下发时为 null
+     */
+    public record VersionSource(String versionId, String policyId, int version, String content,
+                                Map<String, Object> vocabulary) {
+
+        /** 不带词汇的版本。 */
+        public VersionSource(String versionId, String policyId, int version, String content) {
+            this(versionId, policyId, version, content, null);
+        }
     }
 
     /**
@@ -107,12 +118,18 @@ public class PolicyVersionSourceClient {
                 "取策略版本源码失败，status=" + resp.statusCode());
         }
 
-        JsonObject o = resp.bodyAsJsonObject();
-        return Optional.of(new VersionSource(
+        return Optional.of(fromJson(resp.bodyAsJsonObject()));
+    }
+
+    /** cloud 响应体 → 版本源码；{@code vocabulary} 缺省或非对象时视为无词汇。 */
+    static VersionSource fromJson(JsonObject o) {
+        Object vocabulary = o.getValue("vocabulary");
+        return new VersionSource(
             o.getString("versionId"),
             o.getString("policyId"),
             o.getInteger("version", 0),
-            o.getString("content")));
+            o.getString("content"),
+            vocabulary instanceof JsonObject v ? v.getMap() : null);
     }
 
     private static String enc(String s) {

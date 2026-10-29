@@ -7,6 +7,7 @@ import io.aster.policy.parser.DynamicCnlExecutor;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.policy.replay.ReplayMetadata;
 import io.aster.replay.core.ExecutionPhaseResult;
+import io.aster.policy.rest.model.VocabularyBounds;
 import io.aster.replay.core.ReplayExecutionCore;
 import io.aster.replay.core.ReplayExecutionRequest;
 
@@ -63,6 +64,11 @@ public final class RunnerMain {
         ReplayExecutionCore core = new ReplayExecutionCore();
         StandaloneReplayExecutor executor = new StandaloneReplayExecutor();
         try {
+            // 与 API 各入口一致：先按上限校验词汇，再交给 core 建 scopes。
+            String vocabularyError = VocabularyBounds.validate(req.vocabulary());
+            if (vocabularyError != null) {
+                return RunnerEnvelope.error("VOCABULARY", vocabularyError, "parse");
+            }
             ReplayExecutionRequest coreReq = toCoreRequest(req);
             ExecutionPhaseResult phase = core.execute(coreReq, executor);
             // ★captureTrace=true：生产 replayCapture 路径用 (trace || effectiveReplayCapture)=true
@@ -84,7 +90,7 @@ public final class RunnerMain {
      * ★effectiveReplayCapture=true + trace=true：runner 的职责就是复现生产 replayCapture 路径，
      *   须与生产捕获的 ReplayMetadata 对齐（含 traceHash）。aliasesTrusted=false（runner 无 HMAC
      *   上下文，MVP 无签名——别名不受信，与 parity corpus 的 import-free/无别名子集一致）。
-     *   legacyEvaluateSentinel=false。vocabulary=null（raw，core 内建 index，null 合法退化）。
+     *   legacyEvaluateSentinel=false。vocabulary 原样透传（raw，core 内建 scopes；缺省 null 合法退化）。
      */
     private static ReplayExecutionRequest toCoreRequest(RunnerRequest req) {
         return new ReplayExecutionRequest(
@@ -93,7 +99,7 @@ public final class RunnerMain {
             /* context */ req.input(),
             req.functionName(),
             req.locale(),
-            /* vocabulary */ null,
+            req.vocabulary(),
             req.aliasSet(),
             /* legacyEvaluateSentinel */ false,
             /* aliasesTrusted */ false,

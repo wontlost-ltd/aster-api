@@ -107,15 +107,16 @@ public class PolicyVersionService {
      * 这保证同一别名集总产出同一 source envelope（可复现/跨租户一致）。
      *
      * @param aliasSet        结构化别名集，null/空=无用户别名
-     * @param identifierIndex 领域词汇索引（别名↔标识符碰撞校验），可为 null
+     * @param scopes          领域词汇作用域，只用于别名↔标识符碰撞校验，可为 null；不进 envelope——
+     *                        版本不冻结词汇、按版本编译也不用词汇（见 {@link PolicyVersion#compileScopesJson()}）
      */
     @Transactional
     public PolicyVersion createVersion(UUID catalogId, String sourceCnl, String locale,
                                        String sourceKind, String authorRole,
                                        java.util.Map<aster.core.lexicon.SemanticTokenKind, java.util.List<String>> aliasSet,
-                                       aster.core.identifier.IdentifierIndex identifierIndex) {
+                                       aster.core.identifier.VocabularyScopes scopes) {
         io.aster.policy.parser.UserAliasValidator.Result vr =
-            io.aster.policy.parser.UserAliasValidator.validate(aliasSet, locale, identifierIndex);
+            io.aster.policy.parser.UserAliasValidator.validate(aliasSet, locale, scopes);
         if (!vr.valid()) {
             throw new IllegalArgumentException("用户自定义别名校验失败: " + String.join("; ", vr.errors()));
         }
@@ -145,6 +146,7 @@ public class PolicyVersionService {
         String normalizedAliasJson = canonicalizeAliasJson(aliasSetJson, locale);
 
         String policyId = catalog.moduleName + "." + catalog.functionName;
+        PolicyVersion.lockChainTail(policyId);
         PolicyVersion version = new PolicyVersion(
             policyId,
             catalog.moduleName,
@@ -163,7 +165,9 @@ public class PolicyVersionService {
         String toolchain = toolchainIdentityProvider.currentToolchainId();
         version.sourceToolchainId = toolchain;
         version.sourceEnvelopeSha256 = PolicyVersion.computeSourceEnvelope(
-            sourceCnl, version.aliasSet, locale, toolchain);
+            sourceCnl, version.aliasSet, locale, toolchain, version.compileScopesJson());
+        // 新建行直接按位置解析规则产出（5 段 envelope），存量重编译任务无需再处理（ADR 0051 §9）。
+        version.resolverVersion = io.aster.policy.parser.CompileIdentity.RESOLVER_VERSION;
 
         // P0-C 稳定性门禁（ADR 0031 M3）：保存 surface——regulated tenant strict（命中白名单才可存
         // Experimental），普通 tenant warn（不阻断）。tenantId 来自 catalog 归属（非 body 自报）。
@@ -204,8 +208,8 @@ public class PolicyVersionService {
             throw new IllegalArgumentException("aliasSet JSON 非法或含未知 kind: " + e.getMessage());
         }
         // 语义校验（Codex 三轮复核：String 入口也必须校验，不能只验 canonical 形）。
-        // 白名单/多词/不遮蔽——撞领域词汇的碰撞校验需 IdentifierIndex，请用结构化入口
-        // createVersion(...Map, IdentifierIndex)；此处至少挡敏感 kind/单词/遮蔽。
+        // 白名单/多词/不遮蔽——撞领域词汇的碰撞校验需词汇作用域，请用结构化入口
+        // createVersion(...Map, VocabularyScopes)；此处至少挡敏感 kind/单词/遮蔽。
         io.aster.policy.parser.UserAliasValidator.Result vr =
             io.aster.policy.parser.UserAliasValidator.validate(parsed, locale, null);
         if (!vr.valid()) {
@@ -520,7 +524,8 @@ public class PolicyVersionService {
         // 停用旧的活跃版本
         PolicyVersion.deactivateAllVersions(policyId);
 
-        // 创建新版本
+        // 创建新版本（先锁链尾，prevHash 与存量重编译的后继改写串行）
+        PolicyVersion.lockChainTail(policyId);
         PolicyVersion newVersion = new PolicyVersion(
             policyId,
             moduleName,

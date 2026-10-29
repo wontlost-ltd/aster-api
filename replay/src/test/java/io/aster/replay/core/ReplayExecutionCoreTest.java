@@ -42,7 +42,7 @@ class ReplayExecutionCoreTest {
     private static final class SucceedingExecutor implements ReplayExecutor {
         @Override
         public ReplayExecutorResult execute(String tenantId, String source, Object context,
-                String functionName, String locale, aster.core.identifier.IdentifierIndex vocabIndex,
+                String functionName, String locale, aster.core.identifier.VocabularyScopes vocabIndex,
                 boolean legacyEvaluateSentinel, Map<SemanticTokenKind, List<String>> aliasSet,
                 boolean aliasesTrusted) {
             return new ReplayExecutorResult(42, "probe", "main", 5L);
@@ -59,7 +59,7 @@ class ReplayExecutionCoreTest {
 
         @Override
         public ReplayExecutorResult execute(String tenantId, String source, Object context,
-                String functionName, String locale, aster.core.identifier.IdentifierIndex vocabIndex,
+                String functionName, String locale, aster.core.identifier.VocabularyScopes vocabIndex,
                 boolean legacyEvaluateSentinel, Map<SemanticTokenKind, List<String>> aliasSet,
                 boolean aliasesTrusted) {
             throw toThrow;
@@ -191,5 +191,44 @@ class ReplayExecutionCoreTest {
         assertEquals(50000L, child.result());
         assertEquals(false, child.matched());
         assertTrue(child.children().isEmpty());
+    }
+
+    /** 记录 core 传给 executor 的词汇作用域。 */
+    private static final class CapturingExecutor implements ReplayExecutor {
+        aster.core.identifier.VocabularyScopes seen;
+
+        @Override
+        public ReplayExecutorResult execute(String tenantId, String source, Object context,
+                String functionName, String locale, aster.core.identifier.VocabularyScopes vocabIndex,
+                boolean legacyEvaluateSentinel, Map<SemanticTokenKind, List<String>> aliasSet,
+                boolean aliasesTrusted) {
+            seen = vocabIndex;
+            return new ReplayExecutorResult(1, "probe", "main", 1L);
+        }
+    }
+
+    private static ReplayExecutionRequest requestWithVocabulary(Map<String, Object> vocabulary) {
+        return new ReplayExecutionRequest(
+            "tenant-1", "Module probe.\nRule main given x as Int, produce Int:\n  Return x.",
+            Map.of("x", 1), "main", "en-US", vocabulary, null, true, true, false, false);
+    }
+
+    @Test
+    @DisplayName("ADR 0051：请求词汇构建为按角色作用域交给 executor；空词汇等同无词汇")
+    void executeBuildsVocabularyScopesFromRequest() {
+        Map<String, Object> vocabulary = Map.of(
+            "id", "v", "name", "V", "locale", "de-DE", "version", "user",
+            "structs", List.of(Map.of("canonical", "Driver", "localized", "Fahrer", "kind", "struct")),
+            "fields", List.of(Map.of("canonical", "age", "localized", "alter", "kind", "field", "parent", "Driver")));
+        CapturingExecutor executor = new CapturingExecutor();
+        core.execute(requestWithVocabulary(vocabulary), executor);
+        assertEquals("Driver", aster.core.identifier.VocabularyScopes
+            .lookup(executor.seen.types(), "Fahrer").exact().get(0).canonical());
+        assertEquals("age", aster.core.identifier.VocabularyScopes
+            .lookup(executor.seen.fields().get("Driver"), "alter").exact().get(0).canonical());
+
+        core.execute(requestWithVocabulary(Map.of("id", "v", "name", "V", "locale", "de-DE", "version", "user")),
+            executor);
+        assertNull(executor.seen, "无任何条目的词汇必须与无词汇一致");
     }
 }

@@ -40,6 +40,34 @@ class PromptComposerSyntaxTest {
     }
 
     @Test
+    void generateTemplatesExplainPositionAwareVocabularyAndQualifiedForm() throws Exception {
+        // ADR 0051：词汇按位置解析而非编译前替换；可能歧义时用限定写法 Stufe.Hoch
+        for (String locale : new String[]{"en", "zh", "de"}) {
+            String kept = PromptComposer.syntaxSections(resource("prompts/developer/policy_gen_" + locale + ".txt"));
+            assertThat(kept).as(locale).contains("Stufe.Hoch").contains("hoch()");
+            // 比较场景同样要求限定写法
+            assertThat(kept).as(locale).contains("x equals to Stufe.Hoch");
+        }
+    }
+
+    @Test
+    void suggestSystemPromptCarriesQualifiedEnumMemberRule() throws Exception {
+        PromptComposer composer = new PromptComposer();
+        set(composer, "templates", new PromptTemplateRegistry() {
+            @Override public String load(String category, String name, String locale) {
+                try { return resource("prompts/" + category + "/" + name + "_" + locale + ".txt"); }
+                catch (Exception e) { throw new RuntimeException(e); }
+            }
+        });
+        set(composer, "config", Proxy.newProxyInstance(LlmConfig.class.getClassLoader(), new Class<?>[]{LlmConfig.class},
+            (proxy, method, args) -> method.getName().equals("model") ? "stub" : method.getName().equals("suggestMaxTokens") ? 1000 : 0));
+        for (String locale : new String[]{"en", "zh", "de"}) {
+            PromptContext context = composer.buildSuggestContext("t", new SuggestRequest("Module m.", locale, null, null));
+            assertThat(context.getSystemPrompt()).as(locale).contains("Stufe.Hoch");
+        }
+    }
+
+    @Test
     void syntaxSectionsKeepFirstTwoSectionsForEveryLocale() throws Exception {
         for (String locale : new String[]{"en", "zh", "de"}) {
             String template = resource("prompts/developer/policy_gen_" + locale + ".txt");

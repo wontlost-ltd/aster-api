@@ -65,9 +65,15 @@ public class CedarExportService {
     private record Mismatch(Probe probe, AsterSide aster, CedarEngine.Decision cedar) {
     }
 
-    public CedarExportOutcome exportSource(String source, String locale, String aliasSetJson, String functionName) {
+    /**
+     * 编译源码并导出。导出基于名称解析（ADR 0051 R2）之后的 Core IR，规则、类型、字段均为规范名。
+     *
+     * @param scopes 领域词汇作用域，null 表示无词汇
+     */
+    public CedarExportOutcome exportSource(String source, String locale, String aliasSetJson,
+                                           aster.core.identifier.VocabularyScopes scopes, String functionName) {
         String sourceHash = sha256(source == null ? "" : source);
-        CompilationResult compiled = compiler.compile(source, locale, aliasSetJson);
+        CompilationResult compiled = compiler.compile(source, locale, aliasSetJson, scopes, false);
         List<CompileDiagnostic> errors = compileErrors(compiled);
         if (!errors.isEmpty()) {
             return new CedarExportOutcome(false, null, functionName, null, null, null, null, List.of(), 0, 0,

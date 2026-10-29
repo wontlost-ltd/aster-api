@@ -1,0 +1,111 @@
+[
+  {
+    "content": "Module m.\n\nRule f given x as Int, produce Int:\n  Return x.\n",
+    "aliasSetJson": "",
+    "locale": "en-US",
+    "toolchainId": "abi=1.1;core=ts;validator=1;resolver=1;casefold=15.1;build=vectors",
+    "vocabulary": null,
+    "scopesJson": "",
+    "expectedSha256": "9be24bed35f482ac2184574b45696dc9b7f70848cb07461dc0c0eaa3cf83f1bd"
+  },
+  {
+    "content": "Modul m.\n\nDefiniere Fahrer hat alter als Ganzzahl.\n",
+    "aliasSetJson": "{\"FUNC_TO\":[\"Richtlinie\"]}",
+    "locale": "de-DE",
+    "toolchainId": "abi=1.1;core=ts;validator=1;resolver=1;casefold=15.1;build=vectors",
+    "vocabulary": {
+      "id": "envelope.single-struct",
+      "name": "单 struct",
+      "locale": "de-DE",
+      "version": "1.0.0",
+      "structs": [
+        {
+          "canonical": "Driver",
+          "localized": "Fahrer",
+          "kind": "struct"
+        }
+      ],
+      "fields": [],
+      "functions": [],
+      "enumValues": [],
+      "literals": []
+    },
+    "scopesJson": "{\"enumMembers\":{},\"fields\":{},\"functions\":{},\"literals\":{},\"schemaVersion\":1,\"types\":{\"fahrer\":[{\"canonical\":\"Driver\",\"kind\":\"struct\",\"source\":\"term\",\"written\":\"Fahrer\"}]}}",
+    "expectedSha256": "c402ce29d9b49dc96640ab10bf284b4838b804660ebfff37e006abe257b71d30"
+  },
+  {
+    "content": "Modul m.\n\nDefiniere Café hat preis als Ganzzahl.\n",
+    "aliasSetJson": "",
+    "locale": "de-DE",
+    "toolchainId": "abi=1.1;core=java;validator=1;resolver=1;casefold=15.1;build=vectors",
+    "vocabulary": {
+      "id": "envelope.synonyms-nfc",
+      "name": "同义词与 NFC 组合字符",
+      "locale": "de-DE",
+      "version": "1.0.0",
+      "structs": [
+        {
+          "canonical": "Cafe",
+          "localized": "Café",
+          "kind": "struct",
+          "aliases": [
+            "Kaffeehaus",
+            "Bistró"
+          ]
+        },
+        {
+          "canonical": "Level",
+          "localized": "Stufe",
+          "kind": "struct",
+          "aliases": [
+            "Niveau"
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "canonical": "price",
+          "localized": "preis",
+          "kind": "field",
+          "parent": "Cafe",
+          "aliases": [
+            "kosten"
+          ]
+        },
+        {
+          "canonical": "level",
+          "localized": "stufe",
+          "kind": "field",
+          "parent": "Cafe"
+        }
+      ],
+      "functions": [
+        {
+          "canonical": "total",
+          "localized": "gesamt",
+          "kind": "function",
+          "aliases": [
+            "summe"
+          ]
+        }
+      ],
+      "enumValues": [
+        {
+          "canonical": "High",
+          "localized": "Hoch",
+          "kind": "enum_value",
+          "parent": "Level"
+        },
+        {
+          "canonical": "Low",
+          "localized": "Niedrig",
+          "kind": "enum_value",
+          "parent": "Level"
+        }
+      ],
+      "literals": []
+    },
+    "scopesJson": "{\"enumMembers\":{\"Level\":{\"hoch\":[{\"canonical\":\"High\",\"kind\":\"enum_value\",\"parent\":\"Level\",\"source\":\"term\",\"written\":\"Hoch\"}],\"niedrig\":[{\"canonical\":\"Low\",\"kind\":\"enum_value\",\"parent\":\"Level\",\"source\":\"term\",\"written\":\"Niedrig\"}]}},\"fields\":{\"Cafe\":{\"kosten\":[{\"canonical\":\"price\",\"kind\":\"field\",\"parent\":\"Cafe\",\"source\":\"synonym\",\"written\":\"kosten\"}],\"preis\":[{\"canonical\":\"price\",\"kind\":\"field\",\"parent\":\"Cafe\",\"source\":\"term\",\"written\":\"preis\"}],\"stufe\":[{\"canonical\":\"level\",\"kind\":\"field\",\"parent\":\"Cafe\",\"source\":\"term\",\"written\":\"stufe\"}]}},\"functions\":{\"gesamt\":[{\"canonical\":\"total\",\"kind\":\"function\",\"source\":\"term\",\"written\":\"gesamt\"}],\"summe\":[{\"canonical\":\"total\",\"kind\":\"function\",\"source\":\"synonym\",\"written\":\"summe\"}]},\"literals\":{},\"schemaVersion\":1,\"types\":{\"bistró\":[{\"canonical\":\"Cafe\",\"kind\":\"struct\",\"source\":\"synonym\",\"written\":\"Bistró\"}],\"café\":[{\"canonical\":\"Cafe\",\"kind\":\"struct\",\"source\":\"term\",\"written\":\"Café\"}],\"kaffeehaus\":[{\"canonical\":\"Cafe\",\"kind\":\"struct\",\"source\":\"synonym\",\"written\":\"Kaffeehaus\"}],\"niveau\":[{\"canonical\":\"Level\",\"kind\":\"struct\",\"source\":\"synonym\",\"written\":\"Niveau\"}],\"stufe\":[{\"canonical\":\"Level\",\"kind\":\"struct\",\"source\":\"term\",\"written\":\"Stufe\"}]}}",
+    "expectedSha256": "c663f4803b2409f1a43e847ad2499a47bd16bddaeb8fdd1fd29607e0d54082e7"
+  }
+]

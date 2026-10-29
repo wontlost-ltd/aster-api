@@ -17,8 +17,8 @@ class SourceEnvelopeTest {
 
     @Test
     void deterministicForSameInputs() {
-        String a = PolicyVersion.computeSourceEnvelope(CONTENT, "{\"TIMES\":[\"multiplied by\"]}", "en-US", "abi=1.0;build=x");
-        String b = PolicyVersion.computeSourceEnvelope(CONTENT, "{\"TIMES\":[\"multiplied by\"]}", "en-US", "abi=1.0;build=x");
+        String a = PolicyVersion.computeSourceEnvelope(CONTENT, "{\"TIMES\":[\"multiplied by\"]}", "en-US", "abi=1.0;build=x", "");
+        String b = PolicyVersion.computeSourceEnvelope(CONTENT, "{\"TIMES\":[\"multiplied by\"]}", "en-US", "abi=1.0;build=x", "");
         assertEquals(a, b, "相同输入必须产出相同 envelope");
         assertEquals(64, a.length(), "SHA-256 hex 64 字符");
     }
@@ -26,45 +26,45 @@ class SourceEnvelopeTest {
     @Test
     void differsWhenAliasSetChanges_antiTamper() {
         // 同 content，别名不同 → envelope 不同（核心防篡改属性）
-        String withAliasA = PolicyVersion.computeSourceEnvelope(CONTENT, "{\"TIMES\":[\"multiplied by\"]}", "en-US", "tc");
-        String withAliasB = PolicyVersion.computeSourceEnvelope(CONTENT, "{\"TIMES\":[\"scaled by\"]}", "en-US", "tc");
+        String withAliasA = PolicyVersion.computeSourceEnvelope(CONTENT, "{\"TIMES\":[\"multiplied by\"]}", "en-US", "tc", "");
+        String withAliasB = PolicyVersion.computeSourceEnvelope(CONTENT, "{\"TIMES\":[\"scaled by\"]}", "en-US", "tc", "");
         assertNotEquals(withAliasA, withAliasB, "别名被替换 → envelope 必须变（防篡改）");
     }
 
     @Test
     void differsWhenAliasAddedToBareSource() {
-        String bare = PolicyVersion.computeSourceEnvelope(CONTENT, null, "en-US", "tc");
-        String aliased = PolicyVersion.computeSourceEnvelope(CONTENT, "{\"TIMES\":[\"multiplied by\"]}", "en-US", "tc");
+        String bare = PolicyVersion.computeSourceEnvelope(CONTENT, null, "en-US", "tc", "");
+        String aliased = PolicyVersion.computeSourceEnvelope(CONTENT, "{\"TIMES\":[\"multiplied by\"]}", "en-US", "tc", "");
         assertNotEquals(bare, aliased, "加别名 → envelope 必须变");
     }
 
     @Test
     void differsWhenToolchainChanges() {
         // 引擎升级（H6）：工具链身份变 → envelope 变 → 可识别非原工具链重编
-        String v1 = PolicyVersion.computeSourceEnvelope(CONTENT, null, "en-US", "abi=1.0;build=a");
-        String v2 = PolicyVersion.computeSourceEnvelope(CONTENT, null, "en-US", "abi=1.0;build=b");
+        String v1 = PolicyVersion.computeSourceEnvelope(CONTENT, null, "en-US", "abi=1.0;build=a", "");
+        String v2 = PolicyVersion.computeSourceEnvelope(CONTENT, null, "en-US", "abi=1.0;build=b", "");
         assertNotEquals(v1, v2);
     }
 
     @Test
     void differsWhenLocaleChanges() {
-        String en = PolicyVersion.computeSourceEnvelope(CONTENT, null, "en-US", "tc");
-        String zh = PolicyVersion.computeSourceEnvelope(CONTENT, null, "zh-CN", "tc");
+        String en = PolicyVersion.computeSourceEnvelope(CONTENT, null, "en-US", "tc", "");
+        String zh = PolicyVersion.computeSourceEnvelope(CONTENT, null, "zh-CN", "tc", "");
         assertNotEquals(en, zh);
     }
 
     @Test
     void lengthPrefixPreventsFieldBoundaryAmbiguity() {
         // 长度前缀分隔：("ab","c") 与 ("a","bc") 不能碰撞
-        String x = PolicyVersion.computeSourceEnvelope("ab", "c", "", "");
-        String y = PolicyVersion.computeSourceEnvelope("a", "bc", "", "");
+        String x = PolicyVersion.computeSourceEnvelope("ab", "c", "", "", "");
+        String y = PolicyVersion.computeSourceEnvelope("a", "bc", "", "", "");
         assertNotEquals(x, y, "字段边界不得因拼接产生歧义");
     }
 
     @Test
     void nullAliasEqualsEmptyButDiffersFromPresent() {
-        String nullAlias = PolicyVersion.computeSourceEnvelope(CONTENT, null, "en-US", "tc");
-        String emptyAlias = PolicyVersion.computeSourceEnvelope(CONTENT, "", "en-US", "tc");
+        String nullAlias = PolicyVersion.computeSourceEnvelope(CONTENT, null, "en-US", "tc", "");
+        String emptyAlias = PolicyVersion.computeSourceEnvelope(CONTENT, "", "en-US", "tc", "");
         assertEquals(nullAlias, emptyAlias, "null 与空串别名等价（都=无别名）");
     }
 

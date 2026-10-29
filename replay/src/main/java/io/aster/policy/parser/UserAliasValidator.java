@@ -1,6 +1,7 @@
 package io.aster.policy.parser;
 
-import aster.core.identifier.IdentifierIndex;
+import aster.core.identifier.CaseFold;
+import aster.core.identifier.VocabularyScopes;
 import aster.core.lexicon.Lexicon;
 import aster.core.lexicon.LexiconRegistry;
 import aster.core.lexicon.SemanticTokenKind;
@@ -101,15 +102,15 @@ public final class UserAliasValidator {
         }
     }
 
-    /** 兼容重载：不带领域词汇索引，不允许结构词。 */
+    /** 兼容重载：不带领域词汇作用域，不允许结构词。 */
     public static Result validate(Map<SemanticTokenKind, List<String>> aliasSet, String locale) {
         return validate(aliasSet, locale, null, false);
     }
 
-    /** 兼容重载：带领域词汇索引，不允许结构词。 */
+    /** 兼容重载：带领域词汇作用域，不允许结构词。 */
     public static Result validate(Map<SemanticTokenKind, List<String>> aliasSet, String locale,
-                                  IdentifierIndex identifierIndex) {
-        return validate(aliasSet, locale, identifierIndex, false);
+                                  VocabularyScopes vocabulary) {
+        return validate(aliasSet, locale, vocabulary, false);
     }
 
     /**
@@ -121,11 +122,11 @@ public final class UserAliasValidator {
      *
      * @param aliasSet        用户别名，null/空视为合法（无别名）
      * @param locale          基础语言代码（取规范拼写/别名做不遮蔽校验）
-     * @param identifierIndex 领域词汇索引，null 表示不做别名↔标识符碰撞校验
+     * @param vocabulary      领域词汇作用域，null 表示不做别名↔标识符碰撞校验
      * @param allowStructural 是否放开结构词别名（管理员按用户授权，权威传入，默认 false）
      */
     public static Result validate(Map<SemanticTokenKind, List<String>> aliasSet, String locale,
-                                  IdentifierIndex identifierIndex, boolean allowStructural) {
+                                  VocabularyScopes vocabulary, boolean allowStructural) {
         if (aliasSet == null || aliasSet.isEmpty()) {
             return Result.ok();
         }
@@ -220,7 +221,7 @@ public final class UserAliasValidator {
                     errors.add("别名 '" + alias + "' 在多个 kind 间重复定义");
                 }
                 // 不撞领域词汇标识符（关键词翻译先于标识符翻译 → 别名会抢赢用户字段名）
-                if (identifierIndex != null && identifierIndex.hasMapping(norm)) {
+                if (vocabularyHasWritten(vocabulary, norm)) {
                     errors.add("别名 '" + alias + "'（" + kind + "）与领域词汇标识符同形，"
                         + "会让关键词抢赢用户标识符，禁止");
                 }
@@ -228,6 +229,17 @@ public final class UserAliasValidator {
         }
 
         return errors.isEmpty() ? Result.ok() : new Result(false, errors);
+    }
+
+    /** 别名与任一角色的词汇写法折叠后相同（字面量宏不算标识符，不参与）。 */
+    private static boolean vocabularyHasWritten(VocabularyScopes scopes, String phrase) {
+        if (scopes == null) {
+            return false;
+        }
+        String key = CaseFold.foldKey(phrase);
+        return scopes.types().containsKey(key) || scopes.functions().containsKey(key)
+            || scopes.fields().values().stream().anyMatch(m -> m.containsKey(key))
+            || scopes.enumMembers().values().stream().anyMatch(m -> m.containsKey(key));
     }
 
     /** 统一归一：trim + 折叠所有空白为单个 ASCII 空格 + lowercase(ROOT)。 */

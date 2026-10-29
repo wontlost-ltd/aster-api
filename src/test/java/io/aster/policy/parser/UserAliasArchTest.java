@@ -32,7 +32,7 @@ class UserAliasArchTest {
         assertDoesNotThrow(() -> InProcessCnlParser.class.getDeclaredMethod(
                 "parseUnsafeWithAliases",
                 String.class, String.class,
-                aster.core.identifier.IdentifierIndex.class, Map.class),
+                aster.core.identifier.VocabularyScopes.class, Map.class),
             "parseUnsafeWithAliases 签名变更：请同步更新 ArchUnit 规则");
     }
 
@@ -47,7 +47,7 @@ class UserAliasArchTest {
                 .should()
                 .callMethod(InProcessCnlParser.class, "parseUnsafeWithAliases",
                         String.class, String.class,
-                        aster.core.identifier.IdentifierIndex.class, Map.class)
+                        aster.core.identifier.VocabularyScopes.class, Map.class)
                 .allowEmptyShould(true)
                 .because("生产路径必须走 parseWithUserAliases（强制 UserAliasValidator 校验），"
                         + "parseUnsafeWithAliases 仅供 parser 受控入口/测试使用（ADR 0022 §11.5）");

@@ -21,7 +21,7 @@ class PolicyVersionEnvelopeVerifierTest {
         v.aliasSet = aliasSet;
         v.locale = locale;
         v.sourceToolchainId = toolchain;
-        v.sourceEnvelopeSha256 = PolicyVersion.computeSourceEnvelope(content, aliasSet, locale, toolchain);
+        v.sourceEnvelopeSha256 = PolicyVersion.computeSourceEnvelope(content, aliasSet, locale, toolchain, "");
         return v;
     }
 
@@ -51,7 +51,7 @@ class PolicyVersionEnvelopeVerifierTest {
         // 攻击者改 alias_set 并把 envelope 也改成"另一套别名的 envelope"——重算仍不符当前字段
         PolicyVersion v = versionWith("Module M.", "{\"TIMES\":[\"multiplied by\"]}", "en-US", "abi=1.0;core=dev");
         String otherEnvelope = PolicyVersion.computeSourceEnvelope(
-            "Module M.", "{\"TIMES\":[\"scaled by\"]}", "en-US", "abi=1.0;core=dev");
+            "Module M.", "{\"TIMES\":[\"scaled by\"]}", "en-US", "abi=1.0;core=dev", "");
         v.sourceEnvelopeSha256 = otherEnvelope; // envelope 改成"scaled by"版本的
         // 但 alias_set 字段仍是 multiplied by → 重算(multiplied by)≠存储(scaled by 的 envelope)
         assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.TAMPERED, verifier.verify(v).status());
@@ -66,7 +66,7 @@ class PolicyVersionEnvelopeVerifierTest {
         v.content = "Module Evil.";
         v.aliasSet = "{\"TIMES\":[\"scaled by\"]}";
         v.sourceEnvelopeSha256 = PolicyVersion.computeSourceEnvelope(
-            v.content, v.aliasSet, v.locale, v.sourceToolchainId);
+            v.content, v.aliasSet, v.locale, v.sourceToolchainId, "");
         // verifier 重算与篡改后字段自洽 → INTACT（本校验器**防不住**全套自洽篡改）
         assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.INTACT, verifier.verify(v).status());
     }
@@ -79,5 +79,32 @@ class PolicyVersionEnvelopeVerifierTest {
         v.sourceEnvelopeSha256 = null;
         v.sourceToolchainId = null;
         assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.SKIPPED_LEGACY, verifier.verify(v).status());
+    }
+
+    @Test
+    void preResolverRowWithFourSegmentEnvelopeIsIntact() {
+        // ADR 0051 §9：迁移失败被归档的存量行保留旧 4 段 envelope，resolverVersion 为 NULL，按迁移前格式校验
+        PolicyVersion v = new PolicyVersion();
+        v.id = 3L;
+        v.content = "Module M.";
+        v.locale = "en-US";
+        v.sourceToolchainId = "abi=1.0;core=dev";
+        v.sourceEnvelopeSha256 = PolicyVersion.computeLegacySourceEnvelope("Module M.", null, "en-US", "abi=1.0;core=dev");
+        assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.INTACT, verifier.verify(v).status());
+        v.content = "Module Evil.";
+        assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.TAMPERED, verifier.verify(v).status());
+    }
+
+    @Test
+    void migratedRowMustUseFiveSegmentEnvelope() {
+        // 已迁移行（resolverVersion=1）不接受旧格式：把 envelope 换回 4 段即判篡改
+        PolicyVersion v = new PolicyVersion();
+        v.id = 4L;
+        v.content = "Module M.";
+        v.locale = "en-US";
+        v.sourceToolchainId = "abi=1.0;core=dev";
+        v.resolverVersion = 1;
+        v.sourceEnvelopeSha256 = PolicyVersion.computeLegacySourceEnvelope("Module M.", null, "en-US", "abi=1.0;core=dev");
+        assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.TAMPERED, verifier.verify(v).status());
     }
 }

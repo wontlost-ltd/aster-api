@@ -1,6 +1,5 @@
 package io.aster.policy.service;
 
-import aster.core.identifier.IdentifierIndex;
 import aster.core.lexicon.Lexicon;
 import aster.core.lexicon.LexiconRegistry;
 import aster.core.lexicon.SemanticTokenKind;

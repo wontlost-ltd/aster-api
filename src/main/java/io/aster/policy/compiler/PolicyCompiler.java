@@ -2,7 +2,6 @@ package io.aster.policy.compiler;
 
 import aster.core.ast.Module;
 import aster.core.ir.CoreModel;
-import aster.core.lowering.CoreLowering;
 import aster.core.typecheck.governance.GovernanceChecker;
 import aster.core.typecheck.TypeChecker;
 import aster.core.typecheck.model.Diagnostic;
@@ -93,20 +92,21 @@ public class PolicyCompiler {
 
     /**
      * 同 {@link #compile(String, String, String)}，额外支持领域词汇与结构词别名授权
-     * （ADR 0014 线C / ADR 0022 结构词扩展）。
+     * （ADR 0051 按位置解析 / ADR 0022 结构词扩展）。
      *
-     * <p>{@code identifierIndex} 让规范化阶段把用户领域术语翻成规范名，并参与别名↔标识符
-     * 碰撞校验；为 null 时与不带词汇编译完全一致。
+     * <p>{@code scopes} 让名称解析把各位置的本地化名称解析为规范名，并参与别名↔标识符碰撞校验；
+     * 为 null 时与不带词汇编译完全一致。名称解析 error（E8xx）以编译错误返回（码 + 位置），
+     * warning（W8xx）随结果诊断返回。
      *
      * <p>{@code allowStructural} 必须来自权威信任判定（如 HMAC 已验签的内部调用方且其已核对
      * 用户授权），<b>不得</b>直接取自未验证的请求体——否则任何人都能注入 RETURN/IF 等结构词别名，
      * 击穿 per-user 授权门控。
      *
-     * @param identifierIndex 领域词汇索引，null=仅内置词汇
+     * @param scopes          领域词汇作用域，null=无词汇
      * @param allowStructural true=结构词别名按已授权校验放行；false=与默认行为一致（拒绝结构词别名）
      */
     public CompilationResult compile(String sourceCnl, String locale, String aliasSetJson,
-                                     aster.core.identifier.IdentifierIndex identifierIndex,
+                                     aster.core.identifier.VocabularyScopes scopes,
                                      boolean allowStructural) {
         // 类型检查对所有编译路径一视同仁（编辑器/保存门、运行时求值、Cedar 导出、审批视图）：
         // 上线前清库重建，没有需要宽容的历史版本；aster.compile.typecheck=warn 只是紧急降级口。
@@ -120,14 +120,12 @@ public class PolicyCompiler {
             LOG.debugf("解析 CNL 源代码... locale=%s, hasAliases=%b", locale, aliasSetJson != null && !aliasSetJson.isBlank());
             Map<SemanticTokenKind, List<String>> aliasSet = parseAliasSetJson(aliasSetJson);
             InProcessCnlParser.ParseResult parseResult = (aliasSet == null || aliasSet.isEmpty())
-                ? InProcessCnlParser.parse(sourceCnl, locale, identifierIndex)
-                : InProcessCnlParser.parseWithUserAliases(sourceCnl, locale, identifierIndex, aliasSet, allowStructural);
+                ? InProcessCnlParser.parse(sourceCnl, locale, scopes)
+                : InProcessCnlParser.parseWithUserAliases(sourceCnl, locale, scopes, aliasSet, allowStructural);
             Module astModule = parseResult.module();
 
-            // 2. 降级 AST → Core IR
-            LOG.debugf("降级 AST → Core IR...");
-            CoreLowering lowering = new CoreLowering();
-            CoreModel.Module coreModule = lowering.lowerModule(astModule);
+            // 2. 名称解析后的 Core IR（parser 内已完成 R1 → lower → R2）
+            CoreModel.Module coreModule = parseResult.core();
 
             // TypeChecker 持有可变诊断状态，故每次编译独立创建实例。
             // 治理类诊断（W700/E70x/E72x）由下方 GovernanceDiagnostics 按编译通道的降级规则单独产出，
@@ -174,6 +172,7 @@ public class PolicyCompiler {
             // 调用方一次就能拿到完整诊断集合；仅 success 由类型错误决定。
             List<CompilationResult.Diagnostic> allDiagnostics =
                 new java.util.ArrayList<>(stability.diagnostics());
+            parseResult.warnings().forEach(w -> allDiagnostics.add(mapTypecheckDiagnostic(w, false)));
             allDiagnostics.addAll(mappedTypecheck);
             allDiagnostics.addAll(conflicts);
             allDiagnostics.addAll(governance);
@@ -183,6 +182,13 @@ public class PolicyCompiler {
 
             return CompilationResult.success(coreJson, metadata, allDiagnostics);
 
+        } catch (InProcessCnlParser.NameResolutionFailure e) {
+            // 名称解析错误与类型错误同形：带码、严重级与起止位置，阻断编译
+            List<Diagnostic> errors = e.resolutionDiagnostics();
+            LOG.debugf("CNL 名称解析失败: %s", e.getMessage());
+            return CompilationResult.failure(
+                errors.stream().map(PolicyCompiler::typecheckError).toList(),
+                errors.stream().map(d -> mapTypecheckDiagnostic(d, false)).toList());
         } catch (InProcessCnlParser.CnlParseException e) {
             String message = "CNL 解析失败: " + e.getMessage();
             LOG.warn(message);

@@ -203,8 +203,8 @@ public class PolicyVersion extends PanacheEntityBase {
     public String aliasSet;
 
     /**
-     * 完整编译输入的 SHA-256（ADR 0022 §11.5 C1）。
-     * 覆盖 content + aliasSet + locale + 工具链身份，防"源码哈希对得上、别名被替换"篡改。
+     * 完整编译输入的 SHA-256（ADR 0022 §11.5 C1，ADR 0051 §7）。
+     * 覆盖 content + aliasSet + locale + 工具链身份 + 词汇作用域，防"源码哈希对得上、别名被替换"篡改。
      * 与只哈希 content 的 {@link #sourceHash} 互补：sourceHash 是版本身份/链，
      * sourceEnvelopeSha256 是完整编译输入的审计真相。NULL=本特性前创建的旧版本。
      */
@@ -310,6 +310,26 @@ public class PolicyVersion extends PanacheEntityBase {
     @Column(name = "locale", length = 20)
     public String locale;
 
+    /**
+     * 产出本行 envelope 与 Core IR 的名称解析版本（ADR 0051 §9）。
+     * 1 = 按位置解析（新建行或存量重编译成功）；NULL = 迁移前的存量行（envelope 为旧 4 段格式）。
+     */
+    @Column(name = "resolver_version")
+    public Integer resolverVersion;
+
+    /** 最近一次存量重编译失败的原因；成功时清空。 */
+    @Column(name = "resolver_migration_error", columnDefinition = "TEXT")
+    public String resolverMigrationError;
+
+    /** 是否由存量重编译任务归档（人工/业务归档恒为 false，只有本标记为 true 的行会在成功后恢复状态）。 */
+    @Column(name = "archived_by_resolver_migration", nullable = false)
+    public Boolean archivedByResolverMigration = false;
+
+    /** 存量重编译任务归档前的状态，成功后据此恢复。 */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status_before_archive", length = 32)
+    public VersionStatus statusBeforeArchive;
+
     // 无参构造函数（JPA 要求）
     public PolicyVersion() {
     }
@@ -399,32 +419,39 @@ public class PolicyVersion extends PanacheEntityBase {
     }
 
     /**
-     * 计算完整编译输入的 SHA-256 信封哈希（ADR 0022 §11.5 C1）。
+     * 计算完整编译输入的 SHA-256 信封哈希（ADR 0022 §11.5 C1，ADR 0051 §7 扩为 5 段）。
      *
-     * <p>覆盖决定编译产物的全部输入，防"源码哈希对得上、别名被替换"篡改：
-     * content + aliasSet（规范 JSON）+ locale + 工具链身份。用**确定性字段序列**
-     * （固定字段顺序 + 长度前缀分隔，杜绝字段间歧义/注入），UTF-8 + SHA-256。
+     * <p>覆盖决定编译产物的全部输入，防"源码哈希对得上、别名或词汇被替换"篡改：
+     * content + aliasSet（规范 JSON）+ locale + 工具链身份 + 词汇作用域（规范 JSON）。
+     * 每段写 {@code <UTF-8 字节数>:<字节>|}，段序固定，杜绝字段间歧义；null 视为空串。
+     * 算法与 cloud {@code computeSourceEnvelope} 逐字节一致，由共享向量 envelope-vectors.json 钉住。
      *
-     * <p>aliasSet 应已是规范形（{@code UserAliasValidator} 保证 alias==normalize(alias)），
-     * 这里只对传入字符串做 null 归一与长度前缀，不再二次解析。
-     *
-     * @param content        源码文本
-     * @param aliasSetJson   版本冻结的 aliasSet JSON（null 视为空）
-     * @param locale         编译 locale
-     * @param toolchainId     工具链身份串（compiler/canonicalizer/lexicon/validator 版本+hash）
+     * @param content      源码文本
+     * @param aliasSetJson 版本冻结的 aliasSet JSON（已是规范形，这里不再二次解析）
+     * @param locale       编译 locale
+     * @param toolchainId  工具链身份串
+     * @param scopesJson   {@link io.aster.policy.parser.CompileIdentity#scopesJson} 的结果；无词汇为空串
      */
     public static String computeSourceEnvelope(String content, String aliasSetJson,
-                                               String locale, String toolchainId) {
+                                               String locale, String toolchainId, String scopesJson) {
+        return digestFields(content, aliasSetJson, locale, toolchainId, scopesJson);
+    }
+
+    /**
+     * ADR 0051 之前的 4 段 envelope（无词汇段）。只用于校验尚未迁移、或迁移失败被归档而保留旧产物的存量行，
+     * 新行一律用 {@link #computeSourceEnvelope}。
+     */
+    public static String computeLegacySourceEnvelope(String content, String aliasSetJson,
+                                                     String locale, String toolchainId) {
+        return digestFields(content, aliasSetJson, locale, toolchainId);
+    }
+
+    /** 每段写 {@code <UTF-8 字节数>:<字节>|} 后整体 SHA-256；null 视为空串。 */
+    private static String digestFields(String... fields) {
         try {
             java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            // 长度前缀分隔：每段写 "<len>:<utf8bytes>"，避免拼接歧义（如 a|b vs ""|a|b）。
-            for (String field : new String[]{
-                content == null ? "" : content,
-                aliasSetJson == null ? "" : aliasSetJson,
-                locale == null ? "" : locale,
-                toolchainId == null ? "" : toolchainId
-            }) {
-                byte[] b = field.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            for (String field : fields) {
+                byte[] b = (field == null ? "" : field).getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 digest.update(Integer.toString(b.length).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
                 digest.update((byte) ':');
                 digest.update(b);
@@ -437,6 +464,17 @@ public class PolicyVersion extends PanacheEntityBase {
     }
 
     /**
+     * 本版本 envelope 的词汇段（ADR 0051 §7 第 5 段）。
+     *
+     * <p>api 侧版本不存词汇，按版本编译（{@code PolicyCompiler#compile(Long)}）也不传词汇，
+     * 实际编译输入里没有词汇，故恒为空串。创建与校验都取这里，二者不会分叉；
+     * 若将来 api 版本要冻结词汇，须同时加列并让编译与本方法读同一快照。
+     */
+    public String compileScopesJson() {
+        return io.aster.policy.parser.CompileIdentity.scopesJson(null);
+    }
+
+    /**
      * 查找前序版本的链接哈希（{@link #chainLink()}）。
      *
      * <p>链接 = envelope（存在时）否则 sourceHash → 前序版本若带别名，其 envelope 进链，
@@ -445,8 +483,21 @@ public class PolicyVersion extends PanacheEntityBase {
      * 向后兼容。
      */
     private static String findPreviousVersionHash(String policyId) {
-        PolicyVersion prev = find("policyId = ?1 ORDER BY version DESC", policyId).firstResult();
+        PolicyVersion prev = find("policyId = ?1 ORDER BY version DESC, id DESC", policyId).firstResult();
         return prev != null ? prev.chainLink() : null;
+    }
+
+    /**
+     * 给策略的链尾版本加行锁（同一事务内随后构造新版本）。
+     *
+     * <p>新版本的 prevHash 取链尾的 chainLink；存量重编译（ADR 0051 §9）会在行锁内改写某行 envelope
+     * 并把其直接后继的 prevHash 跟上。先锁链尾再读，二者对链尾串行：迁移先提交则读到新链接；
+     * 新版本先提交则迁移随后把它当作后继改写。排序与迁移的后继判定一致（version, id）。
+     */
+    public static void lockChainTail(String policyId) {
+        find("policyId = ?1 ORDER BY version DESC, id DESC", policyId)
+            .withLock(LockModeType.PESSIMISTIC_WRITE)
+            .firstResult();
     }
 
     /**

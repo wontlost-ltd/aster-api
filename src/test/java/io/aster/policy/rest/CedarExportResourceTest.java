@@ -160,6 +160,42 @@ class CedarExportResourceTest {
   }
 
   @Test
+  void hmacGermanSourceWithVocabularyExports() throws Exception {
+    // ADR 0051：源码模式携带词汇时按位置解析后导出
+    String tenant = "tenant-cedar-vocab-" + RUN;
+    String body = json(Map.of("source", io.aster.policy.parser.GermanReproductions.GUARD_SOURCE,
+        "locale", "de-DE", "vocabulary", io.aster.policy.parser.GermanReproductions.GUARD_VOCABULARY));
+    var resp = signedAs(tenant, body).post(PATH);
+    resp.then().statusCode(200).body("exportable", equalTo(true)).body("ruleId", equalTo("DE-001"))
+        .body("probes.count", equalTo(resp.jsonPath().getInt("probes.agreed")));
+    // 词汇身份随响应与审计留痕：同一源码不同词汇的导出不共享溯源
+    String expected = io.aster.policy.parser.CompileIdentity.scopesHash(
+        io.aster.replay.core.ReplayExecutionCore.buildVocabularyScopes(
+            io.aster.policy.parser.GermanReproductions.GUARD_VOCABULARY));
+    assertThat(expected).matches("[0-9a-f]{64}");
+    assertThat(resp.jsonPath().getString("scopesHash")).isEqualTo(expected);
+    assertThat(metadataOf(awaitExportEvent(tenant))).containsEntry("scopesHash", expected);
+  }
+
+  @Test
+  void exportWithoutVocabularyRecordsEmptyScopesHash() throws Exception {
+    String tenant = "tenant-cedar-novocab-" + RUN;
+    var resp = signedAs(tenant, json(Map.of("source", SAMPLE))).post(PATH);
+    resp.then().statusCode(200).body("exportable", equalTo(true)).body("scopesHash", equalTo(""));
+    assertThat(metadataOf(awaitExportEvent(tenant))).containsEntry("scopesHash", "");
+  }
+
+  @Test
+  void oversizedVocabularyIsRejected() throws Exception {
+    Map<String, Object> vocab = new LinkedHashMap<>(io.aster.policy.parser.GermanReproductions.GUARD_VOCABULARY);
+    vocab.put("fields", java.util.Collections.nCopies(
+        io.aster.policy.rest.model.VocabularyBounds.MAX_ENTRIES_PER_SECTION + 1, 1));
+    String body = json(Map.of("source", SAMPLE, "vocabulary", vocab));
+    signed(body).post(PATH).then().statusCode(400)
+        .body("error", equalTo(io.aster.policy.rest.model.VocabularyBounds.ERROR_CODE));
+  }
+
+  @Test
   void hmacViewerRoleIsForbidden() throws Exception {
     String tenant = "tenant-cedar-viewer-" + RUN;
     String body = json(Map.of("source", SAMPLE));

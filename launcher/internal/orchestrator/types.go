@@ -13,6 +13,9 @@ type RunnerRequest struct {
 	Locale       string              `json:"locale"`
 	FunctionName string              `json:"functionName"`
 	AliasSet     map[string][]string `json:"aliasSet"` // 可为 null（omitempty 不加——须显式发 null 对齐 Java 侧）
+	// Vocabulary 是 cloud 下发的原始词汇 JSON（ADR 0051），原样透传给 runner，不解析。
+	// 无词汇时省略该键；runner 侧 ignoreUnknown 与缺省均退化为无词汇。
+	Vocabulary map[string]any `json:"vocabulary,omitempty"`
 }
 
 // RunnerEnvelope 逐字对齐 aster-api runner 的 RunnerEnvelope.java（NON_NULL 序列化：

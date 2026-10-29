@@ -231,7 +231,7 @@ class ApiKeyTenantIsolationIT {
     @Test
     void validKey_typicalSource_schemaSucceeds() {
         // 合法小策略仍正常工作（上限不误伤真实用例）。
-        String body = "{\"source\":\"Module m.\\n\\nRule r given amount as Number, produce:\\n  Return amount < 100.\"}";
+        String body = "{\"source\":\"Module m.\\n\\nRule r given amount as Int, produce Bool:\\n  Return amount < 100.\"}";
         given()
             .header("X-Tenant-Id", TENANT_A)
             .header("X-User-Role", "MEMBER")

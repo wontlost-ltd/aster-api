@@ -1,7 +1,7 @@
 package io.aster.policy.parser;
 
 import aster.core.identifier.DomainVocabulary;
-import aster.core.identifier.IdentifierIndex;
+import aster.core.identifier.VocabularyScopes;
 import aster.core.identifier.IdentifierMapping;
 import aster.core.lexicon.SemanticTokenKind;
 import org.junit.jupiter.api.Test;
@@ -191,7 +191,6 @@ class UserAliasValidatorTest {
         org.junit.jupiter.api.Assertions.assertNull(UserAliasValidator.canonicalJson(Map.of()));
     }
 
-    /** 构造一个含单条 field 映射的领域词汇 IdentifierIndex（用于碰撞测试）。 */
     // ── 结构词别名门控（ADR 0022 扩展；与 cloud policy-alias-shared 对齐） ──────────
 
     @Test
@@ -288,11 +287,12 @@ class UserAliasValidatorTest {
         assertTrue(r.valid(), () -> r.errors().toString());
     }
 
-    private static IdentifierIndex vocabIndexWith(String canonical, String localized) {
+    /** 构造一个含单条 field 映射的领域词汇作用域（用于碰撞测试）。 */
+    private static VocabularyScopes vocabIndexWith(String canonical, String localized) {
         DomainVocabulary vocab = new DomainVocabulary(
             "test-vocab", "Test Vocab", "en-US", "1.0.0",
-            List.of(), List.of(IdentifierMapping.field(canonical, localized, null)),
+            List.of(), List.of(IdentifierMapping.field(canonical, localized, "Account")),
             List.of(), List.of(), List.of(), null);
-        return IdentifierIndex.build(vocab);
+        return VocabularyScopes.build(vocab);
     }
 }

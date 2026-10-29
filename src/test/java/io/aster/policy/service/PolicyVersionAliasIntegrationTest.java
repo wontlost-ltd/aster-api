@@ -46,6 +46,27 @@ class PolicyVersionAliasIntegrationTest extends BasePolicyVersionServiceTest {
     }
 
     @Test
+    void persistedEnvelopeUsesFiveSegmentsAndVerifiesIntact() {
+        // ADR 0051 §7：即使创建时带了词汇（只用于碰撞校验），api 版本按无词汇编译，第 5 段为空串；
+        // 创建与校验取同一词汇段，落库后校验器必须判 INTACT。
+        aster.core.identifier.VocabularyScopes scopes = io.aster.replay.core.ReplayExecutionCore.buildVocabularyScopes(
+            Map.of("id", "t", "name", "t", "locale", "en-US", "version", "1.0.0",
+                "structs", List.of(Map.of("canonical", "Driver", "localized", "Fahrer", "kind", "struct")),
+                "fields", List.of(), "functions", List.of(), "enumValues", List.of(), "literals", List.of()));
+        assertNotNull(scopes);
+        PolicyVersion v = versionService.createVersion(catalog.id, SRC, "en-US", "manual", "owner",
+            Map.of(SemanticTokenKind.TIMES, List.of("multiplied by")), scopes);
+        PolicyVersion reloaded = PolicyVersion.findById(v.id);
+
+        assertTrue(reloaded.sourceToolchainId.matches(
+            "^abi=1\\.1;core=[^;]+;validator=[^;]+;resolver=1;casefold=15\\.1;build=[^;]+$"), reloaded.sourceToolchainId);
+        assertEquals(PolicyVersion.computeSourceEnvelope(reloaded.content, reloaded.aliasSet, reloaded.locale,
+            reloaded.sourceToolchainId, ""), reloaded.sourceEnvelopeSha256);
+        assertEquals(PolicyVersionEnvelopeVerifier.VerifyResult.Status.INTACT,
+            new PolicyVersionEnvelopeVerifier().verify(reloaded).status());
+    }
+
+    @Test
     void noAliasSetLeavesColumnsNull_backwardCompatible() {
         PolicyVersion v = versionService.createVersion(catalog.id, SRC.replace("multiplied by", "times"), "en-US");
         PolicyVersion reloaded = PolicyVersion.findById(v.id);

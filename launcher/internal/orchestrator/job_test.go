@@ -131,3 +131,33 @@ func TestRunnerEnvelope_MetadataPassthrough(t *testing.T) {
 		}
 	}
 }
+
+// vocabulary 须随 request.json 完整进入 runner（ADR 0051）；无词汇时不出现该键。
+func TestRunnerRequest_VocabularyRoundTrip(t *testing.T) {
+	body := `{"tenantId":"t1","source":"s","input":{},"locale":"de-DE","functionName":"f","aliasSet":null,` +
+		`"vocabulary":{"id":"v","locale":"de-DE","structs":[{"canonical":"Driver","localized":"Fahrer","kind":"struct"}]}}`
+	var req RunnerRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if req.Vocabulary["id"] != "v" {
+		t.Fatalf("vocabulary 被丢弃: %+v", req.Vocabulary)
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back map[string]any
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatal(err)
+	}
+	structs := back["vocabulary"].(map[string]any)["structs"].([]any)
+	if structs[0].(map[string]any)["localized"] != "Fahrer" {
+		t.Fatalf("vocabulary 内容回写不一致: %s", out)
+	}
+
+	noVocab, _ := json.Marshal(testReq())
+	if strings.Contains(string(noVocab), "vocabulary") {
+		t.Fatalf("无词汇请求不应出现 vocabulary 键: %s", noVocab)
+	}
+}
