@@ -55,14 +55,14 @@
 | 2 | **aster-lang-locales** | CI 绿 |
 | 3 | **aster-lang-core #215**（`fix/reject-with-call-244`），然后是 **aster-lang-core ADR 0051 PR**（先 rebase 到 #215 之后的 main） | **硬门禁：#215 必须在 1.0.36 列车之前合入 core main**（原因见下文）；两个 PR 的 CI 都绿；rebase 后重跑 tier1 parity |
 | 4 | **aster-lang-truffle** | CI 绿。truffle CI 会检出 core main 并 publishToMavenLocal，所以必须在 core 合并之后 |
-| 5 | **aster-lang-ts**（含 `package.json` 1.0.37 → 1.0.38 的提交） | CI 绿；parity 测试读取 `../aster-lang-core` 的 error_codes.json，所以必须在 core 之后 |
-| 6 | **aster-lang-test**（含 `packages/js/package.json` 1.0.3 → 1.1.0） | CI 绿（tier1 parity：解析、IR、eval 全部一致） |
+| 5 | **aster-lang-ts**。**先在特性分支上新增一个提交** `chore(release): aster-lang-ts 1.0.37 → 1.0.38`，只改 `package.json` 的 version（这个提交现在还不存在；做法同 ts#241） | CI 绿；parity 测试读取 `../aster-lang-core` 的 error_codes.json，所以必须在 core 之后；check-artifact `ts:npm` 期望 1.0.38 |
+| 6 | **aster-lang-test**。**先在特性分支上新增一个提交**，把 `packages/js/package.json` 的 version 从 1.0.3 改为 1.1.0（这个提交现在还不存在），并在 changelog 记下 `normalizeIr` 签名变更 | CI 绿（tier1 parity：解析、IR、eval 全部一致）；check-artifact `test:npm` 期望 1.1.0 |
 | 7 | **生态 pin bump PR**：core、runtime、validation、test（packages/jvm）、locales、hi、truffle、aster-api 的 platform pin 1.0.35 → 1.0.36；aster-api 同时把 `setup-aster-build` 的 `sibling-ref` 改为 `v1.0.36` | 沿用 1.0.35 的做法（core#214、api#388 等），在列车前一起合并 |
 | 8 | **aster-lang-platform**（`chore(release): ADR 0051 版本计划`） | 本仓 CI：check-artifact、run-train.test.sh、catalog 构建 |
 | 9 | **发布列车**（见第 2 节） | 派发前确认 core main 已含 #215（`git log origin/main --oneline \| grep 244`）；preflight 全部通过；所有 tag 与制品都可见 |
 | 10 | **aster-api ADR 0051 PR** | **硬门禁：只在列车完成、各兄弟仓 `v1.0.36` tag 与 Maven 制品都已存在之后合并**：api CI 按 `sibling-ref` 检出兄弟仓 tag，tag 存在前 CI 无法变绿。合并后 push 会触发 deploy.yml，经 image-pin 和 ArgoCD 部署；新 pod 启动时由 Flyway 执行 V6.34.0 |
-| 11 | **aster-cloud PR-B**（其余全部代码，见第 3 节） | ts 1.0.38 已在 npm 上可见；CI 绿；migrate、lsp 镜像的 image-pin 已合并；Worker 已部署 |
-| 12 | **触发迁移 Job**（第 4 节），然后执行 `rollout restart` | api pod 已是新镜像；Worker 是 PR-B；migrate 镜像 digest 已是 PR-B 构建的版本 |
+| 11 | **aster-cloud PR-B**（其余全部代码，含独立的 resolver 迁移镜像，见第 3 节） | ts 1.0.38 已在 npm 上可见；CI 绿；lsp 镜像的 image-pin 已合并；Worker 已部署；resolver 迁移镜像已构建，k3s lane 已按第 3 节接入 |
+| 12 | **触发迁移 Job**（第 4 节），然后执行 `rollout restart` | api pod 已是新镜像；Worker 是 PR-B；k3s `apps/aster-lang/cloud/resolver-migration` 的 digest 来自含 PR-B 代码的构建 |
 
 ### cloud 迁移列的上线方式（裁决 R41，经 R46 修订）
 
@@ -109,7 +109,7 @@ COMMIT;
 - 执行时每条 `ADD COLUMN IF NOT EXISTS` 只报 NOTICE「already exists, skipping」，不报错。随后写入两条迁移记录，hash 取 SQL 文件内容，与是否手工加过列无关。
 - 之后再次 sync 时，库里最新记录已是 0061，不再执行任何迁移。不会失败，也不会重复应用。
 
-本地已用 PG 16 加上 PR 版本的 migrate 镜像完整演练过一遍：
+本地已在 PG 16 上用分支的 drizzle 迁移文件（drizzle-orm migrator，与 migrate 镜像同一入口 scripts/migrate.ts）完整演练过一遍：
 
 1. 迁移到 0059；
 2. 手工执行上面的 DDL；
@@ -206,24 +206,37 @@ gh workflow run release-train.yml --repo aster-cloud/aster-lang-platform --ref m
 
 开发期 cloud 用的是本地包 `file:.e2e-local/aster-lang-ts-local.tgz`。PR-B 合并前要完成以下几项：
 
-1. `package.json`、`lsp-package.json`、`migrate-package.json` 三处都改为 `"@aster-cloud/aster-lang-ts": "1.0.38"`，写精确版本。`scripts/check-lsp-pin.mjs` 逐字比较这三处，auto-upgrade 的 bump-pins 也会一并改写它们。
+1. `package.json` 与 `lsp-package.json` 都改为 `"@aster-cloud/aster-lang-ts": "1.0.38"`，写精确版本。`scripts/check-lsp-pin.mjs` 比较的是两边的字符串。
 2. 执行 `pnpm install` 重新生成 `pnpm-lock.yaml`，确认锁文件里不再有 `file:.e2e-local`。
-3. `node scripts/check-lsp-pin.mjs` 退出码为 0。开发期已知的 4 个失败用例是 check-lsp-pin 的 lsp 与 migrate 两项，各在 on-prem 和 saas 下失败一次，切换后应当全部消失。`pnpm test:run` 应全绿。
-4. **迁移镜像已包含 resolver 迁移脚本**（cloud 提交 `chore(migrate-image): 迁移镜像包含 resolver 迁移脚本（ADR 0051）`，随 PR-B 合入）：
-   - `Dockerfile.migrate` 按 `migrate-package.json` 精确钉版、用 npm 安装依赖：aster-lang-ts、dotenv、prom-client、drizzle-orm、postgres、tsx 等；
-   - 拷入 `tsconfig.json`（tsx 靠它解析 `@/` 别名）、`src/` 和 `scripts/resolver-migration.ts`；
-   - drizzle 迁移的 CMD 不变。
-
-   k3s Job 第 3 步的命令与镜像内入口逐字一致：`node --conditions=import --import tsx scripts/resolver-migration.ts`（workingDir `/app`）。
-
-   本地已用 podman 构建验证，tag 只打在本地。构建时把 aster-lang-ts 临时指向开发期的 tgz，因为 1.0.38 还没发布。在只读根文件系统、uid 1000、`/tmp` 为 tmpfs 的条件下：
-   - `--help` 正常输出；
-   - 缺少环境变量时以退出码 2 拒绝运行；
-   - 对本地 PG 先用该镜像的默认 CMD 跑完全部 drizzle 迁移，再跑 resolver 迁移：空表时 processed=0，退出码 0；
-   - 插入一行后，脚本向桩服务发出带签名的 `/api/v1/policies/compile`，桩返回 503，该行被判为 infrastructure，退出码 1，行未被改动。
-
-   镜像约 640 MB。
-   触发 Job 前，核对 k3s image-lock 里 aster-cloud-migrate 的 sourceSha 是含该提交的 main。
+3. `node scripts/check-lsp-pin.mjs` 退出码为 0。开发期唯一的两个已知失败用例是 check-lsp-pin（on-prem 与 saas），切换后应当消失。`pnpm test:run` 应全绿。
+4. **resolver 迁移用独立的一次性镜像**（R47），不复用 aster-cloud-migrate。如果复用，迁移镜像要拷入 `src/`，几乎每次 push 都会产出新 digest，进而触发 pin PR、sync、PostSync，以及受门控的 Worker 部署。迁移镜像保持只做 drizzle 迁移。
+   - **镜像**：`docker.io/wontlost/aster-resolver-migration`，由 cloud 的 `Dockerfile.resolver-migration` 构建。
+     - deps 阶段按应用锁文件完整安装，把引擎包 npm pack 出来（与应用同字节），并取 dotenv、drizzle-orm、postgres、prom-client、tsx 的精确版本；
+     - 运行阶段只装这些依赖，再拷入 `tsconfig.json`、`src/` 和脚本；
+     - `Dockerfile.resolver-migration.dockerignore` 排除测试代码；
+     - CMD 为 `node --conditions=import --import tsx scripts/resolver-migration.ts`，与 k3s Job 第 3 步逐字一致。
+   - **CI**：cloud `ci.yml` 中的 `build-resolver-migration-image` 和 `image-pin-pr-resolver-migration`。
+     - 只在以下变化时构建、签名，并由 image-pin bot 更新 k3s 的 pin：Dockerfile 及其 dockerignore、`scripts/resolver-migration.ts`、`src/services/policy/resolver-migration.ts`、package.json 中的引擎钉版；
+     - 两个 job 都设了 `continue-on-error`，失败不会影响 CI 结论，也不会影响 Worker 部署；
+     - 不等待 ArgoCD，也不进迁移门禁。
+   - **闭包内其它模块**（`src/lib/` 等）变化不会触发重建。触发 Job 前，如果自上次构建以来这些模块有改动，就在 main 上手动 dispatch 一次 CI（dispatch 时一律构建）。注意：dispatch 成功后 Deploy Worker 也会按同一 head 再部署一次，代码相同，无害。
+   - **首次接入**（新镜像，只做一次）：
+     1. 确认 Docker Hub 上 `wontlost/aster-resolver-migration` 仓库存在，CI 的推送凭据有写权限。
+     2. PR-B 合并后，CI 首次构建并签名。此时 k3s 还没有真实 entry，bot 的 pin PR 会失败，这是预期的。
+     3. 在 k3s 开**人工**接入 PR（内容已在 k3s 本地提交 `chore(rollout): ADR 0051 resolver 迁移 Job 移出 cloud 应用并改用独立镜像` 中）：
+        - `.github/image-pin/allowed-images.yaml` 新条目；
+        - 一对 CIP（7 仓 / 14 CIP）；
+        - `apps.yaml` 的 `resolver-migration` lane；
+        - `apps/aster-lang/cloud/resolver-migration/{image-lock,kustomization}.yaml`。
+        合并前，把这两个文件里的 BOOTSTRAP 占位（全零 digest、`BOOTSTRAP-PLACEHOLDER`、runId 0）替换成首次构建 job summary 里的真实 digest、sourceSha、runId。`allowed-images.yaml` 受 push ruleset 保护，只能走人工流程。
+     4. 之后的构建由 bot 自动开 pin PR。
+   - **本地验证**（podman，tag 只打在本地，验证后已删除）：
+     - 1.0.38 尚未发布，构建上下文是一份副本，在副本里让 deps 阶段额外拷入开发期 tgz。podman 需显式加 `--ignorefile Dockerfile.resolver-migration.dockerignore`；BuildKit 会按 Dockerfile 名自动采用它。
+     - 镜像内没有测试代码，约 240 MB。
+     - 运行条件：只读根文件系统、uid 1000、`/tmp` 为 tmpfs。结果：
+       - `--help` 正常；
+       - 缺少环境变量时以退出码 2 拒绝运行；
+       - 对迁移到最新的本地库插入一行后，脚本向桩服务发出带签名的 `/api/v1/policies/compile`：桩返回 503 时，该行判为 infrastructure，退出码 1，行未被改动；桩返回带 E802 诊断的 422 时，该行被归档（`statusBeforeArchive = APPROVED`），归入 `e8xx`，退出码 0。
 5. **关掉 auto-upgrade 自动开出的升级 PR**。ts 1.0.38 发布后，`auto-upgrade.yml` 会按 npm latest 自动开 `chore(deps): upgrade @aster-cloud/aster-lang-ts to 1.0.38` 之类的 PR。旧 main 搭配新引擎会失败（全局替换 API 已删除），不能合并。依赖升级由 PR-B 承担。aster-dev 也用同一份升级脚本，那边也要拦住或同步适配。
 
 ## 4. 存量重编译 Job
@@ -234,7 +247,7 @@ gh workflow run release-train.yml --repo aster-cloud/aster-lang-platform --ref m
 
 - aster-api 的 pod 都已是新镜像，`kubectl -n aster-cloud rollout status deploy/aster-api` 完成；
 - Worker 已部署 PR-B；
-- migrate 镜像 digest 是 PR-B 的构建，并且已合入 k3s。
+- k3s `apps/aster-lang/cloud/resolver-migration` 的 resolver 镜像 digest 来自含 PR-B 代码的构建，并且已合入 k3s（见第 3 节第 4 条）。
 
 Job 结束后执行：
 
@@ -249,19 +262,53 @@ cloud 侧：Job 在 k8s 中运行，无法访问 Workers KV（`getKV()` 返回 n
 
 ### 4.2 触发
 
-资源位于 k3s `apps/aster-lang/cloud/resolver-migration-cronjob.yaml`，是一个 suspend 的 CronJob，ArgoCD sync 不会运行它。
+资源位于 k3s 的 `apps/aster-lang/cloud/resolver-migration/`，**不属于任何 ArgoCD 应用**：ApplicationSet 只发现 `apps/aster-lang/*/kustomization.yaml`，cloud 应用也不引用这个目录。所以全部由人手工 apply。
+
+回滚点 PVC 单独放在 `backup-pvc.yaml`，不在任何 kustomization 里（R47 C1）。原因：local-path 是 WaitForFirstConsumer，没有 Pod 消费前 PVC 一直 Pending。若由 ArgoCD 管理，aster-cloud 应用会长期处于 Progressing，cloud CI 的「Wait for migration applied」（要求 Healthy）在每次部署时都会失败。
+
+**预检：节点 requests 余量。** Pod 的 requests 合计约为 init 50m/128Mi、init 10m/64Mi、主容器 25m/128Mi；init 容器串行执行，所以峰值约 50m CPU、128Mi 内存。节点 CPU requests 已偏高，参见 k3s `docs/runbooks/pg-restore-drill.md`。
 
 ```bash
-# 先确认没有正在跑的同类 Job（两侧迁移都幂等，但重复跑会产生两份备份）
+kubectl describe nodes | grep -A8 "Allocated resources"
+# 看每个节点 Requests 列的 cpu / memory 百分比，要有至少一个节点能放下约 50m CPU 与 128Mi 内存
+```
+
+如果所有节点都放不下（Pod 长期 Pending，事件里有 `Insufficient cpu`），按以下顺序处理：
+
+1. 在流量低谷执行；
+2. 临时把 aster-api 的 HPA 下限降为 1，腾出余量，Job 结束后恢复；
+3. 还不够就把 dump 的 CPU request 改为 25m：在本地 kustomization 上 patch，不改 git，或者直接改 apply 用的渲染结果，并记录在发布记录里；
+4. 仍不行就暂停，扩节点后再跑。
+
+不要通过删除 requests 来硬塞。
+
+**触发：**
+
+```bash
+# 1. ConfigMap + suspend 的 CronJob（可重复 apply；pin 更新后重新 apply 即可换镜像）
+kubectl apply -k apps/aster-lang/cloud/resolver-migration
+# 2. 回滚点 PVC（只在触发前 apply；此时 Pending 属正常，等 Pod 调度后才绑定）
+kubectl apply -f apps/aster-lang/cloud/resolver-migration/backup-pvc.yaml
+# 3. 确认没有正在跑的同类 Job（两侧迁移都幂等，但重复跑会产生两份备份）
 kubectl -n aster-cloud get jobs -l app=aster-adr0051-resolver-migration
 JOB=aster-adr0051-resolver-migration-$(date +%s)
 kubectl -n aster-cloud create job "$JOB" --from=cronjob/aster-adr0051-resolver-migration
+# 4. Pod 调度后 PVC 应变为 Bound
+kubectl -n aster-cloud wait --for=jsonpath='{.status.phase}'=Bound pvc/aster-adr0051-migration-backup --timeout=5m
 kubectl -n aster-cloud logs -f "job/$JOB" --all-containers --prefix
 ```
 
 Pod 内按以下顺序执行，任何一步失败 Pod 即失败，不自动重试：
 
-1. **dump**（PG 16.4 客户端）：
+1. **dump**（PG 16.4 客户端，`ghcr.io/cloudnative-pg/postgresql:16.4@sha256:99be0637…`）：
+   - **合并 k3s 接入 PR 前，先重新核对这个 digest 仍然是 ghcr 上 16.4 的 manifest-list digest**（这是第三方镜像，不受 image-pin 管理）：
+
+     ```bash
+     crane digest ghcr.io/cloudnative-pg/postgresql:16.4
+     # 或：skopeo inspect --raw docker://ghcr.io/cloudnative-pg/postgresql:16.4 | sha256sum
+     ```
+
+     2026-10-29 解析与拉取实测：digest 一致，`pg_dump --version` 为 16.4。
    - 先确认两库的新列已存在，缺列时以退出码 2 拒绝运行；
    - 对 aster_api 的 `policy_versions`、`policy_artifacts` 和 aster_cloud 的 `"PolicyVersion"`、`"UserVocabularySnapshot"` 做 `pg_dump -Fc`，同时导出逐行 CSV；
    - 写入 PVC `aster-adr0051-migration-backup` 下的 `/backup/adr0051/<UTC 时间戳>/`，附带 `pending-before.txt` 和 `SHA256SUMS`。
@@ -273,7 +320,8 @@ Pod 内按以下顺序执行，任何一步失败 Pod 即失败，不自动重�
    - 调用 `POST /api/v1/admin/resolver-migration/run?batchSize=50`。签名用 admin HMAC，密钥是 `aster-api-plan-gate-credentials/hmac-key`；
    - 直连集群内地址 `http://aster-api.aster-cloud.svc.cluster.local`；
    - 端点是同步的，一次处理完所有待迁移行。Job 按轮调用，`processed == 0` 或 `succeeded == 0` 时停止，最多 5 轮；
-   - 结果写入 `api-report.json`。
+   - 结果写入 `api-report.json`；
+   - 端点对行级基础设施异常（数据库错误等）也返回 200，error 形如 `<异常类名>: <消息>`，即匹配 `^\w+(Exception|Error): `。这些行没有被归档、保持待迁移，单独归入 `infrastructure`，本步以退出码 1 结束，第 3 步不会运行。修复后重新触发即可。
 3. **cloud-migration**：
    - 执行 cloud 迁移脚本，`--report cloud-report.json`；
    - 然后打印汇总，并写入 `SUMMARY.txt`。
@@ -283,7 +331,7 @@ Pod 内按以下顺序执行，任何一步失败 Pod 即失败，不自动重�
 日志末尾的汇总示例：
 
 ```
-aster-api policy_versions: rounds=2 succeeded=… remainingFailed=… (E8xx=… integrityMismatch=… other=…)
+aster-api policy_versions: rounds=2 succeeded=… remainingFailed=… (E8xx=… integrityMismatch=… infrastructure=… other=…)
 aster-cloud "PolicyVersion": processed=… succeeded=… failed=… exit=…
   triage: e8xx=… invalidConstructForm=… untypedFieldAccess=… vocabularyScopeByUser=… integrityMismatch=… otherCompile=… infrastructure=…
 ```
@@ -294,7 +342,8 @@ aster-cloud "PolicyVersion": processed=… succeeded=… failed=… exit=…
 |---|---|---|
 | `e8xx` | 依赖旧全局替换的本地化策略。api 版本不带词汇，按设计编译失败并被归档（`archived_by_resolver_migration = true`） | 这是设计内结果。用户改写，或在 cloud 侧用词汇重建 |
 | `integrityMismatch` | `pre-migration integrity mismatch`：旧封印对不上（篡改证据，或 envelope 有值但工具链串为空） | **行没有被归档，也没有被改动**。每次重跑都会再报，必须人工调查 |
-| `other` | 其它编译失败，例如 #215 之后的 `with f = v`，以及基础设施错误（数据库异常等，这类行不会被归档） | 逐条看 `error`。基础设施类在修复后重跑即可 |
+| `infrastructure` | 行级基础设施异常（error 匹配 `^\w+(Exception|Error): `，例如数据库错误），行没有被归档，保持待迁移 | 修复后重跑；本步以退出码 1 结束 |
+| `other` | 其它编译失败，例如 #215 之后的 `with f = v` | 逐条看 `error` |
 
 **cloud 侧**（`cloud-report.json` 的 `triage`，脚本 `--help` 里有同样的说明）：
 
@@ -310,10 +359,18 @@ aster-cloud "PolicyVersion": processed=… succeeded=… failed=… exit=…
 
 **退出码与重跑**：
 
-- cloud 脚本的退出码：0 = 每一行都有结论；1 = 存在基础设施故障；2 = 配置缺失或脚本错误。
+- 退出码：
+  - api-migration：0 = 拿到报告，失败行都是设计内结果；1 = HTTP 或传输错误，或者有行级基础设施异常；2 = 配置缺失。
+  - cloud 脚本：0 = 每一行都有结论；1 = 存在基础设施故障；2 = 配置缺失或脚本错误。
 - **重跑是幂等的**：成功行会被跳过；失败行（`resolverVersion` 为 NULL）会被重试；行在加锁后会复查。按 4.2 重新 `create job` 即可，每次都会生成一份新的备份目录。
 - **如果多次重跑仍以退出码 1 结束，而且 `infrastructure` 里一直是同一批行，说明不是瞬时故障**，必须人工排查（R45 遗留项），不要无限重跑。
-- 结构上可预期的失败（E8xx 等）不会让 Job 失败，Job 的成功与否只反映基础设施状态。
+- 设计内的编译失败（E8xx、无效构造写法、E801、词条非法、完整性不一致）不会让 Job 失败。**以下情况 Job 会失败**：
+  - api 侧的 HTTP 或传输错误；
+  - api 侧的行级基础设施异常（`infrastructure`）；
+  - cloud 侧的 `infrastructure`；
+  - 配置缺失。
+
+  所以 Job 成功 = 两侧都没有基础设施问题，每一行都有结论。
 
 **收尾**：
 
@@ -321,12 +378,23 @@ aster-cloud "PolicyVersion": processed=… succeeded=… failed=… exit=…
 
   ```bash
   # Job 的 Pod 已结束，不能 exec；临时起一个挂同一 PVC 的 Pod（RWO，Job 结束后才能挂）
-  kubectl -n aster-cloud run adr0051-backup-reader --restart=Never --image=docker.io/library/busybox:1.37 \
-    --overrides='{"spec":{"volumes":[{"name":"b","persistentVolumeClaim":{"claimName":"aster-adr0051-migration-backup"}}],"containers":[{"name":"r","image":"docker.io/library/busybox:1.37","command":["sleep","3600"],"volumeMounts":[{"name":"b","mountPath":"/backup"}]}]}}'
+  kubectl -n aster-cloud run adr0051-backup-reader --restart=Never --image=docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec \
+    --overrides='{"spec":{"volumes":[{"name":"b","persistentVolumeClaim":{"claimName":"aster-adr0051-migration-backup"}}],"containers":[{"name":"r","image":"docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec","command":["sleep","3600"],"volumeMounts":[{"name":"b","mountPath":"/backup"}]}]}}'
   kubectl -n aster-cloud wait --for=condition=Ready pod/adr0051-backup-reader
   kubectl -n aster-cloud cp adr0051-backup-reader:/backup/adr0051 ./adr0051-backup
   kubectl -n aster-cloud delete pod adr0051-backup-reader
   (cd ./adr0051-backup/<时间戳> && sha256sum -c SHA256SUMS)
+  ```
+
+  busybox 按 tag@digest 钉死。digest 是 2026-10-29 从 Docker Hub 解析的 manifest-list digest。
+
+- **清理**：备份拷出并校验通过、确定不需要再跑之后执行。如果回滚窗口内可能还要用这些备份，就留到第 6.4 节再清理。
+
+  ```bash
+  kubectl delete -k apps/aster-lang/cloud/resolver-migration     # CronJob + ConfigMap
+  kubectl -n aster-cloud delete pvc aster-adr0051-migration-backup
+  # 已完成的 Job 由 ttlSecondsAfterFinished（7 天）自动清理；需要提前清理时：
+  kubectl -n aster-cloud delete jobs -l app=aster-adr0051-resolver-migration
   ```
 
 - 预期：失败数与分诊列表一致，只包含刻意构造的冲突样例和已知的本地化测试策略。
@@ -498,8 +566,8 @@ COMMIT;
 
 ### 6.4 收尾
 
-- 回滚完成后，PVC `aster-adr0051-migration-backup` 带有 `Prune=false`，从 git 移除时不会被删除。确认不再需要后，手工执行 `kubectl delete pvc`。
-- 同样从 git 移除 CronJob 与 PVC 的清单。
+- 回滚完成、确认不再需要备份后，按第 4.3 节「清理」删除 CronJob、ConfigMap 和 PVC。这些资源都不由 ArgoCD 管理，从 git 移除清单不会删除集群里的对象。
+- 再从 git 移除 `apps/aster-lang/cloud/resolver-migration/`，同时移除 `apps.yaml` 的 lane、`allowed-images.yaml` 的条目和那一对 CIP。cloud 的 `ci.yml` 删掉两个 resolver job 和 `Dockerfile.resolver-migration`。
 
 ## 7. 发布后跟进清单（来自 SDD 账本）
 
@@ -535,7 +603,8 @@ COMMIT;
 - [ ] locales：generate.mjs 在模块顶层就写文件；没有「重新生成 vs 已提交」的一致性测试，CI 也没有 casefold 测试步骤；hex 键按字典序排列（消费方要按数值排序）；三个 locale 的 Java 测试各自重复实现 resolve。
 - [ ] ts：
   - [ ] resolution-codes 测试的名称检查几乎不起作用，占位符只检查 `{written}`；
-  - [ ] 只在函数体出现的显式 TypeVar 可能被丢弃；alias 的 E807 span 是 0:0；
+  - [ ] 只在函数体出现的显式 TypeVar 可能被丢弃；alias 的 E807 span 是 0:0；歧义类型参数的 E804 落在函数的 span 上（T4）；
+  - [ ] TS 的 JingYeSi 对照用例可能也需要补同一条词汇条目（T11b）；
   - [ ] TypeVar 上的字段在 `compile()` 中按原文透传；未知 subject 下只有折叠命中的 PatternName 会变成绑定；
   - [ ] `scripts/update-all-core-golden.js` 用的是裸 lowerModule；emit-core.js、golden.js 是死代码；typecheck-cli、repl 没有集成测试；
   - [ ] 枚举名与 import 别名冲突（M1）；lexicon 缓存（M5）；
@@ -548,6 +617,7 @@ COMMIT;
   - [ ] `scripts/test-*.mjs` 没有接入；删掉的 workflow 样例没有保留。
 - [ ] truffle：
   - [ ] README 的复合构建说明已过时；CnlCompiler 的 javadoc 有空 `<pre>`；
+  - [ ] 要写明 ADR 分支依赖 core 发版：没有 `-PasterCoreDir` 时，它只能对已发布的 core 1.0.36 构建（T11b）；
   - [ ] 缺少未知 `E.X` 的测试；
   - [ ] CoreIrEvalCli 的词汇为 null，§8 词汇语料落地后需要补词汇通道；
   - [ ] CoreModel 无法反序列化 Block case body；buildScope 的 Env 与 slot 不一致（已有问题）。
