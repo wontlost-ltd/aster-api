@@ -141,4 +141,20 @@ class PlanGateEntitlementLookupTest {
         assertThat(second.get().allowsReplayBatch()).isFalse();
         assertThat(service.cache.getIfPresent("t1")).isNull();
     }
+
+    @Test
+    void interruptedDuringLookup_restoresFlagAndFailsClosedWithoutCaching() {
+        stub.set(() -> { throw new InterruptedException("cancelled"); });
+
+        try {
+            assertThatThrownBy(() -> service.lookupPlanForEntitlement("t-int"))
+                .isInstanceOf(PlanLookupUnavailableException.class)
+                .hasMessageContaining("plan_lookup_failed");
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+            assertThat(service.cache.getIfPresent("t-int")).isNull();
+            assertThat(service.notFoundTenants.getIfPresent("t-int")).isNull();
+        } finally {
+            Thread.interrupted();
+        }
+    }
 }
