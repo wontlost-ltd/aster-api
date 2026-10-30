@@ -149,14 +149,8 @@ public class SnapshotWarmupService {
             JsonArray keys = resp.getJsonArray("apiKeys", new JsonArray());
             for (int i = 0; i < users.size(); i++) {
                 JsonObject u = users.getJsonObject(i);
-                snapshot.setUser(new UserSnapshot(
-                    u.getString("userId"),
-                    u.getString("plan", "free"),
-                    u.getLong("apiCallsLimit", 0L),
-                    u.getString("subscriptionStatus"),
-                    u.getLong("aiBannedUntilEpochMs"),
-                    u.getLong("gracePeriodEndsEpochMs")
-                ));
+                snapshot.setUser(UserSnapshot.fromJson(
+                    u.getString("userId"), u, LocalQuotaSnapshotService.currentPeriod()));
                 totalUsers++;
             }
             for (int i = 0; i < keys.size(); i++) {

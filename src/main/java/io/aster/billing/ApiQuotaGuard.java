@@ -177,16 +177,13 @@ public class ApiQuotaGuard {
             limit = s.apiCallsLimit();
             apiAccessAllowed = s.apiAccessAllowed();
             unlimited = s.unlimitedApi();
-            // used 取本地 Redis 计数器。已知风险（经评审接受）：Redis 冷启动 /
-            // counter 丢失 / 迁移后，本地计数器从 0 重新累积，而 cloud 可能已记录
-            // 历史用量（如 150%）。此窗口内 ">=200% hard reject" 会失效，直到本地
-            // 计数追上。判定为可接受：(1) counter 是用量"计量"而非访问"鉴权"——
-            // 真正的访问控制（撤销 / 过期 / plan 禁用）由 ApiKeyVerifierService 的
-            // cloud verify 持有；(2) 影响有界（单个重新累积窗口）；(3) 用 cloud
-            // monthlyUsed 给本地 counter 播种的修法会引入 double-count 风险，
-            // 需更大改动，不在本次范围。如需收紧：UserSnapshot 携带 baseline
-            // monthlyUsed，此处取 max(localCounter, baseline)。
-            used = local.get().used();
+            // used 取本地 Redis 计数器与快照基线的最大值（#412）。本地计数只含经本服务的直连调用；
+            // cloud REST 调用写入同一 owner 池（cloud#652）却不经过本地计数器，Redis 冷启动 / 计数丢失
+            // 后本地计数也会从 0 重新累积。快照携带 cloud 统计的 owner 池当月合并用量作基线，
+            // 取最大值（而非相加，基线已含本服务上报的直连调用），使 200% 硬上限按合并总量生效。
+            // 基线随快照推送 / 每小时对账 / precheck 预热刷新，滞后量以刷新间隔内的调用为上界。
+            used = s.effectiveUsed(local.get().used(),
+                io.aster.billing.snapshot.LocalQuotaSnapshotService.currentPeriod());
         } else {
             // R32 hotfix v3: 先查进程内 Caffeine（5min TTL），命中即 0 RTT。
             PrecheckResult cached = precheckCache == null ? null
@@ -423,6 +420,16 @@ public class ApiQuotaGuard {
      */
     private record PrecheckResult(long apiCallsLimit, long monthlyUsed, String plan) {}
 
+    /**
+     * precheck 预热写入的快照：带上 cloud 返回的 owner 池当月合并用量作为基线（#412），
+     * 账期取预热时刻的当月。包可见，供单测锁定字段。
+     */
+    static io.aster.billing.snapshot.UserSnapshot snapshotFromPrecheck(
+            String quotaOwnerId, String plan, long apiCallsLimit, long monthlyUsed) {
+        return new io.aster.billing.snapshot.UserSnapshot(quotaOwnerId, plan, apiCallsLimit, null, null, null,
+            monthlyUsed, io.aster.billing.snapshot.LocalQuotaSnapshotService.currentPeriod());
+    }
+
     /** 限制并发预热：同一 quotaOwnerId 已有 in-flight 任务时不重复提交。 */
     private final java.util.concurrent.ConcurrentHashMap<String, Boolean> prefetchInFlight
         = new java.util.concurrent.ConcurrentHashMap<>();
@@ -444,8 +451,8 @@ public class ApiQuotaGuard {
                         precheckCache.put(quotaOwnerId, pre);
                     }
                     try {
-                        snapshot.setUser(new io.aster.billing.snapshot.UserSnapshot(
-                            quotaOwnerId, pre.plan, pre.apiCallsLimit, null, null, null));
+                        snapshot.setUser(snapshotFromPrecheck(
+                            quotaOwnerId, pre.plan, pre.apiCallsLimit, pre.monthlyUsed));
                     } catch (Exception ignore) {
                         // snapshot 内部已 catch；这里再兜一层
                     }

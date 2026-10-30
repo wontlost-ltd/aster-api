@@ -293,7 +293,8 @@ public class LocalQuotaSnapshotService {
     private static UserSnapshot parseUser(String json) {
         if (json == null) return null;
         try {
-            return MAPPER.readValue(json, UserSnapshot.class);
+            // 宽松读取：快照字段只增不减，新副本写入的新增字段不得让本副本把快照判为缺失
+            return JacksonMappers.LENIENT.readValue(json, UserSnapshot.class);
         } catch (Exception e) {
             LOG.warnf("UserSnapshot 反序列化失败，按缺失处理: %s", e.getMessage());
             return null;
