@@ -124,6 +124,28 @@ class PolicyCompilerTest {
     }
 
     @Test
+    void syntaxErrorTextFollowsPolicyLanguage_noChinesePrefixForEnglishPolicy() {
+        // 生产复测第 7 轮：英文策略保存被拒时，errors 与诊断都是中文（「CNL 解析失败: CNL 语法错误 — 行 …」）
+        String badSrc = "Module M.\n\nRule p given n as Int, produce Int:\n  Return n\n";
+        CompilationResult result = policyCompiler.compile(badSrc, "en-US", null);
+
+        assertThat(result.isSuccess()).isFalse();
+        assertThat(result.getErrors()).singleElement(org.assertj.core.api.InstanceOfAssertFactories.STRING)
+            .startsWith("CNL syntax error — Line ")
+            .doesNotContainPattern("\\p{IsHan}");
+        assertThat(result.getDiagnostics()).extracting(CompilationResult.Diagnostic::message)
+            .contains("Expected '.' at end of statement")
+            .noneMatch(m -> m.matches("(?s).*\\p{IsHan}.*"));
+
+        CompilationResult zh = policyCompiler.compile(
+            "模块 M。\n\n规则 p 给定 n 作为 整数，产出 整数：\n  返回 n\n", "zh-CN", null);
+        assertThat(zh.getErrors()).singleElement(org.assertj.core.api.InstanceOfAssertFactories.STRING)
+            .startsWith("CNL 语法错误 — 行 ");
+        assertThat(zh.getDiagnostics()).extracting(CompilationResult.Diagnostic::message)
+            .contains("语句末尾应为 '。'");
+    }
+
+    @Test
     void compileSuccessHasNoDiagnostics() {
         String src = "Module M.\n\nRule p given x as Int, produce Int:\n  Return x times 3.";
         CompilationResult result = policyCompiler.compile(src, "en-US", null);

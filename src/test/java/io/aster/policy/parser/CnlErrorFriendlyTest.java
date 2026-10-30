@@ -28,7 +28,7 @@ class CnlErrorFriendlyTest {
         assertThat(err)
             .doesNotContain("failed predicate")
             .doesNotContain("softComparator")
-            .contains("无法识别")
+            .contains("Unrecognized operator")
             .contains("is less than"); // 给出可用的比较词建议
     }
 
@@ -58,23 +58,22 @@ class CnlErrorFriendlyTest {
     void onlyFirstRootCause_notCascadeOfDozens() {
         // 一个真实错误常引发几十条级联；用户只该看到根因。
         String err = parseErr("Module m.\nRule r given x, produce:\n  If x is wobbly 5\n    Return 1.");
-        // 友好消息以"行 N 第 M 列"开头，且不应包含十几条用 ; 串起来的原始错误
-        assertThat(err).startsWith("CNL 语法错误 — 行 ");
-        long rawSeparators = err.chars().filter(c -> c == ';').count();
-        assertThat(rawSeparators).isZero();
+        // 友好消息以 "Line N, column M" 开头（en 策略），且不应包含十几条串起来的原始错误
+        assertThat(err).startsWith("CNL syntax error — Line ");
+        assertThat(err).doesNotContain("more errors follow").doesNotContain("failed predicate");
     }
 
     @Test
     void humanize_directUnit() {
         assertThat(CnlErrorListener.humanize("rule softComparator failed predicate: {x}?"))
-            .contains("无法识别");
+            .contains("Unrecognized operator");
         assertThat(CnlErrorListener.humanize("mismatched input '.' expecting {':', ',', NEWLINE}"))
-            .contains("意外的")
+            .isEqualTo("Unexpected '.'; expected ':' or ',' or newline")
             .doesNotContain("NEWLINE");
         assertThat(CnlErrorListener.humanize("extraneous input '<INDENT>' expecting {<EOF>}"))
-            .contains("缩进");
+            .contains("Incorrect indentation");
         assertThat(CnlErrorListener.humanize("no viable alternative at input 'Definehas'"))
-            .contains("无法解析");
+            .contains("Cannot parse the syntax near");
     }
 
     /**
@@ -135,7 +134,7 @@ class CnlErrorFriendlyTest {
 
         assertThat(err)
             .as("★源码里没有 `is` 关键词，不得声称是 `is` 的问题")
-            .doesNotContain("`is` 后面不能直接跟符号");
+            .doesNotContain("cannot be followed directly by a symbol");
     }
 
     /** 真正的 `is` + 符号仍必须给出可操作提示（不能为了消误报把功能也砍掉）。 */
@@ -145,7 +144,7 @@ class CnlErrorFriendlyTest {
 
         assertThat(err)
             .as("★真正的 `is <` 必须仍被诊断出来")
-            .containsAnyOf("两种写法不能混用", "`is` 后面不能直接跟符号");
+            .containsAnyOf("cannot be mixed", "cannot be followed directly by a symbol");
         assertThat(err)
             .as("★必须给出可用的改法")
             .containsAnyOf("less than", "< 18");

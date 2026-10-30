@@ -24,6 +24,7 @@ class CnlErrorLocalizedKeywordTest {
 
     private static final String ZH_HEADER = "模块 m。\n\n规则 r 给定 x 作为 整数 产出 整数：\n";
     private static final String INLINE_HINT = "单行条件请写成";
+    private static final String EN_INLINE_HINT = "Write a one-line condition";
 
     private static String parseErr(String src, String locale) {
         try {
@@ -65,7 +66,7 @@ class CnlErrorLocalizedKeywordTest {
             "  " + kw("de-de", SemanticTokenKind.IF) + " x < 0, " + ret + " 0.",
             "  " + ret + " x.");
         assertThat(parseErr(src, "de-DE"))
-            .contains("意外的 '" + ret + "'")
+            .contains("Unerwartet: '" + ret + "'")
             .doesNotContain("'Return'")
             .contains(kw("de-de", SemanticTokenKind.THEN));
     }
@@ -75,7 +76,7 @@ class CnlErrorLocalizedKeywordTest {
         String err = parseErr(
             "Module m.\n\nRule r given x as Int, produce Int:\n  If x less than 0, Return 0 minus x.\n  Return x.",
             "en-US");
-        assertThat(err).contains("意外的 'Return'").contains("「If 条件 then Return …」");
+        assertThat(err).contains("Unexpected 'Return'").contains("\"If condition then Return …\"");
     }
 
     @Test
@@ -90,7 +91,7 @@ class CnlErrorLocalizedKeywordTest {
         String err = parseErr(
             "Module m.\n\nRule r given x as Int, produce Int:\n  If x less than 0:\n    Return 1.\n  Otherwise, Return x.",
             "en-US");
-        assertThat(err).contains("'Return'").doesNotContain(INLINE_HINT);
+        assertThat(err).contains("'Return'").doesNotContain(EN_INLINE_HINT);
     }
 
     @Test
@@ -134,14 +135,14 @@ class CnlErrorLocalizedKeywordTest {
     @Test
     void humanize_missingKeyword_isLocalized() {
         String msg = CnlErrorListener.humanize("missing 'produce' at 'x'", false, ZH, false);
-        assertThat(msg).contains("缺少 '产出'").contains("'x'");
+        assertThat(msg).isEqualTo("'x' 之前应为 '产出'");
     }
 
     @Test
     void humanize_english_isUnchanged() {
         String msg = CnlErrorListener.humanize("mismatched input 'x' expecting {'given', 'produce'}", false,
             KeywordLocalizer.IDENTITY, false);
-        assertThat(msg).isEqualTo("意外的 'x'，此处期望 'given' 或 'produce'");
+        assertThat(msg).isEqualTo("Unexpected 'x'; expected 'given' or 'produce'");
     }
 
     @Test
@@ -150,7 +151,7 @@ class CnlErrorLocalizedKeywordTest {
         // 都不能靠「符号名小写」碰巧命中，必须经由符号名 → 规范拼写表
         String msg = CnlErrorListener.humanize(
             "mismatched input 'x' expecting {ELSE, MODULE_KW, PLUS_WORD}", false, ZH, false);
-        assertThat(msg).isEqualTo("意外的 'x'，此处期望 '否则' 或 '模块' 或 '加上'");
+        assertThat(msg).isEqualTo("意外的 'x'，此处应为 '否则' 或 '模块' 或 '加上'");
     }
 
     @Test
@@ -159,7 +160,7 @@ class CnlErrorLocalizedKeywordTest {
         assertThat(KeywordLocalizer.KeywordTokens.get().symbolicToCanonical)
             .containsEntry("GREATER_THAN_WORD", "greater than");
         String msg = CnlErrorListener.humanize("mismatched input 'x' expecting GREATER_THAN_WORD", false, ZH, false);
-        assertThat(msg).isEqualTo("意外的 'x'，此处期望 '大于'");
+        assertThat(msg).isEqualTo("意外的 'x'，此处应为 '大于'");
     }
 
     @Test
@@ -176,6 +177,6 @@ class CnlErrorLocalizedKeywordTest {
         // en-US 不经过符号名表：RETURN 照旧显示为 'RETURN'（不变成 'Return'）
         String msg = CnlErrorListener.humanize("mismatched input 'x' expecting RETURN", false,
             KeywordLocalizer.IDENTITY, false);
-        assertThat(msg).isEqualTo("意外的 'x'，此处期望 'RETURN'");
+        assertThat(msg).isEqualTo("Unexpected 'x'; expected 'RETURN'");
     }
 }

@@ -2,6 +2,7 @@ package io.aster.policy.parser;
 
 import aster.core.lexicon.Lexicon;
 import aster.core.lexicon.LexiconRegistry;
+import aster.core.lexicon.PunctuationConfig;
 import aster.core.lexicon.SemanticTokenKind;
 import aster.core.parser.AsterCustomLexer;
 import org.antlr.v4.runtime.CharStreams;
@@ -29,15 +30,18 @@ import java.util.Set;
 final class KeywordLocalizer {
 
     /** 恒等实现：英文或无法确定 locale 时使用，错误信息保持原样。 */
-    static final KeywordLocalizer IDENTITY = new KeywordLocalizer(Collections.emptyMap(), null);
+    static final KeywordLocalizer IDENTITY = new KeywordLocalizer(Collections.emptyMap(), Set.of(), null);
 
-    /** 小写规范拼写 → locale 主拼写。 */
+    /** 小写规范拼写 → locale 主拼写（关键词与句末 / 冒号 / 逗号三种标点）。 */
     private final Map<String, String> canonicalToLocal;
+    /** 参与回译的规范标点（如 {@code .}），用于判定出错 token 是否为标点。 */
+    private final Set<String> punctuation;
     /** 作者所用 lexicon，用于取提示里的关键词；IDENTITY 时为 null（提示用规范拼写）。 */
     private final Lexicon target;
 
-    private KeywordLocalizer(Map<String, String> canonicalToLocal, Lexicon target) {
+    private KeywordLocalizer(Map<String, String> canonicalToLocal, Set<String> punctuation, Lexicon target) {
         this.canonicalToLocal = canonicalToLocal;
+        this.punctuation = punctuation;
         this.target = target;
     }
 
@@ -67,7 +71,32 @@ final class KeywordLocalizer {
             // 防御：若两个语义共用同一规范拼写，保留先出现的那个，避免互相覆盖
             map.putIfAbsent(e.getValue().toLowerCase(Locale.ROOT), local);
         }
-        return new KeywordLocalizer(Collections.unmodifiableMap(map), target);
+        Set<String> punctuation = putPunctuation(map, canonical.getPunctuation(), target.getPunctuation());
+        return new KeywordLocalizer(Collections.unmodifiableMap(map), punctuation, target);
+    }
+
+    /**
+     * 句末、冒号、逗号三种标点的回译：canonicalize 之后 ANTLR 只见英文写法，作者写的是
+     * 「。」「：」「，」（zh）或「।」（hi）。逗号取 listSeparator 而非 enumSeparator——
+     * 解析器报 {@code ','} 的位置都是列表 / 参数分隔（与编辑器端的取法一致）。
+     */
+    private static Set<String> putPunctuation(Map<String, String> map, PunctuationConfig from, PunctuationConfig to) {
+        if (from == null || to == null) {
+            return Set.of();
+        }
+        Set<String> canonical = new HashSet<>();
+        String[][] pairs = {
+            {from.statementEnd(), to.statementEnd()},
+            {from.blockStart(), to.blockStart()},
+            {from.listSeparator(), to.listSeparator()},
+        };
+        for (String[] pair : pairs) {
+            if (pair[0] != null && pair[1] != null && !pair[1].isBlank()) {
+                map.putIfAbsent(pair[0], pair[1]);
+                canonical.add(pair[0]);
+            }
+        }
+        return Set.copyOf(canonical);
     }
 
     /**
@@ -86,6 +115,16 @@ final class KeywordLocalizer {
     /** 是否会改写（非英文 locale）。英文为恒等，调用方据此保持英文文案逐字不变。 */
     boolean isLocalizing() {
         return !canonicalToLocal.isEmpty();
+    }
+
+    /** 文本是否为参与回译的规范标点（出错 token 是标点时按作者的写法显示）。 */
+    boolean isPunctuation(String text) {
+        return text != null && punctuation.contains(text);
+    }
+
+    /** 作者所用语言的语法错误文案；IDENTITY（英文 / 未知 locale）为英文。 */
+    SyntaxMessages messages() {
+        return target == null ? SyntaxMessages.ENGLISH : SyntaxMessages.forLexicon(target);
     }
 
     /** 规范关键词 → locale 拼写；不是已知关键词时原样返回。 */

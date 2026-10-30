@@ -198,9 +198,7 @@ public class InProcessCnlParser {
             if (errorListener.hasErrors()) {
                 LOG.debugf("CNL 解析原始错误（全集）: %s", errorListener.getRawErrors());
                 LOG.debugf("CNL 语法错误: %s", errorListener.getErrors());
-                throw new CnlParseException(
-                    "CNL 语法错误 — " + errorListener.getErrors(),
-                    errorListener.getDiagnostics());
+                throw new CnlParseException(errorListener.getSummary(), errorListener.getDiagnostics());
             }
 
             // 5. 构建 AST
