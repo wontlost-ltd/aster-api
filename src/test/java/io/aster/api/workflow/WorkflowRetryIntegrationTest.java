@@ -28,6 +28,9 @@ import org.junit.jupiter.api.Test;
  * - 达到最大重试次数抛异常
  * - 多步骤混合重试场景
  * - 重放一致性验证
+ *
+ * <p>每次 {@code executeUntilComplete} 都经 {@link WorkflowTestTimeouts#completeWithin} 硬性限时：延迟重试 poller
+ * 若卡住（如 aster-api#414 中重放时钟耗尽导致到期任务永不触发）会无限等待且不响应中断，限时让它按时以失败结束。
  */
 @QuarkusTest
 class WorkflowRetryIntegrationTest {
@@ -66,7 +69,7 @@ class WorkflowRetryIntegrationTest {
         return "ok";
       }, Collections.emptySet(), policy);
 
-      registry.executeUntilComplete();
+      WorkflowTestTimeouts.completeWithin(WorkflowTestTimeouts.WORKFLOW_RUN_LIMIT, registry::executeUntilComplete);
 
       // 验证任务成功
       assertThat(registry.getResult("task-success")).isEqualTo("ok");
@@ -109,7 +112,8 @@ class WorkflowRetryIntegrationTest {
       }, Collections.emptySet(), policy);
 
       // 验证达到最大次数后抛出 MaxRetriesExceededException
-      assertThatThrownBy(() -> registry.executeUntilComplete())
+      assertThatThrownBy(() -> WorkflowTestTimeouts.completeWithin(
+          WorkflowTestTimeouts.WORKFLOW_RUN_LIMIT, registry::executeUntilComplete))
           .isInstanceOf(MaxRetriesExceededException.class)
           .hasMessageContaining("Max retries (3) exceeded")
           .hasMessageContaining("persistent failure");
@@ -178,7 +182,7 @@ class WorkflowRetryIntegrationTest {
         return "step2-ok";
       }, Collections.singleton("step1"), policy2);
 
-      registry.executeUntilComplete();
+      WorkflowTestTimeouts.completeWithin(WorkflowTestTimeouts.WORKFLOW_RUN_LIMIT, registry::executeUntilComplete);
 
       // 验证两个步骤都成功
       assertThat(registry.getResult("step1")).isEqualTo("step1-ok");
@@ -227,7 +231,7 @@ class WorkflowRetryIntegrationTest {
         return "success";
       }, Collections.emptySet(), policy);
 
-      registry1.executeUntilComplete();
+      WorkflowTestTimeouts.completeWithin(WorkflowTestTimeouts.WORKFLOW_RUN_LIMIT, registry1::executeUntilComplete);
     } finally {
       registry1.stopPolling();
       registry1.shutdown();
@@ -274,7 +278,7 @@ class WorkflowRetryIntegrationTest {
         return "success";
       }, Collections.emptySet(), policy);
 
-      registry2.executeUntilComplete();
+      WorkflowTestTimeouts.completeWithin(WorkflowTestTimeouts.WORKFLOW_RUN_LIMIT, registry2::executeUntilComplete);
     } finally {
       registry2.stopPolling();
       registry2.shutdown();
