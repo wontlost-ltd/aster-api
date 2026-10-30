@@ -103,6 +103,12 @@ ADR 0051 §6 的 LOCAL 层定义为「当前词法作用域内源码声明的局
 因此关闭启动期重验（`ASTER_REVALIDATION_ENABLED=false`）**不能**提供缓冲期，命中版本必须在升级**之前**改写。改写后的 `Let` 写法在新旧工具链下都能编译。
 具体命令见 runbook。
 
+**发版门禁**：发版列车的最后一层会自动部署 aster-api（`deploy.yml` → k3s image-pin PR 自动合并 → ArgoCD 滚动更新），
+**运行一次列车就等于升级生产 aster-api**。core#225 已在 core main，此后任何一次列车都会带上本变更，包括不相关的 hotfix 列车。因此：
+(1) 在扫描清零、或命中版本全部改写发布之前，不得运行任何发版列车；
+(2) 必须先发版时，先把 `ASTER_COMPILE_TYPECHECK=warn` 合入 k3s 的 aster-api 部署（`apps/aster-lang/cloud/deployment.yaml`，补丁见 runbook §3）并确认生效，再运行列车；
+(3) 列车跑完后检查重验的 invalid 列表，命中清零后从 k3s 删除该变量，恢复 enforce。
+
 1. **合入顺序**：本 ADR（aster-api）→ aster-lang-core → aster-lang-locales（其 en-US 副本须与 core backbone 逐字节一致）
    → aster-lang-ts → aster-lang-test。ts 的格式化往返白名单已登记新的 zh 样本，并跳过语料仓中尚不存在的文件，所以 ts 与 test 可以任意先后合并。
 2. **发版顺序**（沿用生态 release train）：locales → core → truffle（无源码变更，lockstep 重新打 tag）→ ts npm → test。
@@ -110,8 +116,8 @@ ADR 0051 §6 的 LOCAL 层定义为「当前词法作用域内源码声明的局
    en / de / zh 三条模式对每个版本都扫（不按 `locale` 列分流），列出 Set 目标名及文中是否存在同名 Let。结果为空即可直接发版。
 4. **发版前改写**：作者把命中的首次声明改为 Let（`Set x to` → `Let x be`，`将 … 设为` → `令 … 定义为`，`setze … auf` → `sei … gleich`），
    lambda 体内对捕获变量的 Set 改为由外层赋值；走正常审批并发布新版本。改写完成后重跑扫描确认。
-5. **升级 aster-api**：常规部署，启动期 enforce 重验保持开启；完成后在 `/api/admin/revalidation/invalid` 确认没有落在 Set 行上的 E101 / E001。
-6. **兜底**（来不及在升级前改完时）：升级窗口内临时设 `ASTER_COMPILE_TYPECHECK=warn`，以 report 模式重验找出命中版本并改写，
+5. **升级 aster-api（= 运行发版列车）**：满足门禁后运行列车，启动期 enforce 重验保持开启；完成后在 `/api/admin/revalidation/invalid` 确认没有落在 Set 行上的 E101 / E001。
+6. **兜底**（来不及在升级前改完时）：运行列车**之前**在 k3s 的 aster-api 部署中临时设 `ASTER_COMPILE_TYPECHECK=warn`，以 report 模式重验找出命中版本并改写，
    清零后恢复 `enforce`。窗口内所有类型错误都只告警，须尽量缩短并通知作者。
 7. **回滚**：aster-api 回退 core / locales / truffle 的 pin 到上一生态版本，重新部署；toolchain id 随之变回，启动期按旧工具链重验。
    已改写为 `Let` 的版本在新旧工具链下都能编译，无需回退；用过兜底的确认 `ASTER_COMPILE_TYPECHECK` 已恢复为 `enforce`。

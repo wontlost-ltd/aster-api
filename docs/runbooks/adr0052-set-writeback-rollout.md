@@ -3,6 +3,19 @@
 本文是 ADR 0052（`docs/adr/0052-assignment-and-block-scope-writeback.md`）§6 的执行手册。所有命令都由人执行；
 扫描只读，不写任何数据。
 
+## ⚠️ 发版门禁（先读）
+
+**运行一次发版列车 = 升级生产 aster-api。** 列车（aster-lang-platform `release-train.yml`）的最后一层对 aster-api 带 trainId
+dispatch `deploy.yml`：镜像构建后向 k3s 开 image-pin PR，验签通过后自动合并，ArgoCD 按 digest 同步并滚动更新。
+中间没有人工的「升级 aster-api」步骤。
+
+aster-lang-core#225（Set 语义）已在 core main，下一次列车会把它带上，**不论这次列车是为什么而发**。因此：
+
+1. **在 §1 扫描结果清零、或 §2 的改写全部发布之前，不得运行任何发版列车**，包括为不相关修复临时发的 hotfix 列车。
+2. 如果必须先发版：**先**把 `ASTER_COMPILE_TYPECHECK=warn` 合入 k3s 的 aster-api 部署配置并确认已生效（见 §3「兜底」），**再**运行列车。
+   列车内无法再改部署配置，事后再加就晚了。
+3. 列车跑完后，按 §3 检查重验的 invalid 列表；命中清零后把 `ASTER_COMPILE_TYPECHECK` 改回 enforce。
+
 ## 0. 变更摘要
 
 - Java 前端开始把 `Set x to …` / `将 x 设为 …` / `setze x auf …` 解析为赋值语句，不再改写成 `Let` 声明。
@@ -53,9 +66,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0052-scan-set-statemen
 新版本在旧工具链下即可编译与执行。改写完成后重跑第 1 步，确认剩下的命中只有确认无误的合法写回，或者只出现在已停用的旧版本里。
 旧版本升级后会被判为 invalid；只有它们仍会被执行（被固定引用或回放）时才需要处理。
 
-## 3. 升级 aster-api
+## 3. 升级 aster-api（= 运行发版列车）
 
-修改 aster-api 的生态 pin（`settings.gradle` 与 `setup-aster-build` 的 `sibling-ref`），构建并部署。启动期重验保持开启。
+满足上方门禁后运行发版列车。列车会更新 aster-api 的生态 pin、构建镜像、经 k3s image-pin PR 部署。启动期重验保持开启。
 重验完成后，在 aster-cloud 管理后台的「无效版本」列表（代理到 `GET /api/v1/admin/revalidation/invalid?toolchainId=<新 toolchain id>`）
 确认没有落在 `Set` 行上的 E101 / E001。
 
@@ -63,10 +76,22 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0052-scan-set-statemen
 
 只有在必须按时升级、又有命中版本无法提前改写时才用：
 
-1. 部署时临时设 `ASTER_COMPILE_TYPECHECK=warn`。**整个窗口内所有类型错误都只告警**：命中的版本能继续执行，
-   新保存的有错误的策略也能通过，所以窗口要尽量短，并通知策略作者。
+1. **在运行列车之前**，向 k3s 仓提 PR，在 aster-api 部署配置里加上 `ASTER_COMPILE_TYPECHECK=warn`。
+   文件：`apps/aster-lang/cloud/deployment.yaml`（namespace `aster-cloud`，Deployment `aster-api`，容器 `aster-api` 的 `env:`）。
+   例如紧接在 `ASTER_SECURITY_SIGNATURE_ENABLED` 之后：
+   ```diff
+               - name: ASTER_SECURITY_SIGNATURE_ENABLED
+                 value: "false"
+   +            # ADR 0052 升级窗口：类型错误只告警（runbook §3 兜底），命中清零后删除本条
+   +            - name: ASTER_COMPILE_TYPECHECK
+   +              value: "warn"
+   ```
+   合并后等 ArgoCD 同步、滚动更新完成，确认新 pod 已带该变量
+   （`kubectl -n aster-cloud get deploy aster-api -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ASTER_COMPILE_TYPECHECK")].value}'` 输出 `warn`），
+   然后才运行列车。**整个窗口内所有类型错误都只告警**：命中的版本能继续执行，新保存的有错误的策略也能通过，
+   所以窗口要尽量短，并通知策略作者。
 2. 在后台以 `{"scope": "all", "mode": "report"}` 发起重验，按结果让作者改写并发布新版本。
-3. 命中清零后，把 `ASTER_COMPILE_TYPECHECK` 改回 `enforce`（或删除该变量）并滚动重启。
+3. 命中清零后，向 k3s 提 PR 删除上面这条变量（默认即 enforce），ArgoCD 同步后滚动更新生效。
    窗口期间执行门对未改写的版本已经写下 invalid 判定，恢复 enforce 后这些旧版本会被拦截，这是预期行为。
 
 不要用 `ASTER_REVALIDATION_ENABLED=false` 代替这个兜底，原因见上文。`ASTER_COMPILE_GATE=off` 会连带关闭所有执行前校验，不推荐。
@@ -76,7 +101,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0052-scan-set-statemen
 1. aster-api 的生态 pin 回退到上一版本，重新构建并部署。
 2. toolchain id 随之变回，启动期按旧工具链重验。
 3. 第 2 步改写成 `Let` 的版本在新旧工具链下都能编译，不需要回退。
-4. 如果用过兜底，确认 `ASTER_COMPILE_TYPECHECK` 已恢复为 `enforce`。
+4. 回滚本身也要跑列车或改 k3s 的 image pin，同样会触发部署。如果用过兜底，确认 k3s 中的 `ASTER_COMPILE_TYPECHECK` 已删除（恢复 enforce）。
 5. aster-cloud 若已升级到新的 aster-lang-ts，同时回退 `package.json` 与 `lsp-package.json` 中的版本，否则编辑器会对服务端接受的源码报 E101 / E001。
 
 ## 5. 上线后验证
