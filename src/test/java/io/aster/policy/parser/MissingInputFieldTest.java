@@ -218,7 +218,7 @@ class MissingInputFieldTest {
     }
 
     @Test
-    void 未声明类型的参数_按映射兜底仍报路径() {
+    void 未写类型的参数在Core_IR里降为Text_无法确定_保留通用失败() {
         String source = """
             Module demo.untyped.
 
@@ -228,8 +228,62 @@ class MissingInputFieldTest {
               Return applicant.creditScore greater than 600.
             """;
 
-        MissingInputFieldException e = missing(source, "check", Map.of("applicant", applicant("id", "A1")));
+        assertNotMissingField(source, "check", Map.of("applicant", applicant("id", "A1")));
+    }
 
-        assertThat(e.fieldPath()).isEqualTo("applicant.creditScore");
+    @Test
+    void Map类型字段_规则内部Map取键失败_输入完整不误判() {
+        // 审查反例 N1：attrs 声明为 Map，不是结构体，位置本身不判
+        String source = """
+            Module demo.mapfield.
+
+            Define Applicant has id as Text, attrs as Map Text to Int.
+
+            Define Tmp has score as Int.
+
+            Rule probe given applicant as Applicant, produce Int:
+              Let bag be Map.put(Map.empty(), "other", 1).
+              Return bag.score.
+            """;
+
+        assertNotMissingField(source, "probe",
+            Map.of("applicant", applicant("id", "A1", "attrs", applicant("other", 1))));
+    }
+
+    @Test
+    void 参数本身是Map类型_规则内部Map取键失败_输入完整不误判() {
+        // 审查反例 N5：参数 data 声明为 Map，键是数据，不判
+        String source = """
+            Module demo.mapparam.
+
+            Define Tmp has score as Int.
+
+            Rule probe given data as Map Text to Int, produce Int:
+              Let bag be Map.put(Map.empty(), "other", 1).
+              Return bag.score.
+            """;
+
+        assertNotMissingField(source, "probe", Map.of("data", applicant("other", 1)));
+    }
+
+    @Test
+    void Map值为结构体_结构体内缺声明字段_报完整路径() {
+        String source = """
+            Module demo.mapofstruct.
+
+            Define Applicant has id as Text, creditScore as Int.
+
+            Rule probe given team as Map Text to Applicant, produce Int:
+              Let lead be Map.get(team, "lead").
+              Match lead:
+                When Some(a), Return a.creditScore.
+                When None, Return 0.
+            """;
+
+        Map<String, Object> team = new LinkedHashMap<>();
+        team.put("lead", applicant("id", "A1"));
+        MissingInputFieldException e = missing(source, "probe", Map.of("team", team));
+
+        assertThat(e.fieldPath()).isEqualTo("team.lead.creditScore");
     }
 }
