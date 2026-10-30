@@ -73,14 +73,7 @@ public class SnapshotPushResource {
 
         try {
             JsonObject json = new JsonObject(bodyJson);
-            UserSnapshot s = new UserSnapshot(
-                userId,
-                json.getString("plan", "free"),
-                json.getLong("apiCallsLimit", 0L),
-                json.getString("subscriptionStatus", null),
-                json.getLong("aiBannedUntilEpochMs", null),
-                json.getLong("gracePeriodEndsEpochMs", null)
-            );
+            UserSnapshot s = UserSnapshot.fromJson(userId, json, LocalQuotaSnapshotService.currentPeriod());
             snapshot.setUser(s);
             LOG.infof("snapshot user pushed: userId=%s plan=%s limit=%d",
                 userId, s.plan(), s.apiCallsLimit());
