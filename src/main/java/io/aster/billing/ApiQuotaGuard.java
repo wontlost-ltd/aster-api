@@ -418,16 +418,20 @@ public class ApiQuotaGuard {
     /**
      * AKA-8: 合并查询 — 一次 GET 拿 plan + apiCallsLimit + monthlyUsed
      */
-    private record PrecheckResult(long apiCallsLimit, long monthlyUsed, String plan) {}
+    private record PrecheckResult(long apiCallsLimit, long monthlyUsed, String plan, String period) {}
 
     /**
-     * precheck 预热写入的快照：带上 cloud 返回的 owner 池当月合并用量作为基线（#412），
-     * 账期取预热时刻的当月。包可见，供单测锁定字段。
+     * precheck 预热写入的快照：带上 cloud 返回的 owner 池当月合并用量作为基线（#412）。
+     * 账期优先取 cloud 响应里统计该用量所用的 {@code period}：月末最后时刻发出的 precheck，
+     * 回包时本服务可能已进入新月，若用本地当月会把上月用量标成新月。旧 cloud 不返回时退回本地当月。
+     * 包可见，供单测锁定字段。
      */
     static io.aster.billing.snapshot.UserSnapshot snapshotFromPrecheck(
-            String quotaOwnerId, String plan, long apiCallsLimit, long monthlyUsed) {
+            String quotaOwnerId, String plan, long apiCallsLimit, long monthlyUsed, String period) {
+        String baselinePeriod = period == null || period.isBlank()
+            ? io.aster.billing.snapshot.LocalQuotaSnapshotService.currentPeriod() : period;
         return new io.aster.billing.snapshot.UserSnapshot(quotaOwnerId, plan, apiCallsLimit, null, null, null,
-            monthlyUsed, io.aster.billing.snapshot.LocalQuotaSnapshotService.currentPeriod());
+            monthlyUsed, baselinePeriod);
     }
 
     /** 限制并发预热：同一 quotaOwnerId 已有 in-flight 任务时不重复提交。 */
@@ -452,7 +456,7 @@ public class ApiQuotaGuard {
                     }
                     try {
                         snapshot.setUser(snapshotFromPrecheck(
-                            quotaOwnerId, pre.plan, pre.apiCallsLimit, pre.monthlyUsed));
+                            quotaOwnerId, pre.plan, pre.apiCallsLimit, pre.monthlyUsed, pre.period));
                     } catch (Exception ignore) {
                         // snapshot 内部已 catch；这里再兜一层
                     }
@@ -510,7 +514,8 @@ public class ApiQuotaGuard {
         return new PrecheckResult(
             json.getLong("apiCallsLimit", 0L),
             json.getLong("monthlyUsed", 0L),
-            json.getString("plan", "free")
+            json.getString("plan", "free"),
+            json.getString("period", null)
         );
     }
 

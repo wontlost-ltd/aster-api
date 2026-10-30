@@ -95,13 +95,22 @@ class ApiQuotaGuardOwnerBaselineTest {
 
     @Test
     void precheckWarmup_snapshotCarriesOwnerPoolUsageForCurrentPeriod() {
-        UserSnapshot s = ApiQuotaGuard.snapshotFromPrecheck("owner-1", "pro", 1000L, 1800L);
+        UserSnapshot s = ApiQuotaGuard.snapshotFromPrecheck("owner-1", "pro", 1000L, 1800L, null);
 
         assertThat(s.userId()).isEqualTo("owner-1");
         assertThat(s.apiCallsLimit()).isEqualTo(1000L);
         assertThat(s.monthlyUsedBaseline()).isEqualTo(1800L);
         assertThat(s.baselinePeriod()).isEqualTo(PERIOD);
         assertThat(s.effectiveUsed(0L, PERIOD)).isEqualTo(1800L);
+    }
+
+    @Test
+    void precheckWarmup_usesPeriodReportedByCloud() {
+        // 月末发出、月初回包：用量属于 cloud 统计时的账期，不能标成本服务的新月
+        UserSnapshot s = ApiQuotaGuard.snapshotFromPrecheck("owner-1", "pro", 1000L, 1800L, PREVIOUS_PERIOD);
+
+        assertThat(s.baselinePeriod()).isEqualTo(PREVIOUS_PERIOD);
+        assertThat(s.effectiveUsed(3L, PERIOD)).isEqualTo(3L);
     }
 
     @Test
