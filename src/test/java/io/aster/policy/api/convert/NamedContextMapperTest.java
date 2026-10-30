@@ -120,6 +120,8 @@ class NamedContextMapperTest {
         assertFalse(result.success());
         assertTrue(result.hasError());
         assertTrue(result.error().contains("年龄"));
+        // 缺失参数名单独带出，执行器据此归因为 missing_input_field
+        assertEquals(List.of("年龄"), result.missingParams());
     }
 
     @Test

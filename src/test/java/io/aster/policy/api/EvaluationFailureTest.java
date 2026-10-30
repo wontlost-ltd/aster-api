@@ -65,6 +65,24 @@ class EvaluationFailureTest {
     }
 
     @Test
+    void 输入缺字段_400_missing_input_field_带字段路径_被包装也能识别() {
+        Throwable wrapped = new CompletionException(new RuntimeException("x",
+            io.aster.policy.runtime.MissingInputFieldException.of("applicant.creditScore")));
+        EvaluationFailure f = EvaluationFailure.classify(wrapped);
+        assertThat(f.status()).isEqualTo(400);
+        assertThat(f.code()).isEqualTo("missing_input_field");
+        assertThat(f.field()).isEqualTo("applicant.creditScore");
+        assertThat(f.message()).contains("applicant.creditScore");
+        assertThat(f.clientError()).isTrue();
+    }
+
+    @Test
+    void 其它归因不带字段路径() {
+        assertThat(EvaluationFailure.classify(new NullPointerException()).field()).isNull();
+        assertThat(EvaluationFailure.classify(PolicyNotExecutableException.policyNotFound("m", "f")).field()).isNull();
+    }
+
+    @Test
     void 其它失败_500_固定文案_不透出内部消息() {
         EvaluationFailure f = EvaluationFailure.classify(new DynamicExecutionException(
             "Core IR 执行失败: at org.graalvm.Internal.secret(Foo.java:1)", new IllegalStateException("db password=x")));

@@ -2,6 +2,7 @@ package io.aster.policy.api;
 
 import io.aster.policy.parser.DynamicCnlExecutor;
 import io.aster.policy.parser.EntryFunctionException;
+import io.aster.policy.runtime.MissingInputFieldException;
 import io.aster.policy.runtime.ValueShapeException;
 
 /**
@@ -13,8 +14,13 @@ import io.aster.policy.runtime.ValueShapeException;
  * @param status  HTTP 状态码
  * @param code    机器可读错误码（与 cloud 侧 Cedar 导出的 409 "no executable version" 同口径）
  * @param message 面向调用方的说明
+ * @param field   输入缺字段（{@value MissingInputFieldException#CODE}）时的字段路径，其余为 null
  */
-public record EvaluationFailure(int status, String code, String message) {
+public record EvaluationFailure(int status, String code, String message, String field) {
+
+    public EvaluationFailure(int status, String code, String message) {
+        this(status, code, message, null);
+    }
 
     public static final String NO_EXECUTABLE_VERSION = "no_executable_version";
     public static final String POLICY_VERSION_INVALID = "policy_version_invalid";
@@ -64,6 +70,10 @@ public record EvaluationFailure(int status, String code, String message) {
             return e.isMissingFunction()
                 ? new EvaluationFailure(404, FUNCTION_NOT_FOUND, e.getMessage())
                 : new EvaluationFailure(400, FUNCTION_NOT_EXECUTABLE, e.getMessage());
+        }
+        if (t instanceof MissingInputFieldException e) {
+            // 输入缺少规则读取的字段：调用方补上即可，回 400 + 字段路径（须在 DynamicExecutionException 分支之前）
+            return new EvaluationFailure(400, e.code(), e.getMessage(), e.fieldPath());
         }
         if (t instanceof ValueShapeException e) {
             // 值边界形态违例（aster-cloud#639）：入参 400 / 出参 422，code 为稳定的细分错误码

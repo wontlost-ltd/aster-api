@@ -10,6 +10,8 @@ import io.aster.policy.api.convert.NamedContextMapper;
 import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.module.ModuleResolutionException;
 import io.aster.policy.runtime.ExecutionWatchdog;
+import io.aster.policy.runtime.MissingInputFieldException;
+import io.aster.policy.runtime.MissingInputFields;
 import io.aster.policy.runtime.PolyglotValues;
 import io.aster.replay.core.module.ModuleGraphResolver;
 import io.aster.replay.core.parser.ReplayMappers;
@@ -323,15 +325,14 @@ public class DynamicCnlExecutor {
             NamedContextMapper.MappingResult mappingResult =
                 NamedContextMapper.mapContext(context, functionParams, dataDeclsOf(coreModule));
             if (!mappingResult.success()) {
-                throw new DynamicExecutionException("参数映射失败: " + mappingResult.error(),
-                    DynamicExecutionException.Kind.INVALID_INPUT);
+                throw mappingFailure(mappingResult, DynamicExecutionException.Kind.INVALID_INPUT);
             }
 
             // 重新序列化：入参 JSON 可能含多余空白/字段顺序差异，统一走 MAPPER 产出
             // 与 CNL 路径**字节同源**的 compact JSON，避免两条路径喂给 polyglot 的
             // 输入形态不同。
             String coreJson = MAPPER.writeValueAsString(coreModule);
-            Object result = executeWithPolyglot(coreJson, targetFunction, mappingResult.positionalArgs());
+            Object result = executeMapped(coreModule, coreJson, targetFunction, functionParams, context, mappingResult);
 
             long executionTime = System.currentTimeMillis() - startTime;
             String moduleName = coreModule.name == null ? "" : coreModule.name;
@@ -473,6 +474,8 @@ public class DynamicCnlExecutor {
 
             // 4. 映射命名上下文到位置参数（如需）
             Object[] positionalContext;
+            List<CoreModel.Param> mappedParams = null;
+            NamedContextMapper.MappingResult mapping = null;
             if (mapNamedContext) {
                 // 查找目标函数的参数定义
                 List<CoreModel.Param> functionParams = findFunctionParams(compiled.coreModule(), targetFunction);
@@ -485,10 +488,12 @@ public class DynamicCnlExecutor {
                     NamedContextMapper.mapContext(context, functionParams,
                         dataDeclsOf(compiled.coreModule()));
                 if (!mappingResult.success()) {
-                    throw new DynamicExecutionException("参数映射失败: " + mappingResult.error());
+                    throw mappingFailure(mappingResult, DynamicExecutionException.Kind.EXECUTION);
                 }
 
                 positionalContext = mappingResult.positionalArgs();
+                mappedParams = functionParams;
+                mapping = mappingResult;
                 if (mappingResult.wasNamedFormat()) {
                     LOG.infof("命名上下文已映射为位置参数，参数数量: %d", positionalContext.length);
                 }
@@ -502,7 +507,9 @@ public class DynamicCnlExecutor {
 
             // 6. 使用 GraalVM Polyglot 执行
             LOG.debugf("使用 GraalVM Polyglot 执行...");
-            Object result = executeWithPolyglot(compiled.coreJson(), targetFunction, positionalContext);
+            Object result = mapping == null
+                ? executeWithPolyglot(compiled.coreJson(), targetFunction, positionalContext)
+                : executeMapped(compiled.coreModule(), compiled.coreJson(), targetFunction, mappedParams, context, mapping);
 
             long executionTime = System.currentTimeMillis() - startTime;
             LOG.infof("动态执行完成: %s.%s, 耗时 %dms", compiled.moduleName(), targetFunction, executionTime);
@@ -674,6 +681,30 @@ public class DynamicCnlExecutor {
             .filter(Decl.Import.class::isInstance)
             .map(Decl.Import.class::cast)
             .toList();
+    }
+
+    /**
+     * 按命名映射后的参数执行；规则读取的输入字段不存在时归因为 {@link MissingInputFieldException}（带字段路径）。
+     * 单参数规则直接传入整个对象（非命名格式的 Map）时，字段路径不带参数名这一层，与调用方输入一致。
+     */
+    private static Object executeMapped(CoreModel.Module module, String coreJson, String targetFunction,
+                                        List<CoreModel.Param> params, Object context,
+                                        NamedContextMapper.MappingResult mapping) {
+        try {
+            return executeWithPolyglot(coreJson, targetFunction, mapping.positionalArgs());
+        } catch (DynamicExecutionException e) {
+            boolean paramPrefixed = mapping.wasNamedFormat() || !(context instanceof Map);
+            throw MissingInputFields.translate(e, module, params, mapping.positionalArgs(), paramPrefixed);
+        }
+    }
+
+    /** 参数映射失败：缺少参数属于输入缺字段（路径即参数名），其余沿用原归因。 */
+    private static DynamicExecutionException mappingFailure(NamedContextMapper.MappingResult mapping,
+                                                            DynamicExecutionException.Kind kind) {
+        if (!mapping.missingParams().isEmpty()) {
+            return MissingInputFieldException.of(mapping.missingParams().get(0));
+        }
+        return new DynamicExecutionException("参数映射失败: " + mapping.error(), kind);
     }
 
     /**

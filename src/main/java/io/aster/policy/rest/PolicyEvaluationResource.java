@@ -815,7 +815,9 @@ public class PolicyEvaluationResource {
                 boolean timedOut = e.kind() == DynamicCnlExecutor.DynamicExecutionException.Kind.TIMEOUT;
                 // 值边界形态违例（入参过深 / 成环 / 非字符串键等）同属预期内的请求问题，同样不打堆栈
                 boolean shapeViolation = e instanceof io.aster.policy.runtime.ValueShapeException;
-                if (timedOut || shapeViolation || sourceError) {
+                // 输入缺少规则读取的字段：调用方补字段即可，同属预期内的请求问题
+                boolean missingField = e instanceof io.aster.policy.runtime.MissingInputFieldException;
+                if (timedOut || shapeViolation || missingField || sourceError) {
                     LOG.warnf("Dynamic CNL execution rejected: %s", e.getMessage());
                 } else {
                     LOG.errorf(e, "Dynamic CNL execution failed: %s", e.getMessage());
@@ -827,8 +829,9 @@ public class PolicyEvaluationResource {
                 }
                 // 被墙钟看门狗中止：回 422 + execution_timeout（与 /evaluate-json 同一归因口径），
                 // 而不是混进 200 + error 的普通执行失败，调用方据 code 即可识别「策略跑超时」。
-                // 形态违例同理：入参 400 / 出参 422 + 细分 code（input_too_deep 等，aster-cloud#639）
-                if (timedOut || shapeViolation) {
+                // 形态违例同理：入参 400 / 出参 422 + 细分 code（input_too_deep 等，aster-cloud#639）；
+                // 输入缺字段回 400 + missing_input_field + field（字段路径），不再混进 200 + error
+                if (timedOut || shapeViolation || missingField) {
                     throw failureException(EvaluationFailure.classify(e),
                         System.currentTimeMillis() - apiCallStart,
                         evidence == null ? null : evidence.correlationId());
@@ -1311,7 +1314,8 @@ public class PolicyEvaluationResource {
      * 故响应体仍是 EvaluationResponse（保留 error 字段，新增 code），老客户端照常解析。
      */
     static WebApplicationException failureException(EvaluationFailure failure, long executionTimeMs, String correlationId) {
-        EvaluationResponse body = EvaluationResponse.failure(failure.code(), failure.message(), executionTimeMs)
+        EvaluationResponse body = EvaluationResponse.failure(failure.code(), failure.message(), executionTimeMs,
+                failure.field())
             .withEvidence(correlationId);
         return new WebApplicationException(
             jakarta.ws.rs.core.Response.status(failure.status())
