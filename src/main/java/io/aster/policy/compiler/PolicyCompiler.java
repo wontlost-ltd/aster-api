@@ -200,7 +200,8 @@ public class PolicyCompiler {
                 errors.stream().map(PolicyCompiler::typecheckError).toList(),
                 errors.stream().map(d -> mapTypecheckDiagnostic(d, false)).toList());
         } catch (InProcessCnlParser.CnlParseException e) {
-            String message = "CNL 解析失败: " + e.getMessage();
+            // 语法错误（带结构化诊断）的消息已是策略语言的整句（「CNL syntax error — Line …」），不再叠中文前缀
+            String message = e.getDiagnostics().isEmpty() ? "CNL 解析失败: " + e.getMessage() : e.getMessage();
             logUserSourceError(versionId, e);
             // 透传结构化诊断（含 1-based 行列），供编译端点精确标错。
             List<CompilationResult.Diagnostic> diags = e.getDiagnostics().stream()
