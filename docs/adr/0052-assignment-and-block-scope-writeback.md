@@ -1,6 +1,6 @@
 # ADR 0052：赋值语句的可赋值目标与块作用域写回
 
-- 状态：**ACCEPTED**（2026-10-31，按 aster-cloud/aster-lang-truffle#151 的裁决定稿；同日按独立审查 review-151 修订：迁移步骤、语言包、lambda 捕获、函数名诊断）
+- 状态：**ACCEPTED**（2026-10-31，按 aster-cloud/aster-lang-truffle#151 的裁决定稿；同日按独立审查 review-151 两轮修订：迁移步骤改为升级前改写、语言包、lambda 捕获、函数名诊断、扫描不按 locale 分流）
 - 日期：2026-10-31
 - 相关：ADR 0016（IR 字段级 parity）、ADR 0050（增量重验）、ADR 0051（领域词汇按位置解析）、aster-cloud/aster-lang-truffle#151、#156
 - Runbook：`docs/runbooks/adr0052-set-writeback-rollout.md`
@@ -99,19 +99,20 @@ ADR 0051 §6 的 LOCAL 层定义为「当前词法作用域内源码声明的局
 ## 6. 落地、迁移与发版顺序
 
 这是**有意的破坏性变更**：旧版 Java 管线把 `Set x to …` 改写成 `Let x be …`，首次声明用 `Set` 也能编译；升级后它报 E101。
-aster-api 升级 core 后 toolchain id 改变，启动时会自动以 enforce 模式重验全部版本（ADR 0050），命中的版本会被执行门拦截。
-所以必须先扫描、再以 report 模式重验、最后才 enforce。具体命令见 runbook。
+升级后，执行门（`PolicyExecutionGate`）对新 toolchain 下还没有校验行的版本会在请求里同步做类型检查，enforce 模式下直接拒绝（422）。
+因此关闭启动期重验（`ASTER_REVALIDATION_ENABLED=false`）**不能**提供缓冲期，命中版本必须在升级**之前**改写。改写后的 `Let` 写法在新旧工具链下都能编译。
+具体命令见 runbook。
 
-1. **合入顺序**：本 ADR（aster-api）→ aster-lang-locales 与 aster-lang-core（同一生态版本，en-US 副本与 core backbone 须逐字节一致）
-   → aster-lang-ts → aster-lang-test（core / ts / locales 新版本进入 CI 之后）。
+1. **合入顺序**：本 ADR（aster-api）→ aster-lang-core → aster-lang-locales（其 en-US 副本须与 core backbone 逐字节一致）
+   → aster-lang-ts → aster-lang-test。ts 的格式化往返白名单已登记新的 zh 样本，并跳过语料仓中尚不存在的文件，所以 ts 与 test 可以任意先后合并。
 2. **发版顺序**（沿用生态 release train）：locales → core → truffle（无源码变更，lockstep 重新打 tag）→ ts npm → test。
-3. **发版前**：对生产 `policy_versions.content` 运行只读扫描 `scripts/ops/adr0052-scan-set-statements.sql`（en / de / zh 三种写法，不区分大小写，
-   列出 Set 目标名及文中是否存在同名 Let）。扫描结果为空即可跳过第 4、5 步。
-4. **aster-api 升级 core 时**：部署时设 `ASTER_REVALIDATION_ENABLED=false`，关闭启动期的 enforce 重验；然后经 aster-cloud 管理后台
-   以 `{"scope":"all","mode":"report"}` 发起重验，只写 advisory 结果，执行门不读。
-5. **处理命中版本**：从 `/api/admin/revalidation/invalid` 取 advisory 结果中 Set 所在行的 E101 / E001。
-   作者把首次声明的 `Set x to` 改为 `Let x be`（或 `将 … 设为` 改为 `令 … 定义为`、`setze … auf` 改为 `sei … gleich`），重新提交审批并发布新版本。
-6. **恢复 enforce**：命中版本清零后，恢复 `ASTER_REVALIDATION_ENABLED=true` 并重启（或在后台发起 enforce 重验）。
-7. **回滚**：aster-api 回退 core / locales / truffle 的 pin 到上一生态版本，重新部署。toolchain id 随之变回，启动期按旧工具链重验。
-   已改写为 `Let` 的版本在新旧工具链下都能编译，无需回退。
+3. **发版前扫描**：对生产 `policy_versions.content` 运行只读扫描 `scripts/ops/adr0052-scan-set-statements.sql`。
+   en / de / zh 三条模式对每个版本都扫（不按 `locale` 列分流），列出 Set 目标名及文中是否存在同名 Let。结果为空即可直接发版。
+4. **发版前改写**：作者把命中的首次声明改为 Let（`Set x to` → `Let x be`，`将 … 设为` → `令 … 定义为`，`setze … auf` → `sei … gleich`），
+   lambda 体内对捕获变量的 Set 改为由外层赋值；走正常审批并发布新版本。改写完成后重跑扫描确认。
+5. **升级 aster-api**：常规部署，启动期 enforce 重验保持开启；完成后在 `/api/admin/revalidation/invalid` 确认没有落在 Set 行上的 E101 / E001。
+6. **兜底**（来不及在升级前改完时）：升级窗口内临时设 `ASTER_COMPILE_TYPECHECK=warn`，以 report 模式重验找出命中版本并改写，
+   清零后恢复 `enforce`。窗口内所有类型错误都只告警，须尽量缩短并通知作者。
+7. **回滚**：aster-api 回退 core / locales / truffle 的 pin 到上一生态版本，重新部署；toolchain id 随之变回，启动期按旧工具链重验。
+   已改写为 `Let` 的版本在新旧工具链下都能编译，无需回退；用过兜底的确认 `ASTER_COMPILE_TYPECHECK` 已恢复为 `enforce`。
 8. truffle 的 `Set` 无需改动，遮蔽缺陷由 truffle#156 跟进。
