@@ -1,7 +1,8 @@
 {
   "summary": "CNL syntax error — {detail}",
   "located": "Line {line}, column {column}: {message}",
-  "moreErrors": "{message} ({count} more errors follow; fix this one first)",
+  "moreErrors.one": "{message} (1 more error follows; fix this one first)",
+  "moreErrors.other": "{message} ({count} more errors follow; fix this one first)",
   "syntaxError": "Syntax error",
   "unexpected": "Unexpected {token}",
   "unexpectedExpecting": "Unexpected {token}; expected {expected}",
@@ -25,5 +26,6 @@
   "token.identifier": "identifier",
   "token.integer": "integer",
   "token.string": "string",
-  "token.empty": "input"
+  "token.empty": "input",
+  "style.spaceQuotesAfterHan": "false"
 }

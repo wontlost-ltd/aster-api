@@ -13,6 +13,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 语法错误文案目录：按策略 lexicon 的语言取句子骨架与 token 名称。
@@ -81,7 +83,43 @@ final class SyntaxMessages {
     /** 取模板并填充占位符；{@code args} 为「名称, 值」交替排列。 */
     String text(String key, String... args) {
         String template = templates.getOrDefault(key, fallback.getOrDefault(key, key));
-        return ErrorMessages.format(template, args);
+        String filled = ErrorMessages.format(template, args);
+        return Boolean.parseBoolean(templates.get("style.spaceQuotesAfterHan")) ? spaceQuotes(filled) : filled;
+    }
+
+    /** 「另有 N 处后续错误」：N 为 1 时用单数句式（en / de / hi 的名词与动词随数变化）。 */
+    String moreErrors(int count, String message) {
+        return text(count == 1 ? "moreErrors.one" : "moreErrors.other",
+            "count", String.valueOf(count), "message", message);
+    }
+
+    /** 单引号片段整体，用于在汉字与引号相邻处补空格。 */
+    private static final Pattern QUOTED = Pattern.compile("'[^']*'");
+
+    /**
+     * 汉字与引号片段相邻处补一个空格（{@code 应为 '。'}、{@code '返回' 之前}），汉字之间不加空格
+     * （{@code 此处应为换行}）。与编辑器 parse-diagnostic-l10n.ts 的 spaceQuotes 同一排版；重复调用结果不变。
+     */
+    static String spaceQuotes(String s) {
+        Matcher m = QUOTED.matcher(s);
+        StringBuilder out = new StringBuilder();
+        int last = 0;
+        while (m.find()) {
+            out.append(s, last, m.start());
+            if (m.start() > 0 && isHan(s.codePointBefore(m.start()))) {
+                out.append(' ');
+            }
+            out.append(m.group());
+            if (m.end() < s.length() && isHan(s.codePointAt(m.end()))) {
+                out.append(' ');
+            }
+            last = m.end();
+        }
+        return out.append(s.substring(last)).toString();
+    }
+
+    private static boolean isHan(int codePoint) {
+        return Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN;
     }
 
     /** token 的显示名（缩进、换行、标识符等）。 */

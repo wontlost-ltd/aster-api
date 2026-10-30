@@ -57,6 +57,8 @@ public class CnlErrorListener extends BaseErrorListener {
      * 就把可操作的提示丢了，用户只能看到「无法解析 'Ifxis<18' 附近的语法」。
      */
     private int diagnosableIndex = -1;
+    /** 第一条错误所在行（-1 = 尚无错误），用于限定「缺句末标点」的提升范围。 */
+    private int firstErrorLine = -1;
 
     /** 规范关键词 → 作者 locale 拼写的回译器（英文为恒等）。 */
     private final KeywordLocalizer localizer;
@@ -97,8 +99,11 @@ public class CnlErrorListener extends BaseErrorListener {
             friendly = messages.text("withHint", "hint", inlineIfHint(localizer), "message", friendly);
         }
         rawErrors.add(String.format("line %d:%d - %s", line, charPositionInLine, msg));
-        if ((isBeforeSymbol || isMissingStatementEnd(msg)) && diagnosableIndex < 0) {
+        if (diagnosableIndex < 0 && (isBeforeSymbol || isMissingStatementEndNear(msg, line))) {
             diagnosableIndex = friendlyErrors.size();
+        }
+        if (firstErrorLine < 0) {
+            firstErrorLine = line;
         }
         friendlyErrors.add(messages.text("located",
             "line", String.valueOf(line), "column", String.valueOf(charPositionInLine + 1), "message", friendly));
@@ -130,7 +135,7 @@ public class CnlErrorListener extends BaseErrorListener {
         int idx = diagnosableIndex >= 0 ? diagnosableIndex : 0;
         String first = friendlyErrors.get(idx);
         if (friendlyErrors.size() > 1) {
-            return messages.text("moreErrors", "count", String.valueOf(friendlyErrors.size() - 1), "message", first);
+            return messages.moreErrors(friendlyErrors.size() - 1, first);
         }
         return first;
     }
@@ -286,9 +291,16 @@ public class CnlErrorListener extends BaseErrorListener {
     }
 
     /**
-     * 是否为「行尾缺句末标点」：ANTLR 常先在下一行报一条泛化的 no viable，真正的原因排在其后，
-     * 与 `is` 后跟符号一样按可确诊错误优先展示。
+     * 是否为可提升的「行尾缺句末标点」：ANTLR 常先在<b>下一行</b>报一条泛化的 no viable，真正的原因排在其后。
+     * 只有缺句点位于第一条错误的同一行或上一行时才提升；更早或更远处已有别的错误时保持第一条，
+     * 不让常见的缺句点盖过文件前面无关的真错误。
      */
+    private boolean isMissingStatementEndNear(String msg, int line) {
+        boolean near = firstErrorLine < 0 || line == firstErrorLine || line == firstErrorLine - 1;
+        return near && isMissingStatementEnd(msg);
+    }
+
+    /** 是否为「行尾缺句末标点」（ANTLR 的 missing '.' at 换行 / 取消缩进 / 文件结尾）。 */
     private static boolean isMissingStatementEnd(String msg) {
         Matcher m = msg == null ? null : MISSING.matcher(msg);
         return m != null && m.find() && isStatementEnd(m.group(1)) && isLineEnd(m.group(2));

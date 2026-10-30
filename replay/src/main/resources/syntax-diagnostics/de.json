@@ -1,7 +1,8 @@
 {
   "summary": "CNL-Syntaxfehler — {detail}",
   "located": "Zeile {line}, Spalte {column}: {message}",
-  "moreErrors": "{message} ({count} weitere Folgefehler; beheben Sie zuerst diesen)",
+  "moreErrors.one": "{message} (1 weiterer Folgefehler; beheben Sie zuerst diesen)",
+  "moreErrors.other": "{message} ({count} weitere Folgefehler; beheben Sie zuerst diesen)",
   "syntaxError": "Syntaxfehler",
   "unexpected": "Unerwartet: {token}",
   "unexpectedExpecting": "Unerwartet: {token}; erwartet wird {expected}",
@@ -25,5 +26,6 @@
   "token.identifier": "Bezeichner",
   "token.integer": "Ganzzahl",
   "token.string": "Zeichenkette",
-  "token.empty": "Eingabe"
+  "token.empty": "Eingabe",
+  "style.spaceQuotesAfterHan": "false"
 }

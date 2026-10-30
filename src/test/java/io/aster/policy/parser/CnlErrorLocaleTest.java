@@ -189,14 +189,14 @@ class CnlErrorLocaleTest {
         assertThat(CnlErrorListener.humanize(raw, false, KeywordLocalizer.IDENTITY, false))
             .isEqualTo("Unexpected '.'; expected ':' or ',' or newline");
         assertThat(CnlErrorListener.humanize(raw, false, localizer("zh-CN"), true))
-            .isEqualTo("意外的 '。'，此处应为 '：' 或 '，' 或 换行");
+            .isEqualTo("意外的 '。'，此处应为 '：' 或 '，' 或换行");
     }
 
     @Test
     void zh_offendingPunctuation_isShownInChinese() {
         // 作者写的是「。」，canonicalize 后 ANTLR 只见 '.'；报错里要还原成作者的写法
         assertThat(CnlErrorListener.humanize("mismatched input '.' expecting IDENT", false, localizer("zh-CN"), true))
-            .isEqualTo("意外的 '。'，此处应为 标识符");
+            .isEqualTo("意外的 '。'，此处应为标识符");
     }
 
     @Test
@@ -205,11 +205,72 @@ class CnlErrorLocaleTest {
         assertThat(CnlErrorListener.humanize(raw, false, KeywordLocalizer.IDENTITY, false))
             .isEqualTo("Unexpected extra end of file");
         assertThat(CnlErrorListener.humanize(raw, false, localizer("zh-CN"), false))
-            .isEqualTo("多余的 文件结尾");
+            .isEqualTo("多余的文件结尾");
         assertThat(CnlErrorListener.humanize(raw, false, localizer("de-DE"), false))
             .isEqualTo("Überzählig: Dateiende");
         assertThat(CnlErrorListener.humanize(raw, false, localizer("hi-IN"), false))
             .isEqualTo("अतिरिक्त फ़ाइल का अंत");
+    }
+
+    // ---------------------------------------------------------------- 根因选择（多处错误）
+
+    @Test
+    void earlierUnrelatedError_isNotOverriddenByLaterMissingStatementEnd() {
+        // 第 3 行 Map 写法错误 + 第 6 行缺句末标点：缺句点只修正「下一行先报 no viable」，不能盖过更早的真错误
+        String src = "Module m.\n\nDefine Req has attrs as Map of Text to Int.\n\n"
+            + "Rule r given n as Int, produce Int:\n  Return n\n";
+        String msg = parseFailure(src, "en-US").getMessage();
+        assertThat(msg).startsWith("CNL syntax error — Line 3, column 29: Unexpected extra 'of'");
+        assertThat(diagnostics(src, "en-US")).contains("Expected '.' at end of statement");
+    }
+
+    // ---------------------------------------------------------------- 单复数
+
+    @Test
+    void oneMoreError_isSingular_perLanguage() {
+        // 缺句点场景恰好是「根因 + 1 处后续错误」
+        assertThat(parseFailure(missingEnd("en-US"), "en-US").getMessage())
+            .endsWith("(1 more error follows; fix this one first)");
+        assertThat(parseFailure(missingEnd("de-DE"), "de-DE").getMessage())
+            .endsWith("(1 weiterer Folgefehler; beheben Sie zuerst diesen)");
+        assertThat(parseFailure(missingEnd("hi-IN"), "hi-IN").getMessage())
+            .endsWith("(इसके बाद 1 और त्रुटि है; पहले इसे ठीक करें)");
+        assertThat(parseFailure(missingEnd("zh-CN"), "zh-CN").getMessage())
+            .endsWith("（另有 1 处后续错误，建议先修正此处）");
+    }
+
+    @Test
+    void severalMoreErrors_isPlural() {
+        String src = "Module m.\n\nDefine Req has attrs as Map of Text to Int.\n\n"
+            + "Rule r given n as Int, produce Int:\n  Return n\n";
+        assertThat(parseFailure(src, "en-US").getMessage()).endsWith("(2 more errors follow; fix this one first)");
+    }
+
+    // ---------------------------------------------------------------- 输入形态
+
+    @Test
+    void crlfLineEndings_sameDiagnosticsAsLf() {
+        for (String locale : List.of("en-US", "zh-CN", "de-DE", "hi-IN")) {
+            String crlf = missingEnd(locale).replace("\n", "\r\n");
+            assertThat(diagnostics(crlf, locale)).as(locale).isEqualTo(diagnostics(missingEnd(locale), locale));
+        }
+    }
+
+    @Test
+    void tabIndentation_givesLocalizedSyntaxError() {
+        String src = "Module m.\n\nRule r given n as Int, produce Int:\n\tReturn n\n";
+        InProcessCnlParser.CnlParseException e = parseFailure(src, "en-US");
+        assertThat(e.getMessage()).startsWith("CNL syntax error — Line ").doesNotContainPattern(CJK);
+        assertThat(e.getDiagnostics()).isNotEmpty()
+            .allSatisfy(d -> assertThat(d.message()).doesNotContainPattern(CJK).doesNotContain("Returnn"));
+    }
+
+    @Test
+    void unsupportedLocale_fallsBackToEnglishText() {
+        InProcessCnlParser.CnlParseException e = parseFailure(missingEnd("en-US"), "fr-FR");
+        assertThat(e.getMessage()).startsWith("CNL syntax error — ").doesNotContainPattern(CJK);
+        assertThat(e.getDiagnostics()).extracting(CnlErrorListener.Diagnostic::message)
+            .contains("Expected '.' at end of statement");
     }
 
     @Test
