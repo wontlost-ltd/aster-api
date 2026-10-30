@@ -103,7 +103,13 @@ public record EvaluationResponse(
     // 成功响应不输出，保持既有响应字节不变。
     @JsonProperty("code")
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    String code
+    String code,
+
+    // 输入缺字段（code=missing_input_field）时缺失字段相对调用方输入的路径，如 applicant.creditScore；
+    // 其余响应不输出，保持既有响应字节不变。
+    @JsonProperty("field")
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    String field
 ) {
     /** 证据引用：correlationId 与本次评估在审计链上的 POLICY_EVALUATION 事件一一对应，只做关联，不含业务数据。 */
     public record Evidence(@JsonProperty("correlationId") String correlationId) {}
@@ -115,20 +121,20 @@ public record EvaluationResponse(
     ) {}
 
     public static EvaluationResponse success(Object result, long executionTimeMs) {
-        return new EvaluationResponse(result, executionTimeMs, null, null, null, null, null, null, null, null, List.of(), null, null, null);
+        return new EvaluationResponse(result, executionTimeMs, null, null, null, null, null, null, null, null, List.of(), null, null, null, null);
     }
 
     public static EvaluationResponse success(Object result, long executionTimeMs, String executedFunction) {
-        return new EvaluationResponse(result, executionTimeMs, null, null, executedFunction, null, null, null, null, null, List.of(), null, null, null);
+        return new EvaluationResponse(result, executionTimeMs, null, null, executedFunction, null, null, null, null, null, List.of(), null, null, null, null);
     }
 
     public static EvaluationResponse success(Object result, long executionTimeMs, DecisionTrace trace) {
-        return new EvaluationResponse(result, executionTimeMs, null, trace, null, null, null, null, null, null, List.of(), null, null, null);
+        return new EvaluationResponse(result, executionTimeMs, null, trace, null, null, null, null, null, null, List.of(), null, null, null, null);
     }
 
     public static EvaluationResponse success(
             Object result, long executionTimeMs, DecisionTrace trace, String executedFunction) {
-        return new EvaluationResponse(result, executionTimeMs, null, trace, executedFunction, null, null, null, null, null, List.of(), null, null, null);
+        return new EvaluationResponse(result, executionTimeMs, null, trace, executedFunction, null, null, null, null, null, List.of(), null, null, null, null);
     }
 
     /** 携带治理字段（decision / ruleId / controls，ADR 0039）的成功响应。 */
@@ -143,16 +149,21 @@ public record EvaluationResponse(
             Object result, long executionTimeMs, DecisionTrace trace, String executedFunction,
             VerdictView decision, String ruleId, List<String> controls, String profile) {
         return new EvaluationResponse(result, executionTimeMs, null, trace, executedFunction, null, null, null,
-            decision, ruleId, controls == null ? List.of() : List.copyOf(controls), null, profile, null);
+            decision, ruleId, controls == null ? List.of() : List.copyOf(controls), null, profile, null, null);
     }
 
     /** 带错误码的失败响应：error 为说明文本（与旧响应同一字段），code 为机器可读错误码。 */
     public static EvaluationResponse failure(String code, String error, long executionTimeMs) {
-        return new EvaluationResponse(null, executionTimeMs, error, null, null, null, null, null, null, null, List.of(), null, null, code);
+        return failure(code, error, executionTimeMs, null);
+    }
+
+    /** 同上，另带字段路径（输入缺字段 missing_input_field 时非 null）。 */
+    public static EvaluationResponse failure(String code, String error, long executionTimeMs, String field) {
+        return new EvaluationResponse(null, executionTimeMs, error, null, null, null, null, null, null, null, List.of(), null, null, code, field);
     }
 
     public static EvaluationResponse error(String error) {
-        return new EvaluationResponse(null, 0, error, null, null, null, null, null, null, null, List.of(), null, null, null);
+        return new EvaluationResponse(null, 0, error, null, null, null, null, null, null, null, List.of(), null, null, null, null);
     }
 
     public static EvaluationResponse ambiguous(List<String> candidates) {
@@ -162,31 +173,31 @@ public record EvaluationResponse(
             "未指定入口函数，候选函数不唯一",
             safeCandidates
         );
-        return new EvaluationResponse(null, 0, "入口函数不唯一", null, null, List.of(diagnostic), null, null, null, null, List.of(), null, null, null);
+        return new EvaluationResponse(null, 0, "入口函数不唯一", null, null, List.of(diagnostic), null, null, null, null, List.of(), null, null, null, null);
     }
 
     public static EvaluationResponse diagnostic(String code, String message, List<String> candidates) {
         List<String> safeCandidates = candidates == null ? List.of() : List.copyOf(candidates);
         EntryDiagnostic diagnostic = new EntryDiagnostic(code, message, safeCandidates);
-        return new EvaluationResponse(null, 0, message, null, null, List.of(diagnostic), null, null, null, null, List.of(), null, null, null);
+        return new EvaluationResponse(null, 0, message, null, null, List.of(diagnostic), null, null, null, null, List.of(), null, null, null, null);
     }
 
     /** 附加回放元数据（replay-capture 模式；不改其它字段）。 */
     public EvaluationResponse withReplayMetadata(io.aster.policy.replay.ReplayMetadata rm) {
         return new EvaluationResponse(result, executionTimeMs, error, decisionTrace, executedFunction,
-            diagnostics, rm, traceSkeleton, decision, ruleId, controls, evidence, profile, code);
+            diagnostics, rm, traceSkeleton, decision, ruleId, controls, evidence, profile, code, field);
     }
 
     /** 附加决策骨架（脱敏，供漏斗分析；不改其它字段）。 */
     public EvaluationResponse withTraceSkeleton(io.aster.policy.replay.TraceSkeleton skeleton) {
         return new EvaluationResponse(result, executionTimeMs, error, decisionTrace, executedFunction,
-            diagnostics, replayMetadata, skeleton, decision, ruleId, controls, evidence, profile, code);
+            diagnostics, replayMetadata, skeleton, decision, ruleId, controls, evidence, profile, code, field);
     }
 
     /** 附加证据键；correlationId 为 null 时不输出 evidence。 */
     public EvaluationResponse withEvidence(String correlationId) {
         return new EvaluationResponse(result, executionTimeMs, error, decisionTrace, executedFunction,
             diagnostics, replayMetadata, traceSkeleton, decision, ruleId, controls,
-            correlationId == null ? null : new Evidence(correlationId), profile, code);
+            correlationId == null ? null : new Evidence(correlationId), profile, code, field);
     }
 }

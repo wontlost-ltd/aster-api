@@ -39,14 +39,22 @@ public class NamedContextMapper {
         /** 警告信息（如未知参数名） */
         List<String> warnings,
         /** 错误信息（如缺少必需参数） */
-        String error
+        String error,
+        /** 命名格式下调用方未提供的参数名（按参数声明顺序）；其它情形为空 */
+        List<String> missingParams
     ) {
         public static MappingResult success(Object[] args, boolean named, List<String> warnings) {
-            return new MappingResult(args, named, warnings, null);
+            return new MappingResult(args, named, warnings, null, List.of());
         }
 
         public static MappingResult error(String errorMessage) {
-            return new MappingResult(new Object[0], false, List.of(), errorMessage);
+            return new MappingResult(new Object[0], false, List.of(), errorMessage, List.of());
+        }
+
+        /** 命名格式缺少参数：错误信息与缺失参数名一并带出，供执行器归因为输入缺字段。 */
+        public static MappingResult missing(List<String> missingParams) {
+            return new MappingResult(new Object[0], true, List.of(),
+                "缺少必需参数: " + String.join(", ", missingParams), List.copyOf(missingParams));
         }
 
         public boolean hasError() {
@@ -236,9 +244,9 @@ public class NamedContextMapper {
 
         // 如果缺少必需参数，返回错误
         if (!missingParams.isEmpty()) {
-            String errorMsg = "缺少必需参数: " + String.join(", ", missingParams);
-            LOG.errorf(errorMsg);
-            return MappingResult.error(errorMsg);
+            MappingResult missing = MappingResult.missing(missingParams);
+            LOG.warnf(missing.error());
+            return missing;
         }
 
         return MappingResult.success(positionalArgs, true, warnings);
