@@ -78,6 +78,10 @@ dependencies {
     implementation 'io.quarkus:quarkus-hibernate-orm-panache'
     implementation 'io.quarkus:quarkus-jdbc-postgresql'
     implementation 'io.quarkus:quarkus-flyway'
+    // Flyway 10+ 把 PostgreSQL 方言拆到 flyway-database-postgresql。quarkus-flyway 只以「条件依赖」
+    // （存在 quarkus-jdbc-postgresql 时）引入 quarkus-flyway-postgresql；Gradle 9.8 下 Quarkus 插件的
+    // 条件依赖解析失效，测试启动报 Unsupported Database: PostgreSQL（#384）。显式声明，不依赖条件解析。
+    implementation 'io.quarkus:quarkus-flyway-postgresql'
 
     // Scheduler - for workflow cleanup tasks
     implementation 'io.quarkus:quarkus-scheduler'
