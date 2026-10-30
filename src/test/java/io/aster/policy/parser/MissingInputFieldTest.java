@@ -154,4 +154,82 @@ class MissingInputFieldTest {
             .isInstanceOfSatisfying(MissingInputFieldException.class,
                 e -> assertThat(e.fieldPath()).isEqualTo("applicant.creditScore"));
     }
+
+    /** 规则内部值缺键时运行时也报同一文案；输入完整时不能改判为输入缺字段（审查反例 E / F）。 */
+    private static void assertNotMissingField(String source, String fn, Object context) {
+        Throwable thrown = org.assertj.core.api.Assertions.catchThrowable(() -> run(source, fn, context));
+        assertThat(thrown)
+            .as("规则内部取键失败不是输入错误")
+            .isInstanceOf(DynamicCnlExecutor.DynamicExecutionException.class)
+            .isNotInstanceOf(MissingInputFieldException.class);
+        assertThat(((DynamicCnlExecutor.DynamicExecutionException) thrown).kind())
+            .isEqualTo(DynamicCnlExecutor.DynamicExecutionException.Kind.EXECUTION);
+    }
+
+    @Test
+    void 规则内部Map缺键_输入完整_不是缺字段() {
+        String source = """
+            Module demo.internalmap.
+
+            Define Applicant has id as Text, creditScore as Int.
+
+            Define Tmp has score as Int.
+
+            Rule probe given applicant as Applicant, produce Int:
+              Let bag be Map.put(Map.empty(), "other", 1).
+              Return bag.score.
+            """;
+
+        assertNotMissingField(source, "probe", Map.of("applicant", applicant("id", "A1", "creditScore", 800)));
+    }
+
+    @Test
+    void 规则内部None上读字段_输入完整_不是缺字段() {
+        String source = """
+            Module demo.internalnone.
+
+            Define Applicant has id as Text, creditScore as Int.
+
+            Define Fee has value as Int.
+
+            Rule probe given applicant as Applicant, produce Int:
+              Let found be Map.get(Map.empty(), "k").
+              Return found.value.
+            """;
+
+        assertNotMissingField(source, "probe", Map.of("applicant", applicant("id", "A1", "creditScore", 800)));
+    }
+
+    @Test
+    void 规则内部Map缺键_类型已知的输入里没有同名声明字段_即使输入缺别的字段也不改判() {
+        String source = """
+            Module demo.internalmap2.
+
+            Define Applicant has id as Text, creditScore as Int.
+
+            Define Tmp has score as Int.
+
+            Rule probe given applicant as Applicant, produce Int:
+              Let bag be Map.put(Map.empty(), "other", 1).
+              Return bag.score.
+            """;
+
+        assertNotMissingField(source, "probe", Map.of("applicant", applicant("id", "A1")));
+    }
+
+    @Test
+    void 未声明类型的参数_按映射兜底仍报路径() {
+        String source = """
+            Module demo.untyped.
+
+            Define Applicant has id as Text, creditScore as Int.
+
+            Rule check given applicant, produce Bool:
+              Return applicant.creditScore greater than 600.
+            """;
+
+        MissingInputFieldException e = missing(source, "check", Map.of("applicant", applicant("id", "A1")));
+
+        assertThat(e.fieldPath()).isEqualTo("applicant.creditScore");
+    }
 }

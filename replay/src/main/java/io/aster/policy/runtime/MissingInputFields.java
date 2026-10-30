@@ -18,10 +18,14 @@ import java.util.regex.Pattern;
  * {@code RuntimeException("Map 中不存在键：<成员名>")}，既没有错误码，也只有最后一段成员名。
  * 执行器手里有调用方输入、目标函数的参数表与模块内的类型声明，足以把成员名还原为完整路径。
  *
- * <p>判定刻意保守：只有在调用方输入里<b>确实找到缺这个键的对象</b>时才改判，找不到就保留原失败
- * （可能是规则内部构造的值缺键，那不是输入问题）。查找分两轮：先只看参数类型声明了该字段的结构体
- * （有类型的策略，结果精确）；没有命中再看任意缺这个键的映射（参数未声明类型的旧策略）。
- * 同一轮里有多个候选时取遍历顺序（参数顺序、字段声明顺序）中的第一个。
+ * <p>判定刻意保守，宁可不报字段也不误报 400：只有在调用方输入里<b>确实找到缺这个键的对象</b>时才改判，
+ * 找不到就保留原失败（可能是规则内部构造的 Map / Maybe / Result 缺键，那不是输入问题）。
+ * 位置的结构体类型已知时，只认该类型<b>声明</b>了这个字段且输入里确实没传；只有类型未知的位置
+ * （参数未声明类型的旧策略、Map 值等）才按「任意缺这个键的映射」兜底。查找分两轮：先只看已知类型，
+ * 没有命中再看类型未知的位置。同一轮里有多个候选时取遍历顺序（参数顺序、字段声明顺序）中的第一个。
+ *
+ * <p>已知局限：运行时只给成员名、不给被访问对象，内部值缺的键恰好与某个输入类型声明且未传的字段同名时
+ * 仍可能误判；根治需要运行时抛带对象引用的结构化异常（aster-lang-truffle 跟进 issue）。
  */
 public final class MissingInputFields {
 
@@ -29,11 +33,13 @@ public final class MissingInputFields {
 
     /**
      * Truffle 读不到键时的两种文案（aster-lang-truffle MemberAccessNode）：guest 原生映射与宿主 hash 对象。
-     * 成员名之后可能紧跟全角句号或说明文字，故成员名只取到空白 / 中文标点为止。
+     * 整条 message 必须就是该文案（可带 polyglot 加的 {@code java.lang.RuntimeException: } 前缀），
+     * 不在任意 message 里查找——其它异常的 message 可能嵌着用户输入的文本。
      */
     private static final List<Pattern> MISSING_MEMBER = List.of(
-        Pattern.compile("Map 中不存在键：([^\\s，。：]+)"),
-        Pattern.compile("无法访问成员：([^\\s，。：]+)。该对象的可用成员为"));
+        Pattern.compile("(?:java\\.lang\\.RuntimeException: )?Map 中不存在键：([^\\s，。：]+)"),
+        Pattern.compile("(?:java\\.lang\\.RuntimeException: )?无法访问成员：([^\\s，。：]+)。该对象的可用成员为.*",
+            Pattern.DOTALL));
 
     /** cause 链遍历上限，防御自引用或异常深嵌套。 */
     private static final int MAX_CAUSE_DEPTH = 16;
@@ -64,7 +70,7 @@ public final class MissingInputFields {
         if (path.isEmpty()) {
             return failure;
         }
-        LOG.debugf("执行失败归因为输入缺字段: path=%s", path.get());
+        LOG.debugf("执行失败归因为输入缺字段: path=%s, 原始失败=%s", path.get(), failure.getMessage());
         return MissingInputFieldException.of(path.get());
     }
 
@@ -76,7 +82,7 @@ public final class MissingInputFields {
             if (message != null) {
                 for (Pattern pattern : MISSING_MEMBER) {
                     Matcher m = pattern.matcher(message);
-                    if (m.find()) {
+                    if (m.matches()) {
                         return Optional.of(m.group(1));
                     }
                 }
@@ -137,8 +143,9 @@ public final class MissingInputFields {
         }
 
         private Optional<String> findInMap(Map<?, ?> map, CoreModel.Data data, String path, int depth) {
-            boolean declared = data != null && fieldOf(data, member) != null;
-            if ((declared || !typedOnly) && !hasKey(map, member)) {
+            // 类型已知：只认该类型声明的字段；类型未知：第二轮才按任意映射兜底
+            boolean candidate = data != null ? fieldOf(data, member) != null : !typedOnly;
+            if (candidate && !hasKey(map, member)) {
                 return Optional.of(join(path, member));
             }
             for (Map.Entry<?, ?> entry : map.entrySet()) {
