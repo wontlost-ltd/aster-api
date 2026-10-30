@@ -115,6 +115,7 @@ Aster `allow` ⇔ Cedar `Allow`；其余结论 ⇔ Cedar `Deny` 且决定性策�
 - **鉴权**：端点要求可验证身份（aster-cloud 的 HMAC 内部调用或 API Key），纳入 `ApiKeyAuthFilter` 与 `InternalCallerFilter` 的双通道保护；不接受匿名或仅凭 `X-Tenant-Id` 的调用。
 - **审计**：每次成功导出都在审计哈希链追加 `POLICY_EXPORTED` 事件：源码 SHA-256、`target:"cedar"`、策略文本与 schema 各自 SHA-256、规则 id、探针条数；入参为已保存版本时附版本 id，调用方另可附自述引用（如 aster-cloud 的策略 id 与版本号，标为 `claimedRef`，未经 aster-api 核验）。哈希键加入审计元数据的身份键白名单，避免被 PII 脱敏误改。
 - **aster-cloud 版本不在 aster-api**：cloud 的策略版本存在 cloud 自己的库里，详情页导出走源码模式（源码、别名集、按内容检测的语言）并附 `claimedRef`。
+- **结构词别名**：源码模式可带 `allowStructural`，与编译端点同一信任口径——仅 HMAC 已验签的内部调用方声明 `true` 时，结构词别名（RETURN/IF 等）按已授权编译；API key 调用方传 `true` 被忽略。aster-cloud 只对创建版本时已核对授权、冻结进版本的别名集声明 `true`。版本模式恒按未授权编译（aster-api 自存版本保存时即按未授权校验，不含结构词别名）。（#400）
 - **导出的是可执行版本**：aster-cloud 导出 secure-execute 未指定版本时会执行的版本（`isDefault` 的 APPROVED 版本，否则最新 APPROVED 版本），与执行路径共用同一选择函数；草稿等未批准版本不导出——把未经审批的草稿交给执行端等于绕过审批。没有可执行版本时 cloud 路由返回 409 `{"error":"no executable version"}`，面板提示先批准一个版本。`claimedRef.version` 即所导出的版本号。
 - **aster-cloud**：策略详情页提供「导出为 Cedar」，可导出时原样下载 `policies` 与 `schemaText` 为 `<moduleName>.cedar` 与 `<moduleName>.cedarschema.json`（无 `moduleName` 时用 `policy`），诊断在编译诊断同一面板展示；四语文案（hi 用英文）。不读取任何租户凭据。
 

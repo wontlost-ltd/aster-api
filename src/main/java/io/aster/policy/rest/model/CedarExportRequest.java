@@ -33,7 +33,12 @@ public record CedarExportRequest(
 
     // 领域词汇表（可选，仅源码模式，ADR 0051），形同 CompileRequest.vocabulary（DomainVocabulary JSON）
     @JsonProperty("vocabulary")
-    Map<String, Object> vocabulary
+    Map<String, Object> vocabulary,
+
+    // 结构词别名授权请求（可选，仅源码模式），形同 CompileRequest.allowStructural：
+    // 只有 HMAC 已验签的内部调用方声明 true 才生效，其余调用方一律按未授权编译。
+    @JsonProperty("allowStructural")
+    Boolean allowStructural
 ) {
     public String getLocaleOrDefault() {
         return locale == null || locale.isBlank() ? "en-US" : locale.trim();
