@@ -48,6 +48,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -674,6 +675,27 @@ class GuardDecisionServiceTest {
 
     assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
     assertThat(Duration.ofNanos(System.nanoTime() - start)).isGreaterThanOrEqualTo(Duration.ofMillis(900));
+  }
+
+  @Test
+  void waitSeconds期间被中断则保留中断标志并以当前PENDING结束且不再评估() throws Exception {
+    verdict("REQUIRE_APPROVAL", "DPO", "needs review");
+    // 决策落库时线程被中断：随后的等待立即感知，请求就此结束
+    doAnswer(inv -> {
+      Thread.currentThread().interrupt();
+      return null;
+    }).when(store).saveDecision(any(), any());
+
+    try {
+      GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", requestWaiting(30), null);
+
+      assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
+      assertThat(Thread.currentThread().isInterrupted()).isTrue();
+      verify(store, never()).findDecision(any(), any());
+      verify(evaluationService, times(1)).evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any());
+    } finally {
+      Thread.interrupted();
+    }
   }
 
   @Test

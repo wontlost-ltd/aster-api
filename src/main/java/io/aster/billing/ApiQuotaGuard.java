@@ -98,7 +98,7 @@ public class ApiQuotaGuard {
      *   4. precheck timeout 收紧到 1.5s（fail-open 是兜底，cf 边缘正常 ~200ms，
      *      等 10s 比立刻 fail-open 更糟）。
      */
-    private Cache<String, PrecheckResult> precheckCache;
+    Cache<String, PrecheckResult> precheckCache;
     private ExecutorService precheckPool;
     private static final java.time.Duration PRECHECK_CACHE_TTL = java.time.Duration.ofMinutes(5);
     private static final int PRECHECK_CACHE_MAX = 10_000;
@@ -188,6 +188,11 @@ public class ApiQuotaGuard {
             // R32 hotfix v3: 先查进程内 Caffeine（5min TTL），命中即 0 RTT。
             PrecheckResult cached = precheckCache == null ? null
                 : precheckCache.getIfPresent(quotaOwnerId == null ? "" : quotaOwnerId);
+            // monthlyUsed 只在其所属账期内有效：缓存最长 5 分钟，跨月后的条目按未命中处理，
+            // 不能把上月计数沿用到新月。
+            if (cached != null && !io.aster.billing.snapshot.LocalQuotaSnapshotService.currentPeriod().equals(cached.period)) {
+                cached = null;
+            }
             if (cached != null) {
                 if (currentSpan != null) {
                     currentSpan.setAttribute("aster.quota.source", "local_caffeine");
@@ -418,7 +423,7 @@ public class ApiQuotaGuard {
     /**
      * AKA-8: 合并查询 — 一次 GET 拿 plan + apiCallsLimit + monthlyUsed
      */
-    private record PrecheckResult(long apiCallsLimit, long monthlyUsed, String plan, String period) {}
+    record PrecheckResult(long apiCallsLimit, long monthlyUsed, String plan, String period) {}
 
     /**
      * precheck 预热写入的快照：带上 cloud 返回的 owner 池当月合并用量作为基线（#412）。
@@ -515,7 +520,8 @@ public class ApiQuotaGuard {
             json.getLong("apiCallsLimit", 0L),
             json.getLong("monthlyUsed", 0L),
             json.getString("plan", "free"),
-            json.getString("period", null)
+            // 旧 cloud 不返回账期时按取回时的本地当月记，与 snapshotFromPrecheck 的回退一致
+            json.getString("period", io.aster.billing.snapshot.LocalQuotaSnapshotService.currentPeriod())
         );
     }
 
