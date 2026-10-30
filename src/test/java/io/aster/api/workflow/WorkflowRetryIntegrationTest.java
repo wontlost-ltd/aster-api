@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * 工作流重试端到端集成测试
@@ -28,8 +29,12 @@ import org.junit.jupiter.api.Test;
  * - 达到最大重试次数抛异常
  * - 多步骤混合重试场景
  * - 重放一致性验证
+ *
+ * <p>每个用例限时：延迟重试 poller 若卡住（如 aster-api#414 中重放时钟耗尽导致到期任务永不触发），
+ * {@code executeUntilComplete} 会无限等待，限时让它以失败结束而不是拖住整个测试进程。
  */
 @QuarkusTest
+@Timeout(60)
 class WorkflowRetryIntegrationTest {
 
   @Inject
