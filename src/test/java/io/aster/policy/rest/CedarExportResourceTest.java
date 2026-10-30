@@ -135,6 +135,46 @@ class CedarExportResourceTest {
     assertThat(row.performedBy).isEqualTo("u-1");
   }
 
+  // ---------- 结构词别名信任（#400）：与 /compile 同一口径——HMAC 已验签且请求声明 allowStructural ----------
+
+  /** 用结构词别名（IF → provided that）改写的样例：未授权时编译期即被拒，导出不可用。 */
+  static final String STRUCTURAL_SAMPLE = SAMPLE.replace("  If List.contains", "  provided that List.contains");
+  static final Map<String, List<String>> STRUCTURAL_ALIASES = Map.of("IF", List.of("provided that"));
+
+  static Map<String, Object> structuralBody(Boolean allowStructural) {
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("source", STRUCTURAL_SAMPLE);
+    body.put("locale", "en-US");
+    body.put("aliasSet", STRUCTURAL_ALIASES);
+    if (allowStructural != null) {
+      body.put("allowStructural", allowStructural);
+    }
+    return body;
+  }
+
+  @Test
+  void hmacCallWithAllowStructuralExportsStructuralAlias() throws Exception {
+    String tenant = "tenant-cedar-structural-" + RUN;
+    signedAs(tenant, json(structuralBody(true))).post(PATH).then().statusCode(200)
+        .body("exportable", equalTo(true)).body("ruleId", equalTo("GCS-001"));
+    assertThat(metadataOf(awaitExportEvent(tenant))).containsEntry("ruleId", "GCS-001");
+  }
+
+  @Test
+  void hmacCallWithoutAllowStructuralStillRejectsStructuralAlias() throws Exception {
+    signed(json(structuralBody(null))).post(PATH).then().statusCode(200)
+        .body("exportable", equalTo(false)).body("policies", nullValue());
+    signed(json(structuralBody(false))).post(PATH).then().statusCode(200)
+        .body("exportable", equalTo(false));
+  }
+
+  @Test
+  void bearerCallerAllowStructuralIsIgnored() throws Exception {
+    given().header("Authorization", "Bearer " + BEARER_KEY).contentType(ContentType.JSON)
+        .body(json(structuralBody(true))).post(PATH).then().statusCode(200)
+        .body("exportable", equalTo(false)).body("policies", nullValue());
+  }
+
   @Test
   void responseCarriesModuleNameAndVerbatimSchemaMatchingAuditHashes() throws Exception {
     String tenant = "tenant-cedar-verbatim-" + RUN;

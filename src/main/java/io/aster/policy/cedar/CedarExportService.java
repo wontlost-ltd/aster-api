@@ -72,8 +72,21 @@ public class CedarExportService {
      */
     public CedarExportOutcome exportSource(String source, String locale, String aliasSetJson,
                                            aster.core.identifier.VocabularyScopes scopes, String functionName) {
+        return exportSource(source, locale, aliasSetJson, scopes, functionName, false);
+    }
+
+    /**
+     * 同 {@link #exportSource(String, String, String, aster.core.identifier.VocabularyScopes, String)}，
+     * 但可指定结构词别名是否按已授权编译。
+     *
+     * @param allowStructural 必须来自权威信任判定（HMAC 已验签的内部调用方显式声明），语义同
+     *                        {@link PolicyCompiler#compile(String, String, String, aster.core.identifier.VocabularyScopes, boolean)}
+     */
+    public CedarExportOutcome exportSource(String source, String locale, String aliasSetJson,
+                                           aster.core.identifier.VocabularyScopes scopes, String functionName,
+                                           boolean allowStructural) {
         String sourceHash = sha256(source == null ? "" : source);
-        CompilationResult compiled = compiler.compile(source, locale, aliasSetJson, scopes, false);
+        CompilationResult compiled = compiler.compile(source, locale, aliasSetJson, scopes, allowStructural);
         List<CompileDiagnostic> errors = compileErrors(compiled);
         if (!errors.isEmpty()) {
             return new CedarExportOutcome(false, null, functionName, null, null, null, null, List.of(), 0, 0,

@@ -66,9 +66,14 @@ public class CedarExportResource {
     /** ApiKeyAuthFilter 验证 key 后写入的已验证租户属性。 */
     private static final String API_KEY_TENANT_PROP = "aster.apikey.tenantId";
 
-    /** 一次导出的编译输入：源码模式取自请求，版本模式取自已保存版本（版本不带词汇）。 */
+    /**
+     * 一次导出的编译输入：源码模式取自请求，版本模式取自已保存版本（版本不带词汇）。
+     * {@code allowStructural} 为结构词别名是否按已授权编译；版本模式恒为 false——aster-api 自存版本
+     * 保存时即按未授权校验，不会含结构词别名。
+     */
     private record ExportInput(String source, String locale, String aliasSetJson,
-                               aster.core.identifier.VocabularyScopes scopes, String functionName, Long versionId) {
+                               aster.core.identifier.VocabularyScopes scopes, String functionName, Long versionId,
+                               boolean allowStructural) {
     }
 
     @Inject CedarExportService exportService;
@@ -98,25 +103,32 @@ public class CedarExportResource {
             return Response.status(Response.Status.BAD_REQUEST)
                 .entity(Map.of("error", VocabularyBounds.ERROR_CODE, "message", vocabularyError)).build();
         }
+        // 结构词别名信任与 /compile 同一口径（aster-cloud#604）：请求体的 allowStructural 只是「请求」，
+        // 必须叠加「HMAC 已验签」才生效。cloud 只对已在服务端核对过授权、冻结进版本的别名集声明 true；
+        // API key 调用方即使传 true 也按未授权编译，结构词别名照旧被拒。
+        boolean allowStructural = Boolean.TRUE.equals(request.allowStructural())
+            && InternalCallerFilter.isHmacVerified(ctx);
         if (!gate.tryAcquire()) {
             LOG.warnf("Cedar 导出拒绝：并发达到上限 %d，返回 503", gate.limit());
             throw busy(gate.limit());
         }
         try {
-            return exportWithPermit(request);
+            return exportWithPermit(request, allowStructural);
         } finally {
             gate.release();
         }
     }
 
-    private Response exportWithPermit(CedarExportRequest request) {
+    private Response exportWithPermit(CedarExportRequest request, boolean allowStructural) {
         String tenantId = identityResolver.tenantId();
-        ExportInput input = request.versionId() == null ? fromSource(request) : fromVersion(request.versionId(), tenantId);
+        ExportInput input = request.versionId() == null
+            ? fromSource(request, allowStructural) : fromVersion(request.versionId(), tenantId);
         if (input == null) {
             return error(Response.Status.NOT_FOUND, "version not found");
         }
         CedarExportOutcome outcome = exportService.exportSource(
-            input.source(), input.locale(), input.aliasSetJson(), input.scopes(), input.functionName());
+            input.source(), input.locale(), input.aliasSetJson(), input.scopes(), input.functionName(),
+            input.allowStructural());
         String scopesHash = CompileIdentity.scopesHash(input.scopes());
         CedarExportResponse body = toResponse(outcome, scopesHash);
         if (outcome.exportable()) {
@@ -182,11 +194,12 @@ public class CedarExportResource {
         return text == null || text.length() <= MAX_CLAIMED_REF_TEXT;
     }
 
-    private static ExportInput fromSource(CedarExportRequest request) {
+    private static ExportInput fromSource(CedarExportRequest request, boolean allowStructural) {
         String aliasSetJson = request.aliasSet() == null || request.aliasSet().isEmpty()
             ? null : writeJson(request.aliasSet());
         return new ExportInput(request.source(), request.getLocaleOrDefault(), aliasSetJson,
-            ReplayExecutionCore.buildVocabularyScopes(request.vocabulary()), request.functionName(), null);
+            ReplayExecutionCore.buildVocabularyScopes(request.vocabulary()), request.functionName(), null,
+            allowStructural);
     }
 
     /** 版本模式：只在本租户内查找，找不到返回 null；编译输入全部取自版本本身。 */
@@ -197,7 +210,7 @@ public class CedarExportResource {
                 return null;
             }
             String locale = v.locale == null || v.locale.isBlank() ? DEFAULT_LOCALE : v.locale;
-            return new ExportInput(v.content, locale, v.aliasSet, null, v.functionName, v.id);
+            return new ExportInput(v.content, locale, v.aliasSet, null, v.functionName, v.id, false);
         });
     }
 
