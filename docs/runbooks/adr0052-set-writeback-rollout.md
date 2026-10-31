@@ -19,7 +19,7 @@ aster-lang-core#225（Set 语义）已在 core main，下一次列车会把它�
 ## 0. 变更摘要
 
 - Java 前端开始把 `Set x to …` / `将 x 设为 …` / `setze x auf …` 解析为赋值语句，不再改写成 `Let` 声明。
-- `Set` 只能赋值给**已有的 Let 绑定**。首次声明用 `Set` 的源码升级后报 E101；`Set` 形参、模式绑定、lambda 内的捕获变量报 E001。
+- `Set` 只能赋值给**已有的 Let 绑定**。首次声明用 `Set` 的源码升级后报错：`Set` 的目标之后被读取（最常见）时，编辑器与服务端都在**读取行**报 E802；目标不被读取时才在 Set 行报 E101（详见 ADR §2.2）；`Set` 形参、模式绑定、lambda 内的捕获变量报 E001。
 - 涉及制品：aster-lang-locales、aster-lang-core（含 en-US 内置词法表）、aster-lang-ts。truffle 无源码变更，随列车 lockstep 打 tag。
 
 ## 为什么必须在升级前改写
@@ -44,7 +44,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0052-scan-set-statemen
 脚本对每个版本都跑 en / de / zh 三条模式，不看 `locale` 列（它可能为空或写成 `zh_CN`）。
 输出列：`id, policy_id, version, tenant_id, status, active, locale, pattern_lang, set_target, has_let_same_name`。
 
-- `has_let_same_name = f`：文中没有同名 Let，**升级后必然报 E101**，必须改写。
+- `has_let_same_name = f`：文中没有同名 Let，**升级后必然报错**（目标之后被读取则为读取行上的 E802，否则为 Set 行上的 E101），必须改写。
 - `has_let_same_name = t`：通常是合法的写回赋值。但脚本不检查先后与作用域，须人工确认：同名 Let **在该 Set 之前**，
   且在同一条作用域链上（同一规则内、外层或同一块）。不满足的同样要改写。
 - `Set` 位于 lambda 体内、目标是 lambda 外的变量：升级后报 E001，也要改写（让 lambda 返回新值，由外层 `Set`）。
@@ -70,7 +70,8 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0052-scan-set-statemen
 
 满足上方门禁后运行发版列车。列车会更新 aster-api 的生态 pin、构建镜像、经 k3s image-pin PR 部署。启动期重验保持开启。
 重验完成后，在 aster-cloud 管理后台的「无效版本」列表（代理到 `GET /api/v1/admin/revalidation/invalid?toolchainId=<新 toolchain id>`）
-确认没有落在 `Set` 行上的 E101 / E001。
+确认没有落在 `Set` 行上的 E101 / E001。注意：命中 invalid 列表的首次声明 `Set` 版本，多数会显示为**读取行上的 E802**（`Cannot resolve name … in VALUE_REF position`），而不是 Set 行上的 E101；
+按 E802 的行号回看源码，若该名字只由 `Set` 引入、没有前置 `Let`，同样按 §2 改写。
 
 ### 兜底：来不及在升级前改完
 
@@ -102,10 +103,16 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0052-scan-set-statemen
 2. toolchain id 随之变回，启动期按旧工具链重验。
 3. 第 2 步改写成 `Let` 的版本在新旧工具链下都能编译，不需要回退。
 4. 回滚本身也要跑列车或改 k3s 的 image pin，同样会触发部署。如果用过兜底，确认 k3s 中的 `ASTER_COMPILE_TYPECHECK` 已删除（恢复 enforce）。
-5. aster-cloud 若已升级到新的 aster-lang-ts，同时回退 `package.json` 与 `lsp-package.json` 中的版本，否则编辑器会对服务端接受的源码报 E101 / E001。
+5. aster-cloud 若已升级到新的 aster-lang-ts，同时回退 `package.json` 与 `lsp-package.json` 中的版本，否则编辑器会对服务端接受的源码报 E101 / E802 / E001。
 
 ## 5. 上线后验证
 
 - 发布一份 en 策略：`Let total be 0.`，在 case 体内 `Set total to 10.`，执行结果为写回后的值。
 - 对 zh、de 各做一次同样的检查。
-- 发布一份首次声明用 `Set` 的策略，确认编辑器与服务端都报 E101 且行号相同。
+- 发布一份首次声明用 `Set`、**目标之后不被读取**的策略（如 `Let base be n.` / `Set total to base plus 1.` / `Return base.`），确认编辑器与服务端都报 E101 且行号相同（Set 行）。
+- 再发布一份目标之后被读取的版本（如 `Set total to n plus 1.` / `Return total.`），预期编辑器与服务端都报 E802，落在读取 `total` 的那一行，两端同码同行；这不是回归。
+- zh、de 的 Set 写法与上面一致（目标不被读取时同为 Set 行 E101）。
+
+## 6. 上线记录
+
+- 2026-10-31：生产执行 §1 扫描，结果 0 行；生态 1.0.38 已发布；上线后验证（§5）通过。其中首次声明 `Set` 的两端诊断为 E802/E101，见 #428 与 ADR §2.2。
