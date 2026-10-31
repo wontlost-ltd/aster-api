@@ -2716,7 +2716,7 @@
         "iconAdded": "Hinzugefügt",
         "iconRemoved": "Entfernt",
         "iconUnchanged": "Unverändert",
-        "rollback": "Auf diesen Snapshot rollen zurück",
+        "rollback": "Auf diesen Snapshot zurücksetzen",
         "close": "Schließen",
         "loading": "Lade Snapshot…",
         "loadFailed": "Snapshot konnte nicht geladen werden."
