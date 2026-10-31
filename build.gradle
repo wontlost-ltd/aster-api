@@ -58,7 +58,7 @@ dependencies {
     implementation 'io.quarkus:quarkus-redis-cache'
     // 显式声明 caffeine —— LexiconAdminResource 直接使用 com.github.benmanes.caffeine.*
     // 不依赖 quarkus-cache 的传递（避免未来 quarkus 更换 cache provider 时崩）
-    implementation 'com.github.ben-manes.caffeine:caffeine:3.2.4'
+    implementation 'com.github.ben-manes.caffeine:caffeine:3.3.1'
 
     // WebSocket support for Live Preview
     implementation 'io.quarkus:quarkus-websockets'
