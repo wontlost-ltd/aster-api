@@ -117,7 +117,7 @@ ADR 0051 §6 的 LOCAL 层定义为「当前词法作用域内源码声明的局
 
 1. **合入顺序**：本 ADR（aster-api）→ aster-lang-core → aster-lang-locales（其 en-US 副本须与 core backbone 逐字节一致）
    → aster-lang-ts → aster-lang-test。ts 的格式化往返白名单已登记新的 zh 样本，并跳过语料仓中尚不存在的文件，所以 ts 与 test 可以任意先后合并。
-2. **发版顺序**（沿用生态 release train）：locales → core → truffle（无源码变更，lockstep 重新打 tag）→ ts npm → test。
+2. **发版顺序**（沿用生态 release train）：locales → core → truffle → ts npm → test。#151 本身 truffle 无源码变更（lockstep 重新打 tag）；#156 / R55 合入后 truffle 有源码变更（作用域、模式名、调用分派），见 runbook。
    #156 / #227 的修复（truffle 遮蔽、core / ts 的 R55）合入后随下一次列车发版。它们改变已发布策略的运行语义（case 体 Let / 模式绑定遮蔽对所有语言生效；zh / hi / de 变音 / 小写成员的模式形态），
    而带存储 IR 的版本不会自动得到新形态、启动期重验也发现不了。因此**另有一道门禁**：运行任何列车之前，先跑
    `scripts/ops/adr0051-r55-scan-pattern-names.sql`（aster-api 库）与 `scripts/ops/adr0051-r55-scan-pattern-names-cloud.sql`（cloud 库）；
