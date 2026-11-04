@@ -285,6 +285,12 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 - **R21**：期望类型为枚举 E 时，跨层冲突集仅含 LOCAL、模块函数/类型、词汇函数/类型；其他枚举的成员不构成冲突。LOCAL 精确命中优先于成员折叠歧义。§14.1 的“枚举成员 vs 函数/类型”冲突仍为 **E804**（不因精确优先而豁免）。
 - **R49**：相等/不等比较中，若另一操作数为已知枚举，则本操作数以该枚举为期望类型（本地化裸成员可解析）；E802 对值操作数使用非 FUNC_REF 的角色标签；E802/E804 的 help 提示 `Stufe.Hoch` 写法；E804 候选去重。
 - **R53**（无大小写文字的类型名；实现见 aster-lang-core#222，该 PR 合并发版前本条尚未生效）：类型名位置（`Define` 形态的 Data/Enum 声明名、枚举值、类型引用、构造模式名；构造表达式的类型名本就接受任意 IDENT，不受本条约束）接受 TYPE_IDENT，以及首字符属无大小写文字的 IDENT。无大小写文字目前仅指天城文 U+0900–U+0963、U+0966–U+097F（不含 danda U+0964/U+0965，与词法器一致）；CJK 已按 TYPE_IDENT 词法化，不在此列。两引擎只在语法层放行，词法分类不变（天城文仍是 IDENT），表达式位置的天城文仍是名字引用。小写拉丁类型名不在本条范围：TS 接受、Java 拒绝的既有分歧保持不变，另行裁决。无括号的无大小写文字模式产出 PatternName，后随 `(` 时产出 PatternCtor。省略 `Define` 的数据声明（Java 独有写法）不在本条范围。
+- **R54**（无大小写文字的裸模式名；aster-cloud/aster-lang-core#227，实现见 aster-lang-core#230、aster-lang-ts#274）：裸模式名（无括号）是枚举成员还是绑定，仍按 R12 与 §4 R2 判定，两引擎实现一致：主语为枚举 E 时，命中 E 的成员即为成员；主语为其它已知类型时为绑定（与某枚举成员同名也是绑定）；主语类型未知时，写法精确等于唯一一个枚举成员即为成员；其余为绑定。
+  两引擎运行时（TS 解释器、truffle）与 parity 归一化都按「PatName 首字母为 ASCII 大写 = 变体，否则 = 绑定」区分，无大小写文字（中文、天城文等）无法用大小写表达判定结果。因此 R2 按判定结果给出统一形态：
+  首字母不是 ASCII `A`–`Z` 的**成员**产出无参数 `PatCtor`（`typeName` 为规范名），**绑定**产出 `PatName`；首字母为 ASCII 大写的名字保持原形态，en / de 的 IR 不变。判定只看 ASCII，Java 与 JS 结果相同。
+  修复前：Java 把中文裸名词法化为 TYPE_IDENT、一律产出 PatCtor，绑定分支永不匹配，分支体读绑定名还报 E101；TS 一律产出 PatName，成员分支变成兜底绑定，吞掉其后所有分支；天城文两侧都产出 PatName，成员分支同样成了兜底。
+  TS 解释器的无绑定 `PatCtor` 同时匹配枚举成员（与 truffle `PatCtorNode` 一致）。词汇把成员映射为 ASCII 规范名（如 `待处理`→`Pending`）时走大写形态，不受本条影响。
+  遗留：首字母为非 ASCII 大写拉丁字母、又不是成员的裸名（如 `Ärger`），R2 产出 `PatName`，TS 解释器判为绑定，truffle 按 Unicode 大写判为变体；这类名字是成员时已产出 `PatCtor`，两侧一致。
 
 ### 15.3 内建词汇与注册表
 - **R22/R26**：内建词汇的枚举值须带 parent；已在 aster-lang-locales 为 zh/en/de 的 finance-loan、insurance-auto 补全（CreditLevel、LoanType、QuoteStatus、RiskLevel）。TS/Java 注册表对无 parent 的 field/枚举值条目拒绝或跳过（显式注释与测试），作为守卫保留。
