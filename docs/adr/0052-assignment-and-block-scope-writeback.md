@@ -99,7 +99,7 @@ ADR 0051 §6 的 LOCAL 层定义为「当前词法作用域内源码声明的局
 2. **专用错误码**：「赋值给不可变绑定」目前借用 E001。新增专用码（如 `E105 ASSIGN_TO_IMMUTABLE`）需要先在
    aster-lang-locales（zh / de）与 aster-lang-hi 补齐诊断译文，否则 TS 的 overlay 覆盖测试会失败。另开 issue 跟进。
 3. **中文模式绑定名**（aster-cloud/aster-lang-core#227，**已裁决**）：`当 其他，` 这类 CJK 名字作模式绑定时，Java 判为枚举变体，TS 判为绑定。
-   裁决见 ADR 0051 §15.2 R54：成员还是绑定按 R12 判定，R2 对首字母不是 ASCII 大写的名字按判定结果产出 `PatCtor`（成员）或 `PatName`（绑定）。
+   裁决见 ADR 0051 §15.2 R55：成员还是绑定按 R12 判定，R2 对首字母不是 ASCII 大写的名字按判定结果产出 `PatCtor`（成员）或 `PatName`（绑定）。
    tier1 样本 `vocab-zh/cjk-pattern-binding`（aster-lang-test#183） 覆盖成员、兜底绑定、整数主语下的绑定与模式绑定遮蔽。
 
 ## 6. 落地、迁移与发版顺序
@@ -118,7 +118,11 @@ ADR 0051 §6 的 LOCAL 层定义为「当前词法作用域内源码声明的局
 1. **合入顺序**：本 ADR（aster-api）→ aster-lang-core → aster-lang-locales（其 en-US 副本须与 core backbone 逐字节一致）
    → aster-lang-ts → aster-lang-test。ts 的格式化往返白名单已登记新的 zh 样本，并跳过语料仓中尚不存在的文件，所以 ts 与 test 可以任意先后合并。
 2. **发版顺序**（沿用生态 release train）：locales → core → truffle（无源码变更，lockstep 重新打 tag）→ ts npm → test。
-   #156 / #227 的修复（truffle 遮蔽、core / ts 的 R54）合入后随下一次列车发版，同样遵守下面的发版门禁。
+   #156 / #227 的修复（truffle 遮蔽、core / ts 的 R55）合入后随下一次列车发版。它们改变已发布策略的运行语义（case 体 Let / 模式绑定遮蔽对所有语言生效；zh / hi / de 变音 / 小写成员的模式形态），
+   而带存储 IR 的版本不会自动得到新形态、启动期重验也发现不了。因此**另有一道门禁**：运行任何列车之前，先跑
+   `scripts/ops/adr0051-r55-scan-pattern-names.sql`（aster-api 库）与 `scripts/ops/adr0051-r55-scan-pattern-names-cloud.sql`（cloud 库）；
+   结果为空才运行，有命中则按 `docs/runbooks/adr0051-r55-pattern-scope-rollout.md` 先由作者改写 / 重新发布，或在新工具链下重跑确认。
+   `RESOLVER_VERSION` 不递增，理由见 ADR 0051 R55。
 3. **发版前扫描**：对生产 `policy_versions.content` 运行只读扫描 `scripts/ops/adr0052-scan-set-statements.sql`。
    en / de / zh 三条模式对每个版本都扫（不按 `locale` 列分流），列出 Set 目标名及文中是否存在同名 Let。结果为空即可直接发版。
 4. **发版前改写**：作者把命中的首次声明改为 Let（`Set x to` → `Let x be`，`将 … 设为` → `令 … 定义为`，`setze … auf` → `sei … gleich`），

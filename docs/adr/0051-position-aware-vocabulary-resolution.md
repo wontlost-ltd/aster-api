@@ -283,23 +283,48 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 - **R19**（偏离正文）：FUNC_REF 调用目标在所有层均无候选时保持原写法，R2 **不**报 E802，由类型检查器的未定义函数诊断负责。
 - **R20**：点号尾段的“不透明”判定为白名单：dynamic/未类型化、TypeVar、内建标量、Map/Json/Any；别名、包装类型（Option/Maybe/List/TypeApp）与未声明类型名视为 UNKNOWN（走全局候选规则）。`Let y be x` 继承 x 的声明类型。**R30/R31**：无类型注解的函数参数与 lambda 参数视为 UNKNOWN（两引擎一致）。
 - **R21**：期望类型为枚举 E 时，跨层冲突集仅含 LOCAL、模块函数/类型、词汇函数/类型；其他枚举的成员不构成冲突。LOCAL 精确命中优先于成员折叠歧义。§14.1 的“枚举成员 vs 函数/类型”冲突仍为 **E804**（不因精确优先而豁免）。
-- **R49**：相等/不等比较中，若另一操作数为已知枚举，则本操作数以该枚举为期望类型（本地化裸成员可解析）；E802 对值操作数使用非 FUNC_REF 的角色标签；E802/E804 的 help 提示 `Stufe.Hoch` 写法；E804 候选去重。
+- **R49**（编号重复，见 §15 末注；此为 R49-a）：相等/不等比较中，若另一操作数为已知枚举，则本操作数以该枚举为期望类型（本地化裸成员可解析）；E802 对值操作数使用非 FUNC_REF 的角色标签；E802/E804 的 help 提示 `Stufe.Hoch` 写法；E804 候选去重。
 - **R53**（无大小写文字的类型名；实现见 aster-lang-core#222，该 PR 合并发版前本条尚未生效）：类型名位置（`Define` 形态的 Data/Enum 声明名、枚举值、类型引用、构造模式名；构造表达式的类型名本就接受任意 IDENT，不受本条约束）接受 TYPE_IDENT，以及首字符属无大小写文字的 IDENT。无大小写文字目前仅指天城文 U+0900–U+0963、U+0966–U+097F（不含 danda U+0964/U+0965，与词法器一致）；CJK 已按 TYPE_IDENT 词法化，不在此列。两引擎只在语法层放行，词法分类不变（天城文仍是 IDENT），表达式位置的天城文仍是名字引用。小写拉丁类型名不在本条范围：TS 接受、Java 拒绝的既有分歧保持不变，另行裁决。无括号的无大小写文字模式产出 PatternName，后随 `(` 时产出 PatternCtor。省略 `Define` 的数据声明（Java 独有写法）不在本条范围。
-- **R54**（无大小写文字的裸模式名；aster-cloud/aster-lang-core#227，实现见 aster-lang-core#230、aster-lang-ts#274）：裸模式名（无括号）是枚举成员还是绑定，仍按 R12 与 §4 R2 判定，两引擎实现一致：主语为枚举 E 时，命中 E 的成员即为成员；主语为其它已知类型时为绑定（与某枚举成员同名也是绑定）；主语类型未知时，写法精确等于唯一一个枚举成员即为成员；其余为绑定。
-  两引擎运行时（TS 解释器、truffle）与 parity 归一化都按「PatName 首字母为 ASCII 大写 = 变体，否则 = 绑定」区分，无大小写文字（中文、天城文等）无法用大小写表达判定结果。因此 R2 按判定结果给出统一形态：
-  首字母不是 ASCII `A`–`Z` 的**成员**产出无参数 `PatCtor`（`typeName` 为规范名），**绑定**产出 `PatName`；首字母为 ASCII 大写的名字保持原形态，en / de 的 IR 不变。判定只看 ASCII，Java 与 JS 结果相同。
-  修复前：Java 把中文裸名词法化为 TYPE_IDENT、一律产出 PatCtor，绑定分支永不匹配，分支体读绑定名还报 E101；TS 一律产出 PatName，成员分支变成兜底绑定，吞掉其后所有分支；天城文两侧都产出 PatName，成员分支同样成了兜底。
-  TS 解释器的无绑定 `PatCtor` 同时匹配枚举成员（与 truffle `PatCtorNode` 一致）。词汇把成员映射为 ASCII 规范名（如 `待处理`→`Pending`）时走大写形态，不受本条影响。
-  遗留：首字母为非 ASCII 大写拉丁字母、又不是成员的裸名（如 `Ärger`），R2 产出 `PatName`，TS 解释器判为绑定，truffle 按 Unicode 大写判为变体；这类名字是成员时已产出 `PatCtor`，两侧一致。
+- **R55**（裸模式名的 IR 形态；aster-cloud/aster-lang-core#227，实现见 aster-lang-core#230、aster-lang-ts#274、aster-lang-truffle#158；上线见 `docs/runbooks/adr0051-r55-pattern-scope-rollout.md`）：
+  - **判定**：裸模式名（无括号）是枚举成员还是绑定，仍按 R12 与 §4 R2 判定，两引擎实现一致：
+    - 主语为枚举 E 时，命中 E 的成员即为成员；
+    - 主语为其它已知类型时为绑定（与某枚举成员同名也是绑定）；
+    - 主语类型未知时，写法精确等于唯一一个枚举成员即为成员；
+    - 其余为绑定。
+  - **形态**：运行时（TS 解释器、truffle）与 parity 归一化都按「`PatName` 首字母为 ASCII 大写 = 变体，否则 = 绑定」区分，中文、天城文等无大小写文字表达不了判定结果。因此 R2 按判定结果给出形态：
+    - 首字母不是 ASCII `A`–`Z` 的**成员**产出无参数 `PatCtor`（`typeName` 为规范名）；
+    - **绑定**产出 `PatName`；
+    - 判定只看 ASCII，Java 与 JS 结果相同。truffle `PatNameNode` 同样只按 ASCII 大写判变体（此前用 `Character.isUpperCase`）。
+  - **IR 变化范围**：首字母为 ASCII 大写的名字 IR 不变。有变化的是：
+    - 中文 / 天城文成员：`PatName` → `PatCtor`；
+    - Java 侧中文绑定：`PatCtor` → `PatName`；
+    - de 以变音字母（Ä / Ö / Ü）开头的成员：TS 侧 `PatName` → `PatCtor`，Java 原本就是 `PatCtor`；
+    - TS 接受、Java 拒绝的小写 ASCII 枚举成员（`Define Color as one of red, Green`）：`PatName` → `PatCtor`。
+  - **修复前的行为**：
+    - Java 把中文裸名词法化为 TYPE_IDENT、一律产出 `PatCtor`，绑定分支永不匹配，分支体读绑定名还报 E101。
+    - TS 一律产出 `PatName`，成员分支变成兜底绑定，吞掉其后所有分支；天城文两侧都如此。
+    - truffle 把 `bei Ärger,`（不是成员）判为变体、不匹配，TS 判为绑定。
+  - TS 解释器的无绑定 `PatCtor` 同时匹配枚举成员（与 truffle `PatCtorNode` 一致）。词汇把成员映射为 ASCII 规范名（如 `待处理`→`Pending`）时走大写形态，不受本条影响。
+  - **不递增 `RESOLVER_VERSION`**（仍为 1）。理由：
+    - 生产库 2026-10-29 已清空重建，存量很小；
+    - 命中的版本由作者改写或重新发布，即在新工具链下编译、生成新的存储 IR，不需要新的迁移工具；
+    - 递增 `resolver` 要连带修改 aster-api 的 `IS DISTINCT FROM 1` 判断、cloud `cloudToolchainId`、ts / core 常量，并跑 `ResolverMigrationService` 全量迁移，成本与风险都与存量不相称。
+  - **代价与门禁**：
+    - 带存储 IR 的版本（`policy_artifacts` CORE_JSON、`policy_versions.core_json`）不会自动得到新形态；
+    - aster-lang-truffle#156 的运行时作用域变化对所有版本立即生效；
+    - 启动期重验只做类型检查，发现不了这两类语义变化。
+    - 因此发版前必须跑只读扫描（`scripts/ops/adr0051-r55-scan-pattern-names.sql` 与 `-cloud.sql`，aster-api 库与 cloud 库都扫）。结果为空才发版；有命中先由作者改写 / 重新发布，或在新工具链下重跑确认语义符合本意。运行发版列车会自动部署 aster-api，门禁同 ADR 0052 §6。
 
 ### 15.3 内建词汇与注册表
 - **R22/R26**：内建词汇的枚举值须带 parent；已在 aster-lang-locales 为 zh/en/de 的 finance-loan、insurance-auto 补全（CreditLevel、LoanType、QuoteStatus、RiskLevel）。TS/Java 注册表对无 parent 的 field/枚举值条目拒绝或跳过（显式注释与测试），作为守卫保留。
-- **R49**：Java `DomainVocabulary.validate` 与 TS 的按作用域规则对齐（parent 必填，角色+作用域冲突）。
+- **R49**（编号重复，见 §15 末注；此为 R49-b）：Java `DomainVocabulary.validate` 与 TS 的按作用域规则对齐（parent 必填，角色+作用域冲突）。
 
 ### 15.4 工具链与信封
+- **R54**（补记；随 aster-lang-ts 1.2.0 / ts#251 发布，CHANGELOG 已引用，此前未写入本节）：只在函数体中出现的显式 `of T` 保留为类型参数（Core IR `typeParams` 由 `[]` 变为 `["T"]`，TS 向 Java 对齐，ts#248），`RESOLVER_VERSION` **不递增**，仍为 1。
+  当时只有结论，没有记理由；按 R55 的同一考量补记：这是 lowering 输出的修正，名称解析算法没有变化；受影响的只是写了显式 `of T` 的少量版本，由重新发布在新工具链下编译即可，不值得为此跑全量 resolver 迁移。
 - **R36**：`toolchainId` 的 core 分量在 Java 为核心引擎版本（如 `core=1.0.35`），cloud 为 `core=ts`（正文 §9.1 的 `core=<engine>` 据此理解）。
 - **R37**：无词汇或无条目时 `scopesJson` 为 `""`；仅有字面量的词汇仍取完整 `canonicalScopesJson()`（字面量会改变编译输入）。cloud 同。
-- **R40**：cloud 在封存时持久化 `sourceScopesJson`（`""` 表示无），重算信封与 `recordedCompileLocale` 一律使用该存值，不再由实时/快照词汇推导。**R49**：审批时若冻结快照推得的作用域与封存值不一致，则拒绝（本地化文案“词汇自保存后已变更”）。NULL 的存量行先尝试 4 段旧信封摘要。
+- **R40**：cloud 在封存时持久化 `sourceScopesJson`（`""` 表示无），重算信封与 `recordedCompileLocale` 一律使用该存值，不再由实时/快照词汇推导。**R49**（编号重复，见 §15 末注；此为 R49-c）：审批时若冻结快照推得的作用域与封存值不一致，则拒绝（本地化文案“词汇自保存后已变更”）。NULL 的存量行先尝试 4 段旧信封摘要。
 - **R35**（偏离 §9 第 2 步）：aster-api 的 `PolicyCompiler` versionId 缓存不含词汇作用域，因 api 侧存储的版本不携带词汇。
 
 ### 15.5 迁移语义（实际实现）
@@ -311,3 +336,9 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 - **R41/R46**：cloud 拆为两个 PR：PR-A 含 drizzle 迁移（0060/0061）与 schema，PR-B 为其余改动；漂移检查要求 schema 进入 PR-A，零停机做法是用户在合并 PR-A **之前**于生产执行 cloud 的加法 DDL（`IF NOT EXISTS`）；备选为接受短窗口并依赖 db-bootstrap 冷启动的 `ALTER … ADD COLUMN IF NOT EXISTS "sourceScopesJson"` 兜底。core 的前置 PR 须先于 1.0.36 列车合并；api PR 在列车打 tag 之后合并；KV 缓存陈旧窗口 ≤ 1h（文档化）。
 - **R46/R47**：迁移使用**专用镜像** `Dockerfile.resolver-migration`（窄路径过滤、由 image-lock 固定，不属于 PostSync/migrate 门禁）；Job 资源 requests ≤ 25m CPU/128Mi 并设 limits；api 备份用具备序列读权限的凭据。
 - **R48**：迁移 Job 目录置于任何 ApplicationSet glob 之外（`apps/aster-lang-ops/resolver-migration/`），以逐个 generator 的 `git ls-files` 仿真验证；镜像构建作业独立成 workflow，不阻塞 Worker 部署。
+
+### 15.7 编号说明
+- **R49 编号重复**：实现期间三条不同的裁决共用了 R49 编号，即 §15.2 的比较操作数期望枚举（R49-a）、§15.3 的 `DomainVocabulary.validate` 对齐（R49-b）、§15.4 的审批时作用域不一致即拒绝（R49-c）。
+  它们已分别在代码注释、样本 meta 与 PR 中以「R49」被引用，为不让既有引用失效，不重新编号，只在本节就地标注 a / b / c。
+  外部文本里的「R49」按上下文对应：比较 / 枚举期望类型 → a，词汇校验 → b，审批与封存作用域 → c。今后新裁决不得复用已有编号。
+- **R54 / R55**：R54 是 aster-lang-ts 1.2.0 已引用、此前未写入本节的裁决（`of T` 保留到 typeParams、`RESOLVER_VERSION` 不递增），现补记在 §15.4；裸模式名的裁决因此编为 R55（§15.2）。
