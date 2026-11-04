@@ -157,7 +157,7 @@ jobs:
       - name: Mint k3s-scoped token
         if: ${{ steps.staleguard.outputs.stale != 'true' }}
         id: apptoken
-        uses: actions/create-github-app-token@v3.2.0
+        uses: actions/create-github-app-token@v3.3.0
         with:
           client-id: ${{ vars.IMAGE_PIN_APP_CLIENT_ID }}
           private-key: ${{ secrets.IMAGE_PIN_APP_PRIVATE_KEY }}
