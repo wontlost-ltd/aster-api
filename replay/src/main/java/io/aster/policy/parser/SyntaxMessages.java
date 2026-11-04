@@ -19,19 +19,27 @@ import java.util.regex.Pattern;
 /**
  * 语法错误文案目录：按策略 lexicon 的语言取句子骨架与 token 名称。
  *
- * <p>文案放在 {@code syntax-diagnostics/<语言>.json}（en / zh / de / hi），占位符写作 {@code {name}}，
+ * <p>唯一真相源是 aster-lang-locales 的 {@code syntax-diagnostics/<locale-id>.json}（en-US / zh-CN / de-DE / hi-IN，
+ * 随 {@code aster-lang-locales-en} jar 上 classpath；编辑器经 {@code @aster-cloud/ui-messages} 读同一份，aster-api#423）。
+ * 占位符写作 {@code {name}}，
  * 由 {@link ErrorMessages#format} 填充（与 lexicon {@code messages} 模板同一约定）。
  * 句式与编辑器一致：例如句末缺标点在编辑器里是 {@code Expected '.' at end of statement} /
  * 「语句末尾应为 '。'」/ {@code Am Ende der Anweisung wird '.' erwartet}，这里同样措辞。
  *
- * <p>为什么不放进语言包 overlay：ANTLR 的解析错误只在 aster-api 产生（编辑器用 aster-lang-ts 自己的解析器），
- * 没有错误码，进不了按错误码组织的 diagnostic overlay。目录随 replay 模块发布，runner 与 aster-api 共用。
+ * <p>为什么不放进语言包 overlay：解析错误没有错误码，进不了按错误码组织的 diagnostic overlay。
+ *
+ * <p>过渡期：pin 到的 locales 版本还没带这个目录时，读本模块自带的 {@code syntax-diagnostics/<语言>.json} 副本
+ * （内容与 locales 逐字一致，见 SyntaxMessagesCatalogSourceTest）。
  *
  * <p>没有对应文件的语言（新 lexicon）退回英文；某条 key 缺失时同样退回英文，不会抛异常。
  */
 final class SyntaxMessages {
 
     private static final String DEFAULT_LANGUAGE = "en";
+    private static final String CATALOG_DIR = "syntax-diagnostics/";
+    /** 语言代码 → aster-lang-locales 目录的文件名。 */
+    private static final Map<String, String> LOCALE_IDS =
+        Map.of("en", "en-US", "zh", "zh-CN", "de", "de-DE", "hi", "hi-IN");
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Map<String, SyntaxMessages> CACHE = new ConcurrentHashMap<>();
 
@@ -60,19 +68,33 @@ final class SyntaxMessages {
     }
 
     private static SyntaxMessages load(String lang) {
-        Map<String, String> own = read(lang);
+        ClassLoader loader = SyntaxMessages.class.getClassLoader();
+        Map<String, String> own = read(loader, lang);
         if (DEFAULT_LANGUAGE.equals(lang)) {
             return new SyntaxMessages(own, own);
         }
-        Map<String, String> english = read(DEFAULT_LANGUAGE);
+        Map<String, String> english = read(loader, DEFAULT_LANGUAGE);
         return new SyntaxMessages(own.isEmpty() ? english : own, english);
     }
 
-    private static Map<String, String> read(String lang) {
-        String path = "syntax-diagnostics/" + lang + ".json";
-        try (InputStream in = SyntaxMessages.class.getClassLoader().getResourceAsStream(path)) {
+    /** 先读 locales 目录，没有时读本地副本；都没有时返回空 Map（调用方退回英文）。 */
+    static Map<String, String> read(ClassLoader loader, String lang) {
+        String localeId = LOCALE_IDS.get(lang);
+        Map<String, String> shared = localeId == null ? null : readResource(loader, CATALOG_DIR + localeId + ".json");
+        if (shared != null) {
+            return shared;
+        }
+        // TODO(aster-api#423): pin 升到带 syntax-diagnostics 目录的 aster-lang-locales 后，
+        //  删除本地副本 replay/src/main/resources/syntax-diagnostics/{en,zh,de,hi}.json 与这条兜底。
+        Map<String, String> local = readResource(loader, CATALOG_DIR + lang + ".json");
+        return local == null ? Map.of() : local;
+    }
+
+    /** 读一个文案文件；资源不存在时返回 null。 */
+    static Map<String, String> readResource(ClassLoader loader, String path) {
+        try (InputStream in = loader.getResourceAsStream(path)) {
             if (in == null) {
-                return Map.of();
+                return null;
             }
             return Map.copyOf(MAPPER.readValue(in, new TypeReference<Map<String, String>>() {}));
         } catch (IOException e) {
