@@ -34,7 +34,8 @@
   If 分支与函数体共享作用域（与 aster-lang-ts#231 的 E104 规则一致），在分支里 `Let` 外层已有的名字报 E104。
 - 闭包（lambda）在创建时按值捕获外层变量，之后对外层的 `Set` 不影响已创建的闭包（tier1 样本 `closureSnapshot` 两引擎实测一致）。
 
-写回本身就是 truffle 的现有行为，truffle 的 `Set` 不需要改动。truffle 的遮蔽语义另有缺陷，见 §5-1（truffle#156）。
+写回本身就是 truffle 的现有行为，truffle 的 `Set` 不需要改动。truffle 的遮蔽语义另有缺陷，见 §5-1（truffle#156，已修复）。
+模式绑定同样是 case 这一层的新绑定：与外层同名时只在本分支内遮蔽外层。
 
 ### 2.2 可赋值目标
 
@@ -91,12 +92,15 @@ ADR 0051 §6 的 LOCAL 层定义为「当前词法作用域内源码声明的局
 
 ## 5. 已知遗留
 
-1. **case 体 / 嵌套 Scope 内 `Let` 遮蔽外层同名变量**（aster-cloud/aster-lang-truffle#156）：类型检查允许，TS 解释器按本 ADR 遮蔽；
-   truffle 把函数体内（含 case 体）的 Let 放进同一组 frame slot，嵌套 Scope 走 `Env.set` 写冒泡，遮蔽都变成了覆盖。修复前 tier1 样本不覆盖这种写法。
+1. **case 体 / 嵌套 Scope 内 `Let` 遮蔽外层同名变量**（aster-cloud/aster-lang-truffle#156，**已修复**，aster-lang-truffle#158）：
+   truffle 原先把函数体内（含 case 体）的 Let 放进同一组 frame slot，嵌套 Scope 走 `Env.set` 写冒泡，模式绑定写进共享 Env、分支体却读外层 slot，遮蔽都变成了覆盖或读错。
+   现在 truffle 在构建期为每个 frame 维护词法作用域链：case（含模式绑定）与 Scope 各开一层，块内声明分配新 slot，读与 `Set` 取最近一层，与 TS 解释器的 `Env.child()` 链同构。
+   tier1 样本 `block-scope-shadowing`（en、zh，aster-lang-test#183）覆盖 case 体、嵌套 case、模式绑定、闭包与形参的遮蔽；Scope 只能用 Core IR 构造，由 truffle `CaseScopeShadowingTest` 与 TS 解释器单测覆盖。
 2. **专用错误码**：「赋值给不可变绑定」目前借用 E001。新增专用码（如 `E105 ASSIGN_TO_IMMUTABLE`）需要先在
    aster-lang-locales（zh / de）与 aster-lang-hi 补齐诊断译文，否则 TS 的 overlay 覆盖测试会失败。另开 issue 跟进。
-3. **中文模式绑定名**：`当 其他，` 这类 CJK 名字作模式绑定时，Java 判为枚举变体，TS 判为绑定（既有分歧，与 Set 无关）。
-   zh 样本的模式绑定改用 ASCII 名，另开 issue 跟进。
+3. **中文模式绑定名**（aster-cloud/aster-lang-core#227，**已裁决**）：`当 其他，` 这类 CJK 名字作模式绑定时，Java 判为枚举变体，TS 判为绑定。
+   裁决见 ADR 0051 §15.2 R55：成员还是绑定按 R12 判定，R2 对首字母不是 ASCII 大写的名字按判定结果产出 `PatCtor`（成员）或 `PatName`（绑定）。
+   tier1 样本 `vocab-zh/cjk-pattern-binding`（aster-lang-test#183） 覆盖成员、兜底绑定、整数主语下的绑定与模式绑定遮蔽。
 
 ## 6. 落地、迁移与发版顺序
 
@@ -113,7 +117,13 @@ ADR 0051 §6 的 LOCAL 层定义为「当前词法作用域内源码声明的局
 
 1. **合入顺序**：本 ADR（aster-api）→ aster-lang-core → aster-lang-locales（其 en-US 副本须与 core backbone 逐字节一致）
    → aster-lang-ts → aster-lang-test。ts 的格式化往返白名单已登记新的 zh 样本，并跳过语料仓中尚不存在的文件，所以 ts 与 test 可以任意先后合并。
-2. **发版顺序**（沿用生态 release train）：locales → core → truffle（无源码变更，lockstep 重新打 tag）→ ts npm → test。
+2. **发版顺序**（沿用生态 release train）：locales → core → truffle → ts npm → test。#151 本身 truffle 无源码变更（lockstep 重新打 tag）；#156 / R55 合入后 truffle 有源码变更（作用域、模式名、调用分派），见 runbook。
+   #156 / #227 的修复（truffle 遮蔽、core / ts 的 R55）合入后随下一次列车发版。它们改变已发布策略的运行语义（case 体 Let / 模式绑定遮蔽对所有语言生效；zh / hi / de 变音 / 小写成员的模式形态），
+   而带存储 IR 的版本不会自动得到新形态、启动期重验也发现不了。因此**另有一道门禁**：运行任何列车之前，先跑
+   `scripts/ops/adr0051-r55-scan-pattern-names.sql`（aster-api 库）与 `scripts/ops/adr0051-r55-scan-pattern-names-cloud.sql`（cloud 库）；
+   结果为空才运行，有命中则按 `docs/runbooks/adr0051-r55-pattern-scope-rollout.md` 先由作者改写 / 重新发布，或在新工具链下重跑确认。
+   同一扫描的 C 类覆盖 aster-lang-core#231 / aster-lang-ts#273（调用非函数局部名新增 E001，执行门 422），C 类确切命中须先修好。
+   `RESOLVER_VERSION` 不递增，理由见 ADR 0051 R55。
 3. **发版前扫描**：对生产 `policy_versions.content` 运行只读扫描 `scripts/ops/adr0052-scan-set-statements.sql`。
    en / de / zh 三条模式对每个版本都扫（不按 `locale` 列分流），列出 Set 目标名及文中是否存在同名 Let。结果为空即可直接发版。
 4. **发版前改写**：作者把命中的首次声明改为 Let（`Set x to` → `Let x be`，`将 … 设为` → `令 … 定义为`，`setze … auf` → `sei … gleich`），
@@ -123,4 +133,4 @@ ADR 0051 §6 的 LOCAL 层定义为「当前词法作用域内源码声明的局
    清零后恢复 `enforce`。窗口内所有类型错误都只告警，须尽量缩短并通知作者。
 7. **回滚**：aster-api 回退 core / locales / truffle 的 pin 到上一生态版本，重新部署；toolchain id 随之变回，启动期按旧工具链重验。
    已改写为 `Let` 的版本在新旧工具链下都能编译，无需回退；用过兜底的确认 `ASTER_COMPILE_TYPECHECK` 已恢复为 `enforce`。
-8. truffle 的 `Set` 无需改动，遮蔽缺陷由 truffle#156 跟进。
+8. truffle 的 `Set` 无需改动，遮蔽缺陷已由 truffle#156 修复（§5-1）。
