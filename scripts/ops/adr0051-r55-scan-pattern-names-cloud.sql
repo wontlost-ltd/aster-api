@@ -12,6 +12,10 @@
 -- 输出：section = 'A' 的行是 (A) 的命中（kind：non-ascii-initial 首字母为中文 / 天城文 / 变音等非 ASCII 字母；
 -- lower-ascii-member 小写 ASCII 名且出现在枚举声明行，Java 拒绝这种声明，一般只会出现在 cloud 库）；
 -- section = 'B' 的行是 (B) 的粗筛候选（reason：let-declared-Nx 同名 Let 出现 N 次；pattern-binds-let-name 模式绑定名与某个 Let 同名）。
+-- section = 'C' 的行是 (C) 的粗筛候选（aster-lang-core#231 / aster-lang-ts#273，唯一变严的方向）：调用位置的名字另有同名 Let
+-- （call-of-let-name）或写了非函数类型的同名形参（call-of-param-name）；后缀 +same-rule 表示还有同名规则（局部名遮蔽规则，
+-- 含 If 分支内 Let 外泄后在分支外调用同名规则）。升级后这类调用报 E001，执行门 enforce 下整个版本返回 422。
+-- C 不分语言（pattern_lang 为空），已排除单段 builtin（add / sub / … / await，名单见 aster-lang-core CallTargetBuiltins）与右侧为 lambda 的 Let。
 -- source_table：PolicyVersion（已保存的版本）或 Policy（编辑中的当前内容，含未保存为版本的草稿）；has_alias_set 为 t 的行用了关键词别名，正则可能漏扫。
 --
 -- 关键词取自语言包（aster-lang-ts src/config/lexicons/*.ts，与 aster-lang-locales 一致）：
@@ -25,24 +29,28 @@
 --   psql "$CLOUD_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0051-r55-scan-pattern-names-cloud.sql
 BEGIN TRANSACTION READ ONLY;
 
-WITH langs(pattern_lang, match_re, when_re, ctor_re, let_re, one_of_re, null_word) AS (
+WITH langs(pattern_lang, match_re, when_re, ctor_re, let_re, one_of_re, null_word, as_word, rule_head_re, rule_name_re) AS (
   VALUES
     ('en', '(?n)^[ \t]*match[ \t]',  '(?n)^[ \t]*when[ \t]+([^[:space:],(]+)[ \t]*,',
            '(?n)^[ \t]*when[ \t]+[^[:space:],(]+[ \t]*\(([^)]*)\)',
            '(?n)^[ \t]*let[ \t]+([^[:space:]]+)[ \t]+be([ \t]|$)',
-           '(?n)^[ \t]*define[ \t]+[^[:space:]]+[ \t]+as[ \t]+one[ \t]+of[ \t]+(.*)$', 'null'),
+           '(?n)^[ \t]*define[ \t]+[^[:space:]]+[ \t]+as[ \t]+one[ \t]+of[ \t]+(.*)$', 'null',
+           'as', '(?n)^[ \t]*rule[ \t]+(.*)$', '(?n)^[ \t]*rule[ \t]+([^[:space:],，(（:：]+)'),
     ('de', '(?n)^[ \t]*pruefe[ \t]', '(?n)^[ \t]*bei[ \t]+([^[:space:],(]+)[ \t]*,',
            '(?n)^[ \t]*bei[ \t]+[^[:space:],(]+[ \t]*\(([^)]*)\)',
            '(?n)^[ \t]*sei[ \t]+([^[:space:]]+)[ \t]+gleich([ \t]|$)',
-           '(?n)^[ \t]*definiere[ \t]+[^[:space:]]+[ \t]+als[ \t]+eines[ \t]+von[ \t]+(.*)$', 'null'),
+           '(?n)^[ \t]*definiere[ \t]+[^[:space:]]+[ \t]+als[ \t]+eines[ \t]+von[ \t]+(.*)$', 'null',
+           'als', '(?n)^[ \t]*regel[ \t]+(.*)$', '(?n)^[ \t]*regel[ \t]+([^[:space:],，(（:：]+)'),
     ('zh', '(?n)^[ \t]*匹配于',         '(?n)^[ \t]*当[ \t]+([^[:space:],，(（]+)[ \t]*[,，]',
            '(?n)^[ \t]*当[ \t]+[^[:space:],，(（]+[ \t]*[(（]([^)）]*)[)）]',
            '(?n)^[ \t]*令[ \t]+([^[:space:]]+)[ \t]+定义为',
-           '(?n)^[ \t]*定义[ \t]+[^[:space:]]+[ \t]+为以下之一[ \t]*(.*)$', '空值'),
+           '(?n)^[ \t]*定义[ \t]+[^[:space:]]+[ \t]+为以下之一[ \t]*(.*)$', '空值',
+           '作为', '(?n)^[ \t]*规则[ \t]+(.*)$', '(?n)^[ \t]*规则[ \t]+([^[:space:],，(（:：]+)'),
     ('hi', '(?n)^[ \t]*मिलान[ \t]',  '(?n)^[ \t]*जब[ \t]+([^[:space:],(]+)[ \t]*,',
            '(?n)^[ \t]*जब[ \t]+[^[:space:],(]+[ \t]*\(([^)]*)\)',
            '(?n)^[ \t]*मानें[ \t]+([^[:space:]]+)[ \t]+हो([ \t]|$)',
-           '(?n)^[ \t]*परिभाषित[ \t]+[^[:space:]]+[ \t]+इनमें से एक[ \t]+(.*)$', 'शून्य')
+           '(?n)^[ \t]*परिभाषित[ \t]+[^[:space:]]+[ \t]+इनमें से एक[ \t]+(.*)$', 'शून्य',
+           'रूप में', '(?n)^[ \t]*नियम[ \t]+(.*)$', '(?n)^[ \t]*नियम[ \t]+([^[:space:],，(（:：]+)')
 ),
 src AS (
   SELECT 'PolicyVersion' AS source_table, pv.id, pv."policyId" AS policy_id, pv.version::text AS version,
@@ -101,10 +109,67 @@ b_hits AS (
         UNION SELECT source_table, id, pattern_lang, name FROM ctor_binds) AS b
   JOIN lets t ON t.source_table = b.source_table AND t.id = b.id AND t.pattern_lang = b.pattern_lang AND t.name = b.name
 ),
+-- (C) 调用位置的名字另有同名 Let / 写了非函数类型的形参（aster-lang-core#231 / aster-lang-ts#273 的 #268 E001）。
+-- 先去掉字符串字面量与成员调用（`.length(` 等），再取「名字 + 左括号」；排除单段 builtin：
+-- 名单取自 aster-lang-core CallTargetBuiltins.NAMES（镜像 aster-lang-truffle Builtins 中不带点的注册名），
+-- 调用这些名字时 truffle 直接分派 builtin，不看同名局部，不报 E001。
+src_code AS (
+  SELECT s.source_table, s.id, regexp_replace(
+           regexp_replace(s.content, '"[^"\n]*"|「[^」\n]*」', '""', 'g'),
+           '\.[^][[:space:](),，。.:：「」"''+*/<>=!-]+[ \t]*[(（]', '.(', 'g') AS code
+  FROM src s
+),
+calls AS (
+  SELECT DISTINCT c.source_table, c.id, m[1] AS name
+  FROM src_code c
+  CROSS JOIN LATERAL regexp_matches(c.code, '([^][[:space:](),，。.:：「」"''+*/<>=!-]+)[ \t]*[(（]', 'g') AS m
+  WHERE m[1] NOT IN ('add', 'sub', 'mul', 'div', 'intdiv', 'mod', 'eq', 'ne', 'lt', 'lte', 'gt', 'gte',
+                     'and', 'or', 'not', 'await')
+),
+-- 所有 Let（不限含 match 的版本）；右侧为 lambda（`function` / `a function`，关键词未本地化）的不算
+plain_lets AS (
+  SELECT DISTINCT s.source_table, s.id, m[1] AS name
+  FROM src s
+  CROSS JOIN langs l
+  CROSS JOIN LATERAL regexp_matches(s.content, l.let_re || '[ \t]*(?:a[ \t]+)?(function)?', 'gi') AS m
+  WHERE m[array_length(m, 1)] IS NULL
+),
+-- 规则头里写了类型、且类型不是函数类型的形参（未写类型的形参不报，见 core#231）
+rule_heads AS (
+  SELECT s.source_table, s.id, l.as_word, h[1] AS head
+  FROM src s
+  CROSS JOIN langs l
+  CROSS JOIN LATERAL regexp_matches(s.content, l.rule_head_re, 'gi') AS h
+),
+typed_params AS (
+  SELECT DISTINCT r.source_table, r.id, p[1] AS name
+  FROM rule_heads r
+  CROSS JOIN LATERAL regexp_matches(r.head, '([^[:space:],，:：]+)[ \t]+' || r.as_word || '[ \t]+([^,，:：]+)', 'gi') AS p
+  WHERE p[2] !~ '->|\('
+),
+rule_names AS (
+  SELECT DISTINCT s.source_table, s.id, m[1] AS name
+  FROM src s
+  CROSS JOIN langs l
+  CROSS JOIN LATERAL regexp_matches(s.content, l.rule_name_re, 'gi') AS m
+),
+c_hits AS (
+  SELECT c.source_table, c.id, NULL::text AS pattern_lang,
+         CASE WHEN EXISTS (SELECT 1 FROM rule_names r WHERE r.source_table = c.source_table AND r.id = c.id AND r.name = c.name)
+              THEN 'call-of-let-name+same-rule' ELSE 'call-of-let-name' END AS kind, c.name
+  FROM calls c JOIN plain_lets t ON t.source_table = c.source_table AND t.id = c.id AND t.name = c.name
+  UNION
+  SELECT c.source_table, c.id, NULL::text,
+         CASE WHEN EXISTS (SELECT 1 FROM rule_names r WHERE r.source_table = c.source_table AND r.id = c.id AND r.name = c.name)
+              THEN 'call-of-param-name+same-rule' ELSE 'call-of-param-name' END, c.name
+  FROM calls c JOIN typed_params t ON t.source_table = c.source_table AND t.id = c.id AND t.name = c.name
+),
 hits AS (
   SELECT DISTINCT 'A' AS section, source_table, id, pattern_lang, kind, name FROM a_hits
   UNION ALL
   SELECT 'B', source_table, id, pattern_lang, kind, name FROM b_hits
+  UNION ALL
+  SELECT 'C', source_table, id, pattern_lang, kind, name FROM c_hits
 )
 SELECT h.section, h.source_table, s.id, s.policy_id, s.version, s.user_id, s.team_id, s.status, s.deleted,
        h.pattern_lang, h.kind, h.name, s.has_alias_set

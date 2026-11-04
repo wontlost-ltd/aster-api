@@ -2,7 +2,8 @@
 
 本文是 ADR 0051 §15.2 裁决 R55 与 ADR 0052 §6（truffle#156 部分）的执行手册。所有命令由人执行；扫描只读，不写任何数据。
 
-涉及制品：aster-lang-core（R55）、aster-lang-truffle（#156 作用域、R55 的 ASCII 判定）、aster-lang-ts（R55 + 解释器）。
+涉及制品：aster-lang-core（R55；规则调用检查 core#231）、aster-lang-truffle（#156 作用域、R55 的 ASCII 判定）、aster-lang-ts（R55 + 解释器；规则调用检查 ts#273）。
+扫描的 C 类服务于 core#231 / ts#273（#268），与 R55 / #156 同一道门禁，哪一组先进 main 都要先扫。
 实现 PR：aster-cloud/aster-lang-core#230、aster-cloud/aster-lang-truffle#158、aster-cloud/aster-lang-ts#274；样本：aster-cloud/aster-lang-test#183。
 
 ## ⚠️ 发版门禁（先读）
@@ -11,8 +12,9 @@
 core#230、truffle#158 合入 main 后，下一次列车会把它们带上，**不论这次列车是为什么而发**。因此：
 
 1. 运行任何列车之前，先跑 §1 的两份只读扫描（aster-api 库与 cloud 库）。
-2. 结果为空：直接发版。
+2. A、B、C 三类结果都为空：直接发版。
 3. 有命中：先按 §2 由作者改写或重新发布；或者在新工具链下重跑命中版本，确认语义符合作者本意；**确认之后才**运行列车。
+   C 类命中（会变成编译错误）必须先由作者修好，不能只做确认。
 
 ## 0. 变更摘要（语义变化）
 
@@ -30,7 +32,13 @@ core#230、truffle#158 合入 main 后，下一次列车会把它们带上，**�
      truffle 的 `PatName` 改为只看 ASCII 大写，`bei Ärger,`（不是成员）在两引擎都是绑定；此前 truffle 判为变体、不匹配。
    - 小写 ASCII 枚举成员（`Define Color as one of red, Green`）：TS 接受这种声明，Java 拒绝。TS 侧 `When red,` 由兜底改为只匹配 `red`。
    - 首字母为 ASCII 大写的名字 IR 不变。
-3. `RESOLVER_VERSION` 不递增（R55 的理由）。toolchainId 的 Java 侧 `core=<版本>` 随发版变化，会触发缓存失效与启动期重验。
+3. **aster-lang-core#231 / aster-lang-ts#273（#268），唯一变严的方向**：调用一个既不是 builtin、也不是规则函数值的非函数局部名，现在报 E001。
+   - 例：`Rule main given score as Int … Return score(1, 2).`；`Let total be 1. Return total(n).`。
+   - 局部名遮蔽同名规则：有同名规则 `score` 时也报。If 分支内 `Let score be 1.` 外泄到分支外后，再调用 `score(n)` 同样报。
+   - 执行门 enforce 下，命中的版本整体返回 422。
+   - 不报的情形：单段 builtin（`add`、`sub` 等，名单见 aster-lang-core `CallTargetBuiltins`，与 truffle `Builtins` 同步）、未写类型的形参、函数类型的形参、右侧为 lambda 的 Let。
+   - 由 §1 的 C 类扫描检查。
+4. `RESOLVER_VERSION` 不递增（R55 的理由）。toolchainId 的 Java 侧 `core=<版本>` 随发版变化，会触发缓存失效与启动期重验。
 
 ## 为什么扫描必须在发版前做
 
@@ -60,6 +68,9 @@ psql "$CLOUD_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0051-r55-scan-pa
 | A | `lower-ascii-member` | 小写 ASCII 裸模式名，且出现在枚举声明行（R55，一般只在 cloud 库） |
 | B | `let-declared-Nx` | 含 match 的版本中同名 Let 出现 N 次（#156 候选） |
 | B | `pattern-binds-let-name` | 模式绑定名（含构造器模式的字段名）与某个 Let 同名（#156 候选） |
+| C | `call-of-let-name` | 调用位置的名字另有同名 Let（右侧不是 lambda），且不是单段 builtin（core#231 E001 候选） |
+| C | `call-of-param-name` | 调用位置的名字另有写了非函数类型的同名形参（core#231 E001 候选） |
+| C | `…+same-rule` | 同时有同名规则：局部名遮蔽规则，包括 If 分支内 Let 外泄后在分支外调用同名规则 |
 
 - `stored_core_json` 或 `stored_core_artifact` 为 `t` 的行：存储 IR 不会随发版更新，优先处理。
 - `has_alias_set` 为 `t`：用了关键词别名，正则可能漏扫，须离线确认。
@@ -77,6 +88,8 @@ psql "$CLOUD_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0051-r55-scan-pa
 2. 用旧、新两版引擎分别编译（core 1.0.38 与含 core#230 的版本，aster-lang-test `CoreIrFingerprintCli` 的同款流程），比较 Core IR。有差异的就是 A 类的确切命中。
 3. 遍历新版 IR，找出 case 体或 Scope 内 `Let` / 模式绑定名与外层局部（含形参）同名的情形：这是 B 类的确切命中。
 4. 对确切命中，用旧、新两版 truffle 执行作者提供的代表输入（或已有执行日志的输入），确认结果是否变化。
+5. C 类命中：用旧、新两版 core（含 core#231）对命中版本跑名称解析 + 类型检查，比较诊断。新增的 E001 `expected a function, got '<name>' of type …` 即为确切命中；
+   C 类正则不区分规则，同名 Let 在别的规则里也会记为候选，以第 5 步的结果为准。
 
 ## 2. 有命中时：改写或确认后发版
 
@@ -86,7 +99,8 @@ psql "$CLOUD_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0051-r55-scan-pa
   - 例如 hi / zh 成员分支原先被当兜底，应补一条兜底分支，或改用想要的成员名。
   - 改好后走正常审批，**发布新版本**。新版本在新工具链下编译，存储 IR 随之按新形态生成，无需迁移工具。
 - 带存储 IR、又不能改写的命中版本：作者重新发布同一份源码，得到新的存储 IR；或在 §3 发版后按 §4 回滚处理。
-- 全部处理完后重跑 §1，确认没有未经确认的命中，再运行列车。
+- C 类确切命中：作者给局部变量改名，或改为调用规则本身（删掉同名局部 / 不在 If 分支里声明同名 Let），发布新版本。不修好就发版，该版本会在执行门返回 422。
+- 全部处理完后重跑 §1，确认 A / B 类没有未经确认的命中、C 类没有确切命中，再运行列车。
 
 ## 3. 发版（= 运行发版列车）
 

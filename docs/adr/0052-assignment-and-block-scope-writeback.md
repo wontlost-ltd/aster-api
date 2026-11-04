@@ -122,6 +122,7 @@ ADR 0051 §6 的 LOCAL 层定义为「当前词法作用域内源码声明的局
    而带存储 IR 的版本不会自动得到新形态、启动期重验也发现不了。因此**另有一道门禁**：运行任何列车之前，先跑
    `scripts/ops/adr0051-r55-scan-pattern-names.sql`（aster-api 库）与 `scripts/ops/adr0051-r55-scan-pattern-names-cloud.sql`（cloud 库）；
    结果为空才运行，有命中则按 `docs/runbooks/adr0051-r55-pattern-scope-rollout.md` 先由作者改写 / 重新发布，或在新工具链下重跑确认。
+   同一扫描的 C 类覆盖 aster-lang-core#231 / aster-lang-ts#273（调用非函数局部名新增 E001，执行门 422），C 类确切命中须先修好。
    `RESOLVER_VERSION` 不递增，理由见 ADR 0051 R55。
 3. **发版前扫描**：对生产 `policy_versions.content` 运行只读扫描 `scripts/ops/adr0052-scan-set-statements.sql`。
    en / de / zh 三条模式对每个版本都扫（不按 `locale` 列分流），列出 Set 目标名及文中是否存在同名 Let。结果为空即可直接发版。
