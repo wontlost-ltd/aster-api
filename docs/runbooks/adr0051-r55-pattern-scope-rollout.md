@@ -25,6 +25,9 @@ core#230、truffle#158 合入 main 后，下一次列车会把它们带上，**�
    - 块内没有同名 `Let` 时，`Set` 仍写回外层（ADR 0052 不变）。
    - 局部名（Let、形参、模式绑定）与某枚举成员同名时，读该名字得到局部值（ADR 0051 §6.2 LOCAL 优先，与 TS 一致）；此前 truffle 先查枚举成员表，得到枚举值。
      §1 的扫描不覆盖这一项，由离线精确确认覆盖。
+   - 调用目标与单段 builtin（`add`、`gt` 等）同名、且有同名局部时：局部是函数值（lambda、函数类型形参）就调用局部，否则仍调用 builtin。
+     此前 truffle 一律调用 builtin，函数类型形参 `gt(1, 2)` 得 false、乘法闭包 `add(2, 3)` 得 5（与 aster-lang-ts#273 同语义）。
+     由 §1 的 C 类 `builtin-call-shadowed-by-local` 粗筛。
 2. **R55，裸模式名（无括号）的 IR 形态**。首字母不是 ASCII 大写、判为枚举成员的名字产出无参数 `PatCtor`（只匹配同名成员）；判为绑定的产出 `PatName`。
    - zh / hi：中文、天城文成员此前在 TS 与 truffle 上都是兜底绑定，会吞掉其后所有分支（hi 两引擎都如此）。现在只匹配同名成员。
      Java 侧的中文绑定（`当 其他，`）此前永不匹配，分支体读该名字还报 E101；现在作兜底绑定。
@@ -70,6 +73,7 @@ psql "$CLOUD_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0051-r55-scan-pa
 | B | `pattern-binds-let-name` | 模式绑定名（含构造器模式的字段名）与某个 Let 同名（#156 候选） |
 | C | `call-of-let-name` | 调用位置的名字另有同名 Let（右侧不是 lambda），且不是单段 builtin（core#231 E001 候选） |
 | C | `call-of-param-name` | 调用位置的名字另有写了非函数类型的同名形参（core#231 E001 候选） |
+| C | `builtin-call-shadowed-by-local` | 调用名是单段 builtin，且另有同名 Let 或形参（truffle#158：同名局部是函数值时改为调用局部，结果可能改变；局部不是函数值时结果不变） |
 | C | `…+same-rule` | 同时有同名规则：局部名遮蔽规则，包括 If 分支内 Let 外泄后在分支外调用同名规则 |
 
 - `stored_core_json` 或 `stored_core_artifact` 为 `t` 的行：存储 IR 不会随发版更新，优先处理。
@@ -88,8 +92,9 @@ psql "$CLOUD_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/ops/adr0051-r55-scan-pa
 2. 用旧、新两版引擎分别编译（core 1.0.38 与含 core#230 的版本，aster-lang-test `CoreIrFingerprintCli` 的同款流程），比较 Core IR。有差异的就是 A 类的确切命中。
 3. 遍历新版 IR，找出 case 体或 Scope 内 `Let` / 模式绑定名与外层局部（含形参）同名的情形：这是 B 类的确切命中。
 4. 对确切命中，用旧、新两版 truffle 执行作者提供的代表输入（或已有执行日志的输入），确认结果是否变化。
-5. C 类命中：用旧、新两版 core（含 core#231）对命中版本跑名称解析 + 类型检查，比较诊断。新增的 E001 `expected a function, got '<name>' of type …` 即为确切命中；
-   C 类正则不区分规则，同名 Let 在别的规则里也会记为候选，以第 5 步的结果为准。
+5. C 类 `builtin-call-shadowed-by-local` 命中：确认同名局部是不是函数值（lambda 或函数类型形参）。是的话用旧、新两版 truffle 执行代表输入确认结果，与第 4 步同。
+6. C 类其余命中：用旧、新两版 core（含 core#231）对命中版本跑名称解析 + 类型检查，比较诊断。新增的 E001 `expected a function, got '<name>' of type …` 即为确切命中；
+   C 类正则不区分规则，同名 Let 在别的规则里也会记为候选，以第 6 步的结果为准。
 
 ## 2. 有命中时：改写或确认后发版
 

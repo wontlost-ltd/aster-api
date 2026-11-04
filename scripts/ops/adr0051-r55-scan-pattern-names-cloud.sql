@@ -16,6 +16,8 @@
 -- （call-of-let-name）或写了非函数类型的同名形参（call-of-param-name）；后缀 +same-rule 表示还有同名规则（局部名遮蔽规则，
 -- 含 If 分支内 Let 外泄后在分支外调用同名规则）。升级后这类调用报 E001，执行门 enforce 下整个版本返回 422。
 -- C 不分语言（pattern_lang 为空），已排除单段 builtin（add / sub / … / await，名单见 aster-lang-core CallTargetBuiltins）与右侧为 lambda 的 Let。
+-- C 的 builtin-call-shadowed-by-local（aster-lang-truffle#158，结果可能改变而非报错）：调用名是单段 builtin，且另有同名 Let 或形参；
+-- 升级后同名局部若是函数值（lambda、函数类型形参）就调用局部，此前 truffle 一律调用 builtin。
 -- source_table：PolicyVersion（已保存的版本）或 Policy（编辑中的当前内容，含未保存为版本的草稿）；has_alias_set 为 t 的行用了关键词别名，正则可能漏扫。
 --
 -- 关键词取自语言包（aster-lang-ts src/config/lexicons/*.ts，与 aster-lang-locales 一致）：
@@ -153,6 +155,27 @@ rule_names AS (
   CROSS JOIN langs l
   CROSS JOIN LATERAL regexp_matches(s.content, l.rule_name_re, 'gi') AS m
 ),
+-- 与单段 builtin 同名的调用（truffle#158：同名局部是函数值时改为调用局部）
+builtin_calls AS (
+  SELECT DISTINCT c.source_table, c.id, m[1] AS name
+  FROM src_code c
+  CROSS JOIN LATERAL regexp_matches(c.code, '([^][[:space:](),，。.:：「」"''+*/<>=!-]+)[ \t]*[(（]', 'g') AS m
+  WHERE m[1] IN ('add', 'sub', 'mul', 'div', 'intdiv', 'mod', 'eq', 'ne', 'lt', 'lte', 'gt', 'gte',
+                 'and', 'or', 'not', 'await')
+),
+-- 任意 Let 与任意形参名（含未写类型、函数类型），供 builtin 同名判定
+any_lets AS (
+  SELECT DISTINCT s.source_table, s.id, m[1] AS name
+  FROM src s
+  CROSS JOIN langs l
+  CROSS JOIN LATERAL regexp_matches(s.content, l.let_re, 'gi') AS m
+),
+any_params AS (
+  SELECT DISTINCT r.source_table, r.id, btrim(regexp_replace(p, '[ \t]+' || r.as_word || '[ \t].*$', '', 'i')) AS name
+  FROM rule_heads r
+  CROSS JOIN LATERAL regexp_split_to_table(
+    regexp_replace(r.head, '^[^[:space:]]+[ \t]+[^[:space:]]+[ \t]+', ''), '[,，]') AS p
+),
 c_hits AS (
   SELECT c.source_table, c.id, NULL::text AS pattern_lang,
          CASE WHEN EXISTS (SELECT 1 FROM rule_names r WHERE r.source_table = c.source_table AND r.id = c.id AND r.name = c.name)
@@ -163,6 +186,11 @@ c_hits AS (
          CASE WHEN EXISTS (SELECT 1 FROM rule_names r WHERE r.source_table = c.source_table AND r.id = c.id AND r.name = c.name)
               THEN 'call-of-param-name+same-rule' ELSE 'call-of-param-name' END, c.name
   FROM calls c JOIN typed_params t ON t.source_table = c.source_table AND t.id = c.id AND t.name = c.name
+  UNION
+  SELECT b.source_table, b.id, NULL::text, 'builtin-call-shadowed-by-local', b.name
+  FROM builtin_calls b
+  WHERE EXISTS (SELECT 1 FROM any_lets t WHERE t.source_table = b.source_table AND t.id = b.id AND t.name = b.name)
+     OR EXISTS (SELECT 1 FROM any_params t WHERE t.source_table = b.source_table AND t.id = b.id AND t.name = b.name)
 ),
 hits AS (
   SELECT DISTINCT 'A' AS section, source_table, id, pattern_lang, kind, name FROM a_hits
