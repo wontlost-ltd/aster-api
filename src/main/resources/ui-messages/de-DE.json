@@ -254,10 +254,10 @@
   },
   "changePassword": {
     "title": "Neues Passwort festlegen",
-    "subtitle": "Dein Konto ({email}) wurde mit einem temporären Passwort bereitgestellt. Wähle ein neues, bevor du fortfährst.",
+    "subtitle": "Ihr Konto ({email}) wurde mit einem temporären Passwort bereitgestellt. Wählen Sie ein neues, bevor Sie fortfahren.",
     "currentLabel": "Temporäres Passwort",
     "newLabel": "Neues Passwort",
-    "newHint": "Mindestens 8 Zeichen. Verwende es nirgendwo sonst.",
+    "newHint": "Mindestens 8 Zeichen. Verwenden Sie es nirgendwo sonst.",
     "confirmLabel": "Neues Passwort bestätigen",
     "submit": "Passwort setzen",
     "submitting": "Wird gesetzt…",
@@ -575,14 +575,14 @@
       "dangerZone": "Gefahrenzone",
       "transferOwnership": "Eigentümerschaft übertragen",
       "transferDialogTitle": "Team-Eigentümerschaft übertragen",
-      "transferDialogBody": "Wähle das Teammitglied, das neuer Eigentümer werden soll. Du wirst danach Admin in diesem Team. Nur der neue Eigentümer kann die Übertragung rückgängig machen.",
+      "transferDialogBody": "Wählen Sie das Teammitglied, das neuer Eigentümer werden soll. Sie werden danach Admin in diesem Team. Nur der neue Eigentümer kann die Übertragung rückgängig machen.",
       "transferSelectLabel": "Neuer Eigentümer",
       "transferSelectPlaceholder": "Mitglied auswählen…",
       "transferConfirm": "Übertragen",
       "transferCancel": "Abbrechen",
       "transferSuccess": "Eigentümerschaft übertragen.",
       "transferFailed": "Übertragung fehlgeschlagen: {error}",
-      "transferNoEligible": "Keine geeigneten Mitglieder. Lade zuerst einen Admin ein.",
+      "transferNoEligible": "Keine geeigneten Mitglieder. Laden Sie zuerst einen Admin ein.",
       "transferOwnershipDesc": "Übertragen Sie die Team-Eigentümerschaft an einen anderen Administrator",
       "leaveTeam": "Team verlassen",
       "leaveTeamDesc": "Sich selbst aus diesem Team entfernen",
@@ -641,7 +641,7 @@
     "viewDetails": "Details ansehen",
     "inbox": {
       "title": "Offene Einladungen",
-      "subtitle": "Teams, die dich eingeladen haben. Annahme direkt in der App, ohne E-Mail-Link.",
+      "subtitle": "Teams, die Sie eingeladen haben. Annahme direkt in der App, ohne E-Mail-Link.",
       "expiresOn": "Läuft am {date} ab",
       "accept": "Annehmen",
       "decline": "Ablehnen",
@@ -724,7 +724,7 @@
       "downgradedHint": "Reaktivieren Sie innerhalb von {days} Tagen, um Pro/Team-Funktionen und Daten wiederherzustellen.",
       "updatePayment": "Zahlungsmethode aktualisieren",
       "reactivate": "Reaktivieren",
-      "opening": "Öffne..."
+      "opening": "Wird geöffnet..."
     }
   },
   "billing": {
@@ -981,7 +981,7 @@
       "decisionModule": "Modul",
       "decisionFunctions": "Funktionen",
       "decisionTypes": "Typen",
-      "decisionNone": "Noch kein kompiliertes Modul. Sobald du tippst, erscheinen hier die Ergebnisse.",
+      "decisionNone": "Noch kein kompiliertes Modul. Sobald Sie tippen, erscheinen hier die Ergebnisse.",
       "paletteTitle": "Editor-Befehle",
       "palettePlaceholder": "Befehl eingeben…",
       "paletteNoResults": "Keine passenden Befehle.",
@@ -1000,7 +1000,7 @@
       "paletteSubBackToCommands": "← Zurück zu den Befehlen",
       "templateInsertedAtCursor": "Vorlage an Cursorposition eingefügt.",
       "draftRestoreTitle": "Ungespeicherten Entwurf wiederherstellen?",
-      "draftRestoreBody": "Du hast einen ungespeicherten Entwurf von {time}.",
+      "draftRestoreBody": "Sie haben einen ungespeicherten Entwurf von {time}.",
       "draftRestore": "Wiederherstellen",
       "draftDiscard": "Verwerfen",
       "unsavedLeaveWarning": "Es gibt ungespeicherte Änderungen. Trotzdem verlassen?",
@@ -1079,7 +1079,7 @@
       },
       "approveDialog": {
         "title": "Version {n} freigeben?",
-        "body": "Freigegebene Versionen sind ausführbar. Nach der Freigabe kannst du sie als Standard markieren.",
+        "body": "Freigegebene Versionen sind ausführbar. Nach der Freigabe können Sie sie als Standard markieren.",
         "confirm": "Freigeben",
         "cancel": "Abbrechen",
         "commentLabel": "Kommentar (optional)",
@@ -1087,7 +1087,7 @@
       },
       "rejectDialog": {
         "title": "Version {n} ablehnen?",
-        "body": "Der Autor sieht deinen Kommentar und kann ihn in einem neuen Entwurf adressieren.",
+        "body": "Der Autor sieht Ihren Kommentar und kann ihn in einem neuen Entwurf adressieren.",
         "confirm": "Ablehnen",
         "cancel": "Abbrechen",
         "commentLabel": "Begründung",
@@ -1114,8 +1114,8 @@
         "reasonLabel": "Begründung (optional)"
       },
       "sox": {
-        "selfApprovalNotAllowed": "Du kannst eine selbst erstellte Version nicht freigeben. Bitte ein anderes Teammitglied.",
-        "inviteReviewerRequired": "Dein Plan erfordert einen zweiten Freigeber. Lade ein Teammitglied ein und fahre fort."
+        "selfApprovalNotAllowed": "Sie können eine selbst erstellte Version nicht freigeben. Bitte ein anderes Teammitglied.",
+        "inviteReviewerRequired": "Ihr Plan erfordert einen zweiten Freigeber. Laden Sie ein Teammitglied ein und fahren Sie fort."
       },
       "approvalHistory": "Freigabe-Verlauf",
       "approvalDecision": {
@@ -1321,8 +1321,8 @@
     "title": "Einstellungen",
     "subtitle": "Verwalten Sie Ihre Kontoeinstellungen und Präferenzen.",
     "dataCard": {
-      "title": "Deine Daten (DSGVO)",
-      "subtitle": "Lade die für dich gespeicherten KI-Konversationen herunter oder lösche sie.",
+      "title": "Ihre Daten (DSGVO)",
+      "subtitle": "Laden Sie die für Sie gespeicherten KI-Konversationen herunter oder löschen Sie sie.",
       "open": "Daten verwalten"
     },
     "apiKeys": {
@@ -1370,8 +1370,8 @@
     },
     "dataPage": {
       "breadcrumb": "Meine Daten",
-      "title": "Deine KI-Daten",
-      "subtitle": "Gemäß DSGVO Art. 15 und 17 hast du das Recht, die gespeicherten KI-Konversationen einzusehen und zu löschen. Verwende die Aktionen unten.",
+      "title": "Ihre KI-Daten",
+      "subtitle": "Gemäß DSGVO Art. 15 und 17 haben Sie das Recht, die gespeicherten KI-Konversationen einzusehen und zu löschen. Verwenden Sie die Aktionen unten.",
       "downloadCard": {
         "title": "Kopie herunterladen",
         "body": "Exportiert jeden gespeicherten KI-Aufruf (Prompt + Antwort + Sicherheits-Flags) als JSON-Datei. Nützlich für Compliance-Archive oder Migration.",
@@ -1379,7 +1379,7 @@
       },
       "deleteCard": {
         "title": "KI-Konversationsinhalte löschen",
-        "body": "Löscht dauerhaft den verschlüsselten Prompt + die Antwort + den redigierten Text aller deiner KI-Aufrufe. Aggregierte Zähler (Tokens, Kosten, Status) bleiben für Abrechnung und Missbrauchserkennung erhalten — DSGVO-konform.",
+        "body": "Löscht dauerhaft den verschlüsselten Prompt + die Antwort + den redigierten Text aller Ihrer KI-Aufrufe. Aggregierte Zähler (Tokens, Kosten, Status) bleiben für Abrechnung und Missbrauchserkennung erhalten — DSGVO-konform.",
         "action": "Inhalte löschen",
         "confirmTitle": "KI-Konversationsinhalte löschen?",
         "confirmBody": "Löscht die ursprünglichen Prompts und Antworten von {count, plural, =0 {keinen Datensätzen} one {# Datensatz} other {# Datensätzen}}. Zähler und Abrechnungs-Metadaten bleiben erhalten.",
@@ -1417,7 +1417,7 @@
     "aiKeysPage": {
       "breadcrumb": "KI-Schlüssel (BYOK)",
       "title": "KI-Schlüssel (Bring Your Own Key)",
-      "subtitle": "Binde deinen eigenen OpenAI- / Anthropic- / Vertex-AI-Schlüssel. KI-Aufrufe nutzen dein Kontingent und umgehen das Plattform-LLM-Monatslimit.",
+      "subtitle": "Binden Sie Ihren eigenen OpenAI- / Anthropic- / Vertex-AI-Schlüssel. KI-Aufrufe nutzen Ihr Kontingent und umgehen das Plattform-LLM-Monatslimit.",
       "viewUsage": "KI-Nutzung anzeigen →",
       "addTitle": "BYOK-Schlüssel hinzufügen",
       "provider": "Anbieter",
@@ -1447,8 +1447,8 @@
       "never": "Nie",
       "whyTitle": "Warum BYOK?",
       "whyQuota": "Verbraucht das Plattform-KI-Monatskontingent nicht (Free 20 / Pro 500 / Team 500 pro Seat).",
-      "whyBilling": "Aufrufe werden direkt mit deinem Anbieter-Konto abgerechnet; deine Ratenlimits gelten.",
-      "whyCompliance": "Daten bleiben in Compliance-Szenarien außerhalb Dritter (Vertex läuft in deinem GCP-Projekt).",
+      "whyBilling": "Aufrufe werden direkt mit Ihrem Anbieter-Konto abgerechnet; Ihre Ratenlimits gelten.",
+      "whyCompliance": "Daten bleiben in Compliance-Szenarien außerhalb Dritter (Vertex läuft in Ihrem GCP-Projekt).",
       "revokeDialogTitle": "AI-Schlüssel löschen?",
       "revokeDialogBody": "Dadurch wird Ihr {provider}-Schlüssel dauerhaft gelöscht. AI-Aufrufe greifen auf das Plattform-Kontingent zurück. Dies kann nicht rückgängig gemacht werden.",
       "revokeDialogConfirm": "Löschen",
@@ -1519,7 +1519,7 @@
     },
     "aiKeys": {
       "title": "KI-Schlüssel",
-      "subtitle": "Eigenen OpenAI- / Anthropic- / Vertex-AI-Schlüssel binden. KI-Aufrufe nutzen dein Kontingent und umgehen das Plattform-Monatslimit.",
+      "subtitle": "Eigenen OpenAI- / Anthropic- / Vertex-AI-Schlüssel binden. KI-Aufrufe nutzen Ihr Kontingent und umgehen das Plattform-Monatslimit.",
       "manageKeys": "KI-Schlüssel verwalten"
     },
     "emailVerification": {
@@ -2521,7 +2521,7 @@
   },
   "adminLaunchpad": {
     "title": "Aster in 60 Sekunden einrichten",
-    "body": "Du bist als Admin angemeldet. Diese fünf Punkte bringen die Plattform vom leeren Start zur Produktionsreife.",
+    "body": "Sie sind als Admin angemeldet. Diese fünf Punkte bringen die Plattform vom leeren Start zur Produktionsreife.",
     "progress": "{done} von {total} erledigt",
     "steps": {
       "createPolicy": {
@@ -2531,7 +2531,7 @@
       },
       "addApiKey": {
         "label": "API-Schlüssel ausstellen",
-        "desc": "Programmatischer Zugriff auf /api/v1/policies/evaluate von deinem Stack aus.",
+        "desc": "Programmatischer Zugriff auf /api/v1/policies/evaluate von Ihrem Stack aus.",
         "cta": "API-Schlüssel verwalten"
       },
       "addAiKey": {
@@ -2541,7 +2541,7 @@
       },
       "inviteTeam": {
         "label": "Teammitglied einladen",
-        "desc": "Prüfer und Genehmiger einrichten, damit Policy-Änderungen deinem bestehenden Prozess folgen.",
+        "desc": "Prüfer und Genehmiger einrichten, damit Policy-Änderungen Ihrem bestehenden Prozess folgen.",
         "cta": "Mitglieder einladen"
       },
       "reviewBilling": {
@@ -2556,7 +2556,7 @@
     "label": "Benachrichtigungen",
     "empty": "Keine neuen Benachrichtigungen.",
     "viewAll": "Alle anzeigen",
-    "invitationReceived": "Du wurdest in {teamName} als {role} eingeladen.",
+    "invitationReceived": "Sie wurden in {teamName} als {role} eingeladen.",
     "invitationAccepted": "{memberName} ist {teamName} beigetreten.",
     "timeAgoNow": "gerade eben",
     "timeAgoMin": "vor {n} Min.",
@@ -2568,7 +2568,7 @@
   },
   "domainVocabularies": {
     "title": "Domänenvokabulare",
-    "subtitle": "Verwalte die Structs, Felder, Funktionen und Enum-Werte deiner Policies.",
+    "subtitle": "Verwalten Sie die Structs, Felder, Funktionen und Enum-Werte Ihrer Policies.",
     "newTerm": "Begriff hinzufügen",
     "bulkUpload": "Massen-Upload",
     "snapshots": "Snapshots",
@@ -2615,18 +2615,18 @@
     },
     "empty": {
       "title": "Noch keine Begriffe",
-      "description": "Füge den ersten Begriff hinzu, um das eingebaute Vokabular zu erweitern."
+      "description": "Fügen Sie den ersten Begriff hinzu, um das eingebaute Vokabular zu erweitern."
     },
     "needsUpgrade": {
       "title": "Domänenvokabulare sind ein Pro-Feature",
-      "description": "Wechsle zu Pro, um eigene Structs / Felder / Funktionen / Enum-Werte zu verwalten.",
-      "trialEndedTitle": "Deine Pro-Testphase ist abgelaufen",
+      "description": "Wechseln Sie zu Pro, um eigene Structs / Felder / Funktionen / Enum-Werte zu verwalten.",
+      "trialEndedTitle": "Ihre Pro-Testphase ist abgelaufen",
       "trialEndedDescription": "Die Testphase endete am {date}. Upgrade auf Pro, um diese Oberfläche weiter zu nutzen.",
-      "featureCatalog": "Verwalte Structs / Felder / Funktionen / Enum-Werte pro Sprache",
+      "featureCatalog": "Verwalten Sie Structs / Felder / Funktionen / Enum-Werte pro Sprache",
       "featureBulk": "Massen-Import bis 10.000 Zeilen pro Job",
       "featureSnapshots": "Snapshot pro Policy-Version, Rollback mit einem Klick",
       "upgrade": "Plan upgraden",
-      "contactAdmin": "Bitte deinen Administrator um ein Plan-Upgrade"
+      "contactAdmin": "Bitten Sie Ihren Administrator um ein Plan-Upgrade"
     },
     "downgrade": {
       "trialEndedTitle": "Pro-Testphase abgelaufen",
@@ -2635,14 +2635,14 @@
     },
     "bulk": {
       "title": "Massen-Import von Vokabular",
-      "description": "Füge CSV (mit Header-Zeile) oder ein JSON-Array ein. Aliase werden in CSV mit | getrennt (z. B. amount|amt) oder als JSON-Array.",
+      "description": "Fügen Sie CSV (mit Header-Zeile) oder ein JSON-Array ein. Aliase werden in CSV mit | getrennt (z. B. amount|amt) oder als JSON-Array.",
       "chooseFile": "Datei wählen",
       "orPaste": "oder unten einfügen",
       "rawLabel": "CSV oder JSON einfügen",
       "placeholder": "domain,locale,kind,canonical,localized,parentCanonical\\nfinance,de,struct,Loan,Darlehen,,",
       "previewTitle": "Vorschau ({shown} von {total})",
       "rowsValid": "Sync bis {syncLimit}; Async bis {asyncLimit}",
-      "tooManySync": "Wechsle zu Async — überschreitet {syncLimit} Zeilen",
+      "tooManySync": "Wechseln Sie zu Async — das Limit von {syncLimit} Zeilen wird überschritten.",
       "tooManyAsync": "Überschreitet das Async-Limit von {asyncLimit} Zeilen",
       "parseErrorsTitle": "Einige Zeilen konnten nicht geparst werden",
       "moreErrors": "+{n} weitere",
@@ -2742,7 +2742,7 @@
       "cancelling": "Abbrechen…",
       "cancelled": "Job abgebrochen",
       "dismiss": "Schließen",
-      "loading": "Lade Job…",
+      "loading": "Job wird geladen…",
       "fetchFailed": "Job-Status konnte nicht geladen werden, erneuter Versuch folgt.",
       "notFound": "Massen-Job nicht gefunden."
     },
@@ -2774,7 +2774,7 @@
       "cancel": "Abbrechen"
     },
     "errors": {
-      "quota_exceeded": "Du hast das Vokabular-Kontingent deines Plans erreicht.",
+      "quota_exceeded": "Sie haben das Vokabular-Kontingent Ihres Plans erreicht.",
       "duplicate_link": "Dieser Begriff ist bereits verknüpft.",
       "validation_failed": "Bitte prüfe die markierten Felder.",
       "not_found": "Begriff nicht gefunden.",
@@ -3127,7 +3127,7 @@
       },
       "purr": {
         "name": "😌 Schnurren",
-        "quip": "Bauch voll, Welt vergeben. Der Motor läuft. Du darfst weiter existieren."
+        "quip": "Bauch voll, Welt vergeben. Der Motor läuft. Sie dürfen weiter existieren."
       },
       "loaf": {
         "name": "🍞 Laib",
@@ -3139,11 +3139,11 @@
       },
       "judge": {
         "name": "😼 Urteil",
-        "quip": "Keine Sonne, keine Snacks, keine Geduld. Du wirst bewertet. Du bist durchgefallen."
+        "quip": "Keine Sonne, keine Snacks, keine Geduld. Sie werden bewertet. Sie sind durchgefallen."
       }
     },
     "footer": "Albernes Vokabular, ernste Engine: Diese Katzenregel kompilierte und lief auf derselben Aster-Lang-Laufzeit wie eine Kreditrichtlinie. Ihre Worte — selbst diese — werden zu einer prüfbaren Entscheidung.",
-    "idleHint": "Die Katze macht ihr eigenes Ding. Wähle unten eine Szene und sieh, wie sie reagiert."
+    "idleHint": "Die Katze macht ihr eigenes Ding. Wählen Sie unten eine Szene und sehen Sie, wie sie reagiert."
   },
   "languageSettings": {
     "title": "Sprachverfügbarkeit",

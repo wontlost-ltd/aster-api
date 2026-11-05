@@ -22,7 +22,7 @@ class PolicyCompilerTypecheckVersionTest {
         String source = """
             Module M.
             Define Status as one of Approved, Rejected.
-            Define Decision has status, reason.
+            Define Decision has status as Text, reason.
             Rule r given x as Int, produce Decision:
               Return Decision with status set to Approved, reason set to "ok".
             """;

@@ -154,8 +154,8 @@ class PolicyCompilerTest {
     }
 
     @Test
-    void typecheckRejectsUntypedEnumFieldAndReportsParityDiagnostic() {
-        var result = policyCompiler.compile(untypedEnumPolicy(), "en");
+    void typecheckRejectsEnumValueForTextFieldAndReportsParityDiagnostic() {
+        var result = policyCompiler.compile(mistypedEnumFieldPolicy(), "en");
         assertThat(result.isSuccess()).isFalse();
         assertThat(result.getDiagnostics()).anySatisfy(d -> {
             assertThat(d.code()).isEqualTo("E012");
@@ -190,7 +190,7 @@ class PolicyCompilerTest {
     @Test
     void warnModeDowngradesTypeErrors() {
         policyCompiler.typecheckMode = "warn";
-        var result = policyCompiler.compile(untypedEnumPolicy(), "en");
+        var result = policyCompiler.compile(mistypedEnumFieldPolicy(), "en");
         assertThat(result.isSuccess()).isTrue();
         assertThat(result.getDiagnostics()).anySatisfy(d -> {
             assertThat(d.code()).isEqualTo("E012");
@@ -202,7 +202,7 @@ class PolicyCompilerTest {
     @Test
     void typeErrorsStillCarryOtherDiagnostics() {
         // 类型错误不早退：规则冲突（W601）等非阻断诊断与 E012 一起返回
-        String src = untypedEnumPolicy().replace(
+        String src = mistypedEnumFieldPolicy().replace(
             "  If application.creditScore less than 580\n",
             "  If application.creditScore less than 580\n    If application.creditScore greater than 700\n      Return LoanDecision with status set to Review, reason set to \"odd\", riskTier set to Low.\n");
         var result = policyCompiler.compile(src, "en");
@@ -244,7 +244,7 @@ class PolicyCompilerTest {
     @Test
     void typeErrorsCoexistWithGovernanceDiagnostics() {
         // 未登记控制点（W704）来自 GovernanceDiagnostics，不来自类型检查；类型错误下仍只出现一次
-        String src = untypedEnumPolicy().replace(
+        String src = mistypedEnumFieldPolicy().replace(
             "Rule evaluateSmallBusinessLoan given application, produce:",
             "@id(\"GP-001\")\n@control(\"ACME:ART1\")\nRule evaluateSmallBusinessLoan given application, produce:");
         var result = policyCompiler.compile(src, "en");
@@ -253,13 +253,15 @@ class PolicyCompilerTest {
         assertThat(result.getDiagnostics().stream().filter(d -> "W704".equals(d.code())).count()).isEqualTo(1);
     }
 
-    private String untypedEnumPolicy() {
+    // status 显式声明为 Text 却赋枚举值，稳定产生 E012。core#237（1.0.40）起未写类型的字段按名字推断的
+    // 类型视为未知、不再约束构造值，所以这里必须显式写类型。
+    private String mistypedEnumFieldPolicy() {
         return """
             Module company.finance.smallbusiness.
             Define DecisionStatus as one of Approved, Rejected, Review.
             Define RiskTier as one of Low, Medium, High.
             Define LoanApplication has annualRevenue, yearsInBusiness, creditScore, requestedAmount, hasCollateral, industry.
-            Define LoanDecision has status, reason, riskTier.
+            Define LoanDecision has status as Text, reason, riskTier.
             Rule evaluateSmallBusinessLoan given application, produce:
               If application.creditScore less than 580
                 Return LoanDecision with status set to Rejected, reason set to "Credit score below 580", riskTier set to High.
