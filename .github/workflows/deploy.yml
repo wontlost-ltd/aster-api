@@ -495,7 +495,10 @@ jobs:
   image-pin-pr:
     needs: deploy
     # ★两侧显式加括号：GitHub 表达式里 && 确实比 || 紧，但靠优先级读代码容易被后人误改。
-    if: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+    # ★必须显式 !cancelled() + deploy 成功：if: 里没有状态函数时 GitHub 隐式套 success()，
+    # 它要求**所有传递上游**成功；复用路径下 build-and-test 是 skipped，会把本 job 连带跳过。
+    if: ${{ !cancelled() && needs.deploy.result == 'success'
+            && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
              || (github.event_name == 'workflow_dispatch' && inputs.trainId != ''))
             && needs.deploy.outputs.stale != 'true' && vars.IMAGE_PIN_APP_CLIENT_ID != '' }}
     runs-on: ubuntu-latest

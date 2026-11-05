@@ -43,6 +43,18 @@ case_ "deploy 未成功 → 不归本 job 管"               0 "闭环判定不�
 case_ "手工无参 dispatch → 不该 pin"                0 "不该 pin" EVENT=workflow_dispatch TRAIN_ID= PIN_RESULT=skipped PINNED=
 case_ "非 main 分支 push → 不该 pin"                0 "不该 pin" REF=refs/heads/feature PIN_RESULT=skipped PINNED=
 
+# 静态回归（ADR 0053 复用路径）：build-and-test 在复用时是 skipped。下游 job 的 if: 若不含状态函数，
+# GitHub 隐式套 success()，要求所有传递上游成功 → 被连带跳过。故 deploy 之后的 job 必须显式写状态函数。
+DEPLOY_YML="$(dirname "$0")/../../.github/workflows/deploy.yml"
+for job in image-pin-pr cleanup-build-artifact; do
+  if awk -v j="  $job:" '$0==j{f=1;next} f&&/^  [a-z]/{exit} f&&/^    if:/{print;exit}' "$DEPLOY_YML" \
+      | grep -qE '!cancelled\(\)|always\(\)'; then
+    echo "ok   - $job 的 if: 含显式状态函数（复用路径不被隐式 success() 跳过）"
+  else
+    echo "FAIL - $job 的 if: 缺 !cancelled()/always()，复用路径下会被连带跳过"; FAILED=1
+  fi
+done
+
 if [ "$FAILED" = 0 ]; then
   echo "全部通过"
 else
