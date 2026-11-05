@@ -2711,14 +2711,14 @@
           "unchanged": "Unverändert",
           "all": "Alle Snapshot-Begriffe ({n})"
         },
-        "removedNotice": "{n} deiner aktuellen Begriffe würden beim Rollback soft-gelöscht. Innerhalb von 90 Tagen wiederherstellbar.",
+        "removedNotice": "{n} Ihrer aktuellen Begriffe würden beim Rollback soft-gelöscht. Innerhalb von 90 Tagen wiederherstellbar.",
         "emptyBucket": "Keine Begriffe in diesem Bereich.",
         "iconAdded": "Hinzugefügt",
         "iconRemoved": "Entfernt",
         "iconUnchanged": "Unverändert",
         "rollback": "Auf diesen Snapshot zurücksetzen",
         "close": "Schließen",
-        "loading": "Lade Snapshot…",
+        "loading": "Snapshot wird geladen…",
         "loadFailed": "Snapshot konnte nicht geladen werden."
       }
     },
