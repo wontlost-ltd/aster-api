@@ -96,6 +96,18 @@ jobs:
           bash scripts/ci/open-image-pin-pr-merge.test.sh
           bash scripts/ci/open-image-pin-pr-flow.test.sh
           bash scripts/ci/pin-closure-guard.test.sh
+          # ADR 0053：deploy 构建复用键（remote/local 一致、源码变化即失效、fail-closed）
+          bash scripts/ci/build-reuse-key.test.sh
+          bash scripts/ci/verify-artifact-run.test.sh
+
+      # workflow 静态检查（review L12）：钉死版本，自建 ARM64 runner 与托管 runner 均可（脚本按架构下载）。
+      - name: actionlint
+        working-directory: aster-api
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 "$RUNNER_TEMP"
+          # -shellcheck= ：只校验 workflow 结构/表达式。托管 runner 自带 shellcheck，会把各 workflow
+          # 既有的 info 级提示（SC2086 等）也判失败——那是另一项治理，不在本门禁范围。
+          "$RUNNER_TEMP/actionlint" -color -shellcheck=
 
       # PrismaDatabaseE2ETest 用独立的 aster_test 库（其 profile 指向它）。
       - name: Create aster_test database
