@@ -22,6 +22,7 @@ class PolicyEvaluationGateIT {
     @InjectMock ValidationRepository validations;
     @InjectMock ToolchainIdentityProvider toolchains;
 
+    // core#237（1.0.40）起未写类型的字段视为未知类型、不再报错，status 必须显式声明为 Text 才稳定产生 E012。
     @Test @Transactional void missingProofSynchronouslyRejectsSourceWithE012() {
         PolicyVersion version = new PolicyVersion();
         version.id = 987654L;
@@ -29,7 +30,7 @@ class PolicyEvaluationGateIT {
         version.content = """
             Module M.
             Define Status as one of Approved, Rejected.
-            Define Decision has status, reason.
+            Define Decision has status as Text, reason.
             Rule r given x as Int, produce Decision:
               Return Decision with status set to Approved, reason set to "ok".
             """;
@@ -56,7 +57,7 @@ class PolicyEvaluationGateIT {
         version.content = """
             Module M.
             Define Status as one of Approved, Rejected.
-            Define Decision has status, reason.
+            Define Decision has status as Text, reason.
             Rule r given x as Int, produce Decision:
               Return Decision with status set to Approved, reason set to "ok".
             """;
