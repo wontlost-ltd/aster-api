@@ -1,0 +1,7 @@
+{
+  "entryAmbiguous.error": "Entry function is ambiguous",
+  "entryAmbiguous.detail": "No entry function specified and the candidate functions are ambiguous",
+  "agent.REQUIRED": "{field} is required",
+  "agent.TOO_LONG": "{field} exceeds {max} characters",
+  "agent.CONTROL_CHAR": "{field} contains control characters"
+}

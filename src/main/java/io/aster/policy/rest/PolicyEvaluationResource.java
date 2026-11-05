@@ -233,7 +233,7 @@ public class PolicyEvaluationResource {
         content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
     public Uni<EvaluationResponse> evaluate(@Valid EvaluationRequest request) {
         // ADR 0041 §3：agent 在执行前校验，非法即 400——不执行、不计费、不落链
-        final AgentIdentity agent = validatedAgent(request.agent());
+        final AgentIdentity agent = validatedAgent(request.agent(), requestLanguage(null));
         return quotaGate("/api/v1/policies/evaluate").chain(() -> evaluateAdmitted(request, agent));
     }
 
@@ -337,7 +337,7 @@ public class PolicyEvaluationResource {
         content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
     public Uni<EvaluationResponse> evaluateJson(@Valid JsonPolicyRequest request) {
         // ADR 0041 §3：agent 在执行前校验，非法即 400——不执行、不计费、不落链
-        final AgentIdentity agent = validatedAgent(request.agent());
+        final AgentIdentity agent = validatedAgent(request.agent(), requestLanguage(null));
         return quotaGate("/api/v1/policies/evaluate-json").chain(() -> evaluateJsonAdmitted(request, agent));
     }
 
@@ -512,7 +512,7 @@ public class PolicyEvaluationResource {
         @QueryParam("simulate") @DefaultValue("false") boolean simulate
     ) {
         // ADR 0041 §3：agent 在执行前校验（先于配额与并发闸门），非法即 400——不执行、不计费、不落链
-        final AgentIdentity agent = validatedAgent(request.agent());
+        final AgentIdentity agent = validatedAgent(request.agent(), requestLanguage(request.locale()));
         // 词汇表大小/形状先于配额与并发闸门校验：超限即 400，不计费、不占许可。
         requireVocabularyWithinBounds(request.vocabulary());
         // ★simulate 必须绑定 HMAC 内部调用者（与 replayCapture 同门控，第九轮 P0-1b）：
@@ -777,7 +777,7 @@ public class PolicyEvaluationResource {
                 }
                 throw new WebApplicationException(
                     jakarta.ws.rs.core.Response.status(400)
-                        .entity(EvaluationResponse.ambiguous(e.getCandidates()))
+                        .entity(EvaluationDiagnostics.ambiguous(e.getCandidates(), requestLanguage(request.locale())))
                         .type(MediaType.APPLICATION_JSON)
                         .build()
                 );
@@ -1442,17 +1442,23 @@ public class PolicyEvaluationResource {
      * 执行前校验调用方自报的 agent（ADR 0041 §3）。非法时抛 400，响应体沿用本资源既有的
      * {@link EvaluationResponse#diagnostic} 形态（与入口歧义/模块解析失败的 400 一致）。
      */
-    private static AgentIdentity validatedAgent(AgentIdentity raw) {
+    private static AgentIdentity validatedAgent(AgentIdentity raw, String language) {
         try {
             return AgentIdentity.validated(raw);
         } catch (IllegalArgumentException e) {
             throw new WebApplicationException(
                 jakarta.ws.rs.core.Response.status(400)
-                    .entity(EvaluationResponse.diagnostic("invalid_agent", e.getMessage(), List.of()))
+                    .entity(EvaluationDiagnostics.invalidAgent(e, language))
                     .type(MediaType.APPLICATION_JSON)
                     .build()
             );
         }
+    }
+
+    /** 400 诊断文案的语言：请求体 locale（仅 evaluate-source 有）优先，其次 Accept-Language（aster-api#445）。 */
+    private String requestLanguage(String bodyLocale) {
+        String acceptLanguage = jaxrsCtx == null ? null : jaxrsCtx.getHeaderString("Accept-Language");
+        return EvaluationDiagnostics.language(bodyLocale, acceptLanguage);
     }
 
     private static String outcomeOf(VerdictView decision) {

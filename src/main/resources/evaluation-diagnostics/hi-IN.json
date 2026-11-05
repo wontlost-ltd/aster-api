@@ -1,0 +1,7 @@
+{
+  "entryAmbiguous.error": "प्रवेश फ़ंक्शन अस्पष्ट है",
+  "entryAmbiguous.detail": "कोई प्रवेश फ़ंक्शन निर्दिष्ट नहीं है और उम्मीदवार फ़ंक्शन अस्पष्ट हैं",
+  "agent.REQUIRED": "{field} आवश्यक है",
+  "agent.TOO_LONG": "{field} {max} वर्णों से अधिक है",
+  "agent.CONTROL_CHAR": "{field} में नियंत्रण वर्ण हैं"
+}

@@ -166,14 +166,14 @@ public record EvaluationResponse(
         return new EvaluationResponse(null, 0, error, null, null, null, null, null, null, null, List.of(), null, null, null, null);
     }
 
-    public static EvaluationResponse ambiguous(List<String> candidates) {
+    /**
+     * 入口函数不唯一（code=ENTRY_AMBIGUOUS）。{@code error} 为一句话摘要，诊断 message 为详细说明；
+     * 两者由调用方按请求语言给出（见 {@code EvaluationDiagnostics}）。
+     */
+    public static EvaluationResponse ambiguous(List<String> candidates, String error, String detail) {
         List<String> safeCandidates = candidates == null ? List.of() : List.copyOf(candidates);
-        EntryDiagnostic diagnostic = new EntryDiagnostic(
-            "ENTRY_AMBIGUOUS",
-            "未指定入口函数，候选函数不唯一",
-            safeCandidates
-        );
-        return new EvaluationResponse(null, 0, "入口函数不唯一", null, null, List.of(diagnostic), null, null, null, null, List.of(), null, null, null, null);
+        EntryDiagnostic diagnostic = new EntryDiagnostic("ENTRY_AMBIGUOUS", detail, safeCandidates);
+        return new EvaluationResponse(null, 0, error, null, null, List.of(diagnostic), null, null, null, null, List.of(), null, null, null, null);
     }
 
     public static EvaluationResponse diagnostic(String code, String message, List<String> candidates) {
