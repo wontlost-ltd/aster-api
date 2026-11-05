@@ -164,6 +164,14 @@ make_k3s "$NEW_DIGEST" cafe 42; run_script "" success
 grep -q "image-lock 已最新且无 open PR" "$FAKE_STATE/stdout" && pass "走的是无改动路径" || fail "未走无改动路径"
 [[ -z "$(line_of '^pr merge')" && -z "$(line_of 'check-runs')" ]] && pass "无多余调用" || fail "不应合并：$(calls | tr '\n' '|')"
 
+echo "=== H. 同一 digest、仅 sourceSha/runId 不同（复用晋升）：不开 PR ==="
+# ADR 0053 复用路径晋升的是 main 上已 pin 的同一 digest。只改 runId 的 PR 不改 kustomization，
+# k3s verify-image-pin 会因缺 head kustomization 判失败（k3s#1054）。故 digest 相同即视为无改动。
+make_k3s "$NEW_DIGEST" other-sha 7; run_script "" success
+[[ "$(cat "$FAKE_STATE/rc")" == 0 ]] && pass "返回 0" || fail "返回 $(cat "$FAKE_STATE/rc")：$(tail -5 "$FAKE_STATE/stdout")"
+grep -q "image-lock 已最新且无 open PR" "$FAKE_STATE/stdout" && pass "走的是无改动路径" || fail "未走无改动路径：$(tail -3 "$FAKE_STATE/stdout")"
+[[ -z "$(line_of '^pr create')" && -z "$(line_of '^pr merge')" ]] && pass "未建 PR、未合并" || fail "不应开 PR：$(calls | tr '\n' '|')"
+
 echo "=== G. 验签已过但规则集滞后：首次合并报 is expected，重试后合并成功 ==="
 make_k3s "$OLD_DIGEST"
 MERGE_FAIL_TIMES=2 MERGE_RETRY_SECONDS=0 run_script "" success && pass "脚本成功" || fail "脚本失败"

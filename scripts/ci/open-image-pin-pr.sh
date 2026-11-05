@@ -238,7 +238,14 @@ fi
 # ── 从最新 origin/main 重建固定分支，写目标 entry（image-lock 验签真相 + kustomization 部署真相 +
 #    可选第三写目标——见顶部 patch_targets()）──
 git checkout -B "$BRANCH" origin/main
-patch_targets "$DIGEST" "$SOURCE_SHA" "$RUN_ID"
+# ★main 已 pin 同一 digest 时不写任何目标（ADR 0053 复用晋升即如此）：只改 sourceSha/runId 的 PR
+#   不动 kustomization，k3s verify-image-pin 会因缺 head kustomization 判失败（k3s#1054），且部署无变化。
+pinned_digest="$(IMAGE="$IMAGE" yq '(.images[] | select(.image == strenv(IMAGE))).digest' "$LOCK_PATH")"
+if [[ "$pinned_digest" == "$DIGEST" ]]; then
+  echo "main 已 pin ${DIGEST}，不改 image-lock 元数据"
+else
+  patch_targets "$DIGEST" "$SOURCE_SHA" "$RUN_ID"
+fi
 
 open_pr_number() {
   gh pr list -R "$K3S_REPO" --head "$BRANCH" --base main --state open \
