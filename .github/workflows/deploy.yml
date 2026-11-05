@@ -102,7 +102,7 @@ jobs:
           DIGEST=$(docker buildx imagetools inspect "$REF" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
           if [ -z "$DIGEST" ]; then echo "无 $REF → 不晋升"; exit 0; fi
           # fail-closed：只晋升由**本仓 deploy.yml@main** 签过的 digest（与 deploy job 的验签同一身份）。
-          if cosign verify "wontlost/aster-api@${DIGEST}" \
+          if cosign verify -a "build-key=${KEY}" "wontlost/aster-api@${DIGEST}" \
                --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/\.github/workflows/deploy\.yml@refs/heads/main$" \
                --certificate-oidc-issuer "https://token.actions.githubusercontent.com" >/dev/null 2>&1; then
             echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
@@ -120,6 +120,11 @@ jobs:
           set -uo pipefail
           RUN=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/artifacts" -f name="quarkus-app-${KEY}" -f per_page=10 \
                   -q '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | .workflow_run.id // empty' 2>/dev/null || true)
+          # ★来源校验（review H1）：制品名谁都能起，只信本仓 main 上 deploy.yml 的 push/dispatch run。
+          if [ -n "$RUN" ] && ! gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$RUN" | REPO="$GITHUB_REPOSITORY" bash scripts/ci/verify-artifact-run.sh; then
+            echo "::warning::quarkus-app-${KEY} 来自不可信 run $RUN → 不复用，完整 build&test"
+            RUN=""
+          fi
           if [ -n "$RUN" ]; then
             echo "run=$RUN" >> "$GITHUB_OUTPUT"
             echo "♻️ 复用 run $RUN 的 quarkus-app-${KEY}（该 run 的 build&test 已通过）：跳过 build&test" >> "$GITHUB_STEP_SUMMARY"
@@ -286,6 +291,14 @@ jobs:
             echo "stale=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # 两 job 之间不互信：下载前再校验一次来源 run（review H1）。本 run 自产的制品同样过这道门。
+      - name: Verify artifact source run
+        if: ${{ steps.staleguard.outputs.stale != 'true' && env.PROMOTE_DIGEST == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SRC_RUN: ${{ needs.reuse-probe.outputs.artifact_run || github.run_id }}
+        run: gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SRC_RUN}" | REPO="$GITHUB_REPOSITORY" bash scripts/ci/verify-artifact-run.sh
+
       - name: Download build artifact
         if: ${{ steps.staleguard.outputs.stale != 'true' && env.PROMOTE_DIGEST == '' }}
         uses: actions/download-artifact@v8
@@ -432,7 +445,9 @@ jobs:
         run: |
           test -n "${DIGEST}" || { echo "build 未输出 digest，中止"; exit 1; }
           # signer 身份 = 本 CI 的 OIDC（Fulcio 证书 + Rekor 透明日志）。
-          cosign sign "wontlost/aster-api@${DIGEST}"
+          # build-key 注解把复用键绑进签名（review M1）：晋升时按 -a build-key=<key> 验签，
+          # 防止 build-<key> tag 被改指向一个「签过名但属于别的 key」的旧 digest。
+          cosign sign -a "build-key=${KEY}" "wontlost/aster-api@${DIGEST}"
           echo "signed digest=${DIGEST}"
 
       # 部署前校验**本次刚构建的 digest**（非浮动 tag）带一份由本仓库本 workflow 签发的
@@ -443,7 +458,7 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest || env.PROMOTE_DIGEST }}
         run: |
-          cosign verify "wontlost/aster-api@${DIGEST}" \
+          cosign verify -a "build-key=${KEY}" "wontlost/aster-api@${DIGEST}" \
             --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/\.github/workflows/deploy\.yml@refs/heads/main$" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 

@@ -12,6 +12,8 @@ bad() { echo "  ✗ $1"; FAILED=1; }
 # 假 action.yml：脚本须从这里读兄弟仓清单与 sibling-ref 缺省值（单一事实源）。
 cat >"$TMP/action.yml" <<'YML'
 inputs:
+  java-version:
+    default: "21"
   sibling-ref:
     default: "v9.9.9"
 runs:
@@ -63,6 +65,9 @@ M="$TMP/manifest.txt"
 run local MANIFEST_OUT="$M" >/dev/null 2>&1 || true
 grep -q '^sib-a [0-9a-f]\{40\}$' "$M" 2>/dev/null && grep -q '^api 1111111111111111111111111111111111111111$' "$M" \
   && ok "MANIFEST_OUT 写出 key 的全部输入（审计/溯源）" || bad "manifest 不完整：$(cat "$M" 2>/dev/null)"
+
+grep -qx 'java 21' "$M" 2>/dev/null && ok "JDK 版本取自 action.yml 的 java-version 缺省值（非硬编码）" \
+  || bad "JDK 版本未取自 action.yml：$(grep java "$M" 2>/dev/null)"
 
 [ "$FAILED" = 0 ] || { echo "build-reuse-key: FAILED"; exit 1; }
 echo "build-reuse-key: all passed"

@@ -14,7 +14,7 @@
 #   ACTION_YML     缺省 .github/actions/setup-aster-build/action.yml
 #   SIBLING_REF    缺省取 action.yml 里 sibling-ref 的 default
 #   API_SHA        缺省 git rev-parse HEAD
-#   JAVA_VERSION   缺省 25（与 action.yml java-version 缺省一致）
+#   JAVA_VERSION   缺省取 action.yml 里 java-version 的 default（构建实际用的 JDK；不在此硬编码）
 #   SIBLINGS_ROOT  local 模式：兄弟仓检出的父目录（缺省 ..）
 #   REMOTE_BASE    remote 模式：仓库 URL 前缀（缺省 https://github.com；测试用 file://）
 #   GH_TOKEN       remote 模式可选：私有兄弟仓时用（只经 http.extraHeader，不进 URL）
@@ -26,7 +26,6 @@ MODE="${1:?usage: build-reuse-key.sh remote|local}"
 ACTION_YML="${ACTION_YML:-.github/actions/setup-aster-build/action.yml}"
 SIBLINGS_ROOT="${SIBLINGS_ROOT:-..}"
 REMOTE_BASE="${REMOTE_BASE:-https://github.com}"
-JAVA_VERSION="${JAVA_VERSION:-25}"
 API_SHA="${API_SHA:-$(git rev-parse HEAD)}"
 
 # sibling-ref 缺省：inputs.sibling-ref 块里第一条 default。
@@ -34,6 +33,10 @@ if [ -z "${SIBLING_REF:-}" ]; then
   SIBLING_REF=$(awk '/^  sibling-ref:/{f=1} f&&/default:/{gsub(/["'"'"' ]/,"",$2); print $2; exit}' "$ACTION_YML")
 fi
 [ -n "$SIBLING_REF" ] || { echo "无法从 $ACTION_YML 解析 sibling-ref" >&2; exit 1; }
+if [ -z "${JAVA_VERSION:-}" ]; then
+  JAVA_VERSION=$(awk '/^  java-version:/{f=1} f&&/default:/{gsub(/["'"'"' ]/,"",$2); print $2; exit}' "$ACTION_YML")
+fi
+[ -n "$JAVA_VERSION" ] || { echo "无法从 $ACTION_YML 解析 java-version" >&2; exit 1; }
 
 SIBLINGS=$(sed -n 's#^ *repository: *\([A-Za-z0-9_.-]*/[A-Za-z0-9_.-]*\) *$#\1#p' "$ACTION_YML" | sort -u)
 [ -n "$SIBLINGS" ] || { echo "无法从 $ACTION_YML 解析兄弟仓清单" >&2; exit 1; }

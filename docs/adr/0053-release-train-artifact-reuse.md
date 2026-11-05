@@ -1,6 +1,6 @@
 # ADR 0053：发布列车的产物复用、层内并行与清理
 
-- 状态：**PROPOSED**（2026-11-05）
+- 状态：**PROPOSED**（2026-11-05；同日按独立审查 review-train-reuse 修订：H1 制品来源校验、M1 签名绑定 key、M2 deploy run 不锁定、L1/L7/L9/L10/L12）
 - 日期：2026-11-05
 - 相关：ADR 0023（多模块发布治理 / 发布列车）、aster-lang-platform#82 / #85 / #89、aster-lang-test#168
 - 实现：aster-cloud/aster-lang-platform PR（分支 `feat/train-artifact-reuse`）、wontlost-ltd/aster-api PR（同名分支）
@@ -63,7 +63,7 @@ Java 引擎仓的发布 run（例：core 1.0.39 publish 2:22）已经是「只 a
 ```
 format 1
 api <aster-api commit>
-java <JDK 主版本>
+java <JDK 主版本，取自 setup-aster-build/action.yml 的 java-version 缺省值>
 sibling-ref <vX>
 aster-lang-<repo> <该 tag 指向的 commit>   × 7（清单从 setup-aster-build/action.yml 读取，不重复维护）
 ```
@@ -79,8 +79,8 @@ key 取上面清单 sha256 的前 32 位。有两种模式，算出的 key 必�
 
 `deploy.yml` 新增 `reuse-probe` job，按以下优先级选路径：
 
-1. **晋升已签名镜像**：`wontlost/aster-api:build-<key>` 存在，且它的 digest 能通过 `cosign verify`（身份限定为本仓 `deploy.yml@refs/heads/main`，与部署前的验签一致）。此时跳过 build&test、镜像构建、arch 校验和签名，`docker buildx imagetools create` 把同一个 digest 重新打上 `<sha7>` 和 `jvm-latest` tag，deploy job 部署前再验一次签。签名绑定 digest，晋升不产生新 digest，签名依然有效。
-2. **复用已验证制品**：存在未过期的 `quarkus-app-<key>` 制品。它只会在 Build & Test **通过之后**上传，所以存在即说明已验证。此时跳过 build&test，deploy 用 `download-artifact` 的 `run-id` 从产出它的那次 run 下载，逐文件核对 `SHA256SUMS` 后再构建镜像。
+1. **晋升已签名镜像**：`wontlost/aster-api:build-<key>` 存在，且它的 digest 能通过 `cosign verify -a build-key=<key>`（身份限定为本仓 `deploy.yml@refs/heads/main`，与部署前的验签一致）。签名时用 `cosign sign -a build-key=<key>` 把 key 写进签名载荷：即便有人把 `build-<key>` tag 改指到一个本 workflow 签过、但属于别的 key 的旧 digest，注解也对不上，不会晋升。本次改动之前签的镜像没有这个注解，不会被晋升，会安全地回落到重建。此时跳过 build&test、镜像构建、arch 校验和签名，`docker buildx imagetools create` 把同一个 digest 重新打上 `<sha7>` 和 `jvm-latest` tag，deploy job 部署前再验一次签。签名绑定 digest，晋升不产生新 digest，签名依然有效。
+2. **复用已验证制品**：存在未过期的 `quarkus-app-<key>` 制品，**且产出它的 run 可信**。可信的标准由 `scripts/ci/verify-artifact-run.sh` 判定：`path == .github/workflows/deploy.yml`、`head_branch == main`、`head_repository` 是本仓、event 为 push 或 workflow_dispatch。制品名谁都能起，PR、fork、其他 workflow 都能上传同名制品，所以「存在即已验证」只对可信来源成立；deploy.yml 只在 Build & Test **通过之后**上传它。reuse-probe 校验一次，deploy job 下载前再校验一次（两个 job 之间不互信），不可信就回落完整构建（有负例测试）。此时跳过 build&test，deploy 用 `download-artifact` 的 `run-id` 从产出它的那次 run 下载，逐文件核对 `SHA256SUMS` 后再构建镜像。
 3. **完整构建**（缺省路径，向后兼容）：与原来相同，另外给镜像加打 `build-<key>` tag，并上传带校验和的 `quarkus-app-<key>`（retention 3 天）。
 
 任何探测失败（API 错误、tag 不存在、验签不符）都落到路径 3：复用只用来加速，不放宽任何门禁。手工 dispatch 时可以传 `forceRebuild: true` 关闭复用。stale guard、arch 校验、cosign 签名与验签、image-pin、pin-closure-guard 的语义都不变。
@@ -89,7 +89,8 @@ key 取上面清单 sha256 的前 32 位。有两种模式，算出的 key 必�
 
 ## 6. 决策五：deploy 等待用对信号、设有界上限
 
-- `deploy.yml` 加上 `run-name`：带 trainId 的 dispatch，标题为 `Deploy · train <id>`。列车按标题后缀精确关联自己触发的 run，不再取「最新一个 dispatch run」。老版本 deploy.yml 没有标题时，回退为 `created>=since` 的**最早**一个 dispatch run，也就是列车 dispatch 之后最先出现的那个。
+- `deploy.yml` 加上 `run-name`：带 trainId 的 dispatch，标题为 `Deploy · train <id>`。列车按标题后缀精确关联自己触发的 run，不再取「最新一个 dispatch run」。
+- **不锁定**：每一轮都重新按标题查。只有**连续** `SERVICE_FALLBACK_AFTER` 轮（缺省 15 × 20s = 5 分钟）都没有标题匹配时，才判定 deploy.yml 缺少 run-name，回退为 `created>=since` 的最早一个 dispatch run，并在日志里写明。这样，dispatch 后的延迟窗口里插进来的手工 dispatch 不会被当成本列车的 run（有测试）。
 - service step 使用独立上限 `SERVICE_POLL_MAX`，缺省 180 × 20s = 60 分钟。这仍是有界等待，覆盖实测最大值 42 分钟，余量约 40%。最后一轮之后再查一次终态（#82）。
 - 超时时报出 run 的 URL 和最后一次状态，并说明「它成功即部署成功，用 fromLayer 续跑收尾即可」。有了 §5，续跑只需约 3 分钟。
 
@@ -99,12 +100,14 @@ preflight 在 drift gate 通过后，把各仓 clone 下来的 main HEAD 记成 
 
 deploy 期间（dispatch 之后）的合入仍由 aster-api 自己的 stale guard 与 final stale gate 拦截；列车这边会如实报告失败。
 
+**列车自身不会推进任何参与仓的 main**（2026-11-05 核对各仓 release*.yml）：发布 workflow 只 `git push origin <tag>`，aster-api 的 image-pin-pr 推到的是 wontlost-ltd/k3s（不在 release-plan 中）。所以 stale gate 不需要排除任何仓。今后若有发布 workflow 在列车途中回写本生态某仓的 main（例如自动 bump 版本），必须把该仓排除出 stale gate，或者在 preflight 之后重新记录它的 SHA，并在本节登记。
+
 ## 8. 完整性与溯源
 
 | 产物 | 完整性 | 溯源 |
 |---|---|---|
-| quarkus-app-<key> | `SHA256SUMS` 逐文件校验（下载方 `sha256sum -c`）；key 绑定全部源码 commit；build-and-test 断言检出源码与 key 一致 | 制品所属 run（`workflow_run.id`），job summary 里有 key 的输入清单 |
-| 镜像 | cosign keyless 签名（不变），晋升前与部署前各验一次签，身份限定为 deploy.yml@main；arch 校验只在构建时做（晋升不产生新 digest） | `build-<key>` / `<sha7>` tag；`ASTER_RUNTIME_BUILD=<sha>` 烘进镜像 |
+| quarkus-app-<key> | 来源 run 校验（deploy.yml@main，本仓，push/dispatch，两处各校验一次）；`SHA256SUMS` 逐文件校验（下载方 `sha256sum -c`）；key 绑定全部源码 commit；build-and-test 断言检出源码与 key 一致 | 制品所属 run（`workflow_run.id`），job summary 里有 key 的输入清单 |
+| 镜像 | cosign keyless 签名，附 `build-key=<key>` 注解；晋升前与部署前各用 `-a build-key=<key>` 验一次签，身份限定为 deploy.yml@main；arch 校验只在构建时做（晋升不产生新 digest） | `build-<key>` / `<sha7>` tag；`ASTER_RUNTIME_BUILD=<sha>` 烘进镜像 |
 | 引擎制品 | registry 是事实源（可见性检查已修 SIGPIPE 并支持翻页） | train manifest：tag → commit → 发布 run |
 
 ## 9. 决策七：清理
@@ -118,7 +121,9 @@ deploy 期间（dispatch 之后）的合入仍由 aster-api 自己的 stale guar
 | 各仓 `refs/tags/<tag>` 作用域的 Actions cache | 同上 | 列车结束 | GitHub 7 天未访问即淘汰 |
 
 - dryRun 列车只做 dry-run 清理（只列，不删）。
-- 清理失败只输出 `::warning::`，不会让一次成功的列车变红。
+- 清理失败（包括 LAYERS 解析失败）只输出 `::warning::`，不会让一次成功的列车变红。
+- 手工清理 workflow 使用独立的 concurrency 组 `release-train-cleanup`：不排在正在跑的列车后面，也不挡下一趟列车。
+- 两个仓的 CI 都加了钉死版本（v1.7.7）的 actionlint 步骤。
 - 手工补救用 `aster-lang-platform` 的 `Cleanup Release Train` workflow（缺省 dry-run），与列车共用 `scripts/release-plan/cleanup-train.sh`。
 
 tag-ref cache 按 ref 隔离，永远不会被 main 或 PR 构建命中。本次 dry-run 实测当前各引擎仓没有残留（tag-push 发布 run 目前没有写入 cache），清理器仍然保留这一类，作为防线。
