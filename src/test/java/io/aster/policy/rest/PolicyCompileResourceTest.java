@@ -192,14 +192,15 @@ public class PolicyCompileResourceTest {
             .body("diagnostics.find { it.code == 'W601' }.blocking", is(false));
     }
 
-    // 服务端类型检查（生产 E2E 2026-10-23 G2）：未标类型字段被赋枚举值 → success=false，
+    // 服务端类型检查（生产 E2E 2026-10-23 G2）：字段类型与所赋枚举值不符 → success=false，
     // E012 带 1-based 行列与 blocking=true 原样到达 REST 调用方（cloud 保存门与 Validated 徽章依赖它）。
+    // core#237（1.0.40）起未写类型的字段视为未知类型、不再报错，所以 status 必须显式声明为 Text。
     @Test
-    public void compileUntypedEnumField_returnsBlockingE012() {
+    public void compileMistypedEnumField_returnsBlockingE012() {
         String source = String.join("\n",
             "Module M.",
             "Define Status as one of Approved, Rejected.",
-            "Define Decision has status, reason.",
+            "Define Decision has status as Text, reason.",
             "Rule r given x as Int, produce Decision:",
             "  Return Decision with status set to Approved, reason set to \"ok\".");
 
