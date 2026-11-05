@@ -257,7 +257,7 @@
     "subtitle": "Ihr Konto ({email}) wurde mit einem temporären Passwort bereitgestellt. Wählen Sie ein neues, bevor Sie fortfahren.",
     "currentLabel": "Temporäres Passwort",
     "newLabel": "Neues Passwort",
-    "newHint": "Mindestens 8 Zeichen. Verwende es nirgendwo sonst.",
+    "newHint": "Mindestens 8 Zeichen. Verwenden Sie es nirgendwo sonst.",
     "confirmLabel": "Neues Passwort bestätigen",
     "submit": "Passwort setzen",
     "submitting": "Wird gesetzt…",
@@ -582,7 +582,7 @@
       "transferCancel": "Abbrechen",
       "transferSuccess": "Eigentümerschaft übertragen.",
       "transferFailed": "Übertragung fehlgeschlagen: {error}",
-      "transferNoEligible": "Keine geeigneten Mitglieder. Lade zuerst einen Admin ein.",
+      "transferNoEligible": "Keine geeigneten Mitglieder. Laden Sie zuerst einen Admin ein.",
       "transferOwnershipDesc": "Übertragen Sie die Team-Eigentümerschaft an einen anderen Administrator",
       "leaveTeam": "Team verlassen",
       "leaveTeamDesc": "Sich selbst aus diesem Team entfernen",
@@ -724,7 +724,7 @@
       "downgradedHint": "Reaktivieren Sie innerhalb von {days} Tagen, um Pro/Team-Funktionen und Daten wiederherzustellen.",
       "updatePayment": "Zahlungsmethode aktualisieren",
       "reactivate": "Reaktivieren",
-      "opening": "Öffne..."
+      "opening": "Wird geöffnet..."
     }
   },
   "billing": {
@@ -2619,14 +2619,14 @@
     },
     "needsUpgrade": {
       "title": "Domänenvokabulare sind ein Pro-Feature",
-      "description": "Wechsle zu Pro, um eigene Structs / Felder / Funktionen / Enum-Werte zu verwalten.",
+      "description": "Wechseln Sie zu Pro, um eigene Structs / Felder / Funktionen / Enum-Werte zu verwalten.",
       "trialEndedTitle": "Ihre Pro-Testphase ist abgelaufen",
       "trialEndedDescription": "Die Testphase endete am {date}. Upgrade auf Pro, um diese Oberfläche weiter zu nutzen.",
       "featureCatalog": "Verwalten Sie Structs / Felder / Funktionen / Enum-Werte pro Sprache",
       "featureBulk": "Massen-Import bis 10.000 Zeilen pro Job",
       "featureSnapshots": "Snapshot pro Policy-Version, Rollback mit einem Klick",
       "upgrade": "Plan upgraden",
-      "contactAdmin": "Bitte Ihren Administrator um ein Plan-Upgrade"
+      "contactAdmin": "Bitten Sie Ihren Administrator um ein Plan-Upgrade"
     },
     "downgrade": {
       "trialEndedTitle": "Pro-Testphase abgelaufen",
@@ -2642,7 +2642,7 @@
       "placeholder": "domain,locale,kind,canonical,localized,parentCanonical\\nfinance,de,struct,Loan,Darlehen,,",
       "previewTitle": "Vorschau ({shown} von {total})",
       "rowsValid": "Sync bis {syncLimit}; Async bis {asyncLimit}",
-      "tooManySync": "Wechsle zu Async — überschreitet {syncLimit} Zeilen",
+      "tooManySync": "Wechseln Sie zu Async — das Limit von {syncLimit} Zeilen wird überschritten.",
       "tooManyAsync": "Überschreitet das Async-Limit von {asyncLimit} Zeilen",
       "parseErrorsTitle": "Einige Zeilen konnten nicht geparst werden",
       "moreErrors": "+{n} weitere",
@@ -3143,7 +3143,7 @@
       }
     },
     "footer": "Albernes Vokabular, ernste Engine: Diese Katzenregel kompilierte und lief auf derselben Aster-Lang-Laufzeit wie eine Kreditrichtlinie. Ihre Worte — selbst diese — werden zu einer prüfbaren Entscheidung.",
-    "idleHint": "Die Katze macht ihr eigenes Ding. Wähle unten eine Szene und sieh, wie sie reagiert."
+    "idleHint": "Die Katze macht ihr eigenes Ding. Wählen Sie unten eine Szene und sehen Sie, wie sie reagiert."
   },
   "languageSettings": {
     "title": "Sprachverfügbarkeit",
