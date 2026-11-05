@@ -28,9 +28,6 @@ import java.util.regex.Pattern;
  *
  * <p>为什么不放进语言包 overlay：解析错误没有错误码，进不了按错误码组织的 diagnostic overlay。
  *
- * <p>过渡期：pin 到的 locales 版本还没带这个目录时，读本模块自带的 {@code syntax-diagnostics/<语言>.json} 副本
- * （内容与 locales 逐字一致，见 SyntaxMessagesCatalogSourceTest）。
- *
  * <p>没有对应文件的语言（新 lexicon）退回英文；某条 key 缺失时同样退回英文，不会抛异常。
  */
 final class SyntaxMessages {
@@ -77,17 +74,11 @@ final class SyntaxMessages {
         return new SyntaxMessages(own.isEmpty() ? english : own, english);
     }
 
-    /** 先读 locales 目录，没有时读本地副本；都没有时返回空 Map（调用方退回英文）。 */
+    /** 读 locales 目录里该语言的文件；语言未登记或文件不存在时返回空 Map（调用方退回英文）。 */
     static Map<String, String> read(ClassLoader loader, String lang) {
         String localeId = LOCALE_IDS.get(lang);
-        Map<String, String> shared = localeId == null ? null : readResource(loader, CATALOG_DIR + localeId + ".json");
-        if (shared != null) {
-            return shared;
-        }
-        // TODO(aster-api#423): pin 升到带 syntax-diagnostics 目录的 aster-lang-locales 后，
-        //  删除本地副本 replay/src/main/resources/syntax-diagnostics/{en,zh,de,hi}.json 与这条兜底。
-        Map<String, String> local = readResource(loader, CATALOG_DIR + lang + ".json");
-        return local == null ? Map.of() : local;
+        Map<String, String> catalog = localeId == null ? null : readResource(loader, CATALOG_DIR + localeId + ".json");
+        return catalog == null ? Map.of() : catalog;
     }
 
     /** 读一个文案文件；资源不存在时返回 null。 */

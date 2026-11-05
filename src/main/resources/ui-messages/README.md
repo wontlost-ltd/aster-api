@@ -3,18 +3,24 @@
 这些 `<locale-id>.json` 是统一语言包的**界面文案**（ADR 0018），由 `UiMessagesService`
 启动时从 classpath 加载，`/api/v1/messages/{locale}` 端点直接吐内存。
 
-## 为什么 api 自带，而不是从语言包 jar 读
+## 为什么 api 自带一份
 
-ADR 0018 规定界面文案走**独立 npm 通道、不进语言包 JVM jar**（避免全生态版本级联）。
-此外，`cloud.aster-lang:aster-lang-{en,zh,de}` 这三个 Maven 包归属于历史的
-`aster-lang-en/zh/de` 仓，aster-lang-locales 无法跨仓发布同名包（GitHub Packages 422），
-所以这些 jar 也根本不会携带 `ui-messages/` 资源。
+ADR 0018 规定界面文案的真相源是 `aster-lang-locales` 仓（`locales/<lang>/src/main/resources/ui-messages/`）
+与 `aster-lang-hi` 仓，前端经 `@aster-cloud/ui-messages`(+`-hi`) npm 包读取。
 
-因此 aster-api **自带一份 ui-messages 副本**（同 aster-cloud 前端的内嵌兜底模式）：
-- `runtimeOnly en/zh/de/hi` 这些语言包 jar 仍保留，但只提供 **lexicon SPI**（关键词/编译），
-  不再用于 messages。
-- messages 的真相源是 `@aster-cloud/ui-messages`(+`-hi`) npm 包 / `aster-lang-locales`
-  仓的 `locales/<lang>/src/main/resources/ui-messages/`。
+语言包 JVM jar 里其实也带着同名资源：`cloud.aster-lang:aster-lang-locales-en` jar 含 `ui-messages/en-US.json`
+（zh/de 包同理），与这里的副本同路径。api 仍自带一份，是为了让 `/api/v1/messages` 的内容由本仓显式锁定，
+而不是取决于 classpath 上哪个 jar 先被找到；`UiMessagesClasspathSiblingParityTest` 与
+`scripts/ci/check-ui-messages-drift.py` 保证副本与 pin 到的 locales/hi 版本逐字节一致，
+因此每次生态 pin bump 都要先同步这里（否则 CI 失败）。
+
+`runtimeOnly` 的 en/zh/de/hi 语言包 jar 主要提供 **lexicon SPI**（关键词/编译）。
+
+## 语法错误文案不在这里
+
+语法错误文案目录 `syntax-diagnostics/<locale-id>.json`（en-US / zh-CN / de-DE / hi-IN）**不再**在 api 留副本：
+它随 `aster-lang-locales-en` jar 上 classpath，`SyntaxMessages` 直接读取（aster-api#423 / #439）。
+改语法错误文案只需改 `aster-lang-locales` 仓根的 `syntax-diagnostics/`，随生态发版生效。
 
 ## 同步
 
