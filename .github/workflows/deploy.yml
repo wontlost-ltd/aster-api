@@ -1,5 +1,10 @@
 name: Deploy
 
+# ★列车关联信号（ADR 0053 §6）：带 trainId 的 dispatch 把 run 标题设成「Deploy · train <id>」，
+#   release train 据此精确找到**自己**触发的 run（旧做法取「最新一个 dispatch run」，任何手工
+#   dispatch 都会让它关联错）；列车 cleanup 也按此标题识别本列车的中间制品。
+run-name: ${{ inputs.trainId && format('Deploy · train {0}', inputs.trainId) || github.event.head_commit.message || 'Deploy' }}
+
 on:
   push:
     branches: [main]
@@ -26,6 +31,13 @@ on:
         type: string
         required: false
         default: ''
+      forceRebuild:
+        description: >-
+          跳过复用（ADR 0053 §5）：不复用已验证的 quarkus-app 制品 / 已签名镜像，强制完整
+          build&test 并重新构建镜像。怀疑复用产物有问题时用。
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -38,8 +50,87 @@ concurrency:
 permissions:
   contents: read
 
+# build-push-action 每次上传的 *.dockerbuild 构建记录制品对部署无用，只占配额（ADR 0053 §9）。
+env:
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+
 jobs:
+  # ══ 复用探测（ADR 0053 §4/§5）══════════════════════════════════════════════
+  # 不检出兄弟仓源码，几秒内算出构建复用键 key（aster-api commit + 7 个兄弟仓 tag commit + JDK），
+  # 然后按优先级找可复用的产物：
+  #   1. 镜像 wontlost/aster-api:build-<key> 存在且其 digest 带本 workflow 的 cosign 签名
+  #      → 跳过 build&test 与镜像构建，按 digest 晋升（列车续跑 / 同 commit 重部署：~30min → ~2min）
+  #   2. 制品 quarkus-app-<key> 存在（某次 build&test **通过后**才上传）
+  #      → 跳过 build&test，用该制品构建镜像（deploy job 失败后的重跑）
+  #   3. 都没有 → 照旧完整 build&test（向后兼容的缺省路径）
+  # 任何探测失败（API 错误、签名不符、tag 不存在）都落到 3：复用只是加速，绝不放宽门禁。
+  reuse-probe:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read      # 列出本仓 workflow 制品
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+      image_digest: ${{ steps.image.outputs.digest }}
+      artifact_run: ${{ steps.artifact.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: 计算构建复用键
+        id: key
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+          API_SHA: ${{ github.sha }}
+          MANIFEST_OUT: ${{ runner.temp }}/reuse-manifest.txt
+        run: |
+          set -euo pipefail
+          KEY=$(bash scripts/ci/build-reuse-key.sh remote)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          { echo "### 构建复用键 \`$KEY\`"; echo '```'; cat "$MANIFEST_OUT"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Install cosign
+        if: ${{ !inputs.forceRebuild }}
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v2.5.2'   # 与 deploy job 同版本，理由见那里的注释
+      - name: 探测可晋升镜像（build-<key> + 本 workflow 签名）
+        id: image
+        if: ${{ !inputs.forceRebuild }}
+        env:
+          KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -uo pipefail
+          REF="docker.io/wontlost/aster-api:build-${KEY}"
+          DIGEST=$(docker buildx imagetools inspect "$REF" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+          if [ -z "$DIGEST" ]; then echo "无 $REF → 不晋升"; exit 0; fi
+          # fail-closed：只晋升由**本仓 deploy.yml@main** 签过的 digest（与 deploy job 的验签同一身份）。
+          if cosign verify "wontlost/aster-api@${DIGEST}" \
+               --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/\.github/workflows/deploy\.yml@refs/heads/main$" \
+               --certificate-oidc-issuer "https://token.actions.githubusercontent.com" >/dev/null 2>&1; then
+            echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+            echo "♻️ 复用已签名镜像 \`$DIGEST\`（build-${KEY}）：跳过 build&test 与镜像构建" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::$REF 存在但 digest $DIGEST 验签失败 → 不晋升，完整重建"
+          fi
+      - name: 探测已验证的 quarkus-app 制品
+        id: artifact
+        if: ${{ !inputs.forceRebuild && steps.image.outputs.digest == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -uo pipefail
+          RUN=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/artifacts" -f name="quarkus-app-${KEY}" -f per_page=10 \
+                  -q '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | .workflow_run.id // empty' 2>/dev/null || true)
+          if [ -n "$RUN" ]; then
+            echo "run=$RUN" >> "$GITHUB_OUTPUT"
+            echo "♻️ 复用 run $RUN 的 quarkus-app-${KEY}（该 run 的 build&test 已通过）：跳过 build&test" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "无 quarkus-app-${KEY} → 完整 build&test"
+          fi
+
   build-and-test:
+    needs: reuse-probe
+    # 有可复用产物时跳过（见 reuse-probe）；deploy 对 skipped 放行。
+    if: ${{ needs.reuse-probe.outputs.image_digest == '' && needs.reuse-probe.outputs.artifact_run == '' }}
     runs-on: ubuntu-latest
     # 真实 PostgreSQL service（固定 localhost:5432）。`./gradlew build` 含需 DB 的
     # @QuarkusTest 测试，它们连 application.properties 默认 localhost:5432；
@@ -104,19 +195,42 @@ jobs:
       # PlanGateServiceIT 的 mock 端口跨 classloader 不一致导致 flaky；该根因已修
       # （System property 缓存端口）+ 上面加了 redis service，IT 现已稳定，可重新
       # 作为生产部署的完整把关。
+      # 完整性（ADR 0053 §8）：实际检出的兄弟仓源码必须就是 reuse-probe 的 key 所声明的那份
+      # （tag 在两步之间被移动 / checkout 取错 ref → 不一致 → 失败），否则产物会以错误的 key 上传、被错误复用。
+      - name: 断言检出源码与复用键一致
+        working-directory: aster-api
+        env:
+          API_SHA: ${{ github.sha }}
+          SIBLINGS_ROOT: ..
+          WANT: ${{ needs.reuse-probe.outputs.key }}
+        run: |
+          GOT=$(bash scripts/ci/build-reuse-key.sh local)
+          [ "$GOT" = "$WANT" ] || { echo "::error::检出源码的 key=$GOT ≠ reuse-probe 的 key=$WANT（兄弟仓 tag 在构建期间被移动？）"; exit 1; }
+          echo "key=$GOT ✓"
+
       - name: Build & Test
         working-directory: aster-api
         run: ./gradlew build -Dquarkus.package.jar.type=fast-jar
 
+      # 校验和随制品一起上传，下载方（本 run 或日后复用它的 run）逐文件校验。
+      - name: Checksum build output
+        working-directory: aster-api/build/quarkus-app
+        run: find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+
+      # 制品名带 key：只有 build&test **通过**才走到这里，故 quarkus-app-<key> 的存在即「已验证」。
+      # retention 3 天兜底（ADR 0053 §9）；部署闭环成功后由 cleanup-build-artifact 立即删除
+      # （此后复用走已签名镜像 build-<key>），失败则保留供重跑复用。
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: quarkus-app
+          name: quarkus-app-${{ needs.reuse-probe.outputs.key }}
           path: aster-api/build/quarkus-app/
-          retention-days: 1
+          retention-days: 3
 
   deploy:
-    needs: build-and-test
+    needs: [reuse-probe, build-and-test]
+    # build-and-test 因复用而 skipped 时照常部署；它失败/取消则不部署。
+    if: ${{ !cancelled() && needs.reuse-probe.result == 'success' && (needs.build-and-test.result == 'success' || needs.build-and-test.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -125,10 +239,15 @@ jobs:
       # 投毒镜像，也无法在没有本 CI OIDC 身份的情况下产出通过校验的签名。
       id-token: write
       contents: read
+      actions: read      # 跨 run 下载可复用的 quarkus-app-<key>
     # digest-pin Phase 2：把已验签 digest + 是否过时 暴露给下游 image-pin-pr job。
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.build.outputs.digest || needs.reuse-probe.outputs.image_digest }}
       stale: ${{ steps.staleguard.outputs.stale }}
+    env:
+      KEY: ${{ needs.reuse-probe.outputs.key }}
+      # 非空 = 晋升已签名镜像：跳过下载 / 构建 / arch 校验 / 签名，只改 tag + 验签。
+      PROMOTE_DIGEST: ${{ needs.reuse-probe.outputs.image_digest }}
     steps:
       - uses: actions/checkout@v7
 
@@ -168,15 +287,28 @@ jobs:
           fi
 
       - name: Download build artifact
-        if: ${{ steps.staleguard.outputs.stale != 'true' }}
+        if: ${{ steps.staleguard.outputs.stale != 'true' && env.PROMOTE_DIGEST == '' }}
         uses: actions/download-artifact@v8
         with:
-          name: quarkus-app
+          name: quarkus-app-${{ needs.reuse-probe.outputs.key }}
           path: build/quarkus-app/
+          # 复用时从产出它的那次 run 下载；否则就是本 run。
+          run-id: ${{ needs.reuse-probe.outputs.artifact_run || github.run_id }}
+          github-token: ${{ github.token }}
 
-      - if: ${{ steps.staleguard.outputs.stale != 'true' }}
+      - name: Verify build artifact checksums
+        if: ${{ steps.staleguard.outputs.stale != 'true' && env.PROMOTE_DIGEST == '' }}
+        working-directory: build/quarkus-app
+        run: |
+          test -s SHA256SUMS || { echo "::error::制品缺 SHA256SUMS（非本 workflow 产出？）"; exit 1; }
+          sha256sum --quiet -c SHA256SUMS
+          rm SHA256SUMS   # 不进镜像
+          echo "quarkus-app-${KEY} 校验通过（来源 run ${{ needs.reuse-probe.outputs.artifact_run || github.run_id }}）"
+
+      - if: ${{ steps.staleguard.outputs.stale != 'true' && env.PROMOTE_DIGEST == '' }}
         uses: docker/setup-qemu-action@v4
 
+      # buildx 两条路径都要：晋升用 `buildx imagetools create`。
       - if: ${{ steps.staleguard.outputs.stale != 'true' }}
         uses: docker/setup-buildx-action@v4
 
@@ -197,7 +329,7 @@ jobs:
 
       - name: Build & Push Docker Image
         id: build
-        if: ${{ steps.staleguard.outputs.stale != 'true' }}
+        if: ${{ steps.staleguard.outputs.stale != 'true' && env.PROMOTE_DIGEST == '' }}
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -217,9 +349,23 @@ jobs:
           # 来自 Dockerfile 构建期 `RUN uname -m` 断言 + 下面 push 后 verifier（Codex 复审）。
           provenance: false
           sbom: false
+          # build-<key>：复用键 tag，日后同 key 的部署按 digest 晋升它而不重建（ADR 0053 §5）。
           tags: |
             wontlost/aster-api:${{ steps.meta.outputs.tag }}
             wontlost/aster-api:jvm-latest
+            wontlost/aster-api:build-${{ env.KEY }}
+
+      # 晋升（ADR 0053 §5）：build once, promote by digest——把已签名 digest 重新打上本次的
+      # <sha7> / jvm-latest tag。只改 registry 指针，不产生新 digest，签名（绑 digest）依然有效。
+      - name: Promote signed image by digest
+        if: ${{ steps.staleguard.outputs.stale != 'true' && env.PROMOTE_DIGEST != '' }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            -t "wontlost/aster-api:${{ steps.meta.outputs.tag }}" \
+            -t wontlost/aster-api:jvm-latest \
+            "wontlost/aster-api@${PROMOTE_DIGEST}"
+          echo "♻️ 晋升 \`${PROMOTE_DIGEST}\` → ${{ steps.meta.outputs.tag }}, jvm-latest（未重建）" >> "$GITHUB_STEP_SUMMARY"
 
       # ★arm64 内容校验（2026-07-15 加）：集群节点是 ARM64（VM.Standard.A1.Flex Ampere），
       # 但曾发生 build-push-action + QEMU 产出**内容是 amd64 却标 arm64** 的镜像 → 节点
@@ -227,7 +373,7 @@ jobs:
       # manifest 的 architecture 字段会撒谎（标 arm64），故拉真实 arm64 变体在其内 `uname -m`
       # 必须 aarch64，否则**构建即失败**，杜绝 mislabeled 镜像上生产（补上 pipeline 缺的 arch verifier）。
       - name: Verify pushed image is genuinely arm64
-        if: ${{ steps.staleguard.outputs.stale != 'true' }}
+        if: ${{ steps.staleguard.outputs.stale != 'true' && env.PROMOTE_DIGEST == '' }}
         run: |
           set -euo pipefail
           DIGEST='${{ steps.build.outputs.digest }}'
@@ -279,7 +425,7 @@ jobs:
           cosign-release: 'v2.5.2'
 
       - name: Sign pushed image digest (keyless)
-        if: ${{ steps.staleguard.outputs.stale != 'true' }}
+        if: ${{ steps.staleguard.outputs.stale != 'true' && env.PROMOTE_DIGEST == '' }}
         env:
           COSIGN_YES: "true"
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -291,10 +437,11 @@ jobs:
 
       # 部署前校验**本次刚构建的 digest**（非浮动 tag）带一份由本仓库本 workflow 签发的
       # cosign 签名。fail-closed：任何签名/身份不符 → verify 失败 → 部署中止。
+      # 晋升路径同样在此 fail-closed 验签（reuse-probe 已验过一次，部署前再验——两 job 之间不可信）。
       - name: Verify freshly-built digest signature
         if: ${{ steps.staleguard.outputs.stale != 'true' }}
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.build.outputs.digest || env.PROMOTE_DIGEST }}
         run: |
           cosign verify "wontlost/aster-api@${DIGEST}" \
             --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/\.github/workflows/deploy\.yml@refs/heads/main$" \
@@ -430,3 +577,30 @@ jobs:
           PINNED: ${{ needs.image-pin-pr.outputs.pinned }}
           FINAL_STALE: ${{ needs.image-pin-pr.outputs.final_stale }}
         run: bash scripts/ci/pin-closure-guard.sh
+
+  # ══ 清理（ADR 0053 §9）══════════════════════════════════════════════════════
+  # 部署闭环成功（pin-closure-guard 绿）后，quarkus-app-<key>（~114MB/个）已无用：镜像已按 digest
+  # 推送签名，同 key 的复用改走 build-<key> 镜像。立即删除，不等 retention。
+  # 闭环失败则保留（重跑时 reuse-probe 复用它，省 ~28min build&test），retention 3 天到期自动回收。
+  # 清理失败只告警，不让一次成功的部署变红。
+  cleanup-build-artifact:
+    needs: [reuse-probe, deploy, pin-closure-guard]
+    if: ${{ !cancelled() && needs.pin-closure-guard.result == 'success' && needs.deploy.result == 'success' && needs.deploy.outputs.stale != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete quarkus-app-<key> artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ needs.reuse-probe.outputs.key }}
+        run: |
+          set -uo pipefail
+          ids=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/artifacts" -f name="quarkus-app-${KEY}" -f per_page=100 \
+                  -q '.artifacts[].id' 2>/dev/null || true)
+          [ -n "$ids" ] || { echo "无 quarkus-app-${KEY} 可删"; exit 0; }
+          for id in $ids; do
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/$id" \
+              && echo "deleted artifact $id" \
+              || echo "::warning::删除制品 $id 失败——retention 到期自动回收"
+          done
