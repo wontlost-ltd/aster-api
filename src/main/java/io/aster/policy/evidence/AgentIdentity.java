@@ -22,14 +22,44 @@ public record AgentIdentity(String provider, String model, String version, Strin
   }
 
   private static String required(String field, String v) {
-    if (v == null || v.isBlank()) throw new IllegalArgumentException(field + " 必填");
+    if (v == null || v.isBlank()) throw new InvalidAgentException(field, InvalidAgentException.Reason.REQUIRED, field + " 必填");
     return optional(field, v);
   }
 
   private static String optional(String field, String v) {
     if (v == null) return null;
-    if (v.length() > MAX_TEXT) throw new IllegalArgumentException(field + " 超过 " + MAX_TEXT + " 字符");
-    if (v.chars().anyMatch(Character::isISOControl)) throw new IllegalArgumentException(field + " 含控制字符");
+    if (v.length() > MAX_TEXT) {
+      throw new InvalidAgentException(field, InvalidAgentException.Reason.TOO_LONG, field + " 超过 " + MAX_TEXT + " 字符");
+    }
+    if (v.chars().anyMatch(Character::isISOControl)) {
+      throw new InvalidAgentException(field, InvalidAgentException.Reason.CONTROL_CHAR, field + " 含控制字符");
+    }
     return v;
+  }
+
+  /**
+   * agent 校验失败：带出错字段与原因，供 REST 层按请求语言重新组织文案（aster-api#445）。
+   * 仍是 {@link IllegalArgumentException}，既有按该类型捕获的调用方（guard）行为不变。
+   */
+  public static final class InvalidAgentException extends IllegalArgumentException {
+    /** 失败原因，对应文案目录里的 {@code agent.<reason>} 条目。 */
+    public enum Reason { REQUIRED, TOO_LONG, CONTROL_CHAR }
+
+    private final String field;
+    private final Reason reason;
+
+    InvalidAgentException(String field, Reason reason, String message) {
+      super(message);
+      this.field = field;
+      this.reason = reason;
+    }
+
+    public String field() {
+      return field;
+    }
+
+    public Reason reason() {
+      return reason;
+    }
   }
 }

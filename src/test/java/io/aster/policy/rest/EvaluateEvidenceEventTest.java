@@ -168,6 +168,8 @@ class EvaluateEvidenceEventTest {
         .post("/api/v1/policies/evaluate");
     assertThat(r1.statusCode()).as(r1.asString()).isEqualTo(400);
     assertThat(r1.jsonPath().getString("diagnostics[0].code")).isEqualTo("invalid_agent");
+    // #445：未带 Accept-Language 时文案为英文，不再是中文硬编码
+    assertThat(r1.jsonPath().getString("error")).isEqualTo("agent.provider is required");
 
     Map<String, Object> jsonBody = new HashMap<>(Map.of("policy", coreIrJsonOf("evidence.json"),
         "context", Map.of("amount", 1), "agent", badAgent));
@@ -179,6 +181,16 @@ class EvaluateEvidenceEventTest {
     Response r3 = evaluateSource(tenant, badAgent, false);
     assertThat(r3.statusCode()).as(r3.asString()).isEqualTo(400);
     assertThat(r3.jsonPath().getString("diagnostics[0].code")).isEqualTo("invalid_agent");
+
+    // #445：Accept-Language 指定德语时文案随之切换，code 不变
+    Response r4 = given().header("X-Tenant-Id", tenant).header("X-User-Id", "u-ev").header("Accept-Language", "de-DE")
+        .contentType(ContentType.JSON)
+        .body(Map.of("policyModule", DeployedMapParamProbeTest.MODULE, "policyFunction", DeployedMapParamProbeTest.FUNCTION,
+            "context", List.of(guardRequest("read_customer_record")), "agent", badAgent))
+        .post("/api/v1/policies/evaluate");
+    assertThat(r4.statusCode()).as(r4.asString()).isEqualTo(400);
+    assertThat(r4.jsonPath().getString("diagnostics[0].code")).isEqualTo("invalid_agent");
+    assertThat(r4.jsonPath().getString("error")).isEqualTo("agent.provider ist erforderlich");
 
     Thread.sleep(1000);
     assertThat(countEvents(tenant)).isZero();
