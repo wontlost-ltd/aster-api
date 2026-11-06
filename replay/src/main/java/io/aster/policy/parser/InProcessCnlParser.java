@@ -176,7 +176,11 @@ public class InProcessCnlParser {
 
             // 3. 创建语法分析器
             CommonTokenStream tokens = new CommonTokenStream(lexer);
-            tokens.fill();
+            try {
+                tokens.fill();   // 词法阶段的嵌套深度守卫抛带码的 E054
+            } catch (aster.core.parser.ParseDiagnosticException e) {
+                throw codedFailure(errorListener, e);
+            }
             tokens.seek(0);
 
             AsterParser parser = new AsterParser(tokens);
@@ -190,8 +194,13 @@ public class InProcessCnlParser {
             parser.removeErrorListeners();
             parser.addErrorListener(errorListener);
 
-            // 4. 解析模块
-            AsterParser.ModuleContext moduleCtx = parser.module();
+            // 4. 解析模块（嵌套深度守卫等可能在语法分析阶段就抛带码的 ParseDiagnosticException，E054）
+            AsterParser.ModuleContext moduleCtx;
+            try {
+                moduleCtx = parser.module();
+            } catch (aster.core.parser.ParseDiagnosticException e) {
+                throw codedFailure(errorListener, e);
+            }
 
             // 检查解析错误：抛给用户的是友好化的首个错误（根因），原始 ANTLR
             // 级联错误仅记日志供调试，避免把几十条内部消息糊到用户脸上。
@@ -245,6 +254,12 @@ public class InProcessCnlParser {
         } catch (Exception e) {
             throw internalFailure(e);
         }
+    }
+
+    /** 带码的解析错误（词法 / 语法 / 构建 AST 阶段抛出）记为用户源码错误，与 ANTLR 事件走同一出口。 */
+    private static CnlParseException codedFailure(CnlErrorListener listener, aster.core.parser.ParseDiagnosticException e) {
+        listener.report(e);
+        return new CnlParseException(listener.getSummary(), listener.getDiagnostics());
     }
 
     /** 语法已通过却得不到 AST 属内部故障（IllegalStateException），不是用户源码错误。 */

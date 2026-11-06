@@ -21,6 +21,15 @@ class ValidationRepositoryLegacyCodeTest {
     }
 
     @Test
+    void legacyLocalizedSyntaxMessage_getsCode() {
+        assertThat(ValidationRepository.withLegacySyntaxCode(legacy("语句末尾应为 '。'")).code()).isEqualTo("E059");
+        assertThat(ValidationRepository.withLegacySyntaxCode(legacy("Am Ende der Anweisung wird '.' erwartet")).code())
+            .isEqualTo("E059");
+        assertThat(ValidationRepository.withLegacySyntaxCode(legacy("कथन के अंत में '।' अपेक्षित है")).code())
+            .isEqualTo("E059");
+    }
+
+    @Test
     void existingCode_andUnknownMessage_areUntouched() {
         CompilationResult.Diagnostic coded = new CompilationResult.Diagnostic(1, 1, 1, 1, "Unexpected 'x'",
             "E802", "error", null, null, true);
