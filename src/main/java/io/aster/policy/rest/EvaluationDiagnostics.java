@@ -23,6 +23,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * 请求语言优先取 evaluate-source 请求体的 {@code locale}（策略 CNL 语言），其次 {@code Accept-Language}，
  * 都不认识时为英文；某条 key 缺失时同样退回英文。
  *
+ * <p>唯一真相源是 aster-lang-locales 的 {@code evaluation-diagnostics/<locale-id>.json}（en-US / zh-CN / de-DE / hi-IN，
+ * 随 {@code aster-lang-locales-en} jar 上 classpath，aster-lang-locales#121），本仓不留副本——同路径副本会遮蔽 jar。
+ * 读取方式与 {@code SyntaxMessages} 一致：文件缺失时得到空目录，调用方退回英文，不抛异常。
+ *
  * <p>模块解析错误（MODULE_* 系列）的 message 是英文原文，暂不在此本地化。
  */
 final class EvaluationDiagnostics {
@@ -90,12 +94,17 @@ final class EvaluationDiagnostics {
 
     private static Map<String, String> catalog(String language) {
         String lang = LOCALE_IDS.containsKey(language) ? language : DEFAULT_LANGUAGE;
-        return CACHE.computeIfAbsent(lang, EvaluationDiagnostics::load);
+        return CACHE.computeIfAbsent(lang, l -> read(EvaluationDiagnostics.class.getClassLoader(), l));
     }
 
-    private static Map<String, String> load(String lang) {
-        String path = CATALOG_DIR + LOCALE_IDS.get(lang) + ".json";
-        try (InputStream in = EvaluationDiagnostics.class.getClassLoader().getResourceAsStream(path)) {
+    /** 读 locales 目录里该语言的文件；语言未登记或文件不存在时返回空 Map（调用方退回英文）。 */
+    static Map<String, String> read(ClassLoader loader, String lang) {
+        String localeId = LOCALE_IDS.get(lang);
+        if (localeId == null) {
+            return Map.of();
+        }
+        String path = CATALOG_DIR + localeId + ".json";
+        try (InputStream in = loader.getResourceAsStream(path)) {
             if (in == null) {
                 return Map.of();
             }

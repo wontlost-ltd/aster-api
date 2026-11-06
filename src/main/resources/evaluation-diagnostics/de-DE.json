@@ -1,7 +1,0 @@
-{
-  "entryAmbiguous.error": "Einstiegsfunktion ist nicht eindeutig",
-  "entryAmbiguous.detail": "Keine Einstiegsfunktion angegeben und die Kandidatenfunktionen sind nicht eindeutig",
-  "agent.REQUIRED": "{field} ist erforderlich",
-  "agent.TOO_LONG": "{field} überschreitet {max} Zeichen",
-  "agent.CONTROL_CHAR": "{field} enthält Steuerzeichen"
-}

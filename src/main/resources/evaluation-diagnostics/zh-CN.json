@@ -1,7 +1,0 @@
-{
-  "entryAmbiguous.error": "入口函数不唯一",
-  "entryAmbiguous.detail": "未指定入口函数，候选函数不唯一",
-  "agent.REQUIRED": "{field} 必填",
-  "agent.TOO_LONG": "{field} 超过 {max} 字符",
-  "agent.CONTROL_CHAR": "{field} 含控制字符"
-}
