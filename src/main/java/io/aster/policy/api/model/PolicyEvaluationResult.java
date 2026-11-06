@@ -16,6 +16,10 @@ import java.util.Objects;
  * ruleId / controls 来自被执行函数的 {@code @id} / {@code @control} 注解，无注解时为 null / 空列表。
  * profile 为模块声明的治理档案 id（ADR 0046 §6），未声明时为 null 且不进入缓存 JSON。
  *
+ * <p>policyVersionId / sourceHash 为被执行封存版本的 id 与链接哈希（{@code PolicyVersion#chainLink}，
+ * aster-api#459）：供 /evaluate 把决策钉到版本。结果缓存键已含 versionId，命中值与键指向同一版本；
+ * 非动态加载或无版本时为 null 且不进入缓存 JSON。
+ *
  * <p>本类会作为 {@code policy-results} 缓存值写入 Redis（生产默认缓存后端）并在命中时按 JSON 还原。
  * 类有两个多参构造器，Jackson 无法自行推断用哪个创建实例，命中时会报 “no Creators” 解码失败，
  * 导致相同请求第二次评估失败（Action Guard 降级为 DENY evaluation_failed）。因此在全参构造器上显式声明
@@ -31,6 +35,8 @@ public class PolicyEvaluationResult {
     private final String ruleId;
     private final List<String> controls;
     private final String profile;
+    private final Long policyVersionId;
+    private final String sourceHash;
 
     /** 不携带治理字段的构造（decision / ruleId 为 null，controls 为空）。 */
     public PolicyEvaluationResult(Object result, double executionTimeMs, boolean fromCache) {
@@ -43,6 +49,12 @@ public class PolicyEvaluationResult {
         this(result, executionTimeMs, fromCache, decision, ruleId, controls, null);
     }
 
+    /** 无版本身份的构造（policyVersionId / sourceHash 为 null）。 */
+    public PolicyEvaluationResult(Object result, double executionTimeMs, boolean fromCache,
+                                  VerdictView decision, String ruleId, List<String> controls, String profile) {
+        this(result, executionTimeMs, fromCache, decision, ruleId, controls, profile, null, null);
+    }
+
     @JsonCreator
     public PolicyEvaluationResult(@JsonProperty("result") Object result,
                                   @JsonProperty("executionTimeMs") double executionTimeMs,
@@ -50,7 +62,9 @@ public class PolicyEvaluationResult {
                                   @JsonProperty("decision") VerdictView decision,
                                   @JsonProperty("ruleId") String ruleId,
                                   @JsonProperty("controls") List<String> controls,
-                                  @JsonProperty("profile") String profile) {
+                                  @JsonProperty("profile") String profile,
+                                  @JsonProperty("policyVersionId") Long policyVersionId,
+                                  @JsonProperty("sourceHash") String sourceHash) {
         this.result = result;
         this.executionTimeMs = executionTimeMs;
         this.fromCache = fromCache;
@@ -58,6 +72,8 @@ public class PolicyEvaluationResult {
         this.ruleId = ruleId;
         this.controls = controls == null ? List.of() : List.copyOf(controls);
         this.profile = profile;
+        this.policyVersionId = policyVersionId;
+        this.sourceHash = sourceHash;
     }
 
     public Object getResult() {
@@ -89,6 +105,16 @@ public class PolicyEvaluationResult {
         return profile;
     }
 
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public Long getPolicyVersionId() {
+        return policyVersionId;
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public String getSourceHash() {
+        return sourceHash;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -104,11 +130,14 @@ public class PolicyEvaluationResult {
             && Objects.equals(decision, that.decision)
             && Objects.equals(ruleId, that.ruleId)
             && Objects.equals(controls, that.controls)
-            && Objects.equals(profile, that.profile);
+            && Objects.equals(profile, that.profile)
+            && Objects.equals(policyVersionId, that.policyVersionId)
+            && Objects.equals(sourceHash, that.sourceHash);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(result, executionTimeMs, fromCache, decision, ruleId, controls, profile);
+        return Objects.hash(result, executionTimeMs, fromCache, decision, ruleId, controls, profile,
+            policyVersionId, sourceHash);
     }
 }

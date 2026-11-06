@@ -7,7 +7,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.common.JacksonMappers;
 import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.policy.api.PolicyEvaluationService;
+import io.aster.policy.compiler.PolicyExecutionGate;
 import io.aster.policy.entity.AuditLog;
+import io.aster.policy.entity.PolicyCatalog;
+import io.aster.policy.entity.PolicyVersion;
+import io.aster.policy.entity.VersionStatus;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.policy.stability.ToolchainIdentityProvider;
 import io.aster.replay.core.parser.ReplayMappers;
@@ -22,6 +26,7 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +35,7 @@ import java.util.UUID;
 import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 
 /**
  * ADR 0041 §2.2–§2.3 端到端：三条 /evaluate* 端点生成 correlationId、在响应 evidence 中回传，
@@ -67,9 +73,15 @@ class EvaluateEvidenceEventTest {
       .replace("@id(\"PROBE-001\")", "@id(\"GOV-001\")\n@control(\"EU_AI_ACT:ART14\")");
 
   private static boolean deployed;
+  /** 走 /evaluate 数据库加载路径的已部署版本 id，用于核对事件里的 policyVersionId。 */
+  private static Long probeVersionId;
 
   @Inject
   PolicyEvaluationService policyEvaluationService;
+
+  /** 只做观察（不打桩）：核对门禁读阶段拿到的版本 id 与事件所写一致。%test 下门禁为 off，但读阶段仍以版本 id 进入。 */
+  @InjectSpy
+  PolicyExecutionGate executionGate;
 
   /** 只在「成功事件后抛错」用例里打桩，其余用例走真实实现。 */
   @InjectSpy
@@ -78,8 +90,8 @@ class EvaluateEvidenceEventTest {
   @BeforeEach
   void deployOnce() {
     if (deployed) return;
-    DeployedMapParamProbeTest.deploy(TENANT, DeployedMapParamProbeTest.MODULE, DeployedMapParamProbeTest.FUNCTION,
-        DeployedMapParamProbeTest.SOURCE);
+    probeVersionId = DeployedMapParamProbeTest.deploy(TENANT, DeployedMapParamProbeTest.MODULE,
+        DeployedMapParamProbeTest.FUNCTION, DeployedMapParamProbeTest.SOURCE);
     DeployedMapParamProbeTest.deploy(TENANT, GOVERNED_MODULE, DeployedMapParamProbeTest.FUNCTION,
         GOVERNED_DEPLOYED_SOURCE);
     deployed = true;
@@ -101,9 +113,54 @@ class EvaluateEvidenceEventTest {
         .containsEntry("agentProvider", "anthropic").containsEntry("agentModel", "claude-fable-5-1")
         .containsEntry("agentSession", "s-1").containsEntry("agentSource", "declared")
         .containsEntry("contextSize", 1);
-    // /evaluate 本期不写版本（ADR 0041 修正 #2）
-    assertThat(md).doesNotContainKeys("policyVersionId", "profile");
+    assertThat(md).doesNotContainKey("profile");
     assertThat(MAPPER.readTree(resp.asString()).has("profile")).as(resp.asString()).isFalse();
+
+    // issue #459：事件指向被执行的封存版本，sourceHash 取版本链接哈希
+    // （envelope 优先，否则 content sourceHash；PolicyVersion#chainLink）。
+    PolicyVersion executed = QuarkusTransaction.requiringNew().call(() -> PolicyVersion.findById(probeVersionId));
+    assertThat(md).containsEntry("policyVersionId", probeVersionId.intValue())
+        .containsEntry("sourceHash", executed.chainLink());
+    // 响应契约不变：版本键只进链，不回给调用方
+    assertThat(MAPPER.readTree(resp.asString()).has("policyVersionId")).isFalse();
+    assertThat(MAPPER.readTree(resp.asString()).has("sourceHash")).isFalse();
+  }
+
+  /**
+   * issue #459：事件所写版本与 PolicyExecutionGate 读阶段校验的版本一致（全新模块，首评必经编译路径）；
+   * 激活切换并失效缓存后，新事件指向新版本，带 envelope 的版本 sourceHash 取 envelope。
+   */
+  @Test
+  void evaluate版本与门禁一致且切换后指向新版本() throws Exception {
+    String module = "evidence.switch." + RUN;
+    String function = DeployedMapParamProbeTest.FUNCTION;
+    String source = DeployedMapParamProbeTest.SOURCE.replace("Module guard.probe.", "Module " + module + ".");
+    Long v1 = DeployedMapParamProbeTest.deploy(TENANT, module, function, source);
+    assertThat(metadataOf(awaitEvent(TENANT, evaluateDeployed(module, function))))
+        .containsEntry("policyVersionId", v1.intValue());
+    verify(executionGate).prefetch(v1);
+
+    String envelope = "e".repeat(64);
+    Long v2 = QuarkusTransaction.requiringNew().call(() -> {
+      PolicyVersion.update("active = false where id = ?1", v1);
+      PolicyVersion next = new PolicyVersion();
+      next.policyId = module + "." + function; next.version = System.currentTimeMillis();
+      next.moduleName = module; next.functionName = function;
+      next.content = source.replace("@id(\"PROBE-001\")", "@id(\"PROBE-002\")");
+      next.sourceEnvelopeSha256 = envelope;
+      next.locale = "en-US"; next.active = true; next.status = VersionStatus.APPROVED;
+      next.tenantId = TENANT; next.createdAt = Instant.now(); next.createdBy = "probe";
+      next.persist();
+      PolicyCatalog.update("defaultVersionId = ?1 where tenantId = ?2 and moduleName = ?3 and functionName = ?4",
+          next.id, TENANT, module, function);
+      return next.id;
+    });
+    policyEvaluationService.invalidateCache(TENANT, module, function).await().indefinitely();
+
+    Map<String, Object> md = metadataOf(awaitEvent(TENANT, evaluateDeployed(module, function)));
+    assertThat(md).containsEntry("policyVersionId", v2.intValue()).containsEntry("ruleId", "PROBE-002")
+        .containsEntry("sourceHash", envelope);
+    verify(executionGate).prefetch(v2);
   }
 
   /** 首次走编译+执行（Core JSON 宽松重解析取档案），第二次命中 policy-results 缓存，两次都须带 profile。 */
@@ -143,6 +200,7 @@ class EvaluateEvidenceEventTest {
     assertThat(md).containsEntry("role", "Data Protection Officer").containsKey("reason");
   }
 
+  /** issue #459：/evaluate 失败（无版本可解析）时不写版本键，不编造。 */
   @Test
   void evaluate失败也生成correlationId并落链() throws Exception {
     Response resp = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
@@ -155,7 +213,8 @@ class EvaluateEvidenceEventTest {
 
     AuditLog row = awaitEvent(TENANT, cid);
     assertThat(row.success).isFalse();
-    assertThat(metadataOf(row)).containsEntry("agentProvider", "anthropic").doesNotContainKey("outcome");
+    assertThat(metadataOf(row)).containsEntry("agentProvider", "anthropic")
+        .doesNotContainKeys("outcome", "policyVersionId", "sourceHash");
   }
 
   @Test
@@ -221,6 +280,11 @@ class EvaluateEvidenceEventTest {
         .containsEntry("agentSource", "declared").containsEntry("sourceFormat", "cnl")
         .doesNotContainKey("profile");
     assertThat(MAPPER.readTree(resp.asString()).has("profile")).as(resp.asString()).isFalse();
+    // issue #459：即时源码无已保存版本 → 不写 policyVersionId，但写与封存同算法的源码 sourceHash（可与版本比对）
+    assertThat(md).doesNotContainKey("policyVersionId")
+        .containsEntry("sourceHash", PolicyVersion.computeSourceHash(VERDICT_SOURCE));
+    assertThat(md.get("sourceHash")).asString().matches("^[0-9a-f]{64}$");
+    assertThat(MAPPER.readTree(resp.asString()).has("sourceHash")).isFalse();
   }
 
   @Test
@@ -280,6 +344,18 @@ class EvaluateEvidenceEventTest {
   }
 
   // ---------------------------------------------------------------- helpers
+
+  /** 评估已部署策略并返回响应里的 correlationId。 */
+  private static String evaluateDeployed(String module, String function) {
+    Response resp = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
+        .body(Map.of("policyModule", module, "policyFunction", function,
+            "context", List.of(guardRequest("read_customer_record")), "agent", AGENT))
+        .post("/api/v1/policies/evaluate");
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    String cid = resp.jsonPath().getString("evidence.correlationId");
+    assertThat(cid).isNotBlank();
+    return cid;
+  }
 
   private static Map<String, Object> guardRequest(String action) {
     Map<String, Object> m = new HashMap<>();

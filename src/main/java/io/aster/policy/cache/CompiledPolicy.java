@@ -12,6 +12,7 @@ import java.time.Instant;
  */
 public class CompiledPolicy {
     private final String versionId;
+    /** 版本链接哈希（{@code PolicyVersion#chainLink}：envelope 优先，否则 content sourceHash），随评估结果进证据事件。 */
     private final String sourceHash;
     private final String coreJson;
     private final CompilationMetadata metadata;

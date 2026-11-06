@@ -224,8 +224,7 @@ public class PolicyEvaluationService {
                 if (compiled.getEntryFailure() != null) {
                     throw io.aster.policy.parser.EntryFunctionException.cached(compiled.getEntryFailure());
                 }
-                return executeCompiled(cacheKey, compiled.getCoreJson(), compiled.getMetadata(),
-                    System.nanoTime(), resolveDeterminismContext() != null);
+                return executeCompiled(cacheKey, compiled, System.nanoTime(), resolveDeterminismContext() != null);
             })
             // EntryFunctionException 的消息只含函数名、且是调用方唯一能自行修正的原因：
             // 不包装，让 /evaluate 与 /evaluate/batch 把它原样回给调用方。
@@ -308,10 +307,11 @@ public class PolicyEvaluationService {
      * 纯执行已编译策略（零 DB 访问）：Truffle 执行 coreJson + 计时。
      * 编译缓存命中的热路径走这里，不占 JDBC 连接、不开事务。
      */
-    private PolicyEvaluationResult executeCompiled(PolicyCacheKey cacheKey, String coreJson,
-            CompilationMetadata metadata, long startMarker, boolean deterministicTiming) {
+    private PolicyEvaluationResult executeCompiled(PolicyCacheKey cacheKey,
+            io.aster.policy.cache.CompiledPolicy compiled, long startMarker, boolean deterministicTiming) {
+        String coreJson = compiled.getCoreJson();
         ExecutionResult executionResult = trufflePolicyRuntime.execute(
-            coreJson, cacheKey.getContext(), metadata);
+            coreJson, cacheKey.getContext(), compiled.getMetadata());
         if (!executionResult.success()) {
             throw new RuntimeException(String.format(
                 "策略执行失败: %s.%s - %s",
@@ -323,8 +323,22 @@ public class PolicyEvaluationService {
         // 解析失败只降级为无元数据，不影响评估结果。
         CoreModel.Module module = parseCoreModule(coreJson);
         RuleMetadata meta = RuleMetadata.of(module, cacheKey.getPolicyFunction());
+        // 版本身份（aster-api#459）取自编译产物：它由解析到的 PolicyVersion 构造，与门禁校验的是同一版本
         return new PolicyEvaluationResult(executionResult.result(), durationNanos / 1_000_000.0, false,
-            VerdictView.from(executionResult.result()).orElse(null), meta.ruleId(), meta.controls(), meta.profile());
+            VerdictView.from(executionResult.result()).orElse(null), meta.ruleId(), meta.controls(), meta.profile(),
+            parseVersionId(compiled.getVersionId()), compiled.getSourceHash());
+    }
+
+    /** 编译产物的 versionId 由 {@code String.valueOf(version.id)} 生成；非数字（测试直构）按无版本处理。 */
+    private static Long parseVersionId(String versionId) {
+        if (versionId == null) {
+            return null;
+        }
+        try {
+            return Long.valueOf(versionId);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /**
@@ -483,13 +497,15 @@ public class PolicyEvaluationService {
     private static io.aster.policy.cache.CompiledPolicy toCompiledPolicy(PolicyCacheKey cacheKey,
             PolicyVersion version, CompilationResult compilationResult) {
         String versionId = String.valueOf(version.id);
+        // 链接哈希（envelope 优先，否则 content sourceHash）：随结果进证据事件，口径与版本链 prevHash 一致
+        String sourceHash = version.chainLink();
         try {
             String entryCoreJson = io.aster.policy.parser.CoreIrEntrySelector.withEntry(
                 compilationResult.getCoreJson(), cacheKey.getPolicyFunction());
             return new io.aster.policy.cache.CompiledPolicy(
-                versionId, version.sourceHash, entryCoreJson, compilationResult.getMetadata());
+                versionId, sourceHash, entryCoreJson, compilationResult.getMetadata());
         } catch (io.aster.policy.parser.EntryFunctionException e) {
-            return io.aster.policy.cache.CompiledPolicy.entryFailure(versionId, version.sourceHash, e.getMessage());
+            return io.aster.policy.cache.CompiledPolicy.entryFailure(versionId, sourceHash, e.getMessage());
         }
     }
 
@@ -598,7 +614,9 @@ public class PolicyEvaluationService {
             original.getDecision(),
             original.getRuleId(),
             original.getControls(),
-            original.getProfile()
+            original.getProfile(),
+            original.getPolicyVersionId(),
+            original.getSourceHash()
         );
     }
 

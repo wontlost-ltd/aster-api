@@ -269,10 +269,12 @@ public class PolicyEvaluationResource {
             }
 
             // correlationId（ADR 0041 §2.2）：同一个键既进审计链事件、又回给调用方，
-            // 让调用方日志与链上事件可一对一关联；/evaluate 本期不写 policyVersionId。
+            // 让调用方日志与链上事件可一对一关联。版本两键（aster-api#459）取自评估结果：
+            // 被执行且过了门禁的封存版本 id 与链接哈希，只进链、不进响应契约。
             EvaluationEvidence evidence = EvaluationEvidence.of(
                 outcomeOf(result.getDecision()), result.getRuleId(), result.getControls(), null, agent,
-                roleOf(result.getDecision()), reasonOf(result.getDecision()), result.getProfile());
+                roleOf(result.getDecision()), reasonOf(result.getDecision()), result.getProfile())
+                .withVersion(result.getPolicyVersionId(), result.getSourceHash());
             publishPolicyEvaluationEvent(
                 tenantId,
                 request,
@@ -679,10 +681,13 @@ public class PolicyEvaluationResource {
                     metadata.put("dynamicExecution", true);
                     metadata.put("namedContext", request.context() instanceof Map);
 
+                    // 即时源码没有已保存版本（id 为 null），但写与封存同算法的源码哈希（aster-api#459），
+                    // 证据包可据此与 cloud 侧版本的 sourceHash 比对。
                     evidence = EvaluationEvidence.of(
                         outcomeOf(decision),
                         phase.execResult().ruleId(), phase.execResult().controls(), null, agent,
-                        roleOf(decision), reasonOf(decision), phase.execResult().profile());
+                        roleOf(decision), reasonOf(decision), phase.execResult().profile())
+                        .withVersion(null, io.aster.policy.entity.PolicyVersion.computeSourceHash(request.source()));
                     publishPolicyEvaluationEvent(
                         tenantId,
                         new EvaluationRequest(phase.execResult().moduleName(), phase.execResult().functionName(), new Object[]{request.context()}, agent),

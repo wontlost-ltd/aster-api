@@ -53,7 +53,7 @@
 
 `correlationId`、`outcome`（ALLOW / DENY / REQUIRE_APPROVAL / ESCALATE，非 Verdict 结果不写键）、`ruleId`、`role`、`reason`（Verdict 的审批角色与原因，仅执行成功且为 Verdict 时写；ADR 0042 §3.2 补）、`controls`（数组，≤ 16 项、每项 ≤ 64 字符）、`agentProvider / agentModel / agentVersion / agentSession / agentSource`（§3，有 agent 时才写，`agentSource` 恒为 `"declared"`）。文本值 ≤ 255 字符截断，null/空值不写键。既有键（`applicantId`、`contextSize`、`sourceFormat` 等）不动；同名键以证据为准。
 
-本期 `/evaluate*` 事件不写 `policyVersionId`：三个端点的调用点都拿不到版本 id（`PolicyEvaluationResult` 不带版本）。guard 收据照旧携带 `policyVersionId`；`/evaluate*` 的版本回填列入 §10。
+~~本期 `/evaluate*` 事件不写 `policyVersionId`：三个端点的调用点都拿不到版本 id（`PolicyEvaluationResult` 不带版本）。~~ **修订（aster-api#459）**：`PolicyEvaluationResult` 新增 `policyVersionId / sourceHash`（由编译产物携带，与 `PolicyExecutionGate` 读阶段校验的是同一 `PolicyVersion`；结果缓存键已含 versionId，命中值与键指向同一版本）。`/evaluate` 成功事件写被执行活跃版本的 `policyVersionId` 与 `sourceHash`（取 `PolicyVersion#chainLink`：`sourceEnvelopeSha256` 优先，旧版本无 envelope 时回落 content `sourceHash`，与版本链 `prevHash` 同口径）；`/evaluate-source` 没有已保存版本，不写 `policyVersionId`，但写源码的 content 哈希（`PolicyVersion.computeSourceHash`，与封存同一算法，供与版本比对）；`/evaluate` 失败路径与 `/evaluate-json` 两键皆不写。两键只进链，不进 `EvaluationResponse`。guard 收据照旧携带 `policyVersionId` 与 content `sourceHash`（ADR 0040 §5.2）——同一版本在 guard 收据与 `/evaluate` 事件里的 `sourceHash` 仅当该版本无 envelope 时相等，统一口径列入 §10。
 
 覆盖范围：`/evaluate`、`/evaluate-json`、`/evaluate-source` 三个端点中**走到策略执行**的路径才发事件并回 `evidence`——`/evaluate` 与 `/evaluate-json` 的执行成功与执行失败分支（失败时无 outcome/ruleId/controls，仍带 `correlationId` 与 agent 键），以及 `/evaluate-source` 的执行成功路径。`/evaluate-source` 执行前的早退异常分支（入口歧义、模块解析失败、CNL 解析失败等）与 `/evaluate-json` 的外层 catch 既不发事件也不回 `evidence`，沿用既有发布范围，有意不改。`/evaluate-source?simulate=true`（HMAC 生效的模拟）不发事件，也不回 `evidence`。
 
@@ -177,7 +177,7 @@ C 的 `services/evidence/receipts-client.ts` 按策略所属租户（`teamId ?? 
 - `agent` 不合法 → A 返回 400 `invalid_agent`（早于配额与并发闸门），C 的 v1 路由返回 400；缺省不影响评估。
 - 相关键只做身份，不含业务数据；guard 收据预算收缩顺序见 §3。
 - 只有走到策略执行的路径发事件、回 `evidence`；`/evaluate-source` 早退异常分支、`/evaluate-json` 外层 catch 与 simulate 模式都不发、不回（§2.2）。`/evaluate-source` 成功事件发布之后若回放元数据或骨架阶段抛错，错误响应仍带同一个 `evidence.correlationId`。
-- `/evaluate*` 事件本期不写 `policyVersionId`（§2.2）。
+- `/evaluate` 写 `policyVersionId / sourceHash`、`/evaluate-source` 只写源码 `sourceHash`、`/evaluate-json` 与失败路径不写（§2.2，aster-api#459）。
 - 哈希链 append-only 不动；冗余列不进哈希载荷；不新增同步写入热路径；收据接口只读。
 - 旧 C（不传 `agent`、不读 `evidence`）与旧 A（不返回 `evidence`）互相兼容：字段均为可选追加。
 
@@ -228,7 +228,9 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 
 - **3b 审批闭环**：四眼 `required_role` 匹配改用 ADR 0015 已验证团队角色 / PolicyReviewer 授权（`roleVerified: true`）；cloud 审批收件箱 UI；C 执行路由真正调用 guard 并记录 `guardDecisionId`。
 - **3c What-if 四态**（已完成，见 ADR 0043）：`replay_batch_item` 的 `base_outcome / target_outcome`、C 窗口接口下发 `outcome`、runner 按转移对计数（消除 ADR 0039 §5.2 限制）。
-- `/evaluate*` 事件的 `policyVersionId` 回填（需评估结果携带版本 id）。
+- ~~`/evaluate*` 事件的 `policyVersionId` 回填（需评估结果携带版本 id）~~（已完成，aster-api#459，见 §2.2 修订）。
+- guard 收据的 `sourceHash` 仍为 content 哈希（ADR 0040 §5.3），`/evaluate` 事件为 `chainLink`（envelope 优先）：带 envelope 的版本两处不相等。统一为 `chainLink` 需改 `GuardDecisionService.resolveVersion`，与 ADR 0040 §10「统一版本来源」一并处理（评估结果现已携带版本，guard 可改读结果而非自行解析）。
+- aster-cloud `executions.policyVersionRowId` 指向 cloud 自己的版本行，与 aster-api `policy_versions.id` 不是同一 id 空间；贯通靠 `/evaluate-source` 事件的 `sourceHash`（收据接口 §2.4 已随 `metadata` 返回）与 cloud 版本 source 哈希比对，需 cloud 侧在证据包条目里展示/校验该键。
 - 内部调用者 HMAC 签名覆盖查询串（§7.1）。
 - `source: "key-bound"` 模型身份；证据包签名或链锚定引用；`agent.session` 的跨请求关联。
 - `/evaluate` 事件异步落链的丢失率监控（missing 计数指标）。

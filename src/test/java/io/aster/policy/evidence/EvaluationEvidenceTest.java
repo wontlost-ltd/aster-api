@@ -35,6 +35,18 @@ class EvaluationEvidenceTest {
     assertThat(e.toMetadata()).containsOnlyKeys("correlationId");
   }
 
+  /** issue #459：版本键由 withVersion 附加，correlationId 不变；null 不写键，sourceHash 逐字入链。 */
+  @Test void withVersion写policyVersionId与sourceHash且保留correlationId() {
+    EvaluationEvidence base = EvaluationEvidence.of("ALLOW", "R-1", List.of(), null, null);
+    EvaluationEvidence e = base.withVersion(42L, "ab".repeat(32));
+    assertThat(e.correlationId()).isEqualTo(base.correlationId());
+    assertThat(e.toMetadata()).containsEntry("policyVersionId", 42L).containsEntry("sourceHash", "ab".repeat(32));
+    // /evaluate-source：无已保存版本但有源码哈希
+    assertThat(base.withVersion(null, "cd".repeat(32)).toMetadata())
+        .doesNotContainKey("policyVersionId").containsEntry("sourceHash", "cd".repeat(32));
+    assertThat(base.withVersion(null, null).toMetadata()).doesNotContainKeys("policyVersionId", "sourceHash");
+  }
+
   @Test void of生成UUID相关键() {
     EvaluationEvidence e = EvaluationEvidence.of("DENY", null, null, 7L, null);
     assertThat(e.correlationId()).matches("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
