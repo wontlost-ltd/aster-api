@@ -117,8 +117,16 @@ public record EvaluationResponse(
     public record EntryDiagnostic(
         String code,
         String message,
-        List<String> candidates
-    ) {}
+        List<String> candidates,
+        // 同一 code 下的具体原因（稳定 key，如 MODULE_NOT_VISIBLE 的 TENANT_REQUIRED / NOT_VISIBLE，aster-api#452）；
+        // 没有细分原因的诊断为 null，不序列化。
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        String reason
+    ) {
+        public EntryDiagnostic(String code, String message, List<String> candidates) {
+            this(code, message, candidates, null);
+        }
+    }
 
     public static EvaluationResponse success(Object result, long executionTimeMs) {
         return new EvaluationResponse(result, executionTimeMs, null, null, null, null, null, null, null, null, List.of(), null, null, null, null);
@@ -177,8 +185,13 @@ public record EvaluationResponse(
     }
 
     public static EvaluationResponse diagnostic(String code, String message, List<String> candidates) {
+        return diagnostic(code, null, message, candidates);
+    }
+
+    /** 带细分原因的 400 诊断（{@code reason} 可为 null）。 */
+    public static EvaluationResponse diagnostic(String code, String reason, String message, List<String> candidates) {
         List<String> safeCandidates = candidates == null ? List.of() : List.copyOf(candidates);
-        EntryDiagnostic diagnostic = new EntryDiagnostic(code, message, safeCandidates);
+        EntryDiagnostic diagnostic = new EntryDiagnostic(code, message, safeCandidates, reason);
         return new EvaluationResponse(null, 0, message, null, null, List.of(diagnostic), null, null, null, null, List.of(), null, null, null, null);
     }
 

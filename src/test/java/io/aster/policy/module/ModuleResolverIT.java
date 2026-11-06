@@ -54,8 +54,12 @@ class ModuleResolverIT {
 
         assertThatThrownBy(() -> resolver.resolveGraph(TENANT, root.core(), root.imports(), "en-US"))
             .isInstanceOf(ModuleResolutionException.class)
-            .extracting(e -> ((ModuleResolutionException) e).code())
-            .isEqualTo(ModuleResolutionException.Code.IMPORT_VERSION_REQUIRED);
+            .satisfies(e -> {
+                ModuleResolutionException err = (ModuleResolutionException) e;
+                assertThat(err.code()).isEqualTo(ModuleResolutionException.Code.IMPORT_VERSION_REQUIRED);
+                assertThat(err.reason()).isEqualTo(ModuleResolutionException.Reason.VERSION_REQUIRED);
+                assertThat(err.getMessage()).isEqualTo("Import version is required");
+            });
     }
 
     @Test
@@ -74,6 +78,7 @@ class ModuleResolverIT {
             .satisfies(e -> {
                 ModuleResolutionException err = (ModuleResolutionException) e;
                 assertThat(err.code()).isEqualTo(ModuleResolutionException.Code.MODULE_VERSION_NOT_FOUND);
+                assertThat(err.reason()).isEqualTo(ModuleResolutionException.Reason.VERSION_NOT_FOUND);
                 assertThat(err.candidates()).containsExactly("1");
             });
     }
@@ -91,8 +96,73 @@ class ModuleResolverIT {
 
         assertThatThrownBy(() -> resolver.resolveGraph(TENANT, root.core(), root.imports(), "en-US"))
             .isInstanceOf(ModuleResolutionException.class)
-            .extracting(e -> ((ModuleResolutionException) e).code())
-            .isEqualTo(ModuleResolutionException.Code.MODULE_NOT_VISIBLE);
+            .satisfies(e -> {
+                ModuleResolutionException err = (ModuleResolutionException) e;
+                assertThat(err.code()).isEqualTo(ModuleResolutionException.Code.MODULE_NOT_VISIBLE);
+                assertThat(err.reason()).isEqualTo(ModuleResolutionException.Reason.NOT_VISIBLE);
+                assertThat(err.params()).isEmpty();
+            });
+    }
+
+    @Test
+    void missingTenantRaisesTenantRequired() {
+        ParsedRoot root = root("""
+            Module app.Root.
+            Use risk.Scoring version 1 as Score.
+
+            Rule run given amount as Int, produce Int:
+              Return amount.
+            """);
+
+        assertThatThrownBy(() -> resolver.resolveGraph(null, root.core(), root.imports(), "en-US"))
+            .isInstanceOf(ModuleResolutionException.class)
+            .satisfies(e -> {
+                ModuleResolutionException err = (ModuleResolutionException) e;
+                assertThat(err.code()).isEqualTo(ModuleResolutionException.Code.MODULE_NOT_VISIBLE);
+                assertThat(err.reason()).isEqualTo(ModuleResolutionException.Reason.TENANT_REQUIRED);
+            });
+    }
+
+    @Test
+    void aliasedLibraryRaisesAliasesUnsupported() {
+        persistLibrary(TENANT, "risk.Scoring", 1L, true, scoringSource(1), "{\"RETURN\":[\"Give back\"]}");
+        ParsedRoot root = root("""
+            Module app.Root.
+            Use risk.Scoring version 1 as Score.
+
+            Rule run given amount as Int, produce Int:
+              Return amount.
+            """);
+
+        assertThatThrownBy(() -> resolver.resolveGraph(TENANT, root.core(), root.imports(), "en-US"))
+            .isInstanceOf(ModuleResolutionException.class)
+            .satisfies(e -> {
+                ModuleResolutionException err = (ModuleResolutionException) e;
+                assertThat(err.code()).isEqualTo(ModuleResolutionException.Code.MODULE_NOT_VISIBLE);
+                assertThat(err.reason()).isEqualTo(ModuleResolutionException.Reason.ALIASES_UNSUPPORTED);
+                assertThat(err.params()).isEmpty();
+            });
+    }
+
+    @Test
+    void unparsableLibraryRaisesParseFailed() {
+        persistLibrary(TENANT, "risk.Scoring", 1L, true, "Module risk.Scoring.\n\nRule f given x as Int, produce Int:\n  Return x\n");
+        ParsedRoot root = root("""
+            Module app.Root.
+            Use risk.Scoring version 1 as Score.
+
+            Rule run given amount as Int, produce Int:
+              Return amount.
+            """);
+
+        assertThatThrownBy(() -> resolver.resolveGraph(TENANT, root.core(), root.imports(), "en-US"))
+            .isInstanceOf(ModuleResolutionException.class)
+            .satisfies(e -> {
+                ModuleResolutionException err = (ModuleResolutionException) e;
+                assertThat(err.code()).isEqualTo(ModuleResolutionException.Code.MODULE_NOT_VISIBLE);
+                assertThat(err.reason()).isEqualTo(ModuleResolutionException.Reason.PARSE_FAILED);
+                assertThat(err.getMessage()).isEqualTo("Imported module could not be parsed");
+            });
     }
 
     @Test
@@ -123,8 +193,14 @@ class ModuleResolverIT {
 
         assertThatThrownBy(() -> resolver.resolveGraph(TENANT, root.core(), root.imports(), "en-US"))
             .isInstanceOf(ModuleResolutionException.class)
-            .extracting(e -> ((ModuleResolutionException) e).code())
-            .isEqualTo(ModuleResolutionException.Code.MODULE_CYCLE);
+            .satisfies(e -> {
+                ModuleResolutionException err = (ModuleResolutionException) e;
+                assertThat(err.code()).isEqualTo(ModuleResolutionException.Code.MODULE_CYCLE);
+                assertThat(err.reason()).isEqualTo(ModuleResolutionException.Reason.IMPORT_CYCLE);
+                assertThat(err.params()).containsEntry("cycle", "risk.Alpha@1 -> risk.Beta@1 -> risk.Alpha@1");
+                assertThat(err.getMessage())
+                    .isEqualTo("Module import cycle detected: risk.Alpha@1 -> risk.Beta@1 -> risk.Alpha@1");
+            });
     }
 
     @Test
@@ -239,6 +315,11 @@ class ModuleResolverIT {
     }
 
     void persistLibrary(String tenantId, String moduleName, Long version, boolean visible, String content) {
+        persistLibrary(tenantId, moduleName, version, visible, content, null);
+    }
+
+    void persistLibrary(String tenantId, String moduleName, Long version, boolean visible, String content,
+                        String aliasSet) {
         PolicyVersion policyVersion = new PolicyVersion(
             "policy-" + tenantId + "-" + moduleName + "-" + version,
             moduleName,
@@ -250,6 +331,7 @@ class ModuleResolverIT {
         policyVersion.tenantId = tenantId;
         policyVersion.version = version;
         policyVersion.libraryVisible = visible;
+        policyVersion.aliasSet = aliasSet;
         policyVersion.persist();
     }
 

@@ -2,14 +2,17 @@ package io.aster.policy.rest;
 
 import io.aster.policy.evidence.AgentIdentity;
 import io.aster.policy.rest.model.EvaluationResponse;
+import io.aster.policy.module.ModuleResolutionException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * evaluate 系列 400 诊断按请求语言出文案（aster-api#445）：code 稳定不变，message 跟随
@@ -69,6 +72,85 @@ class EvaluationDiagnosticsTest {
         var ctrl = catchThrowableOfType(IllegalArgumentException.class,
             () -> AgentIdentity.validated(new AgentIdentity("p", "m\u0001", null, null)));
         assertThat(EvaluationDiagnostics.invalidAgent(ctrl, "hi").error()).contains("agent.model").doesNotContain("控制");
+    }
+
+    // ---------------------------------------------------------------- MODULE_*（aster-api#452）
+
+    private static String moduleMessage(ModuleResolutionException e, String lang) {
+        return EvaluationDiagnostics.module(e, lang).diagnostics().get(0).message();
+    }
+
+    /** module.* 文案随 aster-lang-locales 1.0.42 发布；更早的目录没有时这些译文用例跳过（英文与回退用例照跑）。 */
+    private static void assumeModuleCatalog() {
+        assumeTrue(EvaluationDiagnostics.keys("zh").contains("module.NOT_VISIBLE"),
+            "需要 aster-lang-locales ≥ 1.0.42 的 module.* 文案");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = ModuleResolutionException.Reason.class,
+        names = {"TENANT_REQUIRED", "NOT_VISIBLE", "ALIASES_UNSUPPORTED", "PARSE_FAILED", "RESOLVER_UNAVAILABLE"})
+    void 模块不可见_五种原因对外一律NOT_VISIBLE与通用文案_ADR0015(ModuleResolutionException.Reason reason) {
+        var e = new ModuleResolutionException(reason, "internal detail for " + reason);
+        for (String lang : List.of("en", "zh", "de", "hi")) {
+            EvaluationResponse r = EvaluationDiagnostics.module(e, lang);
+            assertThat(r.diagnostics()).singleElement().satisfies(d -> {
+                assertThat(d.code()).isEqualTo("MODULE_NOT_VISIBLE");
+                assertThat(d.reason()).isEqualTo("NOT_VISIBLE");
+                assertThat(d.candidates()).isEmpty();
+                String expected = EvaluationDiagnostics.keys("en").contains("module.NOT_VISIBLE")
+                    ? EvaluationDiagnostics.text(lang, "module.NOT_VISIBLE") : EvaluationDiagnostics.NOT_VISIBLE_FALLBACK;
+                assertThat(d.message()).isEqualTo(expected).doesNotContain("internal detail");
+            });
+        }
+        assertThat(moduleMessage(e, "en")).isEqualTo("Imported module is not visible");
+        // 细分原因只进服务端日志
+        assertThat(EvaluationDiagnostics.moduleLogFields(e))
+            .contains("code=MODULE_NOT_VISIBLE").contains("reason=" + reason.name());
+    }
+
+    @Test
+    void 模块错误_非不可见类原因对外保留细分() {
+        var path = new ModuleResolutionException(ModuleResolutionException.Reason.EMPTY_PATH,
+            "Imported module path is empty");
+        EvaluationResponse r = EvaluationDiagnostics.module(path, "en");
+        assertThat(r.diagnostics().get(0).code()).isEqualTo("MODULE_VERSION_NOT_FOUND");
+        assertThat(r.diagnostics().get(0).reason()).isEqualTo("EMPTY_PATH");
+        assertThat(r.diagnostics().get(0).message()).isEqualTo("Imported module path is empty");
+    }
+
+    @Test
+    void 模块错误_按请求语言本地化并填参数() {
+        assumeModuleCatalog();
+        var cycle = new ModuleResolutionException(ModuleResolutionException.Reason.IMPORT_CYCLE,
+            "Module import cycle detected: a@1 -> b@1 -> a@1", Map.of("cycle", "a@1 -> b@1 -> a@1"), List.of(), null);
+        assertThat(moduleMessage(cycle, "zh")).isEqualTo("检测到模块循环导入：a@1 -> b@1 -> a@1");
+        assertThat(moduleMessage(cycle, "de")).isEqualTo("Zyklischer Modulimport erkannt: a@1 -> b@1 -> a@1");
+        assertThat(moduleMessage(cycle, "hi")).isEqualTo("मॉड्यूल आयात चक्र मिला: a@1 -> b@1 -> a@1");
+        var notFound = new ModuleResolutionException(ModuleResolutionException.Reason.VERSION_NOT_FOUND,
+            "Imported module version was not found", Map.of(), List.of("1", "2"), null);
+        EvaluationResponse zh = EvaluationDiagnostics.module(notFound, "zh");
+        assertThat(zh.diagnostics().get(0).message()).isEqualTo("未找到导入的模块版本");
+        assertThat(zh.diagnostics().get(0).candidates()).containsExactly("1", "2");
+        assertThat(zh.error()).isEqualTo("未找到导入的模块版本");
+    }
+
+    @Test
+    void 模块错误_不可见文案不含模块名() {
+        assumeModuleCatalog();
+        var e = new ModuleResolutionException(ModuleResolutionException.Reason.NOT_VISIBLE,
+            "Imported module is not visible");
+        for (String lang : List.of("en", "zh", "de", "hi")) {
+            assertThat(moduleMessage(e, lang)).as(lang).doesNotContain("{").doesNotContain("@");
+        }
+    }
+
+    @Test
+    void 模块错误_缺key时退回英文原文() {
+        // 旧构造器 + 目录里没有的 key（模拟引擎新增原因先于文案发布）：message 用 getMessage()
+        var legacy = new ModuleResolutionException(ModuleResolutionException.Code.MODULE_CYCLE,
+            "engine says: link failed");
+        assertThat(EvaluationDiagnostics.moduleText(legacy, "zh", "module.__missing__"))
+            .isEqualTo("engine says: link failed");
     }
 
     @Test
