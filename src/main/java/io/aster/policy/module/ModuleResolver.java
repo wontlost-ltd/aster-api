@@ -39,7 +39,7 @@ public class ModuleResolver implements ModuleGraphResolver {
             String locale) {
         if (tenantId == null || tenantId.isBlank()) {
             throw new ModuleResolutionException(
-                ModuleResolutionException.Code.MODULE_NOT_VISIBLE,
+                ModuleResolutionException.Reason.TENANT_REQUIRED,
                 "Module imports require a tenant context");
         }
         Objects.requireNonNull(rootCore, "rootCore");
@@ -121,12 +121,12 @@ public class ModuleResolver implements ModuleGraphResolver {
     private ModuleKey parsePinnedRef(Decl.Import imp) {
         if (imp.version() == null) {
             throw new ModuleResolutionException(
-                ModuleResolutionException.Code.IMPORT_VERSION_REQUIRED,
+                ModuleResolutionException.Reason.VERSION_REQUIRED,
                 "Import version is required");
         }
         if (imp.path() == null || imp.path().isBlank()) {
             throw new ModuleResolutionException(
-                ModuleResolutionException.Code.MODULE_VERSION_NOT_FOUND,
+                ModuleResolutionException.Reason.EMPTY_PATH,
                 "Imported module path is empty");
         }
         return new ModuleKey(imp.path().trim(), imp.version());
@@ -135,7 +135,7 @@ public class ModuleResolver implements ModuleGraphResolver {
     private ModuleResolutionException notFoundOrNotVisible(String tenantId, ModuleKey key) {
         if (PolicyVersion.existsLibraryVersionInTenant(tenantId, key.moduleName(), (long) key.version())) {
             return new ModuleResolutionException(
-                ModuleResolutionException.Code.MODULE_NOT_VISIBLE,
+                ModuleResolutionException.Reason.NOT_VISIBLE,
                 "Imported module is not visible");
         }
 
@@ -144,9 +144,11 @@ public class ModuleResolver implements ModuleGraphResolver {
             .map(String::valueOf)
             .toList();
         return new ModuleResolutionException(
-            ModuleResolutionException.Code.MODULE_VERSION_NOT_FOUND,
+            ModuleResolutionException.Reason.VERSION_NOT_FOUND,
             "Imported module version was not found",
-            candidates
+            Map.of(),
+            candidates,
+            null
         );
     }
 
@@ -163,7 +165,7 @@ public class ModuleResolver implements ModuleGraphResolver {
         // 在 aliasSet-aware 跨模块解析落地前，拒绝引用带别名的 library 版本，而非静默降级。
         if (version.aliasSet != null && !version.aliasSet.isBlank()) {
             throw new ModuleResolutionException(
-                ModuleResolutionException.Code.MODULE_NOT_VISIBLE,
+                ModuleResolutionException.Reason.ALIASES_UNSUPPORTED,
                 "Imported module uses user-defined keyword aliases; cross-module resolution with "
                     + "aliases is not yet supported (refusing to resolve without them, fail-closed)"
             );
@@ -184,7 +186,7 @@ public class ModuleResolver implements ModuleGraphResolver {
             return parsed;
         } catch (InProcessCnlParser.CnlParseException e) {
             throw new ModuleResolutionException(
-                ModuleResolutionException.Code.MODULE_NOT_VISIBLE,
+                ModuleResolutionException.Reason.PARSE_FAILED,
                 "Imported module could not be parsed",
                 e
             );
@@ -222,9 +224,13 @@ public class ModuleResolver implements ModuleGraphResolver {
         }
         java.util.Collections.reverse(cycle);
         cycle.add(repeated.moduleName() + "@" + repeated.version());
+        String path = String.join(" -> ", cycle);
         return new ModuleResolutionException(
-            ModuleResolutionException.Code.MODULE_CYCLE,
-            "Module import cycle detected: " + String.join(" -> ", cycle)
+            ModuleResolutionException.Reason.IMPORT_CYCLE,
+            "Module import cycle detected: " + path,
+            Map.of("cycle", path),
+            List.of(),
+            null
         );
     }
 

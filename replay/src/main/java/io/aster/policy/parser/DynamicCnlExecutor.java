@@ -532,9 +532,12 @@ public class DynamicCnlExecutor {
         } catch (ModuleResolutionException e) {
             throw new ModuleExecutionException(e);
         } catch (LinkException e) {
+            // 引擎原文不翻译：作为 detail 参数嵌进本地化的外层句子
             throw new ModuleExecutionException(new ModuleResolutionException(
-                ModuleResolutionException.Code.MODULE_CYCLE,
+                ModuleResolutionException.Reason.LINK_FAILED,
                 e.getMessage(),
+                Map.of("detail", e.getMessage() == null ? "" : e.getMessage()),
+                List.of(),
                 e
             ));
         } catch (DynamicExecutionException e) {
@@ -572,7 +575,7 @@ public class DynamicCnlExecutor {
         if (!imports.isEmpty() && modulesEnabled) {
             if (moduleResolver == null) {
                 throw new ModuleResolutionException(
-                    ModuleResolutionException.Code.MODULE_NOT_VISIBLE,
+                    ModuleResolutionException.Reason.RESOLVER_UNAVAILABLE,
                     "Module resolver is unavailable");
             }
             LOG.debugf("解析跨模块 imports: count=%d, tenant=%s", imports.size(), tenantId);

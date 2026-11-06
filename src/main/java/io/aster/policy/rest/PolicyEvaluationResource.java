@@ -788,8 +788,8 @@ public class PolicyEvaluationResource {
                     businessMetrics.endPolicyEvaluation(sample);
                 }
                 var moduleError = e.resolutionException();
-                LOG.warnf("Dynamic CNL module resolution failed: code=%s, message=%s",
-                    moduleError.code(), moduleError.getMessage());
+                LOG.warnf("Dynamic CNL module resolution failed: code=%s, reason=%s, message=%s",
+                    moduleError.code(), moduleError.reason(), moduleError.getMessage());
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
@@ -797,10 +797,7 @@ public class PolicyEvaluationResource {
                 }
                 throw new WebApplicationException(
                     jakarta.ws.rs.core.Response.status(400)
-                        .entity(EvaluationResponse.diagnostic(
-                            moduleError.code().name(),
-                            moduleError.getMessage(),
-                            moduleError.candidates()))
+                        .entity(EvaluationDiagnostics.module(moduleError, requestLanguage(request.locale())))
                         .type(MediaType.APPLICATION_JSON)
                         .build()
                 );
