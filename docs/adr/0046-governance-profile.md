@@ -199,7 +199,9 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 ### 11.2 决策
 
-**D1 档案新要求项 `requires.verifiedInputs: boolean`**（缺省 `false`）。注册表升 `1.2.0`：`eu-ai-act-high-risk` 置 `true`，`governed` 保持 `false`。三份副本（core / ts / cloud）与守护测试同步；`exportControls` 校验新键为布尔。旧引擎读到未知键须忽略（三份副本的解析器今天都只取已知字段，须加一条「未知键不报错」的测试钉住，否则 1.2.0 数据会先于引擎发布到 locales）。
+**D1 档案新要求项 `requires.verifiedInputs: boolean`**（缺省 `false`）。注册表升 `1.2.0`：**所有既有档案（含 `eu-ai-act-high-risk`）保持 `false`**，本版只引入键与校验；`eu-ai-act-high-risk` 翻为 `true` 推迟到 `1.3.0`（时点与条件见 D5）。三份副本（core / ts / cloud）与守护测试同步；`exportControls` 校验新键为布尔。
+
+前置依赖「旧解析器忽略未知 registry 字段」：三份副本的解析器（core `ControlRegistry`、ts `governance/controls.ts`、cloud 的注册表读取）今天都只取已知字段，但没有测试钉住。守护测试**各归各仓**：aster-lang-core、aster-lang-ts、aster-cloud 各加一条「`profiles[].requires` 含未知键时加载成功且该键被忽略」的测试，并**先于 registry 1.2.0 发布**随各自下一次常规发版（core / ts 走 1.0.43 列车，cloud 随下一次部署）；locales 1.2.0 在三者都发布后再发（§11.4 ②）。这样 1.2.0 到达任何消费方时，它的解析器都已被证明忽略新键。
 
 **D2 编译期 E7xx 还是运行期 fail-closed——比较与推荐。**
 
@@ -210,7 +212,44 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 **推荐：B 为执行点，编译器只负责把「规则读了哪些输入」算出来（数据，不是诊断），外加一条判定性错误。** 即：
 
-1. **编译器产出 `inputRefs`**（两引擎同车次，parity 锁定）：对每个返回 Verdict 的规则，静态收集对**第一个参数**（记录型输入）的字段读取路径（`req.context.amount` → `context.amount`），经同模块内规则 / 函数调用传递（参数绑定做别名替换）；对 Map 的非字面量键取值、把输入整体或子记录传给导入模块的函数、或任何无法静态定位到路径的读取，记为 `"*"`。写入 `CoreModel.Func` / `Core.Func` 的可选字段 `inputRefs`（字典序去重；未声明档案的模块**不写**，IR 与 `source_hash` 对既有模块逐字节不变——同 §2 对 `profile` 的处理）。aster-api `RuleMetadata` 增 `inputRefs`。
+1. **编译器产出 `inputRefs`**（两引擎同车次，parity 锁定）：对每个返回 Verdict 的规则，静态收集对**第一个参数**（记录型输入）的字段读取路径（`req.context.amount` → `context.amount`）。写入 `CoreModel.Func` / `Core.Func` 的可选字段 `inputRefs`（字典序去重；未声明档案的模块**不写**，IR 与 `source_hash` 对既有模块逐字节不变——同 §2 对 `profile` 的处理）。aster-api `RuleMetadata` 增 `inputRefs`。
+
+   **静态传播规则（完整、可判定）。** 分析在 lowering 后的 Core IR 上进行，是一个对「输入别名」的前向数据流：每个表达式求得一个**来源集** ⊆ {`<路径>`, `*`, ∅}；规则的 `inputRefs` = 规则体内所有「消费」（条件判断、算术 / 比较 / 字符串运算、`Return` 的参数、传给内置函数的实参）处来源集的并。
+
+   | 构造 | 规则 |
+   |---|---|
+   | 参数引用 `req`（第一个参数） | 来源 {`""`}（根） |
+   | 字段访问 `e.f` | 把 `e` 的每个路径 p 扩成 `p.f`；`e` 含 `*` 则仍为 `*` |
+   | `Let x be e.` / `Set x to e.` | 变量 x 绑定到 `e` 的来源集；之后对 x 的引用取该集合。多次赋值（含分支内赋值）取**并**（流不敏感、路径不敏感：宁可多收不少收） |
+   | 记录构造 `Construct T with f1 = e1 …`、列表字面量 | 结果是**聚合**：按字段 / 元素分别保存来源集；后续 `.f1` 取对应集合。无法按字段分解时（如传入整个聚合再做动态访问）退化为各字段并集 |
+   | 同模块调用 `g(a1, a2)` | 把 g 的形参绑定到实参来源集做**内联求值**（g 的分析结果以形参为符号，调用点代入；递归调用按一次展开后定点，超过 8 层或互递归 → `*`）；g 的返回值来源集是 g 体内 `Return` 表达式的并 |
+   | `Match` / `If` 分支、模式绑定 `When x is Some(v)` | 被匹配表达式的来源集绑定到模式变量；各分支取并 |
+   | 对 Map 用字面量键取值 `m["amount"]` 或 `m.amount` | 路径扩展 `.amount` |
+   | 对 Map 用**非字面量**键取值、迭代 Map 的键 / 值、把 `context`（或任何含输入来源的值）整体转为文本 / 序列化 | **`*`** |
+   | 跨模块调用（`Use` 导入的函数）且任一实参来源集非 ∅ | **`*`**（不分析导入模块；§15–16 之前导入签名契约未落地，见 ADR 0051 §16.3） |
+   | 把输入子记录传给同模块函数 | 不是 `*`：按「同模块调用」内联，子记录的路径前缀随形参代入（`g(req.context)` 中 g 读 `c.amount` → `context.amount`） |
+   | 闭包 / 函数值（ADR 0052 之后允许的函数值、`Apply`） | 调用目标静态可定位（同模块具名函数作为值直接传递）→ 按同模块调用处理；目标来自变量或参数（高阶）→ **`*`** |
+   | 常量、不含输入来源的表达式 | ∅ |
+
+   可判定性：来源集的元素是有限路径（受记录类型深度限制，Map 路径只在字面量键上扩展，长度 ≤ 8 段）加一个顶元 `*`，并集单调，内联深度有上界，因此分析必然终止且结果唯一；两引擎对同一 IR 得到相同集合是 parity 的断言。**不做**：数值 / 字符串的「污点跳过」（`Let n be req.context.amount + 1` 的 n 仍来源 `context.amount`——保守）；条件式剪枝（分支不可达也计入）。
+
+   正反例（`GuardRequest has …, context as GuardContext`；`GuardContext has amount as Decimal, tier as Text, meta as Map of Text to Text`）：
+
+   | 规则片段 | `inputRefs` |
+   |---|---|
+   | `If req.context.amount at least 50000m, …` | `context.amount` |
+   | `Let c be req.context. Let a be c.amount. If a > 0 …` | `context.amount` |
+   | `Let x be req.context.amount. Set x to req.context.tier. If x …` | `context.amount`、`context.tier` |
+   | `Let big be isBig(req.context).`（同模块 `isBig given c as GuardContext` 读 `c.amount`） | `context.amount` |
+   | `If req.context.meta["region"] equals to "EU" …` | `context.meta.region` |
+   | `Let k be req.action. If req.context.meta[k] …` | `*` → E708 |
+   | `Let s be Text.format(req.context) …`（整体序列化） | `*` → E708 |
+   | `Let r be ext.score(req.context.amount).`（`ext` 为 `Use` 导入） | `*` → E708 |
+   | `Let f be pick(req.action). Let v be apply f to req.context …`（函数值来自变量） | `*` → E708 |
+   | `If req.principal_roles contains "ops" …` | `principal.roles`（数组整叶子；与 ADR 0040 §11 D1 一致） |
+   | 规则只用常量与 `req.action` | `action.name` |
+
+   运行时对 `"*"` 的保守处理（写明，供 ⑤ 之前已发布 IR 或 E708 被绕过的情形）：aster-api 在档案要求 `verifiedInputs` 时把 `"*"` 视为「引用全部输入叶子」，即请求中**每个** declared 叶子都算被引用 → DENY `unverified_input`，收据 `unverifiedFields` 写 `["*"]`。编译期 E708 与运行期保守处理是同一条规则的两道门，前者让作者改源码，后者保证前者缺位时不放行。
 2. **E708 `GOV_PROFILE_INPUT_UNRESOLVABLE`（error）**：档案要求 `verifiedInputs` 且某 Verdict 规则的 `inputRefs` 含 `"*"`。消息参数 `rule / profile / construct`。这是唯一的新编译期诊断，它管的是**可判定性**而不是来源：高风险规则必须让「读了什么」静态可见，否则运行期无从比对。aster-api 编译通道保持 error 级（与 E705/E706 同列）；cloud 保存门随之拒绝。
 3. **运行期执行点**在 guard（ADR 0040 §11 D5）：`inputRefs ⊄ verified` → DENY `unverified_input`；IR 无 `inputRefs` 而档案要求 → DENY `input_refs_unavailable`。不新增运行期错误码进共享码表（它们是 `reasonCode`，与 `not_a_verdict` 同类）。
 
@@ -227,7 +266,12 @@ Rule decide given applicant as Applicant, produce Verdict:
 | aster-api | `RuleMetadata.inputRefs`；`GovernanceDiagnostics` E708 error 级；guard 执行点（ADR 0040 §11 D5）；编译响应带 `inputRefs`（供 cloud 编辑器展示「本规则依赖字段」） |
 | aster-cloud | 保存门不改（按 severity）；编辑器 Decision 页签显示 `inputRefs`；签发方设置页（ADR 0040 §11 D3） |
 
-**D5 兼容。** 未声明档案、或档案 `verifiedInputs=false` 的模块：IR、诊断、运行行为逐字节不变。`eu-ai-act-high-risk` 今天的使用者只有信贷试点 `pol-credit-pilot` v3（§6）：它走 `/evaluate-source` + from-evidence，**升级后 from-evidence 决策将因输入 declared 而 DENY**（ADR 0040 §11 D5），试点脚本与 Playwright 的「Credit Officer 批准」步骤会失败——须在 ⑤ 之前二选一：(i) 试点改声明 `governed` 并新增档案 `eu-ai-act-high-risk-pilot`（不要求 verifiedInputs）；(ii) 试点脚本改为附带由测试签发方签名的事实（cloud 需先有附 facts 的能力）。本节倾向 (ii)，因为它顺便验收整条链；由用户拍板（§11.5 Q1）。
+**D5 兼容与翻转时点（默认方案，不留二选一）。** 未声明档案、或档案 `verifiedInputs=false` 的模块：IR、诊断、运行行为逐字节不变。`eu-ai-act-high-risk` 今天的使用者只有信贷试点 `pol-credit-pilot` v3（§6），走 `/evaluate-source` + from-evidence；若该档案在引擎发布时即要求 verifiedInputs，from-evidence 决策会因输入 declared 而 DENY（ADR 0040 §11 D5），试点脚本与 Playwright 的「Credit Officer 批准」步骤失败。因此：
+
+1. **registry 1.2.0（aster-lang-locales）**：只加键，`eu-ai-act-high-risk.requires.verifiedInputs = false`。随 ③ 发布的引擎与 ⑤ 的 aster-api 对任何现有策略**不改变行为**；E708 此时对 `eu-ai-act-high-risk` 模块也不会触发（要求项为 false 时不做 `*` 检查）。
+2. **aster-cloud 具备签发能力**（责任仓 aster-cloud）：(a) 团队设置页维护签发方（ADR 0040 §11 D3）；(b) 执行路由在调用 from-evidence 时可为输入附 facts——第一期只做一个内置签发方「cloud-execution」：cloud 以自己的租户级密钥对**执行人在表单里填写的输入**签名？**不做**——cloud 签名不会把人手填的值变成事实，这与「事实必须来自可信数据源」矛盾。第一期的可信来源限定为：`principal.id`（已由 HMAC 签过）与 cloud **从策略租户数据目录 / 身份系统查得**的值（如执行人的 `businessRoles`）；其他 context 字段仍 declared。(c) 为信贷试点配置一个测试签发方（seed 脚本生成 Ed25519 密钥对、写入 `guard_fact_issuers`），`run-credit-pilot.ts` 与 Playwright 用它对四组 fixture 的 `context.*` 签名后执行，使 from-evidence 在要求 verifiedInputs 时得到 PENDING 而非 DENY。
+3. **registry 1.3.0（aster-lang-locales）**：第 2 项合并并在本地栈跑通（九款状态不变、`reviewers[]` 仍含 Credit Officer）后，把 `eu-ai-act-high-risk.requires.verifiedInputs` 翻为 `true` 并发布；aster-api 与 cloud 升 locales pin。翻转是数据变更，不需要引擎列车（引擎已在 ③ 支持该键）。翻转后，任何声明该档案而没有签名事实的生产策略会在 guard 路径被 DENY——发布 1.3.0 前由用户在生产库只读扫描声明了该档案的策略（SQL 与 ADR 0051 §16.2 的扫描同法），逐一确认有签发方配置。
+4. 期间若有租户想在 1.3.0 前启用：自定义档案可在注册表加 `…-verified` 变体（如 `eu-ai-act-high-risk-verified`，要求 verifiedInputs=true），由该租户策略显式声明。
 
 ### 11.3 验收
 
@@ -239,10 +283,14 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 ### 11.4 分阶段落地顺序（需发版列车）
 
-① 本节与 ADR 0040 §11 / ADR 0041 §11 同车次定稿 → ② aster-lang-locales 发布 registry 1.2.0（数据先行；旧引擎忽略新键，须先有 D1 的守护测试）→ ③ aster-lang-core 与 aster-lang-ts **同车次**：`verifiedInputs`、`inputRefs`、E708、parity 夹具（aster-lang-test）→ ④ locales 补 E708 译文（可与 ② 合并为一次 locales 发布，若 ③ 的码表先定稿）→ ⑤ aster-api 升级引擎 pin（发版列车自动部署）：`RuleMetadata.inputRefs` 与 guard 执行点生效 → ⑥ aster-cloud 升级 pin、编辑器展示、试点改造（D5）。⑤ 之前 aster-api 的执行点因 IR 无 `inputRefs` 不会拒绝任何请求（档案 `verifiedInputs` 在 ② 之前也不存在），顺序颠倒不会误伤。
+① 本节与 ADR 0040 §11 / ADR 0041 §11 同车次定稿 → ①′ aster-lang-core、aster-lang-ts、aster-cloud 各自加「忽略未知 registry 字段」守护测试并随各自下一次常规发版（D1）→ ② aster-lang-locales 发布 registry 1.2.0（只加键，全部档案 `verifiedInputs=false`）→ ③ aster-lang-core 与 aster-lang-ts **同车次**：`verifiedInputs` 解析、`inputRefs`、E708、parity 夹具（aster-lang-test）；E708 的英文模板随码表进 `error_codes.json` → ④ locales 补 E708 zh/de 译文（hi 由 aster-lang-hi）；**译文补发前**，按 ADR 0051 §16.1 R56 的回退规则，aster-api 编译通道与 cloud 编辑器对 E708 显示 `error_codes.json` 的英文模板（码与参数完整，仅文案未本地化），不阻塞 ③/⑤ → ⑤ aster-api 升级引擎 pin（发版列车自动部署）：`RuleMetadata.inputRefs` 与 guard 执行点生效，但因无档案要求 verifiedInputs，不拒绝任何请求 → ⑥ aster-cloud 升级 pin、编辑器展示 `inputRefs`、签发方设置页、from-evidence 附 facts、试点测试签发方（D5 第 2 项）→ ⑦ locales registry **1.3.0** 翻转 `eu-ai-act-high-risk.verifiedInputs=true`，aster-api / cloud 升 locales pin（D5 第 3 项；发布前用户执行生产只读扫描）。②–⑥ 任一顺序颠倒都不会改变现有策略行为；只有 ⑦ 是行为变更点。
 
-### 11.5 待用户拍板
+### 11.5 已选默认与可改项
 
-- Q1 信贷试点在 ⑤ 后的处理：改档案（i）还是附签名事实（ii）。
-- Q2 `inputRefs` 是否也对非 Verdict 函数产出（本节只对 Verdict 规则，范围最小）。
-- Q3 E708 是否同时作为 warning 对未声明档案的 Verdict 规则报出（本节：不报，未声明档案的模块零新增诊断，守 §7 承诺）。
+| 项 | 已选默认（定稿即生效） | 可改为 | 改动影响 |
+|---|---|---|---|
+| `eu-ai-act-high-risk` 的 `verifiedInputs` | 1.2.0 为 `false`；1.3.0 翻 `true`（D5） | 直接在 1.2.0 置 `true` | 信贷试点立即 DENY，须先完成 D5 第 2 项 |
+| 信贷试点迁移 | 配置测试签发方并附 facts（D5 第 2(c) 项） | 改声明不要求 verifiedInputs 的档案变体 | 试点不再验收 R60 整条链 |
+| `inputRefs` 产出范围 | 仅返回 Verdict 的规则（声明档案的模块） | 全部函数 | IR 体积与 parity 语料范围扩大，无运行期消费方 |
+| E708 范围 | 仅声明档案且档案要求 verifiedInputs 的模块；未声明档案的模块**不报**（守 §7「零新增诊断」） | 对未声明档案模块报 warning | 违背 §7 承诺，编辑器噪声 |
+| `*` 的运行期处理 | 视为引用全部输入，DENY `unverified_input`（D2） | — | 放宽即放行未验证输入，不提供选项 |

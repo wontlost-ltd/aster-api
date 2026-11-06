@@ -254,6 +254,8 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 | `factIssuers` | List of Text，≤ 8 项 | `issuer#kid`，字典序 |
 | `unverifiedFields` | List of Text，≤ 64 项 | 仅 DENY `unverified_input` 时：规则引用却为 declared 的路径 |
 | `inputSourcesTruncated` | Boolean | 仅当上述任一列表因预算被缩短时写 `true` |
+| `principalIdentityMatched` | Boolean | ADR 0040 §11 D2 第 3 条：服务端解析是否证实 `principal.id` 即提交者；仅 `principal.type == "user"` 时写 |
+| `factExpiresAt` | Text（ISO-8601） | 本次请求全部 facts 中最早的 `expiresAt`；无 facts 不写。幂等重放的 `factsStale` 不上链（重放不写事件），由本键与签发方表推导 |
 
 3800 字符预算（ADR 0040 §5.2）缩短顺序改为：`reason → agentSession → agentVersion → principalRoles → factIssuers → verifiedFields → unverifiedFields → agentModel → agentProvider → principalType → resourceType → resourceId → actionName → principalId`；列表每轮删末项，首次缩短即置 `inputSourcesTruncated`。身份与完整性键集合不变，`inputSourcesTruncated` 本身永不删除。`decision_id` 列投影不变。
 
