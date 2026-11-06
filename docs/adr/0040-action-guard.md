@@ -524,12 +524,13 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
   "issuer": "idp.example.com", "kid": "2026-11", "alg": "Ed25519",
   "audience": "<tenantId>", "issuedAt": "2026-11-07T01:00:00Z", "expiresAt": "2026-11-07T01:10:00Z",
   "claims": { "context.amount": 250000, "principal.roles": ["ops-bot"] },
+  "sources": { "context.amount": "catalog.ledgerAmount", "principal.roles": "idp.businessRoles" },
   "signature": "<base64url>"
 }]
 ```
 
-- **签名载荷**：`{ alg, audience, claims, expiresAt, issuedAt, issuer, kid }` 以 `sha256-sorted-json/v1` 的同一序列化配方（Jackson `ORDER_MAP_ENTRIES_BY_KEYS`，§5.2）得到字节串，签名作用于该字节串（不再二次哈希；Ed25519 内部自带哈希）。只支持 `Ed25519`（JDK 15+ 内建 `EdDSA`，不引入新依赖）；其他 `alg` → 400 `invalid_fact`。
-- **验签顺序**（在 `flatten` 之后、**幂等查重之前**、评估之前；即 §3.1「请求体先按 §2.2 校验并扁平化，再查键」中的「校验」扩展为「校验 + 验签」，与现有 400 先于查重的口径一致）：`issuer + kid` 在本租户签发方表中且 `enabled`；`audience == tenantId`；`now ∈ [issuedAt − 60 s, expiresAt]` 且 `expiresAt − issuedAt ≤ 24 h`；签名有效；每个 claim 路径在 `action` 中存在，且值与 `action` 中的值**深度相等**（两边都经同一配方规范化后逐字节比较）。任一条不满足 → **整个请求** 400 `invalid_fact`（响应体 `issuer / kid / reason`），不做「静默降级为 declared」：被篡改的事实是攻击信号，不是可忽略的噪声。`claims` 总数 ≤ 64，路径 ≤ 128 字符。
+- **签名载荷**：`{ alg, audience, claims, expiresAt, issuedAt, issuer, kid, sources }` 以 `sha256-sorted-json/v1` 的同一序列化配方（Jackson `ORDER_MAP_ENTRIES_BY_KEYS`，§5.2）得到字节串，签名作用于该字节串（不再二次哈希；Ed25519 内部自带哈希）。只支持 `Ed25519`（JDK 15+ 内建 `EdDSA`，不引入新依赖）；其他 `alg` → 400 `invalid_fact`。
+- **验签顺序**（在 `flatten` 之后、**幂等查重之前**、评估之前；即 §3.1「请求体先按 §2.2 校验并扁平化，再查键」中的「校验」扩展为「校验 + 验签」，与现有 400 先于查重的口径一致）：`issuer + kid` 在本租户签发方表中且 `enabled`；`audience == tenantId`；`now ∈ [issuedAt − 60 s, expiresAt]` 且 `expiresAt − issuedAt ≤ 24 h`；签名有效；每个 claim 路径在 `action` 中存在，且值与 `action` 中的值**深度相等**（两边都经同一配方规范化后逐字节比较）；`sources` 为对象，其键集与 `claims` 的叶子路径集**完全相等**（缺失或多出任一键 → `invalid_fact`），每个值为 ≤ 64 字符的来源标识（aster-api 不解释其含义，只在验签后原样进收据 `factSources`，ADR 0041 §11）。`sources` 受签名覆盖：签发来源不可在签发后被调用方改写。任一条不满足 → **整个请求** 400 `invalid_fact`（响应体 `issuer / kid / reason`），不做「静默降级为 declared」：被篡改的事实是攻击信号，不是可忽略的噪声。`claims` 总数 ≤ 64，路径 ≤ 128 字符。
 - **密钥来源**：aster-api 新表 `guard_fact_issuers`（Flyway `V6.36.0`）：`tenant_id, issuer, kid, alg, public_key`（base64url 原始 32 字节）、`enabled, not_after, created_at, created_by`，唯一 `(tenant_id, issuer, kid)`。管理端点 `GET/PUT/DELETE /api/v1/guard/fact-issuers[/{issuer}/{kid}]`，**仅内部 HMAC 通道**（`InternalCallerFilter` REQUIRE_HMAC，Bearer 403 `internal_only`，与 `from-evidence` 同法）；cloud 团队设置页由 owner/admin 维护（`TeamPermission.MEMBER_UPDATE_ROLE` 同级权限，不新增常量），个人租户同样可配。轮换：同一 issuer 多个 `kid` 同时 `enabled`；吊销 = `enabled=false`（不删行，保留审计）。验签时按 `(tenant, issuer, kid)` 直查表（不缓存；每决策至多 8 次主键查询）。
   - 否决的替代方案：随 API key verify / 快照下发公钥（ADR 0042 §2.2 的角色通道）——签发方是租户级事实，不是 key 级；塞进每个快照既膨胀又让轮换要重推全部 key。
 - **不做**：JWT/JWS 封装（`alg` 混淆与头部可塑性问题；本格式只有一个算法、一个载荷配方）；对 `agent.*` 的事实（模型身份的 `key-bound` 来源仍留 ADR 0041 §10）；跨租户共享签发方。
