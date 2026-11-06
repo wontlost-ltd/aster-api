@@ -96,11 +96,23 @@ final class EvaluationDiagnostics {
      * （{@link #moduleLogFields}）。其它 code 的原因不涉及可见性，照常对外区分。
      */
     static EvaluationResponse module(ModuleResolutionException e, String language) {
+        return module(e, language, (lang, key) -> catalog(lang).get(key));
+    }
+
+    /**
+     * @param lookup (语言, key) → 文案，缺失返回 null；测试注入空目录以验证回退
+     */
+    static EvaluationResponse module(ModuleResolutionException e, String language,
+                                     java.util.function.BiFunction<String, String, String> lookup) {
         if (e.code() == ModuleResolutionException.Code.MODULE_NOT_VISIBLE) {
+            // 对外不带候选、不带细分原因：五种可见性原因与 NOT_FOUND 的响应体逐字段相同
             String key = "module." + ModuleResolutionException.Reason.NOT_VISIBLE.name();
-            String own = catalog(language).getOrDefault(key, catalog(DEFAULT_LANGUAGE).get(key));
+            String own = lookup.apply(language, key);
+            if (own == null) {
+                own = lookup.apply(DEFAULT_LANGUAGE, key);
+            }
             return EvaluationResponse.diagnostic(e.code().name(), ModuleResolutionException.Reason.NOT_VISIBLE.name(),
-                own != null ? own : NOT_VISIBLE_FALLBACK, e.candidates());
+                own != null ? own : NOT_VISIBLE_FALLBACK, List.of());
         }
         return EvaluationResponse.diagnostic(e.code().name(), e.reason().name(),
             moduleText(e, language, "module." + e.reason().name()), e.candidates());
