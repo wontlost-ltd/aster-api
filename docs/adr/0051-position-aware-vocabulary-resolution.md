@@ -431,3 +431,27 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 4. **错误定位**：缺失模块、循环导入须指向 `Use` 语句位置。
 
 **延后理由。** 在出现真实跨模块消费方（模块加载器接入 aster-api / cloud 编译路径）之前只扩数据结构没有端到端调用路径，也无法写出非空 parity；排期时与模块解析一起做，两项拆为两个提交（先 RHS，后导入模型）。不进入 1.0.41。
+
+### 16.4 lowering 诊断码段 E600–E606（aster-lang-ts#302 / aster-lang-core#247）
+
+**背景。** ts `compile()` 的 lowering（AST → Core IR）失败此前只有英文字符串（`loweringErrors`），cloud 只能标为 E000。本修订把 lowering 诊断纳入共享码表，并给 lowering 阶段的内部异常一个固定码。
+
+**码表（category=`lowering`，severity=`error`）。**
+
+| 码 | 名称 | 参数 | 英文模板 | ts 发出 | core 发出 |
+|---|---|---|---|---|---|
+| E600 | LOWER_UNKNOWN_DECL_KIND | kind | `Unknown declaration kind: {kind}` | 是 | 否 |
+| E601 | LOWER_UNKNOWN_EFFECT | effect, valid | `Unknown effect '{effect}', valid values: {valid}` | 是 | 否 |
+| E602 | LOWER_UNKNOWN_STMT_KIND | kind | `lowerStmt: unhandled statement kind '{kind}'` | 是 | 否 |
+| E603 | LOWER_UNKNOWN_EXPR_KIND | kind | `Unknown expression kind: {kind}` | 是 | 否 |
+| E604 | LOWER_UNKNOWN_PATTERN_KIND | kind | `Unknown pattern kind: {kind}` | 是 | 否 |
+| E605 | LOWER_UNKNOWN_TYPE_KIND | kind | `Unknown type kind: {kind}` | 是 | 否 |
+| E606 | LOWER_INTERNAL_ERROR | detail | `Internal error during lowering: {detail}` | 是 | 否 |
+
+**与 §16.1 区间规则的关系。** §16.1 定稿：E033–E069 原本全空，解析诊断取 E050–E069，**E033–E049 留给类型检查扩展**。lowering 不属于类型检查，故不占 E033–E049；E070 起为 PII、E100–E104/W105–W106 为作用域与 workflow 警告，均无整段空位。E600–E699 是共享码表中唯一整段空置的百位段，沿用既有「每类一百位」惯例（E1xx scope、E2xx effect、E3xx capability、E4xx pii、E5xx async、E7xx governance、E8xx resolution）分配给 lowering，E600–E606 已用，E607–E699 保留给同类扩展。
+
+**只在 ts 发出。** E600–E605 是 ts lowering 对 AST 节点种类 / 效果值的不变量守卫，任何源码都无法直接触发（解析器只产出已知节点；未知效果名在解析期即报 E056/E064，未知能力名按 #296 原样进 `effectCaps`）；E606 是 ts `compile()` 对 resolveAndLower 调用的非诊断异常统一码。core `CoreLowering` 对 sealed AST 做穷尽 switch（`lowerCaseBody` 的运行期兜底已删除），没有可达的 lowering 发出点，因此 core 只登记码表（`ErrorCodeParityTest` 锁定 byte-identical），共享夹具 `lowering_diagnostics_parity.json` 在 core 侧守「按 params 渲染模板得到相同英文 message」的渲染 parity。aster-api 按码 + params 渲染 ts 产出的 lowering 诊断时两端文本一致。
+
+**接口。** ts `CompileResult` 新增 `loweringDiagnostics?: TypecheckDiagnostic[]`（与 `resolutionDiagnostics` 同形，`data` 为命名参数，按 lexicon 本地化、缺译回退英文）；`loweringErrors?: string[]` 标 deprecated 并行保留一个 minor（与 R56 的 `legacyCode` 过渡同理），cloud 改读新字段后删除。译文由 aster-lang-locales / aster-lang-hi 随 locales#126 补齐，期间 ts overlay 校验只对 category=lowering 豁免缺译。
+
+Refs aster-cloud/aster-lang-ts#302、aster-cloud/aster-lang-core#247。
