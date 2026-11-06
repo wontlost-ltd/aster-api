@@ -132,7 +132,9 @@ class EvaluateEvidenceEventTest {
    */
   @Test
   void evaluate版本与门禁一致且切换后指向新版本() throws Exception {
-    String module = "evidence.switch." + RUN;
+    // 模块段须是合法标识符：RUN 可能以数字开头（CNL 语法错误），故映射为纯字母
+    String module = "evidence.switch." + RUN.chars().mapToObj(c -> String.valueOf((char) ('a' + Character.digit(c, 16))))
+        .reduce("", String::concat);
     String function = DeployedMapParamProbeTest.FUNCTION;
     String source = DeployedMapParamProbeTest.SOURCE.replace("Module guard.probe.", "Module " + module + ".");
     Long v1 = DeployedMapParamProbeTest.deploy(TENANT, module, function, source);
