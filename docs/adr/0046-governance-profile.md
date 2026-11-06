@@ -184,3 +184,65 @@ Rule decide given applicant as Applicant, produce Verdict:
 - 子项目 6b：Cedar 编译目标（REQUIRE_APPROVAL/ESCALATE 的表达方式、可翻译子集与 schema 生成）。
 - 租户级「强制档案」（租户要求其所有策略必须声明某档案）。
 - 档案要求的扩展（如强制 `@reason`、禁止某些结论类型）。
+
+## 11. 2026-11 修订：档案可要求高风险规则只引用已验证字段（R62）
+
+状态：**PROPOSED**（2026-11-07 起草，待用户评审）。本节定稿前不得据此合并实现；定稿后与正文冲突时以本节为准。
+相关：wontlost-ltd/aster-api#461；ADR 0040 §11 R60（来源模型与执行点）、ADR 0041 §11 R61（收据键）、ADR 0045 §2.2（注册表三份副本与守护测试）、ADR 0031（错误码单一来源）。
+
+### 11.1 现状
+
+- 档案要求只有三项：`ruleId / registeredControls / frameworks`（§3；`aster-lang-locales/controls/registry.json:26-34`，core `ControlRegistry.Profile` 记录 `ControlRegistry.java:44`，ts `governance.ts:140`）。检查对象是注解，不涉及规则读了哪些输入。
+- 两个编译器的治理检查器（core `GovernanceChecker.java:40-117`、ts `governance.ts:100-198`）按规则报 E706；错误码 E701–E707 已用，E708–E719 空闲，E720–E724 为 Cedar（ADR 0047）。
+- aster-api 从模块 IR 读规则元数据：`replay/.../governance/RuleMetadata.java:11` `RuleMetadata(ruleId, controls, profile)`，评估路径经 `PolicyEvaluationService.java:322-327` 带出；guard 路径复用评估结果（§6 行 102 曾声明 guard 不在本 ADR，本节把它纳入）。
+- 运行期：guard 请求没有字段来源概念（ADR 0040 §11.1）。
+
+### 11.2 决策
+
+**D1 档案新要求项 `requires.verifiedInputs: boolean`**（缺省 `false`）。注册表升 `1.2.0`：`eu-ai-act-high-risk` 置 `true`，`governed` 保持 `false`。三份副本（core / ts / cloud）与守护测试同步；`exportControls` 校验新键为布尔。旧引擎读到未知键须忽略（三份副本的解析器今天都只取已知字段，须加一条「未知键不报错」的测试钉住，否则 1.2.0 数据会先于引擎发布到 locales）。
+
+**D2 编译期 E7xx 还是运行期 fail-closed——比较与推荐。**
+
+| 方案 | 能回答什么 | 回答不了什么 |
+|---|---|---|
+| A 编译期错误（E7xx）：规则引用的字段必须被声明为 verified | 作者在编辑器里即时得到反馈；档案保存门能挡 | **来源是每个请求的事实**（这次有签名、下次没有），编译器看不到请求；要让它可判定，作者必须在源码里**声明**某字段是 verified——但作者无权替部署环境担保，这等于让被约束者自证合规；还会让来源进入 IR 与 `source_hash`，同一策略在不同接入方（有无签发方）之间无法复用 |
+| B 运行期 fail-closed：guard 按本次请求的实际来源拒绝 | 以事实为准，与 ADR 0040 的 fail-closed 哲学一致；接入方换签发方不改策略 | 运行期不知道规则**读了哪些**字段——除非编译器把它算出来；没有静态引用集就只能要求「全部输入 verified」，过严到不可用 |
+
+**推荐：B 为执行点，编译器只负责把「规则读了哪些输入」算出来（数据，不是诊断），外加一条判定性错误。** 即：
+
+1. **编译器产出 `inputRefs`**（两引擎同车次，parity 锁定）：对每个返回 Verdict 的规则，静态收集对**第一个参数**（记录型输入）的字段读取路径（`req.context.amount` → `context.amount`），经同模块内规则 / 函数调用传递（参数绑定做别名替换）；对 Map 的非字面量键取值、把输入整体或子记录传给导入模块的函数、或任何无法静态定位到路径的读取，记为 `"*"`。写入 `CoreModel.Func` / `Core.Func` 的可选字段 `inputRefs`（字典序去重；未声明档案的模块**不写**，IR 与 `source_hash` 对既有模块逐字节不变——同 §2 对 `profile` 的处理）。aster-api `RuleMetadata` 增 `inputRefs`。
+2. **E708 `GOV_PROFILE_INPUT_UNRESOLVABLE`（error）**：档案要求 `verifiedInputs` 且某 Verdict 规则的 `inputRefs` 含 `"*"`。消息参数 `rule / profile / construct`。这是唯一的新编译期诊断，它管的是**可判定性**而不是来源：高风险规则必须让「读了什么」静态可见，否则运行期无从比对。aster-api 编译通道保持 error 级（与 E705/E706 同列）；cloud 保存门随之拒绝。
+3. **运行期执行点**在 guard（ADR 0040 §11 D5）：`inputRefs ⊄ verified` → DENY `unverified_input`；IR 无 `inputRefs` 而档案要求 → DENY `input_refs_unavailable`。不新增运行期错误码进共享码表（它们是 `reasonCode`，与 `not_a_verdict` 同类）。
+
+**D3 字段来源在哪里声明：Guard 契约，不是规则源码。** 来源是请求级事实，由调用方以签名事实片段携带、由 aster-api 验签后标定（ADR 0040 §11 D2/D3）。规则源码**不出现**来源声明（不设 `Verified Decimal` 之类的类型修饰）；源码只通过引用间接表达「哪些字段重要」。理由：(1) 担保者与被约束者分离——作者写规则，接入方证明事实，aster-api 裁决；(2) 同一策略可在有 / 无签发方的环境复用，`source_hash` 不随部署环境漂移；(3) 对 aster-lang-core / ts 的改动收敛为「算引用集 + 一条诊断」，不动类型系统、不动求值器、不动 parity 语料的 IR。
+
+**D4 对 aster-lang-core / ts 的影响面。**
+
+| 仓 | 改动 |
+|---|---|
+| aster-lang-core | `ControlRegistry.Profile` 增 `verifiedInputs`；`GovernanceChecker` 增 `inputRefs` 收集（在 lowering 后的 Core IR 上遍历 `FieldAccess` / `Call`，复用现有 Func 级遍历）与 E708；`CoreModel.Func.inputRefs` 可选字段与序列化；`ErrorCode` 加 E708；`error_codes.json` 加码 |
+| aster-lang-ts | 同上：`governance.ts`、`Core.Func.inputRefs`、`error_codes.ts` 生成物；`ErrorCodeParityTest` 两侧锁定 |
+| aster-lang-locales | `registry.json` 1.2.0；E708 的 zh/de 诊断译文（与 ADR 0051 §16.1 R56 同一 overlay 机制；hi 由 aster-lang-hi 同法补；缺译回退英文） |
+| aster-lang-test | 夹具：声明高风险档案的规则（a）全部读取可定位 → 无 E708 且 `inputRefs` 两引擎逐字相同；（b）Map 动态键 → E708；（c）未声明档案 → IR 无 `inputRefs`、与现有 golden 逐字节相同 |
+| aster-api | `RuleMetadata.inputRefs`；`GovernanceDiagnostics` E708 error 级；guard 执行点（ADR 0040 §11 D5）；编译响应带 `inputRefs`（供 cloud 编辑器展示「本规则依赖字段」） |
+| aster-cloud | 保存门不改（按 severity）；编辑器 Decision 页签显示 `inputRefs`；签发方设置页（ADR 0040 §11 D3） |
+
+**D5 兼容。** 未声明档案、或档案 `verifiedInputs=false` 的模块：IR、诊断、运行行为逐字节不变。`eu-ai-act-high-risk` 今天的使用者只有信贷试点 `pol-credit-pilot` v3（§6）：它走 `/evaluate-source` + from-evidence，**升级后 from-evidence 决策将因输入 declared 而 DENY**（ADR 0040 §11 D5），试点脚本与 Playwright 的「Credit Officer 批准」步骤会失败——须在 ⑤ 之前二选一：(i) 试点改声明 `governed` 并新增档案 `eu-ai-act-high-risk-pilot`（不要求 verifiedInputs）；(ii) 试点脚本改为附带由测试签发方签名的事实（cloud 需先有附 facts 的能力）。本节倾向 (ii)，因为它顺便验收整条链；由用户拍板（§11.5 Q1）。
+
+### 11.3 验收
+
+1. 两引擎对夹具 (a)(b)(c) 结论一致；`inputRefs` 字典序、经调用传递、`"*"` 判定逐项有正反例。
+2. 既有 parity 语料（parse / ir / eval）零差异；未声明档案模块 `source_hash` 不变。
+3. aster-api 编译端点：高风险档案 + 动态键 → E708 error、`success: true`（与 E706 同口径）；cloud 保存 400 `compile_error`。
+4. guard：ADR 0040 §11.3 第 4 条。
+5. 注册表 1.2.0 对旧引擎（1.0.42 pin）加载不报错（守护测试）。
+
+### 11.4 分阶段落地顺序（需发版列车）
+
+① 本节与 ADR 0040 §11 / ADR 0041 §11 同车次定稿 → ② aster-lang-locales 发布 registry 1.2.0（数据先行；旧引擎忽略新键，须先有 D1 的守护测试）→ ③ aster-lang-core 与 aster-lang-ts **同车次**：`verifiedInputs`、`inputRefs`、E708、parity 夹具（aster-lang-test）→ ④ locales 补 E708 译文（可与 ② 合并为一次 locales 发布，若 ③ 的码表先定稿）→ ⑤ aster-api 升级引擎 pin（发版列车自动部署）：`RuleMetadata.inputRefs` 与 guard 执行点生效 → ⑥ aster-cloud 升级 pin、编辑器展示、试点改造（D5）。⑤ 之前 aster-api 的执行点因 IR 无 `inputRefs` 不会拒绝任何请求（档案 `verifiedInputs` 在 ② 之前也不存在），顺序颠倒不会误伤。
+
+### 11.5 待用户拍板
+
+- Q1 信贷试点在 ⑤ 后的处理：改档案（i）还是附签名事实（ii）。
+- Q2 `inputRefs` 是否也对非 Verdict 函数产出（本节只对 Verdict 规则，范围最小）。
+- Q3 E708 是否同时作为 warning 对未声明档案的 Verdict 规则报出（本节：不报，未声明档案的模块零新增诊断，守 §7 承诺）。

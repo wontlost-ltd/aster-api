@@ -226,3 +226,95 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 - 通知依赖的 `after()` 在 OpenNext/Cloudflare 运行时的行为未验证（请求作用域外的回退已有单测，生产运行时未实测）。
 - `InternalCallerFilter` 在 nonce 校验之前就写入 `HMAC_VERIFIED_PROP`：无害——重放请求随即被 nonce 校验以 409 拒绝，且身份属性只在 nonce 通过后写入。
 - api `PolicyGraphQLResourceTest` 的 LargeVolume 用例引发的连带超时是既有测试套件问题，与本 ADR 无关。
+
+## 11. 2026-11 修订：审批视图携带脱敏后的决策输入与输入快照哈希（R59）
+
+状态：**PROPOSED**（2026-11-07 起草，待用户评审）。本节定稿前不得据此合并实现；定稿后与正文冲突时以本节为准。
+相关：wontlost-ltd/aster-api#460（EU AI Act Art.14 人工监督：审批人须能理解输入）；ADR 0040 §3.3 / §5.2（不存明文 context）、ADR 0041 §5.2（`reviewers[]`）、ADR 0044 §3.1（14(4)(a)/(b) 判定）、aster-api ADR 0015「已锁决策」（租户隔离铁律、visibility-safe 不泄露存在性）、ADR 0040 §11 R60（字段来源，与本节同车次评审）。
+
+### 11.1 现状（已核对 origin/main 772855f）
+
+- `src/main/java/io/aster/guard/api/GuardApprovalView.java:18-22`：审批列表项只有 `actionName / comment / controls / createdAt / decidedAt / decidedBy / decisionId / evidenceCorrelationId / expiresAt / id / outcome / policyFunction / policyModule / principalId / reason / requiredRole / resourceId / resourceType / ruleId / status`，没有任何输入值。
+- `GuardDecisionEntity.java:35` 只有 `context_hash`；ADR 0040 §3.3（行 207）与 §5.2（行 337）明确「不存明文 context」，`GuardReceiptBuilder.java:29`「明文 context 绝不进入收据」。所以审批人今天**不可能**看到输入：数据根本没有落库，不是视图没暴露。
+- `GuardApprovalService.java:77-95` `decideApproval` 只写 `decidedBy / decidedAt / comment`；审批事件 metadata（`GuardReceiptBuilder.java:112-125`）无任何输入引用。审批记录因此证明不了「审批人看过什么」。
+- cloud 收件箱 `src/app/[locale]/(dashboard)/approvals/approvals-content.tsx:80-88` 只渲染 `policyModule.policyFunction`、`actionName → resource`、`reason`；`src/lib/approvals-inbox.ts:25` `InboxItem = GuardApprovalItem & {tenantId, tenantName, canAct}`。
+- 证据包复核者 `src/services/evidence/reviewers.ts:16-24` 七字段（ADR 0041 §5.2），无输入引用；manifest 当前 `schemaVersion '5'`（`types.ts:113`）。
+- 编译期 PII 标记已存在：core `CoreModel.PiiType`（`aster/core/ir/CoreModel.java:252-257`：`baseType / sensitivity(L1–L3) / category`），ts `Core.PiiType`（`src/types.ts:736-742`），源码语法 `@pii(L2, email) Text`（`src/types.ts:486`）；E070/E072/E073、E400–E404 由 `PiiTypeChecker` 报出。已部署版本的 Core IR 存于 `policy_versions.core_json`（`PolicyVersion.java:279-281`），aster-api 可以从中读出规则输入记录各字段的 `PiiType`，不需要引擎改动。
+- 运行期脱敏只有模式识别：`AuditChainAppender.java:201-207` 对收据顶层 String 值用 `PIIRedactor`（SSN / 邮箱 / 电话 / 信用卡 / IP 正则），不是字段级，也不知道业务含义。
+
+### 11.2 决策
+
+**D1 存输入（只存需要人看的）。** 新表 `guard_decision_inputs`（Flyway `V6.35.0`）：`decision_id UUID PK → guard_decisions.id`、`tenant_id`、`action_json JSONB`（请求的 `GuardActionRequest.Action` 原样：principal / action / resource / context / agent；上界与 ADR 0040 §2.2 一致，context ≤ 64 KB）、`context_hash`（与 `guard_decisions.context_hash` 同值，读取时复核）、`pii_marks JSONB`（决策时算出的字段标记快照，D2）、`created_at`。
+
+- 只对 `outcome ∈ {REQUIRE_APPROVAL, ESCALATE}` 的决策写入：ALLOW / DENY 没有人要看，ADR 0040 §3.3「决策行不存明文 context」对这两类结论维持原状。
+- 与决策行、审批行写在**同一个** `requiringNew` 事务里（ADR 0040 §3.3 行 214 的原则）：不会出现「有待审批却没有输入」的半写状态。`from-evidence` 决策同样写入（`action` 来自 cloud 以 HMAC v3 签过的请求体，§3.1）。
+- **不进审计链**：链上仍只有 `contextHash`（4 KB 预算，ADR 0040 §5.2）。输入行的真实性由 `context_hash` 复核：读取时重算 `sha256-sorted-json/v1` 与决策行比对，不等 → 视图状态 `integrity_failed`，不展示。
+- 保留期：审批到达终态（APPROVED / REJECTED / EXPIRED）后 `aster.guard.input-retention=${ASTER_GUARD_INPUT_RETENTION:P90D}` 到期由与 `GuardApprovalExpiryScheduler` 同构的调度器删除输入行（`guard_decisions` 不动）；删除后视图状态 `purged`。PENDING 期间不删。
+
+**D2 字段级脱敏规则（默认打码，按已验证业务角色解除）。**
+
+标记来源：决策时读该版本 `core_json`，取 `policyFunction` 第一个参数的记录类型（ADR 0040 §2.2 的 `GuardRequest`），对其每个字段，以及当 `context` 字段声明为具名记录类型时该记录的每个字段（递归到嵌套记录），收集 `PiiType` 的 `sensitivity / category`，得到 `pii_marks: [{ "path": "context.email", "level": "L2", "category": "email" }, …]`。规则：
+
+| 输入路径 | 处理 |
+|---|---|
+| `principal.id / principal.type / principal.roles / action.name / resource.type / resource.id / agent.*` | **明文**。它们是身份与结构键，已经明文进收据（ADR 0040 §5.2 行 335），列表项今天就带 `principalId / actionName / resourceId` |
+| `context.<path>` 在记录类型里声明且**无** `@pii` | 明文 |
+| `context.<path>` 声明为 `@pii(level, category)` | 打码：值替换为 `{ "$pii": { "level": "L2", "category": "email" } }`，不给长度、不给前后缀 |
+| `context.<path>` **未在记录类型里声明**（含 `context` 本身只声明为 Map 的现状） | 打码：`{ "$pii": { "level": "unknown" } }`。未经 PII 分析的键不能证明可看，fail-closed；与 E404「分析失败即不可部署」同精神 |
+| 任何仍为明文的 String 值 | 再过一遍 `PIIRedactor`（第二层，与收据同一正则集合；`AuditChainAppender.isRedactionExempt` 的身份键豁免同样适用）。代价：与 ADR 0040 §9 终审条目同类的误伤（约 1/800 的 UUID 形态 id 被信用卡正则改写）——只影响展示，不影响哈希比对 |
+
+解除打码（`reveal=true`）：仅当审批行 `status = PENDING` 且审批人**已验证**业务角色（`RequestIdentityResolver.businessRoles()`，§2.2–§2.3）包含审批行 `required_role`；ESCALATE 无所需角色 → 不可解除；owner/admin 无角色 → 不可解除（与 §5.2「管理员只读」一致）。解除只还原**已声明**的 `@pii` 字段；`level: unknown` 的键任何人都看不到原值。解除写 `guard_approvals.input_revealed_at`（首次解除时刻，幂等）。403 `reveal_not_permitted`（响应体附 `verifiedRoles`，与 `role_mismatch` 同形）。
+
+与 ADR 0015 对齐：输入端点与审批端点同一租户隔离与 404 口径（非法 UUID 与跨租户一律 `approval_not_found`，不泄露存在性，ADR 0040 §4.2）；输入只经审批行可达，没有「按 decisionId 直接拉输入」的路径；`from-evidence` 的 HMAC 通道与 Bearer 通道规则沿用 §4.2 的旁路集合（前缀 `/api/v1/guard/approvals/` 已覆盖新路径）。
+
+**D3 审批记录「看到的输入」快照哈希。**
+
+`inputSnapshotHash = sha256-sorted-json/v1`（ADR 0040 §5.2 的同一配方）作用于服务端**实际返回**的视图体 `{ decisionId, contextHash, input, piiMarks, maskRules: "v1", revealed }`；视图自带该哈希。审批时：
+
+1. approve / reject 请求体增加可选 `inputSnapshotHash`。服务端按「审批人角色 + `input_revealed_at` 是否已置」重算当前视图哈希：相等 → `input_snapshot_attested = true`；不等 → 409 `input_snapshot_mismatch`（输入不可变，只会在脱敏规则版本变化时出现，UI 提示刷新）；未提供（旧 SDK）→ 记服务端算出的哈希，`attested = false`。
+2. `guard_approvals` 新列（同 `V6.35.0`）：`input_snapshot_hash VARCHAR(64)`、`input_snapshot_attested BOOLEAN`、`input_revealed_at`。
+3. 审批事件 metadata 新键 `inputSnapshotHash`（身份键：加入 `AuditChainAppender.isRedactionExempt` 白名单，永不缩短）、`inputSnapshotAttested`、`inputRevealed`、`inputStatus`（`available | unavailable | purged | integrity_failed`）；`comment` 仍是唯一可缩短的键（ADR 0040 §5.2）。过期事件（SYSTEM）不写这些键。
+4. 快照哈希的含义是「审批人在该脱敏规则版本与该角色下被呈现的视图」，不是明文输入的哈希（明文由 `contextHash` 负责）。两者并列保存，审计方可核对：输入未变（contextHash）、审批人看到的确是该输入的某个脱敏投影（inputSnapshotHash + maskRules + revealed）。
+
+**D4 接口与下游字段变化。**
+
+| 产物 | 变化 |
+|---|---|
+| aster-api `GET /api/v1/guard/approvals/{id}/input?reveal=false` | 新端点（MEMBER；HMAC 或 Bearer）。响应 `GuardApprovalInputView`（字母序、null 不写）：`approvalId, contextHash, decisionId, input{principal,action,resource,context,agent}, inputSnapshotHash, maskRules, piiMarks[], revealed, status`。`status ≠ available` 时无 `input / piiMarks`。写入 `public-api-contract.golden` |
+| `GuardApprovalView`（列表项） | 只增 `inputStatus`、`inputSnapshotHash`（已决且有记录时）、`inputRevealed`；**不**内嵌输入（一页 200 项 × 64 KB） |
+| approve / reject 请求体 | `{ comment?, inputSnapshotHash? }` |
+| 审批事件 metadata | D3 第 3 项 |
+| `GET /api/v1/audit/receipts?decisionIds=` 的 `approvals[]` | 增 `inputSnapshotHash`、`inputSnapshotAttested`、`inputRevealed`、`inputStatus`（取自该事件 metadata） |
+| aster-guard SDK `GuardApproval` | 增可选 `inputStatus / inputSnapshotHash / inputRevealed`；新增 `getApprovalInput(id, { reveal? })`；`approve / reject` 选项增 `inputSnapshotHash` |
+| aster-cloud `PolicyApiClient` | 增 `getGuardApprovalInput(id, reveal)`（v3 签名，8 s 超时）；新路由 `GET /api/approvals/[tenantId]/[approvalId]/input?reveal=` 以当前用户身份转发 |
+| cloud 收件箱 | 行展开面板显示输入：声明字段明文，`$pii` 以徽标（级别 / 类别）呈现；「显示原值」按钮仅在 `canAct && requiredRole != null` 出现，点击即调用 `reveal=true`（一次解除即留痕）；批准 / 拒绝对话框把当前展示的 `inputSnapshotHash` 一并提交；`status ≠ available` 显示对应文案（旧决策无输入 / 已清理 / 完整性失败），仍允许审批 |
+| 证据包 | `Reviewer` 增 `inputSnapshotHash: string \| null`、`inputRevealed: boolean \| null`（`guard-approval` 来源取收据接口值；`policy-proof / version-approval` 为 null）。两字段进 `bundleHash`；manifest `schemaVersion: '6'`，v5 冻结只读（与 v1–v4 同法）。ADR 0044 §3.1 的 14(4)(a)：存在 `inputSnapshotHash` 非空的 `guard-approval` 复核者 → `evidenced`（原 `partial` 条件保留为次选）；14(4)(b) 仍恒 `none`——有快照不等于没有偏见 |
+
+**D5 迁移与兼容（旧审批无快照时如何显示）。**
+
+- 纯增量：一张新表、三个新列、一个新端点、若干可选字段；既有端点与响应形状不变，旧 SDK / 旧 cloud 可继续审批。
+- 修订前的决策没有输入行 → `inputStatus: unavailable`，输入端点返回 `status: "unavailable"`（200，不是 404），收件箱显示「本决策早于输入快照功能」；审批照常允许，审批事件记 `inputStatus: unavailable`、`inputSnapshotHash` 缺省（不写键）。证据包 Reviewer `inputSnapshotHash: null`。不回填。
+- 修订前已导出的 v1–v5 证据包按原样下载、不重算（ADR 0041 §5.3 既有规则）。
+- `context` 仍声明为 Map 的策略：全部 context 键按 `level: unknown` 打码，审批人只看到键名与「不可见」徽标。要让字段可见或按级别打码，策略作者把 `context` 声明为具名记录（`Define GuardContext has amount as Decimal, email as @pii(L2, email) Text.` 并在 `GuardRequest` 中 `context as GuardContext`）。运行期仍传 Map（ADR 0040 §2.3 的 `allowMapAccess` 机制对嵌套记录同样成立），**此点须由探针测试先行证实**（与 §2.3 `DeployedMapParamProbeTest` 同法）；探针失败则本修订退回设计。
+- 回滚：删端点与写入路径；新表、新列、新事件键留存无害。
+
+### 11.3 验收
+
+1. 部署带 `@pii` 字段的 guard 策略，提交 REQUIRE_APPROVAL 决策 → 输入端点：无角色成员看到 `$pii` 徽标与未声明键的 `unknown`；持 `requiredRole` 者 `reveal=true` 得到声明字段原值、`unknown` 键仍不可见、`input_revealed_at` 落库。
+2. approve 带正确 `inputSnapshotHash` → `attested = true`，审批事件 metadata 含 `inputSnapshotHash / inputRevealed`；带错误哈希 → 409；不带 → `attested = false`。
+3. 修订前决策（测试里直接删除输入行模拟）→ `status: unavailable`，审批可完成，事件记 `inputStatus: unavailable`。
+4. 篡改 `action_json`（SQL）→ `status: integrity_failed`。
+5. 跨租户 / 非法 id → 404 `approval_not_found`，响应体与审批端点一致。
+6. `GET /api/v1/audit/receipts?decisionIds=` 的 `approvals[]` 带新键；cloud 证据导出 `schemaVersion '6'`，`reviewers[].inputSnapshotHash` 与收据一致，14(4)(a) 为 `evidenced`。
+7. 列表端点一页 200 项响应体不含输入；`PublicApiContractTest`、`MigrationGovernanceTest`、`AuditIdentifierRedactionTest`（新白名单键）通过。
+8. cloud 收件箱 Playwright：无角色成员无「显示原值」按钮；DPO 解除后批准，日志页与证据包可追溯。
+
+### 11.4 分阶段落地顺序
+
+① 本节定稿（与 ADR 0040 §11 R60 同车次评审，字段来源徽标与 PII 徽标在收件箱同一面板）→ ② **aster-api**（探针 → `V6.35.0` → 输入落库与标记计算 → 输入端点 → approve 快照 → 事件键与收据接口 → 契约 golden）；纯 aster-api 改动，**不需要引擎发版列车**（`PiiType` 已在 Core IR 里）→ ③ aster-guard SDK（可选字段与新方法，独立版本）→ ④ aster-cloud（client、路由、收件箱面板、证据包 v6、Article 14 判定）。② 与 ④ 反序不坏：旧 cloud 不读新字段；新 cloud 对旧 api 的输入端点 404 → 收件箱按「不可用」显示。
+
+### 11.5 待用户拍板
+
+- Q1 保留期默认 90 天是否合适（涉及 PII 的存储期限，宜由用户按合规要求定）。
+- Q2 解除打码的角色是否只限 `required_role`；是否需要租户级「PII 查看角色」配置（本节未做，留作后续）。
+- Q3 ALLOW / DENY 决策不存输入（本节选择）；若事后审计也要看 ALLOW 的输入，须改为全量存储并重估保留期。

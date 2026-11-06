@@ -232,3 +232,50 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 - 内部调用者 HMAC 签名覆盖查询串（§7.1）。
 - `source: "key-bound"` 模型身份；证据包签名或链锚定引用；`agent.session` 的跨请求关联。
 - `/evaluate` 事件异步落链的丢失率监控（missing 计数指标）。
+
+## 11. 2026-11 修订：决策事件与证据包的逐字段来源（R61）
+
+状态：**PROPOSED**（2026-11-07 起草，待用户评审）。本节定稿前不得据此合并实现；定稿后与正文冲突时以本节为准。
+相关：wontlost-ltd/aster-api#461；ADR 0040 §11 R60（请求契约与验签）、ADR 0046 §11 R62（Profile 要求）、ADR 0042 §11 R59（审批快照键，同车次）。
+
+### 11.1 现状
+
+- `ACTION_GUARD_DECISION` metadata（ADR 0040 §5.2 行 335；`GuardReceiptBuilder.java:79-99`）记录 `principalId / principalRoles / contextHash / agent*`，来源只有 `agentSource: "declared"` 一项（本 ADR §3 行 101）。
+- `POLICY_EVALUATION` metadata（§2.2）没有任何输入来源标记。
+- 证据包 entry 的 `agent.source: "declared"`（§5.1 行 125）是唯一来源字段。
+
+### 11.2 决策
+
+**D1 `ACTION_GUARD_DECISION` 新键**（null / 空不写）：
+
+| 键 | 类型 | 内容 |
+|---|---|---|
+| `verifiedFields` | List of Text，≤ 64 项、每项 ≤ 128 字符 | 本请求 verified 的叶子路径（ADR 0040 §11 D1），字典序；缺省即全 declared |
+| `factIssuers` | List of Text，≤ 8 项 | `issuer#kid`，字典序 |
+| `unverifiedFields` | List of Text，≤ 64 项 | 仅 DENY `unverified_input` 时：规则引用却为 declared 的路径 |
+| `inputSourcesTruncated` | Boolean | 仅当上述任一列表因预算被缩短时写 `true` |
+
+3800 字符预算（ADR 0040 §5.2）缩短顺序改为：`reason → agentSession → agentVersion → principalRoles → factIssuers → verifiedFields → unverifiedFields → agentModel → agentProvider → principalType → resourceType → resourceId → actionName → principalId`；列表每轮删末项，首次缩短即置 `inputSourcesTruncated`。身份与完整性键集合不变，`inputSourcesTruncated` 本身永不删除。`decision_id` 列投影不变。
+
+**D2 `POLICY_EVALUATION` 新键**：`inputSource: "declared"`（常量，与 `agentSource` 同法，凡发事件即写）。`/evaluate*` 的输入全部来自请求体，没有验签通道，这个键的价值是让证据包能诚实标出「评估输入未经验证」；将来 cloud 若对 `/evaluate-source` 附签名事实，键值可扩为 `"mixed"` 并补 `verifiedFields`，形状不变。
+
+**D3 收据查询接口**（§2.4）：`receipts[].metadata` 已原样透传，无需改；`approvals[]` 增 ADR 0042 §11 D3 的四个键（`inputSnapshotHash / inputSnapshotAttested / inputRevealed / inputStatus`）。
+
+**D4 证据包**（与 ADR 0042 §11 同一 `schemaVersion: '6'`，一次升版）：
+
+- entry 增 `inputSource: 'declared' | 'mixed' | 'legacy'`（取评估事件 `inputSource`；旧事件无键 → `legacy`）；对带 `guardDecisionId` 的条目增 `guardInputSources: { verified: string[], factIssuers: string[], unverifiedFields?: string[], truncated?: boolean } | null`（取决策收据 metadata；取不到 → null）。两者进 `bundleHash`。
+- manifest 增 `inputSourceTally: { declared, mixed, legacy }`、`verifiedInputsUsed: number`（`guardInputSources.verified` 非空的条目数）。manifest 不进 `bundleHash`（既有规则）。
+- 报告页在条目旁显示来源徽标；Article 14 对照（ADR 0044 §3.1）**不**因来源改变状态——输入来源对应的是 Art.15（准确性、稳健性与网络安全）而非 Art.14，留待控制注册表增加框架条款时再映射。
+
+**D5 兼容。** 新键全部可选；旧收据不变（链不可改）；旧 cloud 忽略新键；v1–v5 包按原样下载。`AuditChainAppender` 只脱敏顶层 String，新列表键元素原样入链（路径名不是 PII）。
+
+### 11.3 验收
+
+1. 带 facts 的决策收据含 `verifiedFields / factIssuers`，与 `guard_decisions.verified_fields` 一致；超预算构造（64 条 128 字符路径）→ 列表缩短、`inputSourcesTruncated: true`，身份键不动（`GuardReceiptBuilderTest`）。
+2. `/evaluate` 三端点事件含 `inputSource: "declared"`；simulate 不发事件（既有）。
+3. `GET /api/v1/audit/receipts?decisionIds=` 的 `approvals[]` 带审批快照键。
+4. cloud 导出 `schemaVersion '6'`：entry `inputSource`、`guardInputSources`；旧执行 `legacy`；`bundleHash` 重算配方文档化（`notes.verification`）。
+
+### 11.4 落地顺序
+
+与 ADR 0040 §11.4 同：aster-api 先（收据键与查询接口）→ cloud（证据包 v6）。不需要引擎发版。

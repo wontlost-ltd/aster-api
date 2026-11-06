@@ -483,3 +483,67 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
 - **过期队列头部的毒行**：每轮按 `expires_at` 升序只取前 500 条。持续失败的行（如关联决策缺失、追加一直失败）每轮都会重试并占住批次头部；达到 500 条时会阻塞后面的行落库为 EXPIRED。读取路径仍按过期返回 DENY，fail-closed 不受影响。需要失败退避或隔离。
 - **MCP 宿主请求超时与审批等待**：MCP 宿主默认 60 s 请求超时，而审批等待默认 300 s（`--approval-timeout`）。代理已在下游请求带 `progressToken` 时转发上游 progress，宿主侧 keepalive 仍依赖宿主配置（审批等待期间没有上游 progress 可转发）；README 已提示宿主把超时调到不小于 `--approval-timeout`。
 - **metadata 缩短无记录**：`fitBudget` 缩短字段或删除 `controls` 时既不记日志也不计指标，应补上，便于发现被截短的收据。
+
+## 11. 2026-11 修订：Guard 请求逐字段来源标记与签名事实片段（R60）
+
+状态：**PROPOSED**（2026-11-07 起草，待用户评审）。本节定稿前不得据此合并实现；定稿后与正文冲突时以本节为准。
+相关：wontlost-ltd/aster-api#461；ADR 0041 §11 R61（事件 schema）、ADR 0046 §11 R62（Profile 要求与 fail-closed）、ADR 0042 §2（已验证业务角色下发链路）、ADR 0042 §11 R59（审批视图，同车次评审）。
+
+### 11.1 现状（已核对 origin/main 772855f）
+
+- 请求契约 §2.2（行 67–88）：`principal / action / resource / context / agent` 全部由请求体给出；`GuardActionMapper.flatten`（`GuardActionMapper.java:39-57`）只做结构校验与冻结，不区分来源；规则拿到的 Map 键序固定（`GuardActionMapperTest` 钉死）。
+- 服务端**已验证**的只有四样：`tenantId`、`performedBy`（key 用户或 HMAC 签过的 userId，`RequestIdentityResolver.java:122`）、`apiKeyId`、`businessRoles`（`RequestIdentityResolver.java:209`，ADR 0042 §2.2）。`principal.id` 由请求体自报（§9 行 461 的裁定原文），`agent.*` 自报（ADR 0041 §3 `agentSource: "declared"`），`context` 自报。
+- `from-evidence`（ADR 0042 §3.1 / §5.1 行 368）：cloud 把 `principal.id` 固定为执行用户并随 HMAC v3 签入 `X-User-Id`，这是今天唯一一个「服务端可证」的业务字段，但收据里没有任何标记把它与自报字段区分开。
+- 后果即 #461 所述：Prompt injection 从「改指令」转为「改输入」（把 `context.amount` 填成阈值以下、把 `principal.roles` 填成放行角色）时，规则、收据与审批人都无从察觉。
+
+### 11.2 决策
+
+**D1 来源模型。** 输入的每个叶子路径（点路径：`principal.id`、`principal.roles`（数组整体一个叶子）、`resource.id`、`context.amount`、`context.customer.tier` …）有且只有两种来源：`verified`（服务端解析，或经本节签名事实验签）与 `declared`（调用方自报）。**默认 `declared`**。来源不传给规则（`flatten` 键序不变），只进响应、决策行与收据。
+
+**D2 `verified` 的三条路径。**
+
+| 路径 | 判定 | 说明 |
+|---|---|---|
+| (a) 服务端解析 | `principal.id` 当且仅当 `principal.type == "user"` 且值等于 `performedBy()`；`principal.roles` 当且仅当 `principal.id` 已 verified 且 roles ⊆ 该身份的已验证 `businessRoles` | 不新增任何输入，只是把 ADR 0042 已有的身份事实标出来。Agent 以自己的 key 自报 `agent-42` 仍是 `declared` |
+| (b) 签名事实片段 | 请求体 `action.facts[]`（≤ 8 条）；验签通过后其 `claims` 覆盖的路径标 `verified` | 本节主体，见 D3 |
+| (c) 内部 HMAC 调用 | `from-evidence`：签过的 userId 即 `principal.id`（现状）；cloud 同样可附 `facts` | 不改 ADR 0042 §5.1 的映射 |
+
+**D3 签名事实片段格式、验签与密钥来源。**
+
+```json
+"facts": [{
+  "issuer": "idp.example.com", "kid": "2026-11", "alg": "Ed25519",
+  "audience": "<tenantId>", "issuedAt": "2026-11-07T01:00:00Z", "expiresAt": "2026-11-07T01:10:00Z",
+  "claims": { "context.amount": 250000, "principal.roles": ["ops-bot"] },
+  "signature": "<base64url>"
+}]
+```
+
+- **签名载荷**：`{ alg, audience, claims, expiresAt, issuedAt, issuer, kid }` 以 `sha256-sorted-json/v1` 的同一序列化配方（Jackson `ORDER_MAP_ENTRIES_BY_KEYS`，§5.2）得到字节串，签名作用于该字节串（不再二次哈希；Ed25519 内部自带哈希）。只支持 `Ed25519`（JDK 15+ 内建 `EdDSA`，不引入新依赖）；其他 `alg` → 400 `invalid_fact`。
+- **验签顺序**（在 `flatten` 之后、幂等查重与评估之前）：`issuer + kid` 在本租户签发方表中且 `enabled`；`audience == tenantId`；`now ∈ [issuedAt − 60 s, expiresAt]` 且 `expiresAt − issuedAt ≤ 24 h`；签名有效；每个 claim 路径在 `action` 中存在，且值与 `action` 中的值**深度相等**（两边都经同一配方规范化后逐字节比较）。任一条不满足 → **整个请求** 400 `invalid_fact`（响应体 `issuer / kid / reason`），不做「静默降级为 declared」：被篡改的事实是攻击信号，不是可忽略的噪声。`claims` 总数 ≤ 64，路径 ≤ 128 字符。
+- **密钥来源**：aster-api 新表 `guard_fact_issuers`（Flyway `V6.36.0`）：`tenant_id, issuer, kid, alg, public_key`（base64url 原始 32 字节）、`enabled, not_after, created_at, created_by`，唯一 `(tenant_id, issuer, kid)`。管理端点 `GET/PUT/DELETE /api/v1/guard/fact-issuers[/{issuer}/{kid}]`，**仅内部 HMAC 通道**（`InternalCallerFilter` REQUIRE_HMAC，Bearer 403 `internal_only`，与 `from-evidence` 同法）；cloud 团队设置页由 owner/admin 维护（`TeamPermission.MEMBER_UPDATE_ROLE` 同级权限，不新增常量），个人租户同样可配。轮换：同一 issuer 多个 `kid` 同时 `enabled`；吊销 = `enabled=false`（不删行，保留审计）。验签时按 `(tenant, issuer, kid)` 直查表（不缓存；每决策至多 8 次主键查询）。
+  - 否决的替代方案：随 API key verify / 快照下发公钥（ADR 0042 §2.2 的角色通道）——签发方是租户级事实，不是 key 级；塞进每个快照既膨胀又让轮换要重推全部 key。
+- **不做**：JWT/JWS 封装（`alg` 混淆与头部可塑性问题；本格式只有一个算法、一个载荷配方）；对 `agent.*` 的事实（模型身份的 `key-bound` 来源仍留 ADR 0041 §10）；跨租户共享签发方。
+
+**D4 响应与存储。**
+
+- `GuardDecisionResponse` 增 `inputSources: { verified: ["context.amount", "principal.id"], factIssuers: ["idp.example.com#2026-11"] }`；`verified` 为空时整个对象不写（§3.1「null / 空不写」）。字母序排版。
+- `guard_decisions` 新列 `verified_fields JSONB`（同 `V6.36.0`；旧行 NULL = 全 declared）。幂等指纹（§3.1）**不含** facts：facts 不改变「对什么做什么」，重放不重新验签、返回首次的 `inputSources`。
+- 收据键见 ADR 0041 §11 R61。审批视图（ADR 0042 §11 R59）的 `piiMarks` 旁并列 `inputSources`，收件箱对每个字段同时显示「来源」与「PII」徽标。
+
+**D5 与 Profile 的衔接（执行点）。** 模块档案要求 `verifiedInputs`（ADR 0046 §11 R62）时，guard 在评估**之前**把规则的静态输入引用集 `inputRefs` 与本请求的 verified 集合比对：存在被引用却为 `declared` 的路径 → 不评估，直接 DENY `unverified_input`（200，fail-closed 表与 §3.2 同体：`reason` 为 null，收据 `unverifiedFields` 列出路径），写收据与决策行但**不**建待审批（人不能替未验证的输入背书）。模块 IR 没有 `inputRefs`（旧引擎编译）而档案要求 verifiedInputs → DENY `input_refs_unavailable`（与 E707 同精神：基础设施缺位不读成策略违规）。`from-evidence` 同样执行：cloud 执行输入是人手填的 `declared`，高风险模块的 from-evidence 决策将是 DENY 而非 PENDING，除非 cloud 附签名事实——这是有意的，见 ADR 0046 §11.5 Q1。
+
+**D6 兼容。** 不带 `facts` 的现有调用方：全部字段 `declared`，响应无 `inputSources`，行为与今天逐字节一致；只有声明了要求 verifiedInputs 档案的模块会观察到 DENY，而这类档案在 ADR 0046 §11 落地前不存在。aster-guard SDK：`GuardAction.facts?`、`GuardDecision.inputSources?` 可选；MCP 代理不生成事实（它不是可信签发方）。
+
+### 11.3 验收
+
+1. 正确签名的事实 → `inputSources.verified` 含其路径，决策行 `verified_fields` 与收据 `verifiedFields` 一致；篡改 `claims` 任一值、过期、`audience` 不符、未知 `kid`、`enabled=false` 各 → 400 `invalid_fact`，不写收据。
+2. `principal.type=user` 且 `principal.id = performedBy` → `principal.id` verified；换成另一个 id → declared。
+3. 幂等重放不重新验签；同键不同 facts 不触发 422（不在指纹里）。
+4. 高风险档案模块：规则引用 `context.amount` 而请求未附事实 → DENY `unverified_input`、无审批行、收据 `unverifiedFields: ["context.amount"]`；附事实后 → 正常评估。旧引擎 IR → DENY `input_refs_unavailable`。
+5. `guard_fact_issuers` 端点：Bearer 403；HMAC 写入后立即生效；吊销后 `invalid_fact`。
+6. `PublicApiContractTest`、`MigrationGovernanceTest`、`NonDeterminismSourceTest`（验签的时间窗判定用到 `Instant.now()`，按 §8.1 先例登记白名单并写明理由）通过；`GuardReceiptBuilderTest` 新缩短顺序。
+
+### 11.4 分阶段落地顺序
+
+① 本节与 ADR 0041 §11、ADR 0046 §11 同车次定稿 → ② **aster-api**（`V6.36.0`、来源判定 (a)、facts 验签 (b)、签发方表与端点、响应与收据键；D5 的执行点先实现但只在 IR 带 `inputRefs` 且档案要求时生效，故可先于引擎发版部署，不需要发版列车）→ ③ aster-guard SDK → ④ aster-cloud（签发方设置页、收件箱来源徽标、证据包字段）→ ⑤ 引擎发版列车（ADR 0046 §11：registry 1.2.0 + core/ts `inputRefs` + E708）→ ⑥ aster-api / cloud 升级 pin（发版列车会自动部署 aster-api）。⑤ 之前任何模块都不会被 `unverified_input` 拒绝。
