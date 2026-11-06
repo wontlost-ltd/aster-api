@@ -3,9 +3,11 @@ package io.aster.policy.parser;
 import aster.core.lexicon.Lexicon;
 import aster.core.lexicon.LexiconRegistry;
 import aster.core.lexicon.SemanticTokenKind;
+import aster.core.typecheck.ErrorCode;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -91,14 +93,14 @@ class CnlErrorLocaleTest {
     @Test
     void de_missingStatementEnd_isGerman() {
         List<String> msgs = diagnostics(missingEnd("de-DE"), "de-DE");
-        assertThat(msgs).contains("Am Ende der Anweisung wird '.' erwartet");
+        assertThat(msgs).contains("'.' am Ende der Anweisung erwartet");
         assertThat(msgs).noneMatch(m -> CJK.matcher(m).find());
     }
 
     @Test
     void hi_missingStatementEnd_isHindi_andUsesDanda() {
         List<String> msgs = diagnostics(missingEnd("hi-IN"), "hi-IN");
-        assertThat(msgs).contains("कथन के अंत में '।' अपेक्षित है");
+        assertThat(msgs).contains("कथन के अंत में '।' अपेक्षित");
         assertThat(msgs).noneMatch(m -> CJK.matcher(m).find());
     }
 
@@ -124,9 +126,9 @@ class CnlErrorLocaleTest {
     }
 
     @Test
-    void humanize_noViable_usesRenderedInput_whenGiven() {
-        String msg = CnlErrorListener.humanize("no viable alternative at input 'Returnn'", false,
-            KeywordLocalizer.IDENTITY, false, "Return n");
+    void render_noViable_usesRenderedInput_whenGiven() {
+        String msg = CnlErrorListener.render(ErrorCode.PARSE_NO_VIABLE, Map.of("token", "'n'"),
+            KeywordLocalizer.IDENTITY, "Return n");
         assertThat(msg).isEqualTo("Cannot parse the syntax near 'Return n'");
     }
 
@@ -157,59 +159,59 @@ class CnlErrorLocaleTest {
     }
 
     @Test
-    void humanize_mismatched_perLanguage() {
-        String raw = "mismatched input 'x' expecting {'.', ':'}";
-        assertThat(CnlErrorListener.humanize(raw, false, KeywordLocalizer.IDENTITY, false))
+    void render_unexpectedExpecting_perLanguage() {
+        Map<String, String> p = Map.of("token", "'x'", "expected", "'.' | ':'");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING, p, KeywordLocalizer.IDENTITY))
             .isEqualTo("Unexpected 'x'; expected '.' or ':'");
-        assertThat(CnlErrorListener.humanize(raw, false, localizer("zh-CN"), false))
-            .isEqualTo("意外的 'x'，此处应为 '。' 或 '：'");
-        assertThat(CnlErrorListener.humanize(raw, false, localizer("de-DE"), false))
-            .isEqualTo("Unerwartet: 'x'; erwartet wird '.' oder ':'");
-        assertThat(CnlErrorListener.humanize(raw, false, localizer("hi-IN"), false))
-            .isEqualTo("अप्रत्याशित 'x'; यहाँ '।' या ':' अपेक्षित है");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING, p, localizer("zh-CN")))
+            .isEqualTo("意外的 'x'；期望 '。' 或 '：'");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING, p, localizer("de-DE")))
+            .isEqualTo("Unerwartetes 'x'; erwartet: '.' oder ':'");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING, p, localizer("hi-IN")))
+            .isEqualTo("अप्रत्याशित 'x'; अपेक्षित '।' या ':'");
     }
 
     @Test
-    void humanize_missingBeforeToken_perLanguage() {
-        String raw = "missing ':' at 'x'";
-        assertThat(CnlErrorListener.humanize(raw, false, KeywordLocalizer.IDENTITY, false))
+    void render_expectedBefore_perLanguage() {
+        Map<String, String> p = Map.of("token", "':'", "before", "'x'");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_EXPECTED_BEFORE, p, KeywordLocalizer.IDENTITY))
             .isEqualTo("Expected ':' before 'x'");
-        assertThat(CnlErrorListener.humanize(raw, false, localizer("zh-CN"), false))
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_EXPECTED_BEFORE, p, localizer("zh-CN")))
             .isEqualTo("'x' 之前应为 '：'");
-        assertThat(CnlErrorListener.humanize(raw, false, localizer("de-DE"), false))
-            .isEqualTo("Vor 'x' wird ':' erwartet");
-        assertThat(CnlErrorListener.humanize(raw, false, localizer("hi-IN"), false))
-            .isEqualTo("'x' से पहले ':' अपेक्षित है");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_EXPECTED_BEFORE, p, localizer("de-DE")))
+            .isEqualTo("':' vor 'x' erwartet");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_EXPECTED_BEFORE, p, localizer("hi-IN")))
+            .isEqualTo("'x' से पहले ':' अपेक्षित");
     }
 
     @Test
     void expectingSet_commaLiteral_isOneItem_notSplit() {
         // 按逗号切会把 ',' 拆成两个空项（曾显示成「':' 或 input 或 newline, …」）
-        String raw = "mismatched input '.' expecting {':', ',', NEWLINE}";
-        assertThat(CnlErrorListener.humanize(raw, false, KeywordLocalizer.IDENTITY, false))
+        Map<String, String> p = Map.of("token", "'.'", "expected", "':' | ',' | token.newline");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING, p, KeywordLocalizer.IDENTITY))
             .isEqualTo("Unexpected '.'; expected ':' or ',' or newline");
-        assertThat(CnlErrorListener.humanize(raw, false, localizer("zh-CN"), true))
-            .isEqualTo("意外的 '。'，此处应为 '：' 或 '，' 或换行");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING, p, localizer("zh-CN")))
+            .isEqualTo("意外的 '。'；期望 '：' 或 '，' 或换行");
     }
 
     @Test
     void zh_offendingPunctuation_isShownInChinese() {
         // 作者写的是「。」，canonicalize 后 ANTLR 只见 '.'；报错里要还原成作者的写法
-        assertThat(CnlErrorListener.humanize("mismatched input '.' expecting IDENT", false, localizer("zh-CN"), true))
-            .isEqualTo("意外的 '。'，此处应为标识符");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_TOKEN, Map.of("token", "'.'"), localizer("zh-CN")))
+            .isEqualTo("意外的 '。'");
     }
 
     @Test
     void tokenNames_perLanguage() {
-        String raw = "extraneous input '<EOF>' expecting NEWLINE";
-        assertThat(CnlErrorListener.humanize(raw, false, KeywordLocalizer.IDENTITY, false))
-            .isEqualTo("Unexpected extra end of file");
-        assertThat(CnlErrorListener.humanize(raw, false, localizer("zh-CN"), false))
-            .isEqualTo("多余的文件结尾");
-        assertThat(CnlErrorListener.humanize(raw, false, localizer("de-DE"), false))
-            .isEqualTo("Überzählig: Dateiende");
-        assertThat(CnlErrorListener.humanize(raw, false, localizer("hi-IN"), false))
-            .isEqualTo("अतिरिक्त फ़ाइल का अंत");
+        Map<String, String> p = Map.of("token", "token.eof");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_TOKEN, p, KeywordLocalizer.IDENTITY))
+            .isEqualTo("Unexpected end of file");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_TOKEN, p, localizer("zh-CN")))
+            .isEqualTo("意外的文件结尾");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_TOKEN, p, localizer("de-DE")))
+            .isEqualTo("Unerwartetes Dateiende");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_TOKEN, p, localizer("hi-IN")))
+            .isEqualTo("अप्रत्याशित फ़ाइल का अंत");
     }
 
     // ---------------------------------------------------------------- 根因选择（多处错误）
@@ -220,7 +222,7 @@ class CnlErrorLocaleTest {
         String src = "Module m.\n\nDefine Req has attrs as Map of Text to Int.\n\n"
             + "Rule r given n as Int, produce Int:\n  Return n\n";
         String msg = parseFailure(src, "en-US").getMessage();
-        assertThat(msg).startsWith("CNL syntax error — Line 3, column 29: Unexpected extra 'of'");
+        assertThat(msg).startsWith("CNL syntax error — Line 3, column 29: Unexpected 'of'");
         assertThat(diagnostics(src, "en-US")).contains("Expected '.' at end of statement");
     }
 

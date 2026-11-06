@@ -1,6 +1,9 @@
 package io.aster.policy.rest.model;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+
+import java.util.Map;
 
 /**
  * 编译诊断项，字段与前端 Monaco 契约对齐（1-based 行列）。
@@ -36,8 +39,26 @@ public record CompileDiagnostic(
 
     /** P0-C：strict surface 是否因此诊断阻断（severity 恒 warning，blocking 表达是否拒）。 */
     @JsonProperty("blocking")
-    boolean blocking
+    boolean blocking,
+
+    /**
+     * 命名参数（ADR 0051 §16 R56）：语法诊断 E050–E069 的 {@code kw.*} / {@code token.*} / 引号字面片段，
+     * 供按码渲染；其它诊断为空，空时不序列化（响应体与改码前一致）。
+     */
+    @JsonProperty("params")
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    Map<String, String> params
 ) {
+    public CompileDiagnostic {
+        params = params == null ? Map.of() : Map.copyOf(params);
+    }
+
+    /** 无参数诊断。 */
+    public CompileDiagnostic(String severity, String message, int startLine, int startColumn,
+                             int endLine, int endColumn, String code, String featureId, boolean blocking) {
+        this(severity, message, startLine, startColumn, endLine, endColumn, code, featureId, blocking, Map.of());
+    }
+
     /**
      * 编译端点内部故障码（ADR 0046 §4）：编译没做成，不是源码错误。core 码表没有通用的
      * 编译器内部故障码，故由 api 定义；cloud 保存门把它当作「编译不可用」处理。
@@ -63,6 +84,6 @@ public record CompileDiagnostic(
             d.severity() == null ? "error" : d.severity(),
             d.message(),
             d.line(), d.column(), d.endLine(), d.endColumn(),
-            d.code(), d.featureId(), d.blocking());
+            d.code(), d.featureId(), d.blocking(), d.params());
     }
 }

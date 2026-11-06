@@ -53,7 +53,51 @@ public class PolicyCompileResourceTest {
             .body("diagnostics[0].severity", is("error"))
             .body("diagnostics[0].startLine", greaterThanOrEqualTo(1))
             .body("diagnostics[0].startColumn", greaterThanOrEqualTo(1))
-            .body("diagnostics[0].message", not(emptyOrNullString()));
+            .body("diagnostics[0].message", not(emptyOrNullString()))
+            // ADR 0051 §16 R56：语法诊断带共享码表的码与命名参数（改码前 code=null）
+            .body("diagnostics[0].code", matchesPattern("E0[56]\\d"))
+            .body("diagnostics[0].params", notNullValue());
+    }
+
+    @Test
+    public void compileSyntaxError_zh_codeAndLocalizedMessage() {
+        // 第 4 行「返回 x」缺句末标点：E059，文案取 zh-CN overlay，标点按作者写法显示
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body("""
+                { "source": "模块 m。\\n\\n规则 r 给定 x 作为 整数，产出 整数：\\n  返回 x\\n",
+                  "locale": "zh-CN" }
+                """)
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200)
+            .body("success", is(false))
+            .body("diagnostics.find { it.code == 'E059' }.startLine", is(4))
+            .body("diagnostics.find { it.code == 'E059' }.message", is("语句末尾应为 '。'"))
+            .body("diagnostics.find { it.code == 'E059' }.params.token", is("'.'"));
+    }
+
+    @Test
+    public void compileLiteralOutOfRange_isCodedSourceError_notInternalFailure() {
+        // AstBuilder 抛出的 ParseDiagnosticException（E053）是用户源码错误，不是 COMPILE_INTERNAL_ERROR
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body("""
+                { "source": "Module M.\\n\\nRule p given x as Int, produce Int:\\n  Return 99999999999999999999.",
+                  "locale": "en-US" }
+                """)
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200)
+            .body("success", is(false))
+            .body("diagnostics", hasSize(1))
+            .body("diagnostics[0].code", is("E053"))
+            .body("diagnostics[0].startLine", is(4))
+            .body("diagnostics[0].params.literal", is("99999999999999999999"));
     }
 
     @Test

@@ -205,7 +205,8 @@ public class PolicyCompiler {
             logUserSourceError(versionId, e);
             // 透传结构化诊断（含 1-based 行列），供编译端点精确标错。
             List<CompilationResult.Diagnostic> diags = e.getDiagnostics().stream()
-                .map(d -> CompilationResult.Diagnostic.error(d.line(), d.column(), d.message()))
+                .map(d -> new CompilationResult.Diagnostic(d.line(), d.column(), d.line(), d.column(), d.message(),
+                    d.code(), "error", null, null, true, d.params()))
                 .toList();
             return CompilationResult.failure(java.util.List.of(message), diags);
         } catch (Exception e) {

@@ -203,7 +203,14 @@ public class InProcessCnlParser {
 
             // 5. 构建 AST
             AstBuilder builder = new AstBuilder();
-            Module module = requireModule(builder.visitModule(moduleCtx));
+            Module module;
+            try {
+                module = requireModule(builder.visitModule(moduleCtx));
+            } catch (aster.core.parser.ParseDiagnosticException e) {
+                // 构建 AST 时发现的带码解析错误（E053 字面量越界、E065 位置不对…）是用户源码错误，不是内部故障
+                errorListener.report(e);
+                throw new CnlParseException(errorListener.getSummary(), errorListener.getDiagnostics());
+            }
 
             // 6. 名称解析（R1 → lower → R2）：任一 E8xx 即失败，不产出 IR
             NameResolution.ResolvedCore resolved = resolveNames(module, scopes);
@@ -387,7 +394,8 @@ public class InProcessCnlParser {
         private static CnlErrorListener.Diagnostic toListenerDiagnostic(Diagnostic d) {
             int line = d.span().map(o -> o.start == null ? 1 : o.start.line).orElse(1);
             int col = d.span().map(o -> o.start == null ? 1 : o.start.col).orElse(1);
-            return new CnlErrorListener.Diagnostic(line, col, d.code().code() + " " + d.message());
+            return new CnlErrorListener.Diagnostic(line, col, d.code().code() + " " + d.message(), d.code().code(),
+                java.util.Map.of());
         }
     }
 

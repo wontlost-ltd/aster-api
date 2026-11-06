@@ -3,7 +3,10 @@ package io.aster.policy.parser;
 import aster.core.lexicon.Lexicon;
 import aster.core.lexicon.LexiconRegistry;
 import aster.core.lexicon.SemanticTokenKind;
+import aster.core.typecheck.ErrorCode;
 import org.junit.jupiter.api.Test;
+
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -48,8 +51,9 @@ class CnlErrorLocalizedKeywordTest {
     @Test
     void zh_inlineCommaReturn_namesChineseKeyword_andSuggestsThen() {
         String err = parseErr(ZH_HEADER + "  如果 x 小于 0，返回 0 减去 x。\n  返回 x。", "zh-CN");
+        // E055（core 的单项期望不带出错 token）：位置落在「返回」上，提示里的关键词用作者语言
         assertThat(err)
-            .contains("意外的 '返回'")
+            .contains("行 4 第 12 列：此处应为换行")
             .doesNotContain("'Return'")
             .contains("单行条件请写成「如果 条件 那么 返回 …」");
     }
@@ -66,7 +70,8 @@ class CnlErrorLocalizedKeywordTest {
             "  " + kw("de-de", SemanticTokenKind.IF) + " x < 0, " + ret + " 0.",
             "  " + ret + " x.");
         assertThat(parseErr(src, "de-DE"))
-            .contains("Unerwartet: '" + ret + "'")
+            .contains("Zeilenumbruch erwartet")
+            .contains("„" + ret + " …“")
             .doesNotContain("'Return'")
             .contains(kw("de-de", SemanticTokenKind.THEN));
     }
@@ -76,14 +81,14 @@ class CnlErrorLocalizedKeywordTest {
         String err = parseErr(
             "Module m.\n\nRule r given x as Int, produce Int:\n  If x less than 0, Return 0 minus x.\n  Return x.",
             "en-US");
-        assertThat(err).contains("Unexpected 'Return'").contains("\"If condition then Return …\"");
+        assertThat(err).contains("Line 4, column 21: Expected newline").contains("\"If condition then Return …\"");
     }
 
     @Test
     void zh_otherwiseCommaReturn_getsNoInlineIfHint() {
         // else 分支写成「否则，返回 x。」时，提示「如果 … 那么」是错的
         String err = parseErr(ZH_HEADER + "  如果 x 小于 0：\n    返回 1。\n  否则，返回 x。", "zh-CN");
-        assertThat(err).contains("'返回'").doesNotContain(INLINE_HINT);
+        assertThat(err).contains("行 6 第 13 列：此处应为换行").doesNotContain(INLINE_HINT);
     }
 
     @Test
@@ -91,7 +96,7 @@ class CnlErrorLocalizedKeywordTest {
         String err = parseErr(
             "Module m.\n\nRule r given x as Int, produce Int:\n  If x less than 0:\n    Return 1.\n  Otherwise, Return x.",
             "en-US");
-        assertThat(err).contains("'Return'").doesNotContain(EN_INLINE_HINT);
+        assertThat(err).contains("Line 6, column 14: Expected newline").doesNotContain(EN_INLINE_HINT);
     }
 
     @Test
@@ -121,46 +126,48 @@ class CnlErrorLocalizedKeywordTest {
     private static final KeywordLocalizer ZH = KeywordLocalizer.forTarget(lexicon("zh-cn"));
 
     @Test
-    void humanize_expectingSet_quotedKeywords_areLocalized() {
-        String msg = CnlErrorListener.humanize("mismatched input 'x' expecting {'given', 'produce'}", false, ZH, false);
+    void render_expectingSet_keywords_areLocalized() {
+        String msg = CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING,
+            Map.of("token", "'x'", "expected", "kw.given | kw.produce"), ZH);
         assertThat(msg).contains("'给定'").contains("'产出'").doesNotContain("'given'");
     }
 
     @Test
-    void humanize_expectingSet_bareSymbolicKeyword_isLocalized() {
-        String msg = CnlErrorListener.humanize("mismatched input 'x' expecting RETURN", false, ZH, false);
-        assertThat(msg).contains("'返回'").doesNotContain("RETURN");
+    void render_singleExpectedKeyword_isLocalized() {
+        String msg = CnlErrorListener.render(ErrorCode.PARSE_EXPECTED, Map.of("token", "kw.return"), ZH);
+        assertThat(msg).isEqualTo("此处应为 '返回'");
     }
 
     @Test
-    void humanize_missingKeyword_isLocalized() {
-        String msg = CnlErrorListener.humanize("missing 'produce' at 'x'", false, ZH, false);
+    void render_missingKeyword_isLocalized() {
+        String msg = CnlErrorListener.render(ErrorCode.PARSE_EXPECTED_BEFORE,
+            Map.of("token", "kw.produce", "before", "'x'"), ZH);
         assertThat(msg).isEqualTo("'x' 之前应为 '产出'");
     }
 
     @Test
-    void humanize_english_isUnchanged() {
-        String msg = CnlErrorListener.humanize("mismatched input 'x' expecting {'given', 'produce'}", false,
-            KeywordLocalizer.IDENTITY, false);
+    void render_english_keepsCanonicalKeywords() {
+        String msg = CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING,
+            Map.of("token", "'x'", "expected", "kw.given | kw.produce"), KeywordLocalizer.IDENTITY);
         assertThat(msg).isEqualTo("Unexpected 'x'; expected 'given' or 'produce'");
     }
 
     @Test
-    void humanize_expectingSet_bareSymbolicNames_resolveThroughLexerTable() {
-        // ELSE 的拼写是 Otherwise、MODULE_KW 是 Module、PLUS_WORD 是 plus：
-        // 都不能靠「符号名小写」碰巧命中，必须经由符号名 → 规范拼写表
-        String msg = CnlErrorListener.humanize(
-            "mismatched input 'x' expecting {ELSE, MODULE_KW, PLUS_WORD}", false, ZH, false);
-        assertThat(msg).isEqualTo("意外的 'x'，此处应为 '否则' 或 '模块' 或 '加上'");
+    void render_symbolicKeywordParams_resolveThroughLexerTable() {
+        // core 的期望集合给的是小写符号名（下划线写成空格）：ELSE 的拼写是 Otherwise、MODULE_KW 是 Module、
+        // PLUS_WORD 是 plus，都不能靠「符号名即拼写」碰巧命中，必须经由符号名 → 规范拼写表
+        String msg = CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING,
+            Map.of("token", "'x'", "expected", "kw.else | kw.module kw | kw.plus word"), ZH);
+        assertThat(msg).isEqualTo("意外的 'x'；期望 '否则' 或 '模块' 或 '加上'");
     }
 
     @Test
-    void humanize_sharedTokenType_hasDeterministicPreference() {
+    void render_sharedTokenType_hasDeterministicPreference() {
         // GREATER_THAN 与 MORE_THAN 等多个语义可能落到同一 token 类型；按枚举声明顺序，先声明者胜出
         assertThat(KeywordLocalizer.KeywordTokens.get().symbolicToCanonical)
             .containsEntry("GREATER_THAN_WORD", "greater than");
-        String msg = CnlErrorListener.humanize("mismatched input 'x' expecting GREATER_THAN_WORD", false, ZH, false);
-        assertThat(msg).isEqualTo("意外的 'x'，此处应为 '大于'");
+        String msg = CnlErrorListener.render(ErrorCode.PARSE_EXPECTED, Map.of("token", "kw.greater than word"), ZH);
+        assertThat(msg).isEqualTo("此处应为 '大于'");
     }
 
     @Test
@@ -173,10 +180,10 @@ class CnlErrorLocalizedKeywordTest {
     }
 
     @Test
-    void humanize_english_bareSymbolicNames_areUnchanged() {
-        // en-US 不经过符号名表：RETURN 照旧显示为 'RETURN'（不变成 'Return'）
-        String msg = CnlErrorListener.humanize("mismatched input 'x' expecting RETURN", false,
-            KeywordLocalizer.IDENTITY, false);
-        assertThat(msg).isEqualTo("Unexpected 'x'; expected 'RETURN'");
+    void render_english_symbolicKeyword_showsCanonicalSpelling() {
+        // en-US 同样经由符号名表还原规范拼写：显示 'Return'，不再泄露符号名 'RETURN'
+        String msg = CnlErrorListener.render(ErrorCode.PARSE_EXPECTED, Map.of("token", "kw.return"),
+            KeywordLocalizer.IDENTITY);
+        assertThat(msg).isEqualTo("Expected 'Return'");
     }
 }

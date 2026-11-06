@@ -1,54 +1,67 @@
 package io.aster.policy.parser;
 
+import aster.core.lexicon.SemanticTokenKind;
+import aster.core.parser.ParseDiagnostic;
+import aster.core.parser.ParseDiagnosticException;
+import aster.core.parser.SyntaxErrorCollector;
+import aster.core.typecheck.ErrorCode;
 import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.NoViableAltException;
-import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Parser;
+import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.TokenStream;
 import org.antlr.v4.runtime.Vocabulary;
-import aster.core.lexicon.SemanticTokenKind;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * ANTLR 错误监听器
  *
- * 收集 CNL 解析过程中的语法错误，并把 ANTLR 的原始（面向编译器实现者的）消息
- * 翻译成面向 CNL 作者的友好提示。
+ * 收集 CNL 解析过程中的语法错误，产出带共享码表 E050–E069 错误码与命名参数的结构化诊断，
+ * 并按作者所用语言渲染面向 CNL 作者的文案（ADR 0013 错误信息友好化、ADR 0051 §16 R56）。
  *
- * <p>背景：ANTLR 默认错误形如
- * {@code mismatched input '.' expecting {':', ',', NEWLINE}} /
- * {@code rule softComparator failed predicate: {...}?} /
- * {@code extraneous input '<INDENT>' expecting ...}，并且一个真实语法错误常引发
- * 几十条级联错误。直接抛给用户既冗长又难懂（见 ADR 0013 错误信息友好化）。
- * 本监听器：①把内部 token 名 / 谓词名翻译成人话；②对外只暴露<b>第一个</b>
- * 友好错误（根因），原始级联仅保留供调试；③文案用策略 lexicon 的语言
- * （{@link SyntaxMessages}），关键词与标点按作者的写法显示（{@link KeywordLocalizer}）。
+ * <p>分工：ANTLR 事件 → 码 + 参数由 core 的 {@link SyntaxErrorCollector} 判定（与 aster-lang-ts 同一份
+ * 映射清单，本类不再自己用正则解析 ANTLR 原文）；本类负责 ①按码取 overlay 模板（{@link SyntaxMessages}），
+ * 参数里的 {@code kw.*} 按作者的写法回译（{@link KeywordLocalizer}）、{@code token.*} 取语法目录的名词；
+ * ②对外只暴露<b>第一个</b>可确诊错误（根因），原始级联仅保留供调试。
  */
 public class CnlErrorListener extends BaseErrorListener {
 
     /**
-     * 结构化语法诊断：携带 1-based 行列 + 友好消息，供编译端点透传给前端
-     * （Monaco 精确标错）。这是行列的唯一结构化真源——此前只被格式化进字符串。
+     * 结构化语法诊断：携带 1-based 行列、错误码、命名参数与友好消息，供编译端点透传给前端
+     * （Monaco 精确标错、按码取文案）。
      *
-     * @param line        1-based 行号（ANTLR line 本就 1-based）
-     * @param column      1-based 列号（ANTLR charPositionInLine 是 0-based，+1）
-     * @param message     友好化后的消息（策略 lexicon 的语言，不含内部 token 名）
+     * @param line    1-based 行号（ANTLR line 本就 1-based）
+     * @param column  1-based 列号（ANTLR charPositionInLine 是 0-based，+1）
+     * @param message 友好化后的消息（策略 lexicon 的语言，不含内部 token 名）
+     * @param code    错误码（语法错误为 E050–E069；名称解析为 E8xx）；来源无码时为 null
+     * @param params  命名参数（core 约定：关键词 {@code kw.*}、抽象 token {@code token.*}、字面片段带单引号）
      */
-    public record Diagnostic(int line, int column, String message) {}
+    public record Diagnostic(int line, int column, String message, String code, Map<String, String> params) {
 
-    /** 友好化后的错误（去内部术语）。 */
+        public Diagnostic {
+            params = params == null ? Map.of() : Map.copyOf(params);
+        }
+
+        /** 无码诊断（兼容旧调用方）。 */
+        public Diagnostic(int line, int column, String message) {
+            this(line, column, message, null, Map.of());
+        }
+    }
+
+    /** 友好化后的错误（带「第 N 行第 M 列」外框）。 */
     private final List<String> friendlyErrors = new ArrayList<>();
     /** 原始 ANTLR 错误（供日志/调试，不展示给用户）。 */
     private final List<String> rawErrors = new ArrayList<>();
-    /** 结构化诊断（含 1-based 行列），供编译端点映射为前端 diagnostics。 */
+    /** 结构化诊断（含 1-based 行列 + 码 + 参数）。 */
     private final List<Diagnostic> diagnostics = new ArrayList<>();
+    /** core 的分类器：每个 ANTLR 事件先交给它判定码与参数。 */
+    private final SyntaxErrorCollector classifier = new SyntaxErrorCollector();
     /**
      * 首条**可确诊**错误的下标（-1 = 无）。
      *
@@ -85,33 +98,45 @@ public class CnlErrorListener extends BaseErrorListener {
         String msg,
         RecognitionException e
     ) {
-        // ★用 token 流做判定，而不是靠 ANTLR 消息里的**无分隔拼接串**：
-        //   那个串把 `analysis <= 3` 拼成 `analysis<=3`，与真正的 `x is < 18`
-        //   拼出的 `xis<18` 在正则眼里毫无区别——实测 `analysis <= 3` 会被
-        //   报成「`is` 后面不能直接跟符号」，把用户引向一个根本不存在的问题。
-        boolean isBeforeSymbol = precededByIsKeyword(recognizer, offendingSymbol);
-        // ★只有 ANTLR 词表里的关键词 token 与规范标点才回译；标识符/字面量即使碰巧与英文关键词同形也不改。
-        boolean offendingIsKeyword = isKeywordToken(recognizer, offendingSymbol)
-            || (offendingSymbol instanceof Token tok && localizer.isPunctuation(tok.getText()));
+        classifier.syntaxError(recognizer, offendingSymbol, line, charPositionInLine, msg, e);
+        List<ParseDiagnostic> classified = classifier.diagnostics();
+        ParseDiagnostic d = classified.get(classified.size() - 1);
+        // no viable 的出错片段按源码间隔重排（ANTLR 把 `Return n` 拼成 `Returnn`），比单个 token 更易定位
         String viableInput = e instanceof NoViableAltException nva ? renderInput(recognizer, nva, localizer) : null;
-        String friendly = humanize(msg, isBeforeSymbol, localizer, offendingIsKeyword, viableInput);
+        String friendly = render(d.code(), d.params(), localizer, viableInput);
+        boolean offendingIsKeyword = offendingSymbol instanceof Token tok
+            && KeywordLocalizer.KeywordTokens.get().types.contains(tok.getType());
         if (isInlineIfReturnAfterComma(recognizer, offendingSymbol, offendingIsKeyword)) {
             friendly = messages.text("withHint", "hint", inlineIfHint(localizer), "message", friendly);
         }
         rawErrors.add(String.format("line %d:%d - %s", line, charPositionInLine, msg));
-        if (diagnosableIndex < 0 && (isBeforeSymbol || isMissingStatementEndNear(msg, line))) {
+        boolean isBeforeSymbol = "hint.isBeforeSymbol".equals(d.params().get("hint"));
+        if (diagnosableIndex < 0 && (isBeforeSymbol || isMissingStatementEndNear(d.code(), line))) {
             diagnosableIndex = friendlyErrors.size();
         }
+        add(d.line(), d.column(), friendly, d.code(), d.params());
+    }
+
+    /**
+     * AstBuilder / 字面量解析抛出的带码解析错误（语法已通过、构建 AST 时发现）：与 ANTLR 事件同样记为
+     * 用户源码错误。位置未知（0）时落在 1:1。
+     */
+    void report(ParseDiagnosticException e) {
+        rawErrors.add(String.format("ast %d:%d - %s", e.line(), e.column(), e.getMessage()));
+        add(Math.max(1, e.line()), Math.max(1, e.column()), render(e.code(), e.params(), localizer, null),
+            e.code(), e.params());
+    }
+
+    private void add(int line, int column, String friendly, ErrorCode code, Map<String, String> params) {
         if (firstErrorLine < 0) {
             firstErrorLine = line;
         }
         friendlyErrors.add(messages.text("located",
-            "line", String.valueOf(line), "column", String.valueOf(charPositionInLine + 1), "message", friendly));
-        // 行列归一到 1-based（Monaco/前端契约）。charPositionInLine 是 0-based → +1。
-        diagnostics.add(new Diagnostic(line, charPositionInLine + 1, friendly));
+            "line", String.valueOf(line), "column", String.valueOf(column), "message", friendly));
+        diagnostics.add(new Diagnostic(line, column, friendly, code == null ? null : code.code(), params));
     }
 
-    /** 结构化诊断（含 1-based 行列 + 友好消息）。 */
+    /** 结构化诊断（含 1-based 行列 + 码 + 参数 + 友好消息）。 */
     public List<Diagnostic> getDiagnostics() {
         return new ArrayList<>(diagnostics);
     }
@@ -160,198 +185,108 @@ public class CnlErrorListener extends BaseErrorListener {
     }
 
     // ==========================================================
-    // ANTLR 原始消息 → 友好文案（策略 lexicon 的语言）
+    // 码 + 参数 → 友好文案（策略 lexicon 的语言）
     // ==========================================================
 
-    private static final Pattern MISMATCHED =
-        Pattern.compile("mismatched input '(.+?)' expecting \\{?(.+?)\\}?$");
-    private static final Pattern MISSING =
-        Pattern.compile("missing '?(.+?)'? at '(.+?)'");
-    private static final Pattern EXTRANEOUS =
-        Pattern.compile("extraneous input '(.+?)' expecting");
-    private static final Pattern NO_VIABLE =
-        Pattern.compile("no viable alternative at input '(.+?)'");
-    private static final Pattern FAILED_PREDICATE =
-        Pattern.compile("rule (\\w+) failed predicate");
+    /** 期望集合最多列出的项数，其余以「, …」省略。 */
+    private static final int MAX_EXPECTED = 3;
 
-    /**
-     * 出错 token 的**前一个** token 是否就是 `is` 关键字，且自身以符号开头。
-     *
-     * <p>这是「`is` 后面直接跟符号」的<b>权威</b>判定：走 token 流，
-     * 不受 ANTLR 消息里无分隔拼接串的干扰。
-     */
-    private static boolean precededByIsKeyword(Recognizer<?, ?> recognizer, Object offendingSymbol) {
-        if (!(offendingSymbol instanceof Token bad)) {
-            return false;
-        }
-        String text = bad.getText();
-        if (text == null || text.isEmpty() || "<>!=".indexOf(text.charAt(0)) < 0) {
-            return false;   // 出错 token 不是符号，谈不上「is 后跟符号」
-        }
-        if (!(recognizer instanceof Parser parser)) {
-            return false;
-        }
-        TokenStream stream = parser.getInputStream();
-        if (stream == null) {
-            return false;
-        }
-        for (int i = bad.getTokenIndex() - 1; i >= 0; i--) {
-            Token prev = stream.get(i);
-            if (prev.getChannel() != Token.DEFAULT_CHANNEL) {
-                continue;   // 跳过空白/注释通道
-            }
-            return "is".equalsIgnoreCase(prev.getText());
-        }
-        return false;
-    }
-
-    /** 兼容旧签名（无 token 上下文时按「不是 is+符号」处理，即不作断言；英文文案）。 */
-    static String humanize(String msg) {
-        return humanize(msg, false);
-    }
-
-    static String humanize(String msg, boolean isBeforeSymbol) {
-        return humanize(msg, isBeforeSymbol, KeywordLocalizer.IDENTITY, false);
-    }
-
-    static String humanize(String msg, boolean isBeforeSymbol, KeywordLocalizer localizer,
-            boolean offendingIsKeyword) {
-        return humanize(msg, isBeforeSymbol, localizer, offendingIsKeyword, null);
+    /** 按码渲染（无 no viable 片段）。 */
+    static String render(ErrorCode code, Map<String, String> params, KeywordLocalizer localizer) {
+        return render(code, params, localizer, null);
     }
 
     /**
-     * 把一条 ANTLR 消息翻译成面向 CNL 作者的提示（{@code localizer} 决定语言）。无法识别的模式原样返回。
+     * 按码取 {@code localizer} 语言的模板并填参数。
      *
-     * @param viableInput no viable alternative 的出错片段（按源码间隔重排、关键词已回译）；
-     *                    null 时退回 ANTLR 消息里的无分隔拼接串
+     * <p>带 {@code hint} 参数的 E063（`is` 后直接跟符号、未识别的比较词）直接给出提示句：提示本身就指明了
+     * 原因与改法，比「无法解析 … 附近的语法」更可操作（与改码前对外文案一致）。
+     *
+     * @param viableInput no viable alternative 的出错片段（按源码间隔重排、关键词已回译）；null 时用 {@code token} 参数
      */
-    static String humanize(String msg, boolean isBeforeSymbol, KeywordLocalizer localizer,
-            boolean offendingIsKeyword, String viableInput) {
+    static String render(ErrorCode code, Map<String, String> params, KeywordLocalizer localizer, String viableInput) {
         SyntaxMessages text = localizer.messages();
-        if (msg == null) {
-            return text.text("syntaxError");
+        String hint = params.get("hint");
+        if (hint != null && hint.startsWith("hint.") && text.has(hint.substring("hint.".length()))) {
+            return text.text(hint.substring("hint.".length()));
         }
-
-        Matcher m;
-
-        // 谓词失败：最常见于软关键字比较词（under/over）/可选 is 连接词处。
-        // 例：rule softComparator failed predicate → 多半是用了未识别的比较词，
-        // 或 `is` 后面跟了非比较词。给出可操作建议。
-        if ((m = FAILED_PREDICATE.matcher(msg)).find()) {
-            return text.text("unknownOperator");
-        }
-
-        if ((m = MISMATCHED.matcher(msg)).find()) {
-            String got = friendlyToken(offendingIsKeyword ? localizer.localize(m.group(1)) : m.group(1), text);
-            String expecting = friendlyExpecting(m.group(2), localizer);
-            return expecting.isEmpty()
-                ? text.text("unexpected", "token", got)
-                : text.text("unexpectedExpecting", "expected", expecting, "token", got);
-        }
-
-        if ((m = MISSING.matcher(msg)).find()) {
-            // missing 'X' 的 X 来自 ANTLR 字面量名，必是关键词/标点；at 是实际 token，按类型判定
-            String want = friendlyToken(localizer.localize(m.group(1)), text);
-            if (isStatementEnd(m.group(1)) && isLineEnd(m.group(2))) {
-                // 与编辑器同一说法：「语句末尾应为 '。'」/ Expected '.' at end of statement
-                return text.text("expectedAtEndOfStatement", "token", want);
+        List<String> args = new ArrayList<>();
+        for (Map.Entry<String, String> p : params.entrySet()) {
+            String value;
+            if ("expected".equals(p.getKey()) && code == ErrorCode.PARSE_UNEXPECTED_EXPECTING) {
+                value = renderExpected(p.getValue(), localizer);
+            } else if ("token".equals(p.getKey()) && code == ErrorCode.PARSE_NO_VIABLE
+                    && viableInput != null && !viableInput.isBlank()) {
+                value = "'" + viableInput + "'";
+            } else {
+                value = renderParam(p.getValue(), localizer);
             }
-            String at = friendlyToken(offendingIsKeyword ? localizer.localize(m.group(2)) : m.group(2), text);
-            return text.text("expectedBefore", "token", want, "before", at);
+            args.add(p.getKey());
+            args.add(value);
         }
-
-        if ((m = EXTRANEOUS.matcher(msg)).find()) {
-            String extra = m.group(1);
-            if (extra.contains("INDENT")) {
-                return text.text("indentation");
-            }
-            return text.text("extraneous", "token",
-                friendlyToken(offendingIsKeyword ? localizer.localize(extra) : extra, text));
-        }
-
-        if ((m = NO_VIABLE.matcher(msg)).find()) {
-            // ★只有当**上一个真实 token 就是 `is` 关键字**时才给这条专项提示。
-            //   曾经改用正则扫拼接串，结果 `analysis <= 3` / `this is< 5` 之类
-            //   含 "is" 的标识符全部误报——一条自信但错误的提示比没有提示更糟，
-            //   它让用户去改一个正确的地方（实测浪费了整轮排查）。
-            if (isBeforeSymbol) {
-                return text.text("isBeforeSymbol");
-            }
-            String tok = viableInput != null && !viableInput.isBlank() ? viableInput : m.group(1);
-            return text.text("noViable", "token", friendlyToken(tok, text));
-        }
-
-        if (msg.contains("token recognition error")) {
-            return text.text("unrecognizedCharacter");
-        }
-
-        // 兜底：原样（但去掉最内部的 expecting token 集，避免暴露 token 名）
-        int idx = msg.indexOf(" expecting");
-        return idx > 0 ? msg.substring(0, idx) : msg;
+        return text.diagnostic(code, args.toArray(String[]::new));
     }
 
     /**
-     * 是否为可提升的「行尾缺句末标点」：ANTLR 常先在<b>下一行</b>报一条泛化的 no viable，真正的原因排在其后。
+     * 单个参数值的显示：{@code kw.*} 回译成作者语言的关键词并加引号，{@code token.*} 取名词，
+     * {@code hint.*} 取提示句，带引号的字面片段剥掉缩进标记、标点按作者的写法显示，其余（数字、类型名）原样。
+     */
+    static String renderParam(String value, KeywordLocalizer localizer) {
+        SyntaxMessages text = localizer.messages();
+        if (value == null || value.isEmpty()) {
+            return text.token("empty");
+        }
+        if (value.startsWith("kw.")) {
+            return "'" + localizer.keywordParam(value.substring("kw.".length())) + "'";
+        }
+        if (value.startsWith("token.")) {
+            return text.tokenName(value.substring("token.".length()));
+        }
+        if (value.startsWith("hint.")) {
+            return text.text(value.substring("hint.".length()));
+        }
+        if (value.length() >= 2 && value.startsWith("'") && value.endsWith("'")) {
+            String inner = stripLayoutMarkers(value.substring(1, value.length() - 1));
+            if (inner.isEmpty()) {
+                return text.token("empty");
+            }
+            return "'" + (localizer.isPunctuation(inner) ? localizer.localize(inner) : inner) + "'";
+        }
+        return value;
+    }
+
+    /** 期望集合（core 以 {@code " | "} 连接）：逐项渲染、去重，只列前几项，用该语言的「或」连接。 */
+    private static String renderExpected(String set, KeywordLocalizer localizer) {
+        SyntaxMessages text = localizer.messages();
+        List<String> items = new ArrayList<>();
+        String[] parts = set.split(" \\| ");
+        for (String part : parts) {
+            String rendered = renderParam(part, localizer);
+            if (!items.contains(rendered)) {
+                items.add(rendered);
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(items.size(), MAX_EXPECTED); i++) {
+            if (i > 0) {
+                sb.append(text.text("or"));
+            }
+            sb.append(items.get(i));
+        }
+        if (items.size() > MAX_EXPECTED) {
+            sb.append(text.text("more"));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 是否为可提升的「行尾缺句末标点」（E059）：ANTLR 常先在<b>下一行</b>报一条泛化的 no viable，真正的原因排在其后。
      * 只有缺句点位于第一条错误的同一行或上一行时才提升；更早或更远处已有别的错误时保持第一条，
      * 不让常见的缺句点盖过文件前面无关的真错误。
      */
-    private boolean isMissingStatementEndNear(String msg, int line) {
+    private boolean isMissingStatementEndNear(ErrorCode code, int line) {
         boolean near = firstErrorLine < 0 || line == firstErrorLine || line == firstErrorLine - 1;
-        return near && isMissingStatementEnd(msg);
-    }
-
-    /** 是否为「行尾缺句末标点」（ANTLR 的 missing '.' at 换行 / 取消缩进 / 文件结尾）。 */
-    private static boolean isMissingStatementEnd(String msg) {
-        Matcher m = msg == null ? null : MISSING.matcher(msg);
-        return m != null && m.find() && isStatementEnd(m.group(1)) && isLineEnd(m.group(2));
-    }
-
-    /** ANTLR 报缺的是句末标点（规范写法 {@code .}）。 */
-    private static boolean isStatementEnd(String canonical) {
-        return ".".equals(canonical);
-    }
-
-    /** 缺失位置是行尾：换行、取消缩进或文件结尾。 */
-    private static boolean isLineEnd(String at) {
-        return switch (at) {
-            case "\\n", "\n", "NEWLINE", "<DEDENT>", "DEDENT", "<EOF>" -> true;
-            default -> false;
-        };
-    }
-
-    /** 把 token 文本/名翻译成友好描述。 */
-    private static String friendlyToken(String tok, SyntaxMessages text) {
-        if (tok == null || tok.isEmpty()) {
-            return text.token("empty");
-        }
-        switch (tok) {
-            case "<INDENT>":
-            case "INDENT":
-                return text.token("indent");
-            case "<DEDENT>":
-            case "DEDENT":
-                return text.token("dedent");
-            case "<EOF>":
-                return text.token("eof");
-            case "\\n":
-            case "\n":
-            case "NEWLINE":
-                return text.token("newline");
-            case "TYPE_IDENT":
-                return text.token("typeName");
-            case "IDENT":
-                return text.token("identifier");
-            case "INT_LITERAL":
-                return text.token("integer");
-            case "STRING_LITERAL":
-                return text.token("string");
-            default:
-                // no viable alternative 等错误的 group(1) 可能是多 token 串
-                // （如 `Ifx<5\n<DEDENT>`），其中内嵌的 <INDENT>/<DEDENT> 是 lexer
-                // 内部缩进标记，绝不能泄露给用户。先剥掉这些标记再加引号显示。
-                String scrubbed = stripLayoutMarkers(tok);
-                return "'" + scrubbed + "'";
-        }
+        return near && code == ErrorCode.PARSE_EXPECTED_STATEMENT_END;
     }
 
     /**
@@ -392,8 +327,7 @@ public class CnlErrorListener extends BaseErrorListener {
 
     /**
      * 剥掉 token 文本里内嵌的缩进标记（{@code <INDENT>}/{@code <DEDENT>}）与
-     * 字面换行，避免在友好错误里泄露 lexer 内部 token 名。多 token 串场景
-     * （no viable alternative 的 group(1)）会命中。
+     * 字面换行，避免在友好错误里泄露 lexer 内部 token 名。
      */
     private static String stripLayoutMarkers(String tok) {
         return tok
@@ -402,64 +336,6 @@ public class CnlErrorListener extends BaseErrorListener {
             .replace("\\n", " ")
             .replace("\n", " ")
             .trim();
-    }
-
-    /** 简化 expecting 集合（ANTLR 常列十几个 token），只取前几个友好项。 */
-    private static String friendlyExpecting(String set, KeywordLocalizer localizer) {
-        if (set == null || set.isBlank()) {
-            return "";
-        }
-        SyntaxMessages text = localizer.messages();
-        List<String> parts = expectingItems(set);
-        StringBuilder sb = new StringBuilder();
-        int shown = 0;
-        for (String p : parts) {
-            // expecting 集合里的项来自 ANTLR 词表：带引号的是字面量名（关键词/标点），
-            // 不带引号的是符号名（RETURN、ELSE…）。两者都不是用户文本，可安全回译。
-            String raw = p.replaceAll("^'|'$", "");
-            if (localizer.isLocalizing()) {
-                raw = KeywordLocalizer.KeywordTokens.get().symbolicToCanonical.getOrDefault(raw, raw);
-            }
-            String t = friendlyToken(localizer.localize(raw), text);
-            if (sb.indexOf(t) >= 0) {
-                continue; // 去重
-            }
-            if (shown > 0) {
-                sb.append(text.text("or"));
-            }
-            sb.append(t);
-            if (++shown >= 3) {
-                break;
-            }
-        }
-        if (parts.size() > shown) {
-            sb.append(text.text("more"));
-        }
-        return sb.toString();
-    }
-
-    /** ANTLR expecting 集合的项：带引号的字面量（可能就是 {@code ','}）或裸符号名。按逗号切会把 {@code ','} 拆碎。 */
-    private static final Pattern EXPECTING_ITEM = Pattern.compile("'(?:[^'\\\\]|\\\\.)*'|[^,\\s{}]+");
-
-    private static List<String> expectingItems(String set) {
-        List<String> items = new ArrayList<>();
-        Matcher m = EXPECTING_ITEM.matcher(set);
-        while (m.find()) {
-            items.add(m.group());
-        }
-        return items;
-    }
-
-    /**
-     * offendingSymbol 是否为关键词 token：类型属于 {@link KeywordLocalizer.KeywordTokens}
-     * （以词法器对规范关键词拼写的实际判定为准，覆盖带/不带字面量名的所有关键词规则）。
-     * 用户的标识符与类型名（含与关键词同形的 Given、Profile）不在其中，永远不会被回译。
-     */
-    private static boolean isKeywordToken(Recognizer<?, ?> recognizer, Object offendingSymbol) {
-        if (!(offendingSymbol instanceof Token tok)) {
-            return false;
-        }
-        return KeywordLocalizer.KeywordTokens.get().types.contains(tok.getType());
     }
 
     /**
