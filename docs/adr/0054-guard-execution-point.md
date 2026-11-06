@@ -42,7 +42,7 @@
 | 测试：vitest，mock fetch + 内存 MCP 上游；e2e 脚本可选 | `test/*.test.ts` | 无绕过套件 |
 | 发布：ADR 0040 §6（tag-push、trusted publisher、provenance），`package.json` `@aster-cloud/aster-guard`、Node ≥ 24、ESM | `package.json` | 未发布（`npm view` 404）；`engines` 与 workflow 需按 aster-lang-ts 现行 release.yml 校对 |
 
-仓库归属：ADR 0040 §6 与现有代码都在 `aster-cloud` 组织；#464 写的是 `wontlost-ltd/aster-guard`。本 ADR 按**现状**写 `aster-cloud/aster-guard`（代码已在那里、npm scope 已是 `@aster-cloud`）；是否迁到 `wontlost-ltd` 由用户定（§9 可改项），迁移只影响 `repository.url` 与 release workflow 的 OIDC 主体。
+仓库归属：ADR 0040 §6 与现有代码都在 `aster-cloud` 组织；#464 原文写的 `wontlost-ltd/aster-guard` 为笔误，按现状定稿为 **`aster-cloud/aster-guard`**（代码已在那里、npm scope 已是 `@aster-cloud`），#464 另行评论更正。
 
 ---
 
@@ -61,7 +61,7 @@ const outcome = await guard.run(
 
 `run` 内部固定顺序（任一步失败即返回 `blocked`，回调不被调用）：
 
-1. `actionHash = hashAction(action)`（§4 配方；与送出的请求体是**同一个对象**，`check` 内部不再复制改写——现有 `check` 对 `principal` 的缺省填充在哈希**之前**完成）。
+1. `actionHash = hashAction(action)`（§4 配方；与送出的请求体是**同一个对象**，`check` 内部不再复制改写、不剔除 null——现有 `check` 对 `principal` 的缺省填充在哈希**之前**完成）。
 2. `check(action)`；`PENDING` → `waitFor`；最终非 `ALLOW` → `blocked` / `pending`。
 3. `verifyReceipt(decision.executionReceipt, { tenantId, decisionId, actionHash })`（ADR 0040 §12 D6 顺序；JWKS 来自 `keys()`，内存缓存 5 分钟，未命中 `kid` 刷新一次）。
 4. `consume(decisionId, { actionHash, executorId, attemptId: randomUUID() })`；非 200 → `blocked`（网络错误同样 `blocked`，并尽力 `reportResult(aborted, errorCode: 'consume_response_lost')`，ADR 0040 §12 D5）。
@@ -90,7 +90,7 @@ const outcome = await guard.run(
 | REQUIRE_APPROVAL / ESCALATE 等到超时仍 PENDING | `true` | `{ "asterGuard": { "status": "pending", "decisionId", "approvalId", "requiredRole", "expiresAt", "poll": "GET /api/v1/guard/decisions/{decisionId}" } }`；模型可在之后用 `guard_status` 工具（现有 standalone 工具集）重新查询，但**不能**凭 ALLOW 结果自行调用上游——再次调用同名工具会重新走一遍 1–6，得到新决策（幂等键是每次新生成的，ADR 0040 §6） |
 | 验签 / consume / 网络 / 超时失败 | `true` | `{ "asterGuard": { "status": "blocked", "decisionId", "reasonCode": "receipt_invalid" \| "receipt_consumed" \| "action_mismatch" \| "receipt_expired" \| "not_allowed" \| "client_error" \| "client_timeout", "reason" } }` |
 
-`isError: true` 的返回对模型是普通工具错误，它可以读到原因与 `decisionId`，但读不到任何能让它换路执行的东西（没有上游端点、没有收据原文）。
+**这些结构化字段是非授权信息。** `reason / reasonCode / approvalId / poll / requiredRole` 只供人与审计阅读，不是给模型的指令：SDK 与代理**不得**据此触发任何替代执行（不自动改参重试、不换工具、不在 PENDING 期间以其他路径「先做再说」）；模型若读到 DENY 后转而调用另一个可用工具，那次调用会**独立**走一遍 1–6 并得到自己的决策，不继承任何前序结论。安全边界不在这些字段的措辞上，而在 §3.3 的端点隔离：模型读到什么都无所谓，只要它触达不到原始工具。验收见 §7 第 2b 条。
 
 ---
 
@@ -112,7 +112,24 @@ const outcome = await guard.run(
 | `digestArgs` | 列出的顶层参数在 `context` 中以 `{ "$sha256": "<hex>" }` 代入（大对象 / 二进制 / 不想入收据预算的字段） | 无 |
 | `actionName` | 覆盖 `action.name`（缺省为工具名） | 工具名 |
 
-**不变式**（绕过套件 §7 第 3 条断言）：`context` = 上游参数去 null 后逐键映射，`digestArgs` 之外的键**原值**进入 `context`，`digestArgs` 内的键以摘要进入；转发给上游的 `args` 就是映射前的那个对象。因此：改任何参数都改变 `actionHash`（原值或摘要之一必变）；不存在「不进 context 也不进摘要」的参数。没有 `excludeArgs`——这正是 #464 第 3 条「哪些参数进 actionHash」的回答：全部，只是形式有原值与摘要两种。
+**不变式**（绕过套件 §7 第 3 条断言）：
+
+1. **规范化只排序、不改值。** 代理对下游 `arguments` 做一次 `canonicalize`：递归按键排序，**null 原样保留**，不删键、不改类型、不补缺省。送去 Guard 的 `action.context` 与转发给上游工具的 `arguments` 是**同一个规范化后的对象**（同一引用，序列化后逐字节相同）。0.1.0 的「check 之前剔除 null」（ADR 0040 §6）**废止**：aster-api 当前拒绝 `context` 中的 null 值（§2.2「值不得为 null」），本 ADR 要求 aster-api 在 R63 中放开 `context` 的 null 值（`GuardActionMapper` 只需允许 null 叶子；规则读到 null 与读到缺省键的行为由规则作者负责）。
+2. **缺失 ≠ null ≠ `""`。** 三者是三个不同的 JSON 文档，哈希各不相同；工具若把「缺省」与「显式 null」当作不同语义，两次调用也会得到两个不同的 `actionHash`，不会共用一份收据。
+3. **`digestArgs` 的摘要输入**：该键的值先经同一 `sha256-sorted-json/v1` 序列化，再 sha256，`context` 中以 `{ "$sha256": "<hex>" }` 代入；值为 null 时摘要输入是字面量 `null`（4 字节），键缺失时 `context` 中**没有**该键（不生成 `$sha256`）。转发给上游的仍是原值（摘要只替换 Guard 看到的副本——这是不变式 1 的唯一例外，且被摘要绑定）。
+4. `digestArgs` 之外的键原值进入 `context`；不存在「不进 context 也不进摘要」的参数。没有 `excludeArgs`——这正是 #464 第 3 条「哪些参数进 actionHash」的回答：全部，只是形式有原值与摘要两种。
+
+正反例（`actions.send_email = { resourceFrom: "to", digestArgs: ["body"] }`）：
+
+| 下游 `arguments` | Guard 看到的 `context` | 转发给上游 | 哈希 |
+|---|---|---|---|
+| `{ to: "a@x", body: "hi", cc: null }` | `{ body: {$sha256: H("\"hi\"")}, cc: null, to: "a@x" }` | `{ body: "hi", cc: null, to: "a@x" }` | h1 |
+| `{ to: "a@x", body: "hi" }`（无 `cc`） | `{ body: {…}, to: "a@x" }` | 同左 | h2 ≠ h1 |
+| `{ to: "a@x", body: "hi", cc: "" }` | `{ body: {…}, cc: "", to: "a@x" }` | 同左 | h3 ≠ h1, h2 |
+| `{ to: "a@x", body: "hi!", cc: null }` | `body` 摘要变 | 同左 | h4 ≠ h1（摘要绑定 body） |
+| `{ to: "a@x", body: null }` | `{ body: {$sha256: H("null")}, to: "a@x" }` | `{ body: null, to: "a@x" }` | h5 |
+| `{ to: "a@x" }` | `{ to: "a@x" }` | 同左 | h6 ≠ h5 |
+| ALLOW 后代理内部改 `arguments.to` 再转发（套件第 3 条注入） | — | — | consume 409 `action_mismatch`，不转发 |
 
 ### 3.3 原始工具端点的隔离（至少其一，缺省必须声明选了哪一种）
 
@@ -121,7 +138,10 @@ const outcome = await guard.run(
 | 网络策略 | 上游 MCP 服务器只接受来自代理的连接：stdio 上游（子进程，现状）天然满足；HTTP 上游用 k8s `NetworkPolicy` / 主机防火墙只放行代理 Pod | 套件第 1 条：从模型所在网络直连上游必须失败 |
 | 工具侧鉴权 | 上游要求一个只有代理持有的凭证（`--upstream-auth-env <VAR>` 注入 header） | 套件第 1 条：不带凭证直连 401/403 |
 
-代理启动参数 `--isolation network|auth` **必填**，只是声明，用于 README 与套件选择断言方式；代理无法自己证明隔离成立，所以套件必须随部署跑（§7）。
+代理启动参数 `--isolation network|auth` **必填**，但它只是**配置自述**：代理无法自己证明隔离成立。隔离的验收是**部署级**的（§7 第二层），以 e2e 从模型所在网络命名空间直连原始工具端点**失败**为准；`--isolation` 的值只决定 e2e 用哪种断言（连接被拒 / 401）与从哪里读取配置：
+
+- `network`：e2e 读取部署仓（aster-deploy / k3s）中该上游工具的 `NetworkPolicy`（`podSelector` 指向工具 Pod，`ingress.from` 仅含代理 Pod 的标签选择器），并在模型所在命名空间启动一个一次性 Pod 对工具 Service 发起连接，期望超时 / 拒绝；策略对象缺失即判失败。
+- `auth`：工具侧要求 **consume 票据**——代理在 consume 200 后把 `{ decisionId, attemptId }` 以 `X-Aster-Guard-Consume` 头附在上游请求上，工具侧用自己的 API key 调 `GET /api/v1/guard/decisions/{decisionId}` 核对 `consumedBy.attemptId` 一致且未写 result（R63 响应增 `consumedBy` 视图），不一致 / 缺头 → 401；e2e 从模型所在网络不带头直连，期望 401。该方式要求工具可改；不可改的第三方工具只能用 `network`。
 
 ---
 
@@ -140,7 +160,7 @@ consume: { decisionId, actionHash, executorId, attemptId }
 result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, finishedAt, resultHash?, errorCode? }
 ```
 
-- `executorId` 形态：`<component>@<host-or-pod>[:<instance>]`，如 `aster-guard-mcp@agent-host-1`、`aster-cloud-exec@cloud-7f9c`；≤ 255 字符、无控制字符。
+- `executorId` 形态：`<component>@<host-or-pod>[:<instance>]`，如 `aster-guard-mcp@agent-host-1`、`aster-cloud-exec@cloud-7f9c`；≤ 255 字符、无控制字符。它与 `attemptId` 都是**关联 / 审计用途**的自报值，不承担身份认证；身份是 API key（§3.1），对账里「谁执行的」以链事件 `performed_by` 与 `requested_api_key_id` 为准，`executorId` 只用来把 consume、result 与执行方日志对上。
 - `attemptId`：执行方生成的 UUID v4，每次 `run` 一个；同一 `decisionId` 只会有一个被 consume 接受。
 - 代理与 SDK 自身**无持久化**，它们的「执行侧记录」就是 consume / result 两次回写；对账任务（#465，aster-api 定时）只读 `guard_receipts` 与链事件，不需要执行方再上报。aster-cloud 自有执行方（策略执行、workflow runner）在自己的表里记 `decisionId`（`executions.metadata.guardDecisionId` 已存在，ADR 0041 §5.2），同时按本契约 consume / 回写；外部业务系统的批量上报端点是 #465 的范围。
 - 对账三类异常（#465）在本契约下的判定：无 `decisionId` 的副作用 → 孤儿；有 consume 无 result 超过 `result-grace` → 执行侧丢失；consume 的决策为 DENY → 不可能发生（consume 对非 ALLOW 409 `not_allowed`），若出现说明 aster-api 自身被绕过，严重告警。
@@ -158,25 +178,31 @@ result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, f
 
 ## 7. 绕过测试套件（随仓，#466 的执行点部分）
 
-`test/bypass/*.e2e.test.ts`，以 `ASTER_GUARD_E2E=1` 启用，否则 `it.skip` 并打印原因（#466「先以 skip + 原因登记」）。依赖本地 aster-api（含 ADR 0040 §12）与一个内存上游 MCP 服务器，上游每次调用把副作用写进测试内的 `sideEffects[]`，三样断言（Guard 决策记录、`sideEffects` 无新增、链 / 行一致）每条都做：
+套件分两层，结论的效力不同：
+
+- **夹具层（随仓，`test/bypass/*.e2e.test.ts`）**：以 `ASTER_GUARD_E2E=1` 启用，否则 `it.skip` 并打印原因（#466「先以 skip + 原因登记」）。依赖本地 aster-api（含 ADR 0040 §12）与一个内存上游 MCP 服务器，上游每次调用把副作用写进 `sideEffects[]`。它**只证明代理逻辑**（DENY 不转发、改参 409、重放 409、验签拒绝），不证明部署里的原始工具不可达。
+- **部署层（#466，aster-cloud Playwright + 部署仓脚本）**：在真实部署拓扑里，由模型所在网络命名空间的一次性 Pod 对原始工具端点直连（§3.3），**必须失败**；配置从部署仓读取（`NetworkPolicy` 对象或工具侧 consume 票据开关）。第 1 条的通过与否**只以部署层为准**，夹具层对第 1 条只是 `--isolation` 参数解析测试。
+
+三样断言（Guard 决策记录、`sideEffects` 无新增、链 / 行一致）每条都做：
 
 | # | 场景 | 断言 |
 |---|---|---|
-| 1 | 不经代理直连上游（按 `--isolation` 声明的方式） | 连接被拒 / 401；`sideEffects` 空 |
-| 2 | 规则 DENY 后调用 | 返回 `status: denied`；`sideEffects` 空；链上有 DECISION、无 CONSUME |
-| 3 | ALLOW 后、转发前改参数（测试用钩子篡改 `args`） | consume 409 `action_mismatch`；`sideEffects` 空；`guard_receipts.consumed_at` 空 |
+| 1 | 不经代理直连上游（**部署层**，按 `--isolation` 选断言；§3.3） | 连接被拒 / 401；工具侧无副作用 |
+| 2 | 规则 DENY 后调用 | 返回 `status: denied`；`sideEffects` 空；链上有 DECISION、无 CONSUME_ATTEMPT |
+| 2b | DENY 后模型尝试其它可用工具 / 路径：同一会话里对白名单内另一工具发起调用、对同一工具改参重试、直连上游（#466 第 2 条扩展） | 每次调用各得独立决策（新 decisionId）；被拒的不转发；直连按第 1 条失败；`sideEffects` 只含被 ALLOW 的那些；代理与 SDK 代码中不存在读取 `reason / poll / approvalId` 后分支执行的逻辑（静态断言：grep 这些字段只出现在返回构造处） |
+| 3 | ALLOW 后、转发前改参数（测试用钩子篡改 `args`）；以及 null / 缺失 / `""` 三种 `cc` 各得不同 `actionHash`（§3.2 正反例） | consume 409 `action_mismatch`；`sideEffects` 空；`guard_receipts.consumed_at` 空；三哈希两两不等 |
 | 4 | 同一收据执行两次（用低层 API 重放 `consume`） | 第二次 409 `receipt_consumed`；`sideEffects` 恰一条 |
 | 5 | 伪造 / 篡改签名、过期收据（mock `/decisions` 响应） | `verifyReceipt` 失败，未调用 consume；`sideEffects` 空 |
 | 6 | 注入指令驱动的演示 Agent | 属 aster-cloud 场景（#464 验收），本仓只提供 1–5 与 §5 契约 |
 | 7 | 向量文件与 aster-api 副本一致 | 单测，始终启用 |
 
-套件是**必要非充分**：它证明已知路径关着，不证明没有未知路径；未知路径由 #465 对账兜底。
+套件是**必要非充分**：它证明已知路径关着，不证明没有未知路径；未知路径由 #465 对账兜底。对账只认 `guard_receipts.consume_audit_id` 指向的权威尝试事件（ADR 0041 §12 D1），不数事件。
 
 ---
 
 ## 8. 分阶段落地
 
-① 本 ADR 与 ADR 0040 §12、ADR 0041 §12 同车次定稿 → ② aster-api 落 R63/R64 → ③ aster-guard 0.2.0：`hashAction` + 向量、`verifyReceipt / consume / reportResult / keys / run`、代理固定顺序与结构化返回、`--tools` / 映射文件 / `--isolation`、套件 1–5、7；release workflow 与 Trusted Publisher；发布 → ④ aster-cloud：演示 Agent 场景接入代理（#464 验收第 6 条），from-evidence 执行路径用同一契约 consume / 回写 → ⑤ Streamable HTTP 模式 + Agent 登记 + 镜像（有多 Agent 共用代理的需求时）→ ⑥ Java 客户端（有需求时）。
+① 本 ADR 与 ADR 0040 §12、ADR 0041 §12 同车次定稿 → ② aster-api 落 R63/R64（先于代理；旧代理不受影响）→ ②′ 排空：待处理的迁移前 ALLOW 决策处理完或过期（ADR 0040 §12 D10）→ ③ aster-guard 0.2.0：`hashAction` + 向量、`verifyReceipt / consume / reportResult / keys / run`、代理固定顺序与结构化返回、`--tools` / 映射文件 / `--isolation`、套件 1–5、7；release workflow 与 Trusted Publisher；发布 → ④ aster-cloud：演示 Agent 场景接入代理（#464 验收第 6 条），from-evidence 执行路径用同一契约 consume / 回写 → ⑤ Streamable HTTP 模式 + Agent 登记 + 镜像（有多 Agent 共用代理的需求时）→ ⑥ Java 客户端（有需求时）。
 
 ---
 
@@ -184,7 +210,6 @@ result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, f
 
 | 项 | 已选默认 | 可改为 | 影响 |
 |---|---|---|---|
-| 仓归属 | `aster-cloud/aster-guard`（现状） | 迁至 `wontlost-ltd/aster-guard` | 改 `repository.url`、release OIDC 主体、npm scope 是否同改 |
 | 传输 | stdio 先行 | 首版即含 Streamable HTTP | 多 Agent 登记与镜像提前到 ③ |
 | 未配置 `--tools` | 全部暴露 + warn | 启动拒绝 | 现有用户升级即失败 |
 | `digestArgs` | 显式列出 | 超过阈值（如 8 KB）自动摘要 | 哈希输入取决于大小阈值，跨实现更难一致 |
