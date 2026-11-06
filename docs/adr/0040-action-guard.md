@@ -92,7 +92,7 @@ guard 服务把它扁平成**一个 Map** 作为规则的唯一位置参数，�
 - `policyModule`、`policyFunction`、`principal.id`、`action.name` 不得为空白。
 - 文本字段 `principal.id`、`principal.type`、`action.name`、`resource.type`、`resource.id`、`agent.model` ≤ 255 字符且不含控制字符（`Character.isISOControl`）。上限与 `guard_decisions` 列宽一致，也给收据 metadata 一个确定上界（§5.2）。
 - `principal.roles` 至多 16 项，元素非 null，每项同样 ≤ 255 字符且不含控制字符。roles 不入列，但会写进收据 metadata（§5.2）。
-- `context`：键必须是字符串，值不得为 null，嵌套深度 ≤ 8（context 自身为第 1 层），键排序序列化后 ≤ 65536 字节。
+- `context`：键必须是字符串，值**允许为 null**（null 叶子原样保留、原样进 `contextHash` / `actionHash`，不剔除、不补缺省；缺失键与 null 值是两个不同的文档，§12 D2），嵌套深度 ≤ 8（context 自身为第 1 层），键排序序列化后 ≤ 65536 字节。
 
 传给规则的 Map 及其中的 `context` / `principal_roles` 是**深度不可变**的副本（`Map.copyOf` / `List.copyOf`），原因见 §2.3。
 
@@ -612,7 +612,7 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
 - 为什么是整体而不是「name、resource、参数」三样：挑字段就要有一份「哪些字段进哈希」的配置，配置本身就是绕过面（把要改的参数放到不进哈希的字段里）。整体哈希没有这份配置，`actionHash` 与 `contextHash` 的关系是超集，执行点只需保证**一条不变式**：送去 guard 的 `action` 对象与算哈希的对象是同一个，且转发给工具的参数正是该对象 `context` 中的参数（执行点契约见 ADR 0054 §3；参数不想入 `context` 的以摘要代入，而不是省略）。
 - **跨语言一致性**：执行方须独立算出同一哈希才能把收据绑到「它将要执行的对象」上，所以 `sha256-sorted-json/v1` 的字节级定义写入本节并以 golden 向量在两仓锁定：对象键按 UTF-16 码元序排序（Jackson `ORDER_MAP_ENTRIES_BY_KEYS` 对 `String` 键的自然序）、无空白、字符串按 JSON 标准转义（非 ASCII 原样 UTF-8，不 `\u` 转义）、整数按十进制无指数、非整数按 Java `Double.toString` 形态、`true/false/null` 字面量；超出 2^53 的整数与非整数在 JS 侧**不保证**与 Java 一致——这类值算出的哈希若不一致，consume 得到 409 `action_mismatch`，方向是 fail-closed，可接受；执行点文档建议金额等用整数最小单位或字符串。aster-api 新增 `GuardActionHashVectorsTest`，向量文件 `src/test/resources/guard/action-hash-vectors.json` 与 aster-guard 仓 `test/fixtures/action-hash-vectors.json` 逐字节相同（两仓各自的测试读本仓副本，PR 评审时人工比对；CI 跨仓校验留 ADR 0054 §7）。
 - 执行方自算的哈希与服务端不一致（实现漂移）在 consume 时就暴露，不会放行；不一致的方向永远是「不执行」。
-- **`context` 允许 null 叶子**（修订 §2.2「值不得为 null」）：执行点必须把送 Guard 与转发给工具的对象保持逐字节同一（ADR 0054 §3.2），而工具参数里的显式 null 是合法值，剔除它会让「缺省」与「null」共用一份收据。`GuardActionMapper` 放开 null 值校验，深度 / 大小上限不变；传给规则的 Map 中 null 原样出现，规则作者按需处理。
+- **`context` 允许 null 叶子**（§2.2 已同步改写；原「值不得为 null」是本节之前的口径）：执行点必须把送 Guard 与转发给工具的对象保持逐字节同一（ADR 0054 §3.2），而工具参数里的显式 null 是合法值，剔除它会让「缺省」与「null」共用一份收据。`GuardActionMapper` 放开 null 值校验，深度 / 大小上限不变；传给规则的 Map 中 null 原样出现，规则作者按需处理。
 
 **D3 TTL。** `aster.guard.receipt.ttl=${ASTER_GUARD_RECEIPT_TTL:PT5M}`；`expiresAt = issuedAt + ttl`。审批转 ALLOW 时从审批时刻重新起算（D1 (2)）。Agent 轮询慢于 5 分钟才看到 ALLOW 的，收据已过期，只能换新 `Idempotency-Key` 重新申请决策（若规则仍 REQUIRE_APPROVAL，就要重新审批——这是有意的：审批人批准的是「现在做」，不是「随时做」）。`GET /decisions/{id}` 不写库，**不**为过期收据续签。
 
@@ -648,8 +648,8 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
 - 来源：本仓今天没有任何 Vault 客户端（`grep -ri vault src/main` 只命中无关的 BYOK / HMAC 注释），HMAC 密钥同样走环境变量（`HmacSignatureService.java:131-137`）。本节沿用：私钥由部署侧秘密管理注入环境变量（k3s Secret；上游可以是 Vault / External Secrets，由 aster-deploy 决定），aster-api 进程不直连 Vault。直连 Vault Transit 做远程签名列入可改项——它让每次 ALLOW 多一次网络调用并引入新依赖，现阶段代价大于收益。
 - **启动即校验**：`active-kid` 不在列表、种子长度不对、或列表为空 → 启动失败（fail-fast）。没有密钥就没有执行收据，没有执行收据执行点就什么都不执行；与其让生产静默地全量「不可消耗」，不如部署时就失败。测试 profile 带固定测试密钥。
 - **计划轮换**：列表里保留旧 `kid`（验签用）与新 `kid`，`active-kid` 指向新的；旧 `kid` 到 `notAfter`（≥ 最长 TTL，建议 24 h）后从列表移除。签发只用 `active-kid`；`/keys` 列出全部未过 `notAfter` 的公钥。
-- **紧急撤销**：列表项加 `"revoked": true`（或直接从列表删除并把 `kid` 写进 `aster.guard.receipt.revoked-kids`）后滚动重启；服务端 consume 对 `kid` 已撤销的行返回 409 `kid_revoked`（D5）——**服务端是唯一权威，撤销在 consume 立即生效**。离线验签的生效上界是 JWKS 缓存 `max-age`（300 s）：一个已撤销 `kid` 签出的收据最多还能在执行方本地通过验签 300 s，但 consume 必被拒，所以**不会被执行**；本节不承诺「即时撤销离线验签」，只承诺「服务端 consume 立即生效，离线验签最多滞后 300 s」。
-- `/keys` 响应带 `revision`（单调递增整数，任何密钥列表变化 +1；由配置哈希派生，多副本一致）；consume 的 409 `kid_revoked` 与 `executionReceipt` 都带当前 `revision`。SDK 规则：验签失败、收到 `kid_revoked`、或响应里的 `revision` 大于本地缓存的 → 立即强制刷新 `/keys`（无视 `max-age`），每 60 s 至多一次强制刷新，刷新失败则本次按验签失败处理。
+- **紧急撤销**：列表项加 `"revoked": true`（或直接从列表删除并把 `kid` 写进 `aster.guard.receipt.revoked-kids`）后滚动重启；服务端 consume 对 `kid` 已撤销的行返回 409 `kid_revoked`（D5）——**服务端是唯一权威**。生效口径：**撤销在所有副本完成重启后生效，上界 = 滚动重启时长；期间尚未重启的旧副本可能接受该 `kid` 的 consume**（它们还不知道撤销）。这是预期状态（§12.3 第 6 条），runbook 要求紧急撤销时先把副本数缩到 1 或用 `kubectl rollout restart` 并等待 `rollout status` 完成后才算撤销完成。离线验签的生效上界是 JWKS 缓存 `max-age`（300 s）：一个已撤销 `kid` 签出的收据最多还能在执行方本地通过验签 300 s，但 consume 必被拒，所以**不会被执行**；本节不承诺「即时撤销离线验签」，只承诺「服务端 consume 立即生效，离线验签最多滞后 300 s」。
+- `/keys` 响应带 `revision`：密钥配置自带的**显式单调版本号**（`ASTER_GUARD_RECEIPT_SIGNING_KEYS` JSON 顶层 `{ "revision": <整数>, "keys": [...] }`；任何改动——加 key、改 `active-kid`、`notAfter`、撤销——都必须递增，运维规约 + 启动校验：aster-api 启动时把 `revision` 与持久化的最新值（新表 `guard_signing_key_revisions(revision PK, applied_at, kids JSONB)`，同 `V6.37.0`）比较，**小于**已持久化值 → 启动失败，等于 → 不写，大于 → 插入一行；多副本因此只会看到单调序列，而不是由配置哈希派生（哈希无法单调，审查指出）。consume 的 409 `kid_revoked` 与 `executionReceipt` 都带当前 `revision`。SDK 规则：验签失败、收到 `kid_revoked`、或响应里的 `revision` 大于本地缓存的 → 立即强制刷新 `/keys`（无视 `max-age`），每 60 s 至多一次强制刷新，刷新失败则本次按验签失败处理。
 - `GET /api/v1/guard/keys`：JWKS（RFC 7517 + RFC 8037）`{ "keys": [{ "alg": "EdDSA", "crv": "Ed25519", "kid", "kty": "OKP", "use": "sig", "x": "<base64url>", "exp"?: <epoch 秒> }] }`，`Cache-Control: max-age=300`。要求 Bearer（不在 `shouldProtect` 开豁免：少一个特例；执行方本来就持有 key）。写入 `public-api-contract.golden`。
 - 执行方验签顺序（写进 ADR 0054 与 SDK 文档）：`kid` 在缓存的 JWKS 中（未命中则刷新一次，仍未命中 → 不执行）→ 签名对 `payload` 的规范化字节串有效 → `payload.tenantId` 等于自己的租户、`payload.decisionId` 等于决策 id、`payload.outcome == "ALLOW"` → `now ∈ [issuedAt − 60 s, expiresAt]` → `payload.actionHash` 等于本地自算的哈希。任一失败 → 不 consume、不执行，按 DENY `receipt_invalid` 记录。验签是**快速失败**，不替代 consume：伪造签名的收据在执行方就止步（#463 验收「伪造 / 篡改签名 401」指的是执行方的本地拒绝，服务端没有「提交收据」的入口，consume 只收 `actionHash`，无签名可验；记为 ADR 0054 的 e2e 断言）。
 
@@ -677,7 +677,7 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
 3. **伪造 / 篡改签名**：aster-guard SDK `verifyReceipt` 对改动 `payload` 任一字节或换签名的收据返回失败且 `GuardClient.run` 不调用执行回调（ADR 0054 §7，vitest）；aster-api 侧 `ExecutionReceiptSignerTest` 用 JDK `Signature.getInstance("Ed25519")` 复验签发结果。
 4. **过期 409**：注入时钟使 `now > expiresAt` → 409 `receipt_expired`；审批 APPROVED 后收据 `issuedAt` 为审批时刻、`expiresAt = +PT5M`。
 5. **consume 事件位于执行结果之前**：`GET /api/v1/audit/receipts?decisionIds=` 返回的 `consumes[].auditId < results[].auditId`；未 consume 先 `result` → 409 `not_consumed`。
-6. **密钥轮换期间新旧 kid 均可验**：配置两把 key、`active-kid` 切到新 key → `/keys` 两个 `kid` 都在、`revision` +1；用旧 `kid` 签发的未过期收据在 SDK 侧仍验签通过；移除旧 key 后 → 验签失败。**紧急撤销**：标记 `revoked` 并重启 → 该 `kid` 的收据 consume 409 `kid_revoked`（带 `revision`）；SDK 收到后强制刷新 `/keys`，之后本地验签也失败；滚动重启期间（旧副本仍在）consume 可能短暂 200，上界为重启完成时刻，写进 runbook。
+6. **密钥轮换期间新旧 kid 均可验**：配置两把 key、`active-kid` 切到新 key → `/keys` 两个 `kid` 都在、`revision` +1；用旧 `kid` 签发的未过期收据在 SDK 侧仍验签通过；移除旧 key 后 → 验签失败。**紧急撤销**：标记 `revoked`、`revision` +1 并滚动重启 → 重启完成后该 `kid` 的收据 consume 409 `kid_revoked`（带 `revision`）；SDK 收到后强制刷新 `/keys`，之后本地验签也失败。**预期状态**：滚动期间旧副本对该 `kid` 仍返回 200，测试以两副本模拟（一旧一新）断言「新副本 409、旧副本 200、全部重启后全 409」；`revision` 回退（配置写小了）→ 启动失败，有用例。
 8. **崩溃窗口**：测试在行提交后、结果事件追加前注入失败 → 链上只有尝试事件，`consume_audit_id` 指向它，`GET /api/v1/audit/receipts` 的 `consumes[]` 标 `outcome: crashed-unknown`，对账计为已消耗。
 7. 既有守卫：`PublicApiContractTest`（三个新路径）、`MigrationGovernanceTest`（`V6.37.0` checksum）、`NonDeterminismSourceTest`（`Instant.now()`、`SecureRandom`/`UUID` 白名单登记并写理由）、`AuditIdentifierRedactionTest`（新身份键 `actionHash / attemptId / executorId / consumeReceiptHash`，ADR 0041 §12）。
 

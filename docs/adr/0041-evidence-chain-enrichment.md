@@ -302,13 +302,14 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 
 | 事件 | 触发 | `success` | `performed_by` | metadata（null 不写） |
 |---|---|---|---|---|
-| `ACTION_GUARD_CONSUME_ATTEMPT` | consume 请求通过入参校验后、加锁判定前（ADR 0040 §12 D5「先入链」） | 恒 `false`（它只是「一次消耗尝试」，不表示已消耗；是否生效以 `guard_receipts.consume_audit_id` 为准） | 请求身份 `performedBy()`（Bearer 用户或 HMAC 签入的用户；`executorId` 只是关联字段，不是身份） | `decisionId, actionHash, attemptId, executorId, kid, receiptIssuedAt, receiptExpiresAt, decisionReceiptHash`（指回决策链收据哈希，与审批事件同法） |
-| `ACTION_GUARD_CONSUME_OUTCOME` | 加锁判定提交之后（成功或 409 都写；进程在此前崩溃则缺失，属预期） | `outcome == "consumed"` | 同上 | `decisionId, attemptId, executorId, outcome: consumed \| rejected:<409 code>, attemptReceiptHash`（指回尝试事件 `currentHash`） |
+| `ACTION_GUARD_CONSUME_ATTEMPT` | consume 请求通过入参校验后、加锁判定前（ADR 0040 §12 D5「先入链」） | 恒 `true`——与链上 `success` 的既有语义一致：「这条事件所记的事（一次消耗尝试）已记录」，**不**表示已消耗；metadata 带 `kind: "attempt"`；是否生效只看 `guard_receipts.consume_audit_id` | 请求身份 `performedBy()`（Bearer 用户或 HMAC 签入的用户；`executorId` 只是关联字段，不是身份） | `decisionId, actionHash, attemptId, executorId, kid, receiptIssuedAt, receiptExpiresAt, decisionReceiptHash`（指回决策链收据哈希，与审批事件同法） |
+| `ACTION_GUARD_CONSUME_OUTCOME` | 加锁判定提交之后（成功或 409 都写；进程在此前崩溃则缺失，属预期） | `outcome == "consumed"` | 同上 | `kind: "outcome", decisionId, attemptId, executorId, outcome: consumed \| rejected:<409 code>, attemptReceiptHash`（指回尝试事件 `currentHash`） |
 | `ACTION_GUARD_RESULT` | result 请求通过「已被该 attempt 消耗」判定后、写行前 | `status == "executed"` | 同上 | `decisionId, attemptId, executorId, status, resultHash, errorCode, finishedAt, consumeReceiptHash`（指回**权威**尝试事件的 `currentHash`） |
 
 - 三者都走 `GuardReceiptBuilder` 新方法 `consumeAttemptEvent / consumeOutcomeEvent / resultEvent`，沿用 3800 字符预算；可缩短键只有 `errorCode`（结果事件），其余全部是身份与哈希键，永不缩短。
 - 新增身份键 `actionHash / attemptId / executorId / resultHash / consumeReceiptHash / attemptReceiptHash` 加入 `AuditChainAppender.IDENTITY_METADATA_KEYS`（`executorId` 是执行方自报的标识如 `aster-guard-mcp@host:inst`，不是人；进白名单的代价与 ADR 0040 §9 终审条目相同：调用方若把 PII 塞进 `executorId` 会原样入链）。`AuditIdentifierRedactionTest` 同步断言。
 - 顺序不变量：对同一 `decisionId`，权威尝试事件的 `auditId` 恒小于 RESULT 事件（结果端点在加锁判定里要求行已消耗，ADR 0040 §12 D7）。
+- `kind` 是普通文本键（不脱敏、永不缩短），让只看 `event_type + success` 的通用查询也能区分「尝试」与「结果」；但判定消耗与否**不能**用 `success`——
 - **读法（对账与查询方的唯一规则）**：有效消耗 = `guard_receipts.consume_audit_id` 指向的那条尝试事件；其余尝试事件无论有没有结果事件都不算消耗。权威尝试事件没有结果事件 → `crashed-unknown`（行已消耗，结果事件未写成）。不允许「数 CONSUME 事件」或「看 success 列」来判定消耗。
 
 **D2 收据查询接口**（§2.4）：`decisionIds` 路径增 `consumes[]`（每个尝试事件一项，`{ auditId, currentHash, decisionId, authoritative: boolean, outcome: consumed | rejected:<code> | crashed-unknown, ... }`，`outcome` 由对应 OUTCOME 事件合入、缺失且 `authoritative` 为 `crashed-unknown`、缺失且非权威为 `unknown`）、`results[]`，每项加该事件 metadata 的同名键（形状与 `approvals[]` 同法：时间取行时间戳）。`correlationIds` 路径不变。空集合不输出。`authoritativeConsumeAuditId`（来自 `guard_receipts.consume_audit_id`）随 `receipts[]` 中对应的决策收据一并返回。
