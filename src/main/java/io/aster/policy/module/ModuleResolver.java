@@ -132,17 +132,28 @@ public class ModuleResolver implements ModuleGraphResolver {
         return new ModuleKey(imp.path().trim(), imp.version());
     }
 
+    /**
+     * 「版本不存在」与「存在但不可见」对外不可区分（ADR 0015 不泄露存在性）。
+     *
+     * <p>候选版本只来自 {@link PolicyVersion#findLibraryVersions}：限定调用方租户且 {@code libraryVisible = true}，
+     * 与编辑器模块目录（{@code findLibraryCatalog}）向该租户公开的内容相同，不含隐藏版本，也不跨租户。
+     * <ul>
+     *   <li>有可见版本：调用方本已知道模块存在，请求的版本隐藏或不存在都报 VERSION_NOT_FOUND + 可见候选；</li>
+     *   <li>没有可见版本：隐藏（NOT_VISIBLE）与根本不存在（NOT_FOUND）都归 MODULE_NOT_VISIBLE、候选为空，
+     *       细分原因只进日志。</li>
+     * </ul>
+     */
     private ModuleResolutionException notFoundOrNotVisible(String tenantId, ModuleKey key) {
-        if (PolicyVersion.existsLibraryVersionInTenant(tenantId, key.moduleName(), (long) key.version())) {
-            return new ModuleResolutionException(
-                ModuleResolutionException.Reason.NOT_VISIBLE,
-                "Imported module is not visible");
-        }
-
         List<String> candidates = PolicyVersion.findLibraryVersions(tenantId, key.moduleName())
             .stream()
             .map(String::valueOf)
             .toList();
+        if (candidates.isEmpty()) {
+            boolean hidden = PolicyVersion.existsLibraryVersionInTenant(tenantId, key.moduleName(), (long) key.version());
+            return hidden
+                ? new ModuleResolutionException(ModuleResolutionException.Reason.NOT_VISIBLE, "Imported module is not visible")
+                : new ModuleResolutionException(ModuleResolutionException.Reason.NOT_FOUND, "Imported module was not found");
+        }
         return new ModuleResolutionException(
             ModuleResolutionException.Reason.VERSION_NOT_FOUND,
             "Imported module version was not found",
