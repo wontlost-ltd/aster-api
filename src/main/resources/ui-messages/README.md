@@ -22,6 +22,10 @@ ADR 0018 规定界面文案的真相源是 `aster-lang-locales` 仓（`locales/<
 它随 `aster-lang-locales-en` jar 上 classpath，`SyntaxMessages` 直接读取（aster-api#423 / #439）。
 改语法错误文案只需改 `aster-lang-locales` 仓根的 `syntax-diagnostics/`，随生态发版生效。
 
+评估 400 诊断文案目录 `evaluation-diagnostics/<locale-id>.json` 同理（aster-api#445，aster-lang-locales#121）：
+随 `aster-lang-locales-en` jar 上 classpath，`EvaluationDiagnostics` 直接读取；本仓不留同路径副本（会遮蔽 jar），
+nightly 的 `check-ui-messages-drift.py` 会把重新出现的副本报为漂移。
+
 ## 同步
 
 改文案 = 改真相源（locales 仓）→ 同步到这里：

@@ -33,6 +33,25 @@ SOURCES: dict[str, str] = {
 
 COPY_DIR = "aster-api/src/main/resources/ui-messages"
 
+# 只在 aster-lang-locales 仓根维护、随 aster-lang-locales-en jar 上 classpath 的文案目录
+# （syntax-diagnostics：aster-api#423；evaluation-diagnostics：aster-api#445）。
+# aster-api 不得保留同路径副本：本仓资源先于依赖 jar，副本会遮蔽 locales 版本，改了文案也不生效。
+LOCALES_ONLY_DIRS: tuple[str, ...] = ("syntax-diagnostics", "evaluation-diagnostics")
+API_RESOURCES = "aster-api/src/main/resources"
+
+
+def shadowing_copies(root: Path) -> list[str]:
+    """列出 aster-api 里遮蔽 locales 目录的同路径副本（每个文件一条漂移）。"""
+    found: list[str] = []
+    for name in LOCALES_ONLY_DIRS:
+        src_dir = root / "aster-lang-locales" / name
+        if not src_dir.is_dir():
+            print(f"::warning::locales 目录缺失，跳过 {name}：{src_dir}", file=sys.stderr)
+            continue
+        for copy in sorted((root / API_RESOURCES / name).glob("*.json")):
+            found.append(f"- `{name}/{copy.name}`：aster-api 留有同路径副本，会遮蔽 aster-lang-locales-en jar（应删除）")
+    return found
+
 
 def leaf_count(path: Path) -> int | None:
     """叶子 key 数（仅用于把差异说清楚，解析失败不影响判定）。"""
@@ -69,6 +88,8 @@ def main(root: Path) -> int:
             a, b = leaf_count(src), leaf_count(dst)
             detail = f"源 {a} 键 vs aster-api 副本 {b} 键" if a and b else "内容不一致"
             drift.append(f"- `{locale}`：{detail}（**不逐字节一致**）")
+
+    drift.extend(shadowing_copies(root))
 
     if checked == 0:
         print("::error::四语源全部缺失——兄弟仓未 checkout？", file=sys.stderr)
