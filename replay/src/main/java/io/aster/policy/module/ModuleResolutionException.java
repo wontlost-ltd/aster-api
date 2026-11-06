@@ -37,6 +37,8 @@ public class ModuleResolutionException extends RuntimeException {
         TENANT_REQUIRED(Code.MODULE_NOT_VISIBLE),
         /** 模块存在但对调用方不可见。 */
         NOT_VISIBLE(Code.MODULE_NOT_VISIBLE),
+        /** 本租户没有该模块的任何版本；对外与 NOT_VISIBLE 不可区分（ADR 0015 不泄露存在性），仅日志区分。 */
+        NOT_FOUND(Code.MODULE_NOT_VISIBLE),
         /** 被导入的版本带用户别名，跨模块解析暂不支持（fail-closed）。 */
         ALIASES_UNSUPPORTED(Code.MODULE_NOT_VISIBLE),
         /** 被导入的模块无法解析。 */

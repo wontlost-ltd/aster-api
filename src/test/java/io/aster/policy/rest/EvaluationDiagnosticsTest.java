@@ -108,6 +108,42 @@ class EvaluationDiagnosticsTest {
             .contains("code=MODULE_NOT_VISIBLE").contains("reason=" + reason.name());
     }
 
+    /** 400 响应体（与 PolicyEvaluationResource 的 entity 同一对象）按 Jackson 序列化后的 JSON 树。 */
+    private static com.fasterxml.jackson.databind.JsonNode body(ModuleResolutionException e, String lang) {
+        return new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(EvaluationDiagnostics.module(e, lang));
+    }
+
+    @Test
+    void 模块不可见与模块不存在_400响应体逐字段相同_ADR0015() {
+        // 「不存在」：本租户没有该模块的任何可见版本（候选为空）——与 5 种可见性原因对外不可区分
+        List<ModuleResolutionException> cases = List.of(
+            new ModuleResolutionException(ModuleResolutionException.Reason.NOT_FOUND, "Imported module was not found"),
+            new ModuleResolutionException(ModuleResolutionException.Reason.TENANT_REQUIRED, "a"),
+            new ModuleResolutionException(ModuleResolutionException.Reason.NOT_VISIBLE, "b"),
+            new ModuleResolutionException(ModuleResolutionException.Reason.ALIASES_UNSUPPORTED, "c"),
+            new ModuleResolutionException(ModuleResolutionException.Reason.PARSE_FAILED, "d"),
+            new ModuleResolutionException(ModuleResolutionException.Reason.RESOLVER_UNAVAILABLE, "e"));
+        for (String lang : List.of("en", "zh", "de", "hi")) {
+            var expected = body(cases.get(0), lang);
+            assertThat(expected.at("/diagnostics/0/code").asText()).isEqualTo("MODULE_NOT_VISIBLE");
+            assertThat(expected.at("/diagnostics/0/reason").asText()).isEqualTo("NOT_VISIBLE");
+            assertThat(expected.at("/diagnostics/0/candidates")).isEmpty();
+            for (ModuleResolutionException e : cases) {
+                assertThat(body(e, lang)).as("%s %s", lang, e.reason()).isEqualTo(expected);
+            }
+        }
+    }
+
+    @Test
+    void 模块不可见_目录缺NOT_VISIBLE时回退固定英文_不用异常原文() {
+        var e = new ModuleResolutionException(ModuleResolutionException.Reason.PARSE_FAILED,
+            "Imported module could not be parsed");
+        EvaluationResponse r = EvaluationDiagnostics.module(e, "zh", (lang, key) -> null);
+        assertThat(r.diagnostics().get(0).message()).isEqualTo("Imported module is not visible");
+        assertThat(r.diagnostics().get(0).reason()).isEqualTo("NOT_VISIBLE");
+        assertThat(r.error()).isEqualTo("Imported module is not visible");
+    }
+
     @Test
     void 模块错误_非不可见类原因对外保留细分() {
         var path = new ModuleResolutionException(ModuleResolutionException.Reason.EMPTY_PATH,

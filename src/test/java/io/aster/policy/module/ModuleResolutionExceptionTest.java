@@ -18,7 +18,7 @@ class ModuleResolutionExceptionTest {
         assertThat(Reason.VERSION_REQUIRED.code()).isEqualTo(Code.IMPORT_VERSION_REQUIRED);
         assertThat(Reason.EMPTY_PATH.code()).isEqualTo(Code.MODULE_VERSION_NOT_FOUND);
         assertThat(Reason.VERSION_NOT_FOUND.code()).isEqualTo(Code.MODULE_VERSION_NOT_FOUND);
-        for (Reason r : List.of(Reason.TENANT_REQUIRED, Reason.NOT_VISIBLE, Reason.ALIASES_UNSUPPORTED,
+        for (Reason r : List.of(Reason.TENANT_REQUIRED, Reason.NOT_VISIBLE, Reason.NOT_FOUND, Reason.ALIASES_UNSUPPORTED,
                 Reason.PARSE_FAILED, Reason.RESOLVER_UNAVAILABLE)) {
             assertThat(r.code()).as(r.name()).isEqualTo(Code.MODULE_NOT_VISIBLE);
         }

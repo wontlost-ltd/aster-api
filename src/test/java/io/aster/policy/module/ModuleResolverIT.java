@@ -105,6 +105,58 @@ class ModuleResolverIT {
     }
 
     @Test
+    void absentModuleIsIndistinguishableFromHiddenModule() {
+        // ADR 0015：本租户没有任何可见版本时，「不存在」与「存在但不可见」对外同为 MODULE_NOT_VISIBLE、候选为空
+        persistLibrary(TENANT, "risk.Hidden", 1L, false, scoringSource(1));
+        ParsedRoot hidden = root("""
+            Module app.Root.
+            Use risk.Hidden version 1 as Score.
+
+            Rule run given amount as Int, produce Int:
+              Return amount.
+            """);
+        ParsedRoot absent = root("""
+            Module app.Root.
+            Use risk.Absent version 1 as Score.
+
+            Rule run given amount as Int, produce Int:
+              Return amount.
+            """);
+        ModuleResolutionException h = (ModuleResolutionException) org.assertj.core.api.Assertions.catchThrowable(
+            () -> resolver.resolveGraph(TENANT, hidden.core(), hidden.imports(), "en-US"));
+        ModuleResolutionException a = (ModuleResolutionException) org.assertj.core.api.Assertions.catchThrowable(
+            () -> resolver.resolveGraph(TENANT, absent.core(), absent.imports(), "en-US"));
+        assertThat(a.code()).isEqualTo(h.code()).isEqualTo(ModuleResolutionException.Code.MODULE_NOT_VISIBLE);
+        assertThat(a.candidates()).isEmpty();
+        assertThat(h.candidates()).isEmpty();
+        assertThat(a.reason()).isEqualTo(ModuleResolutionException.Reason.NOT_FOUND);
+        assertThat(h.reason()).isEqualTo(ModuleResolutionException.Reason.NOT_VISIBLE);
+    }
+
+    @Test
+    void hiddenVersionWithVisibleSiblings_reportsVersionNotFoundLikeAbsentVersion() {
+        // 有可见版本时调用方本已知道模块存在：隐藏版本与不存在的版本同样报 VERSION_NOT_FOUND + 可见候选
+        persistLibrary(TENANT, "risk.Scoring", 1L, true, scoringSource(1));
+        persistLibrary(TENANT, "risk.Scoring", 2L, false, scoringSource(2));
+        for (int v : new int[] {2, 3}) {
+            ParsedRoot root = root("""
+                Module app.Root.
+                Use risk.Scoring version %d as Score.
+
+                Rule run given amount as Int, produce Int:
+                  Return amount.
+                """.formatted(v));
+            assertThatThrownBy(() -> resolver.resolveGraph(TENANT, root.core(), root.imports(), "en-US"))
+                .isInstanceOf(ModuleResolutionException.class)
+                .satisfies(e -> {
+                    ModuleResolutionException err = (ModuleResolutionException) e;
+                    assertThat(err.code()).isEqualTo(ModuleResolutionException.Code.MODULE_VERSION_NOT_FOUND);
+                    assertThat(err.candidates()).containsExactly("1");
+                });
+        }
+    }
+
+    @Test
     void missingTenantRaisesTenantRequired() {
         ParsedRoot root = root("""
             Module app.Root.
