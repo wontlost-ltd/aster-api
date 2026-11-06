@@ -86,21 +86,36 @@ class EvaluationDiagnosticsTest {
             "需要 aster-lang-locales ≥ 1.0.42 的 module.* 文案");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = ModuleResolutionException.Reason.class,
+        names = {"TENANT_REQUIRED", "NOT_VISIBLE", "ALIASES_UNSUPPORTED", "PARSE_FAILED", "RESOLVER_UNAVAILABLE"})
+    void 模块不可见_五种原因对外一律NOT_VISIBLE与通用文案_ADR0015(ModuleResolutionException.Reason reason) {
+        var e = new ModuleResolutionException(reason, "internal detail for " + reason);
+        for (String lang : List.of("en", "zh", "de", "hi")) {
+            EvaluationResponse r = EvaluationDiagnostics.module(e, lang);
+            assertThat(r.diagnostics()).singleElement().satisfies(d -> {
+                assertThat(d.code()).isEqualTo("MODULE_NOT_VISIBLE");
+                assertThat(d.reason()).isEqualTo("NOT_VISIBLE");
+                assertThat(d.candidates()).isEmpty();
+                String expected = EvaluationDiagnostics.keys("en").contains("module.NOT_VISIBLE")
+                    ? EvaluationDiagnostics.text(lang, "module.NOT_VISIBLE") : EvaluationDiagnostics.NOT_VISIBLE_FALLBACK;
+                assertThat(d.message()).isEqualTo(expected).doesNotContain("internal detail");
+            });
+        }
+        assertThat(moduleMessage(e, "en")).isEqualTo("Imported module is not visible");
+        // 细分原因只进服务端日志
+        assertThat(EvaluationDiagnostics.moduleLogFields(e))
+            .contains("code=MODULE_NOT_VISIBLE").contains("reason=" + reason.name());
+    }
+
     @Test
-    void 模块错误_同码不同原因得到不同文案_code与candidates不变() {
-        var notVisible = new ModuleResolutionException(ModuleResolutionException.Reason.NOT_VISIBLE,
-            "Imported module is not visible");
-        var tenant = new ModuleResolutionException(ModuleResolutionException.Reason.TENANT_REQUIRED,
-            "Module imports require a tenant context");
-        EvaluationResponse r = EvaluationDiagnostics.module(notVisible, "en");
-        assertThat(r.diagnostics()).singleElement().satisfies(d -> {
-            assertThat(d.code()).isEqualTo("MODULE_NOT_VISIBLE");
-            assertThat(d.reason()).isEqualTo("NOT_VISIBLE");
-            assertThat(d.candidates()).isEmpty();
-            assertThat(d.message()).isEqualTo("Imported module is not visible");
-        });
-        assertThat(moduleMessage(tenant, "en")).isEqualTo("Module imports require a tenant context");
-        assertThat(EvaluationDiagnostics.module(tenant, "en").diagnostics().get(0).code()).isEqualTo("MODULE_NOT_VISIBLE");
+    void 模块错误_非不可见类原因对外保留细分() {
+        var path = new ModuleResolutionException(ModuleResolutionException.Reason.EMPTY_PATH,
+            "Imported module path is empty");
+        EvaluationResponse r = EvaluationDiagnostics.module(path, "en");
+        assertThat(r.diagnostics().get(0).code()).isEqualTo("MODULE_VERSION_NOT_FOUND");
+        assertThat(r.diagnostics().get(0).reason()).isEqualTo("EMPTY_PATH");
+        assertThat(r.diagnostics().get(0).message()).isEqualTo("Imported module path is empty");
     }
 
     @Test

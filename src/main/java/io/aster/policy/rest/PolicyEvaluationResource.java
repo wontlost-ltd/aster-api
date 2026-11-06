@@ -788,8 +788,8 @@ public class PolicyEvaluationResource {
                     businessMetrics.endPolicyEvaluation(sample);
                 }
                 var moduleError = e.resolutionException();
-                LOG.warnf("Dynamic CNL module resolution failed: code=%s, reason=%s, message=%s",
-                    moduleError.code(), moduleError.reason(), moduleError.getMessage());
+                // 细分原因只进日志；对外 MODULE_NOT_VISIBLE 一律报 NOT_VISIBLE（ADR 0015，见 EvaluationDiagnostics.module）
+                LOG.warnf("Dynamic CNL module resolution failed: %s", EvaluationDiagnostics.moduleLogFields(moduleError));
                 // ★异常路径同样不给模拟执行记账（第九轮 P0-1）
                 if (!effectiveSimulate) {
                     recordApiCall("/api/v1/policies/evaluate-source", "api_error",
