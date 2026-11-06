@@ -134,6 +134,42 @@ class ModuleResolverIT {
     }
 
     @Test
+    void hiddenModuleRequestedAtAbsentVersion_isNormalizedToNotVisible() {
+        // aster-api#458 ④：模块只有隐藏版本 1，请求不存在的版本 2 ——没有任何可见候选，对外同样归一化为
+        // MODULE_NOT_VISIBLE、候选为空，与「请求隐藏的版本 1」「模块根本不存在」三者的对外契约相同
+        persistLibrary(TENANT, "risk.Hidden", 1L, false, scoringSource(1));
+        ModuleResolutionException absentVersion = resolveFailure("risk.Hidden", 2);
+        ModuleResolutionException hiddenVersion = resolveFailure("risk.Hidden", 1);
+        ModuleResolutionException absentModule = resolveFailure("risk.Absent", 2);
+
+        assertThat(absentVersion.code()).isEqualTo(ModuleResolutionException.Code.MODULE_NOT_VISIBLE);
+        assertThat(absentVersion.candidates()).isEmpty();
+        assertThat(absentVersion.params()).isEmpty();
+        // 细分原因只进日志：版本 2 在本租户不存在，内部归为 NOT_FOUND（版本 1 才是 NOT_VISIBLE）
+        assertThat(absentVersion.reason()).isEqualTo(ModuleResolutionException.Reason.NOT_FOUND);
+        assertThat(hiddenVersion.reason()).isEqualTo(ModuleResolutionException.Reason.NOT_VISIBLE);
+        for (ModuleResolutionException other : List.of(hiddenVersion, absentModule)) {
+            assertThat(other.code()).isEqualTo(absentVersion.code());
+            assertThat(other.candidates()).isEqualTo(absentVersion.candidates());
+            assertThat(other.params()).isEqualTo(absentVersion.params());
+        }
+    }
+
+    private ModuleResolutionException resolveFailure(String moduleName, int version) {
+        ParsedRoot root = root("""
+            Module app.Root.
+            Use %s version %d as Score.
+
+            Rule run given amount as Int, produce Int:
+              Return amount.
+            """.formatted(moduleName, version));
+        Throwable t = org.assertj.core.api.Assertions.catchThrowable(
+            () -> resolver.resolveGraph(TENANT, root.core(), root.imports(), "en-US"));
+        assertThat(t).as("%s@%d", moduleName, version).isInstanceOf(ModuleResolutionException.class);
+        return (ModuleResolutionException) t;
+    }
+
+    @Test
     void hiddenVersionWithVisibleSiblings_reportsVersionNotFoundLikeAbsentVersion() {
         // 有可见版本时调用方本已知道模块存在：隐藏版本与不存在的版本同样报 VERSION_NOT_FOUND + 可见候选
         persistLibrary(TENANT, "risk.Scoring", 1L, true, scoringSource(1));

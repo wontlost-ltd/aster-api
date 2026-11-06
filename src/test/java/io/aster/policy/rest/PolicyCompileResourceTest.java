@@ -100,6 +100,114 @@ public class PolicyCompileResourceTest {
             .body("diagnostics[0].params.literal", is("99999999999999999999"));
     }
 
+    // ---------------------------------------------------------------- 三阶段带码异常出口（aster-api#458 ②）
+    //
+    // core 的 ParseDiagnosticException 可能在词法 fill（E054 嵌套深度守卫）、语法分析、构建 AST（E053 字面量
+    // 越界、E065 位置不对）三个阶段抛出；InProcessCnlParser 三处都经 codedFailure 返回带码诊断。
+    // 这里锁住端点契约：HTTP 200、success=false、恰一条 error 级阻断诊断带码与 1-based 行列、不是内部故障码。
+
+    /** 按 1.0.42 core 的 AsterCustomLexer.MAX_NESTING_DEPTH（300）多套一层括号。 */
+    private static final int NESTING_LIMIT = 300;
+
+    private static String nested(int depth) {
+        return "(".repeat(depth) + "1" + ")".repeat(depth);
+    }
+
+    /** 带码的用户源码错误：恰一条 error 诊断，码 / 行号如期，列号 1-based，端点没有退回内部故障路径。 */
+    private io.restassured.response.ValidatableResponse assertCodedSourceError(String source, String locale,
+                                                                              String code, int line) {
+        return given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body(java.util.Map.of("source", source, "locale", locale))
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200)
+            .contentType(ContentType.JSON)
+            .body("success", is(false))
+            .body("error", not(emptyOrNullString()))
+            .body("$", not(hasKey("module")))
+            .body("diagnostics", hasSize(1))
+            .body("diagnostics[0].code", is(code))
+            .body("diagnostics[0].severity", is("error"))
+            // 语法错误阻断保存门（与 E012 同口径），不是 W600 式的 warning
+            .body("diagnostics[0].blocking", is(true))
+            .body("diagnostics[0].featureId", nullValue())
+            .body("diagnostics[0].startLine", is(line))
+            .body("diagnostics[0].endLine", is(line))
+            .body("diagnostics[0].startColumn", greaterThanOrEqualTo(1))
+            .body("diagnostics[0].endColumn", is(notNullValue()))
+            .body("diagnostics[0].message", not(emptyOrNullString()))
+            .body("diagnostics.findAll { it.code == '" + io.aster.policy.rest.model.CompileDiagnostic.INTERNAL_FAILURE_CODE
+                + "' }", hasSize(0));
+    }
+
+    @Test
+    public void compileNestingTooDeep_lexerStage_isCodedE054() {
+        // 词法阶段：第 301 个 '(' 触发守卫，lexer 报告的是该括号消费之后的列（"  Return " 9 列 + 301 + 1）
+        String source = "Module M.\n\nRule p given x as Int, produce Int:\n  Return " + nested(NESTING_LIMIT + 1) + ".";
+        assertCodedSourceError(source, "en-US", "E054", 4)
+            .body("diagnostics[0].startColumn", is(9 + NESTING_LIMIT + 2))
+            .body("diagnostics[0].params.limit", is(String.valueOf(NESTING_LIMIT)))
+            .body("diagnostics[0].message", is("Nesting is too deep (limit " + NESTING_LIMIT + ")"));
+    }
+
+    @Test
+    public void compileNestingBelowLimit_isNotRejected() {
+        // 守卫边界：少一层括号就不触发 E054（否则上面的用例只是在测「括号多了就报错」）
+        String source = "Module M.\n\nRule p given x as Int, produce Int:\n  Return " + nested(NESTING_LIMIT - 1) + ".";
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body(java.util.Map.of("source", source, "locale", "en-US"))
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200)
+            .body("diagnostics.findAll { it.code == 'E054' }", hasSize(0));
+    }
+
+    @Test
+    public void compileNestingTooDeep_zh_messageFromOverlay() {
+        // 同一出口按请求 locale 取 zh-CN overlay 文案，params 不随语言变化
+        String source = "模块 m。\n\n规则 f 给定 x 作为 整数，产出 整数：\n  返回 " + nested(NESTING_LIMIT + 1) + "。";
+        assertCodedSourceError(source, "zh-CN", "E054", 4)
+            .body("diagnostics[0].params.limit", is(String.valueOf(NESTING_LIMIT)))
+            .body("diagnostics[0].message", is("嵌套层级过深（上限 " + NESTING_LIMIT + "）"));
+    }
+
+    @Test
+    public void compileLiteralOutOfRange_astStage_isCodedE053WithKindAndLiteral() {
+        // 构建 AST 阶段：Int 字面量越界，params 带 kind / literal；位置在字面量所在行
+        String source = "Module M.\n\nRule p given x as Int, produce Int:\n  Return 99999999999.";
+        assertCodedSourceError(source, "en-US", "E053", 4)
+            .body("diagnostics[0].params.literal", is("99999999999"))
+            .body("diagnostics[0].params.kind", not(emptyOrNullString()))
+            .body("diagnostics[0].message", containsString("99999999999"));
+    }
+
+    @Test
+    public void compileDecimalTooManyDigits_astStage_isCodedE053() {
+        String source = "Module M.\n\nRule p, produce Decimal:\n  Return "
+            + "1111111111111111111111111111111111111111111111m.";
+        assertCodedSourceError(source, "en-US", "E053", 4)
+            .body("diagnostics[0].params.literal", not(emptyOrNullString()));
+    }
+
+    @Test
+    public void compileOtherwiseNotLastInBlock_astStage_isCodedE065() {
+        // 构建 AST 阶段：Otherwise 后面还有语句 → E065；params 原样带 kw.* / token.* key（按码渲染的契约），
+        // message 里已回译成作者语言的关键字拼写与名词
+        String source = "Module M.\n\nRule p given x as Int, produce Text:\n  Otherwise allow.\n  Return \"x\".";
+        assertCodedSourceError(source, "en-US", "E065", 4)
+            .body("diagnostics[0].params.construct", is("kw.otherwise"))
+            .body("diagnostics[0].params.position", is("token.lastInBlock"))
+            .body("diagnostics[0].message", allOf(containsString("Otherwise"), containsString("last in its block")))
+            .body("diagnostics[0].message", not(containsString("kw.")))
+            .body("diagnostics[0].message", not(containsString("token.")));
+    }
+
     @Test
     public void compileAliasDependentSource_compilesWithAliasSet() {
         // 依赖用户别名的源码：带 aliasSet 编译应成功（否则会被误判解析错误）。
