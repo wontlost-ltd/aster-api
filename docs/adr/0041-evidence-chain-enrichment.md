@@ -255,9 +255,12 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 | `unverifiedFields` | List of Text，≤ 64 项 | 仅 DENY `unverified_input` 时：规则引用却为 declared 的路径 |
 | `inputSourcesTruncated` | Boolean | 仅当上述任一列表因预算被缩短时写 `true` |
 | `principalIdentityMatched` | Boolean | ADR 0040 §11 D2 第 3 条：服务端解析是否证实 `principal.id` 即提交者；仅 `principal.type == "user"` 时写 |
+| `factSources` | List of Text，≤ 64 项 | `<path>=<source id>`（ADR 0046 §11 D5 签发端来源函数），字典序；缩短顺序排在 `verifiedFields` 之后 |
 | `factExpiresAt` | Text（ISO-8601） | 本次请求全部 facts 中最早的 `expiresAt`；无 facts 不写。幂等重放的 `factsStale` 不上链（重放不写事件），由本键与签发方表推导 |
 
 3800 字符预算（ADR 0040 §5.2）缩短顺序改为：`reason → agentSession → agentVersion → principalRoles → factIssuers → verifiedFields → unverifiedFields → agentModel → agentProvider → principalType → resourceType → resourceId → actionName → principalId`；列表每轮删末项，首次缩短即置 `inputSourcesTruncated`。身份与完整性键集合不变，`inputSourcesTruncated` 本身永不删除。`decision_id` 列投影不变。
+
+审批事件新键 `expiredReason`（`fact_issuer_revoked`，自然过期不写）；新事件类型 `GUARD_FACT_ISSUER_REVOKED`（ADR 0040 §11 D4，metadata `issuer / kid / affectedDecisionIds / affectedCount / affectedTruncated`，`decision_id` 列不投影）。证据包 `guardInputSources` 增 `factSources`。
 
 **D2 `POLICY_EVALUATION` 新键**：`inputSource: "declared"`（常量，与 `agentSource` 同法，凡发事件即写）。`/evaluate*` 的输入全部来自请求体，没有验签通道，这个键的价值是让证据包能诚实标出「评估输入未经验证」；将来 cloud 若对 `/evaluate-source` 附签名事实，键值可扩为 `"mixed"` 并补 `verifiedFields`，形状不变。
 
