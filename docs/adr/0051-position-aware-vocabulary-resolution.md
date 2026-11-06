@@ -398,7 +398,8 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 
 **兼容与迁移。**
 - aster-api 第一阶段**直接用 overlay**：`SyntaxMessages` 改为按码取模板（overlay 优先、缺译回退 `error_codes.json` 英文），句型目录只保留外框 key；过渡期保留“旧 key → 码”与“英文原句 → 码”的兼容映射一个车次，用于读取尚未升级引擎产出的诊断。
-- cloud 改为按 `code` 取文案，删除 `src/lib/parse-diagnostic-l10n.ts`（wontlost-ltd/aster-cloud#660 引入）及其正则；P005 的消费点（`execution-input` 诊断、`resolver-migration` 的构造写法启发式与 triage）改读新码（`invalidConstructForm` 对应 E061 + 构造关键词检测）。
+- cloud 改为按 `code` 取文案，删除 `src/lib/parse-diagnostic-l10n.ts`（wontlost-ltd/aster-cloud#660 引入）及其正则；P005 的消费点（`execution-input` 诊断、`resolver-migration` 的构造写法启发式与 triage）改读新码：构造写法 `X with f = v` 两引擎均报 **E057**（`Expected 'set to' in construction`，ts 与 core 实测一致），`invalidConstructForm` = E057 + 构造关键词检测（原草案写的 E061 有误）。
+- **cloud 过渡契约（发版门槛）。** P005 原是 `tools.error` 的兜底码，新码按句型拆开，不存在一对一替换；过渡车次内 cloud 一律按 `legacyCode`（缺省时回退 `code`）判断旧 P/L 身份。cloud 先发布「读 `legacyCode ?? code`」的版本，**之后**才允许升级到带 E050–E069 的 ts；cloud 改读新码并删除 `legacyCode` 读取后，下一车次引擎才可移除 `legacyCode`。
 
 **发版顺序。** ① 本 ADR 修订评审定稿 → ② aster-lang-ts 与 aster-lang-core **同车次**加码、生成物与 `ErrorCodeParityTest`、aster-lang-test 共享夹具 → ③ aster-lang-locales 发布 zh/de/hi overlay 译文与 `tokens` / `hint` 段 → ④ aster-api 升级引擎与 locales pin、`SyntaxMessages` 按码取文案（运行发版列车会自动部署 aster-api）→ ⑤ aster-cloud 升级并删除过渡模块与 `legacyCode` 读取。② 与 ③ 之间允许 locales 缺 key（回退英文），不允许码先于 ADR 定稿发版。
 
