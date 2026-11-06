@@ -342,3 +342,92 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
   它们已分别在代码注释、样本 meta 与 PR 中以「R49」被引用，为不让既有引用失效，不重新编号，只在本节就地标注 a / b / c。
   外部文本里的「R49」按上下文对应：比较 / 枚举期望类型 → a，词汇校验 → b，审批与封存作用域 → c。今后新裁决不得复用已有编号。
 - **R54 / R55**：R54 是 aster-lang-ts 1.2.0 已引用、此前未写入本节的裁决（`of T` 保留到 typeParams、`RESOLVER_VERSION` 不递增），现补记在 §15.4；裸模式名的裁决因此编为 R55（§15.2）。
+
+## 16. 2026-11 修订：解析诊断码、统一顶层命名空间、导入契约（R56–R58）
+
+状态：**PROPOSED**（2026-11-06 起草，待用户评审；方向已由用户按 codex-decisions-review D1/D2/D3 批准）。本节定稿前不得据此合并实现；定稿后与正文冲突时以本节为准。
+相关：aster-cloud/aster-lang-ts#255（解析诊断码）、aster-cloud/aster-lang-ts#248 M1（枚举遮蔽导入别名）、aster-cloud/aster-lang-test#174 子项 1 / 5（导入签名、alias RHS）、wontlost-ltd/aster-cloud#660（引入 `parse-diagnostic-l10n.ts` 过渡模块）。
+
+### 16.1 R56：解析诊断进入共享错误码表（E050–E069）
+
+**现状（已核对 origin/main）。**
+- 共享码表 `shared/error_codes.json`（ts 与 core 各一份，生成 `src/diagnostics/error_codes.ts` / `ErrorCode.java`，由 `ErrorCodeParityTest` 锁定）已用区段：E001–E032 类型、E070–E073 PII、E100–E104、E200–E212、E300–E304、E400–E404、E500–E504、E701–E724、E800–E807，以及 W071/W074/W105/W106/W700/W704/W800/W801。**E033–E069 全空**；E070 起为 PII，故解析诊断取 **E050–E069**，E033–E049 留给类型检查扩展。
+- ts 解析器另有一套**不进共享表**的本地码（`src/diagnostics/diagnostics.ts` 的 `DiagnosticCode`）：L001–L008 词法、L101–L106 lowering、P001–P015 解析。`parser-tools.ts` 的 `tools.error(msg)` 一律发 **P005** 并用英文整句覆盖消息，约 110 个调用点里绝大多数因此同码异义。cloud 已把 P005 当诊断身份用（`execution-input`、`resolver-migration` 的 `invalidConstructForm` 启发式、相关测试）。
+- core（Java）走 ANTLR：aster-api 的 `CnlErrorListener` 把 ANTLR 事件映射到 `SyntaxMessages` 的句型 key（`unexpected`、`expectedBefore`、`noViable`…），译文在 aster-lang-locales `syntax-diagnostics/<locale>.json`，**没有错误码**；`AstBuilder` / `AsterCustomLexer` / `LiteralParsing` 另以 `IllegalStateException` 抛中英混杂文案。
+- cloud 用 `parse-diagnostic-l10n.ts` 以正则把 ts 英文句子反查到同一组句型 key 再翻译。
+
+**决策。**
+1. **错误码是诊断身份。** ts 与 core 的每个用户可见解析诊断都必须带下表中的码；`message` 只是渲染结果。跨仓、跨语言不得再以英文原句为 key。
+2. **模板与命名参数随码冻结。** 表中的名称、severity、参数名一经发版即为契约：改英文措辞不改码；改参数集合或语义须新开码。
+3. **译文真源**为 aster-lang-locales `overlays/<locale>/diagnostic-messages.json`，key 为错误码，占位符用命名形式 `{token}`；英文模板以 `shared/error_codes.json` 的 `message` 为准。缺 locale 或缺 key 时回退英文，不抛异常。
+4. **参数里的 token 名也要可翻译。** `{token}` / `{after}` / `{context}` 等参数由引擎传**结构化值**：关键词传规范关键词（由消费方按 lexicon 显示），抽象 token 传 `token.<name>` 名（沿用 `syntax-diagnostics` 现有的 `token.*` 词表，并入 overlay 的 `tokens` 段），字面片段原样加引号。
+5. **不进编译 hash。** 解析诊断不改变编译结果与持久化产物身份；码与文案都不参与 `source_hash`、信封、toolchainId、`RESOLVER_VERSION`。
+6. **外框句型不是诊断。** `summary`、`located`、`moreErrors.*`、`withHint`、`or`、`more`、`style.*` 是消费方的排版框架，留在 `syntax-diagnostics/<locale>.json`，不分配码。提示（`isBeforeSymbol`、`unknownOperator`、`inlineIfHint`）作为对应码的 `help` 变体：参数 `{hint}` 取 `hint.<name>`，同样从 overlay 取文案。
+7. **ts 本地 P/L 码。** P001–P015、L001–L008 由新码取代（映射见下表）；过渡期在诊断上同时保留 `legacyCode`（原 P/L 码）一个车次，cloud 改为读新码后删除。L101–L106（lowering 内部不变量）不面向用户，不在本次范围。
+
+**码表草案（全部 category=`syntax`，severity=`error`）。**
+
+| 码 | 名称 | 命名参数 | 英文模板 | ts 来源（file:line @ origin/main） | core 来源 |
+|---|---|---|---|---|---|
+| E050 | PARSE_UNEXPECTED_CHARACTER | char | `Unrecognized character {char}` | L001（lexer.ts 281/289/502/709） | ANTLR token recognition → `unrecognizedCharacter`；`AsterCustomLexer` 285/299 |
+| E051 | PARSE_UNTERMINATED_STRING | — | `Unterminated string literal` | L002（lexer.ts 264/582/600） | ANTLR 词法 |
+| E052 | PARSE_INDENTATION | — | `Incorrect indentation: one level too deep or inconsistent. Indent with 2 spaces` | L003、L004（lexer.ts 337/348） | `indentation` |
+| E053 | PARSE_LITERAL_OUT_OF_RANGE | kind, literal | `{kind} literal {literal} is out of range` | L005–L008（lexer.ts 671/681/694/703） | `LiteralParsing` 32/44/63/66/77 |
+| E054 | PARSE_NESTING_TOO_DEEP | limit | `Nesting is too deep (limit {limit})` | P015（context.ts 312） | —（ANTLR 无对应，parity 夹具只在 ts 侧断言） |
+| E055 | PARSE_EXPECTED | token | `Expected {token}` | P001/P002/P003/P006/P008（parser-tools 90/100/112、import-parser 33、type-parser 412、`Expected '('`/`')'`/`identifier`/`newline`/`dedent`/`type`/PII 级别与类别等） | `expected` |
+| E056 | PARSE_EXPECTED_AFTER | token, after | `Expected {token} after {after}` | 所有 `Expected X after Y`（decl-parser 80/135/151/450/468/476/761、expr-stmt 268/296/379/484/529/564/611/654/668/674/682/699/710/712/719/744/785/1403、type-parser 60/69/96/240/251/252/447/451/460/468、import-parser 105/140）；constraint-parser 209/215/222/255/288 的中文硬编码句改为本码 | `expectedAfter` |
+| E057 | PARSE_EXPECTED_IN | token, context | `Expected {token} in {context}` | expr-stmt 265/865/1930、`Expected indent for retry policy / cases`（702/776）、`Expected indent after workflow header`（614）、`Expected dedent after workflow body`（633）、list/paren 闭合（1708/1719/671） | `expectedIn` |
+| E058 | PARSE_EXPECTED_AFTER_IN | token, after, context | `Expected {token} after {after} in {context}` | decl-parser 186/233、expr-stmt 428/1532/1749 | `expectedAfterIn` |
+| E059 | PARSE_EXPECTED_STATEMENT_END | token | `Expected {token} at end of statement` | expr-stmt 218、parser-tools 78 | `expectedAtEndOfStatement` |
+| E060 | PARSE_EXPECTED_BEFORE | token, before | `Expected {token} before {before}` | —（ts 当前无此句型） | `expectedBefore` |
+| E061 | PARSE_UNEXPECTED_TOKEN | token | `Unexpected {token}` | P005 无专门句型时的兜底（context.ts 256）、`Unexpected '…' where an outcome was expected`（expr-stmt 350，`help`=outcome） | `unexpected`、`extraneous`（措辞并入，见下） |
+| E062 | PARSE_UNEXPECTED_EXPECTING | token, expected | `Unexpected {token}; expected {expected}` | context.ts 233（`expectedToken` 带实际 token 时） | `unexpectedExpecting` |
+| E063 | PARSE_NO_VIABLE | token | `Cannot parse the syntax near {token}` | —（ts 兜底走 E061） | `noViable`（`isBeforeSymbol`/`unknownOperator` 作 `help`） |
+| E064 | PARSE_UNEXPECTED_CONSTRUCT | construct | `Unexpected {construct}` | `Unknown statement`（expr-stmt 602）、`Unexpected token at top level`（decl-parser 775）、`Unexpected expression`（expr-stmt 1860）；construct ∈ `token.statement` / `token.topLevelToken` / `token.expression` | `AstBuilder` 165 `Unknown top level declaration` |
+| E065 | PARSE_MISPLACED | construct, position | `{construct} must appear {position}` | MODULE_MISPLACED / PROFILE_MISPLACED（decl-parser 686/694）、OTHERWISE_NOT_LAST（expr-stmt 104）、`Expected Rule after declaration annotations`（761 的语义版） | `AstBuilder` 133/839 |
+| E066 | PARSE_EMPTY_BLOCK | block, item | `{block} must contain at least one {item}` | expr-stmt 163/199/622 | `AstBuilder` 960/966 |
+| E067 | PARSE_INVALID_VALUE | construct, value, allowed | `Invalid {construct} {value}; expected {allowed}` | Profile id 正则（import-parser 107）、backoff（expr-stmt 724）、max attempts ≤ 0（714）、timeout 负数 / 单位（749/753）、运算符词作前缀调用（1484） | `AstBuilder` 137/1004/1013/1031、字符串转义 1676 |
+| E068 | PARSE_CALL_ARITY | callee, expected, actual | `{callee} takes exactly {expected} argument(s), got {actual}` | await（expr-stmt 486/1684）、前缀操作符（1499） | `AstBuilder` 1526 |
+| E069 | PARSE_UNKNOWN_NAME | kind, name | `Unknown {kind} {name}` | `Unknown capability`（type-parser 180）、`Unknown retry directive`（expr-stmt 729）、`Retry section must include …`（734/735 改为 E066 的 `item` 形式时不占本码） | `AstBuilder` 1019/1022（同上） |
+
+说明：
+- E054、E060、E063 为单侧诊断（另一引擎结构上不产生），parity 夹具只断言“产生时码与参数一致”，不强求两侧都产生；其余码须有两引擎同码、参数等价的共享夹具（aster-lang-test）。
+- 措辞变化（不改码）：`extraneous`（“Unexpected extra {token}”）并入 E061；`Unknown statement` 统一为 `Unexpected statement`。依正文“不考虑向后兼容”，只要求过渡期英文兼容映射覆盖旧句。
+- 表中“file:line”是起草时的盘点索引，实现 PR 以 `rg "error\(|Diagnostics\." src/parser src/frontend/lexer.ts` 复核全量，新增调用点不得再用 `tools.error(msg)` 裸字符串（加 lint 或单测守卫：`tools.error` 只接受 `(code, params)`）。
+- 冻结前须由实现负责人在 core 侧补全 ANTLR 事件 → 码的映射清单（`CnlErrorListener` 现有分支逐一对应），作为 R56 定稿附件。
+
+**兼容与迁移。**
+- aster-api 第一阶段**直接用 overlay**：`SyntaxMessages` 改为按码取模板（overlay 优先、缺译回退 `error_codes.json` 英文），句型目录只保留外框 key；过渡期保留“旧 key → 码”与“英文原句 → 码”的兼容映射一个车次，用于读取尚未升级引擎产出的诊断。
+- cloud 改为按 `code` 取文案，删除 `src/lib/parse-diagnostic-l10n.ts`（wontlost-ltd/aster-cloud#660 引入）及其正则；P005 的消费点（`execution-input` 诊断、`resolver-migration` 的构造写法启发式与 triage）改读新码（`invalidConstructForm` 对应 E061 + 构造关键词检测）。
+
+**发版顺序。** ① 本 ADR 修订评审定稿 → ② aster-lang-ts 与 aster-lang-core **同车次**加码、生成物与 `ErrorCodeParityTest`、aster-lang-test 共享夹具 → ③ aster-lang-locales 发布 zh/de/hi overlay 译文与 `tokens` / `hint` 段 → ④ aster-api 升级引擎与 locales pin、`SyntaxMessages` 按码取文案（运行发版列车会自动部署 aster-api）→ ⑤ aster-cloud 升级并删除过渡模块与 `legacyCode` 读取。② 与 ③ 之间允许 locales 缺 key（回退英文），不允许码先于 ADR 定稿发版。
+
+**验收。** 同一错误在 ts / core 产出同码、等价参数；每个 locale 的 overlay 对 E050–E069 key 与占位符集合完整（复用现有 overlay 完整性测试）；缺译回退英文；改英文模板不影响按码查找；cloud 源码中不再有解析诊断正则反查；`source_hash` / 信封在升级前后不变。
+
+### 16.2 R57：顶层类型、枚举、类型别名与导入别名共用一个命名空间
+
+**现状。** ts `resolve-declarations.ts` 的 `declareTopLevel` 已把类型别名与 Data/Enum 放进同一组按源码顺序查重（E807），但 `Import` 被跳过，导入别名不参与；于是 `Use lib as Status.` 与 `Define Status as one of …` 并存时枚举静默遮蔽别名，`Status.calc(1)` 报 E802（#248 M1）。Java `TypeChecker.checkImport` 对同一情形只发 **E103 IMPORT_SYMBOL_CONFLICT（warning）**，ts 不发；两引擎已不一致。
+
+**决策。**
+1. 声明登记阶段，顶层类型（Data）、枚举、类型别名与导入别名（`Use … as X` 的 X；无 `as` 时为模块末段可见名）进入同一命名空间，按折叠后的规范名（§6.3）查重。
+2. 冲突报 **E807 DUPLICATE_DECLARATION**，报在源码中后出现的一处，参数 `written` / `role` / `candidates` 沿用现有形态（`role` 取后者的角色）。**无优先级**：不存在“别名优先”或“类型优先”的解析结果，冲突模块不进入后续阶段。
+3. Java 对“别名 vs 本地顶层声明”的 E103 warning 改为同一 E807 error；E103 仅保留“重复导入别名”（与 E100 的关系另行清理，不在本修订范围）。ts 与 Java 同车次实现，aster-lang-test 共享夹具锁定（同名冲突两侧同报 E807；无冲突导入与枚举行为不变；别名与函数名同名不受影响——函数在另一命名空间）。
+4. 这是**有意的变严**：原先能编译（且枚举遮蔽别名）的源码将报错。按 SWEEP 原则须先证明无存量受影响。
+
+**兼容性扫描（2026-11-06，只读）。**
+- (a) 仓库语料：扫描 aster-lang-test、aster-lang-ts、aster-lang-core、aster-lang-truffle、aster-lang-locales、aster-api、aster-cloud、aster-lang-template / validation / platform / runtime / hi / dev、aster-dev、prod-e2e-20261022/23 下全部 `.aster` / `.cnl`（897 个文件，12 个含导入别名）：**0 处冲突**。内嵌于 `.ts` / `.java` / `.json` 测试字符串的源码另做粗筛（11 个含别名的文件），**0 处**同文件同名定义。扫描脚本在正向对照样本上命中，排除了漏报的脚本错误。
+- (b) 生产策略：只读 SQL（同一文件自动区分 aster_api 的 `policy_versions` 与 aster_cloud 的 `"PolicyVersion"` + `"Policy"`，覆盖 en/zh/de/hi 四种关键词，名字按小写比较），由用户执行：
+  `kubectl exec -i -n <ns> shared-postgres-1 -c postgres -- psql -v ON_ERROR_STOP=1 -d aster_api -f - < scan-alias-enum-conflict.sql`，aster_cloud 同理。已在一次性容器内以两库仿真模式验证正、反例。本 PR 不附生产结果。
+- **上线条件：** (b) 两库均 0 行；若有命中，迁移方案为通知作者把导入别名改名（别名只在本模块可见，改名只影响本模块引用）后重新发布，全部处理完再发版。不提供“暂按 warning”的过渡开关（会重新引入静默优先级）。
+
+### 16.3 R58：alias 右侧解析与导入签名 / 字段类型的接口契约（延后实现）
+
+**现状。** core `ImportedDeclarations` 只携带导入模块的函数名、类型名、字段名，不含签名与类型；ts `declareTopLevel` 只登记类型别名的名字，RHS 不解析，core `DeclarationResolver` 原样透传。生产路径为单模块编译（aster-api 与 cloud 都不做跨模块解析，ts browser checker 由调用方注入 `importedEffects`），**这两项在当前生产路径上不可达**。
+
+**契约（定稿后实现须遵守）。**
+1. **alias RHS**：类型别名右侧按 TYPE_REF 角色走 §6.2 引用解析（含泛型参数与词汇），未知类型报 E800；别名之间的循环报 E807 以外的新码（随实现申请，不占 E050–E069）。可先于第 2 项单独落地，须有正例（合法泛型）与负例（未知类型）的两引擎 parity 夹具。
+2. **导入声明模型**：`ImportedDeclarations` 扩展为结构化条目——函数：参数名 / 参数类型 / 返回类型 / 效果；Data：字段名 / 字段类型；Enum：成员；类型别名：展开后的类型。类型以规范名 + 来源模块标识表示，不携带词汇显示名。
+3. **无模块场景保持原行为**：未提供导入信息时，导入名按现状视为 unknown（不报错、不推断），与“按名推断视为 unknown”原则一致。
+4. **错误定位**：缺失模块、循环导入须指向 `Use` 语句位置。
+
+**延后理由。** 在出现真实跨模块消费方（模块加载器接入 aster-api / cloud 编译路径）之前只扩数据结构没有端到端调用路径，也无法写出非空 parity；排期时与模块解析一起做，两项拆为两个提交（先 RHS，后导入模型）。不进入 1.0.41。
