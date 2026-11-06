@@ -16,14 +16,33 @@ public final class CompilationResult {
      * <p>P0-C 稳定性诊断（W600）走同一 diagnostics（ADR 0031，非平行字段）：
      * {@code code="W600"}、{@code severity="warning"}（strict 拒绝也不升 error）、
      * {@code featureId/nodeKind} 机器可读、{@code blocking} 标记 strict surface 是否拒。
-     * 语法/语义错误：{@code code=null, severity="error", blocking=true, featureId/nodeKind=null}。
+     * 语法错误：{@code code=E050–E069}（ADR 0051 §16）+ {@code params}，{@code severity="error", blocking=true}；
+     * 无码的语义失败：{@code code=null, severity="error", blocking=true, featureId/nodeKind=null}。
      * 治理诊断（ADR 0045）同样走本通道且恒为 {@code severity="warning"}；例外是档案码 E705/E706/E707
      * （ADR 0046 §4）保持 {@code severity="error"}，供 cloud 保存门拒绝，{@code blocking} 仍为 false。
      * 其中 E707 由 GovernanceDiagnostics 在检查器故障时为声明了档案的模块合成。
      */
     public record Diagnostic(
         int line, int column, int endLine, int endColumn,
-        String message, String code, String severity, String featureId, String nodeKind, boolean blocking) {
+        String message, String code, String severity, String featureId, String nodeKind, boolean blocking,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_EMPTY)
+        java.util.Map<String, String> params) {
+
+        /**
+         * @param params 命名参数（ADR 0051 §16 R56：语法诊断 E050–E069 带 {@code kw.*} / {@code token.*} /
+         *               引号字面片段，消费方可按码 + 参数自行渲染）；其它诊断为空
+         */
+        public Diagnostic {
+            params = params == null ? java.util.Map.of() : java.util.Map.copyOf(params);
+        }
+
+        /** 无参数诊断（稳定性 / 类型检查 / 治理等既有调用方）。 */
+        public Diagnostic(int line, int column, int endLine, int endColumn,
+                          String message, String code, String severity, String featureId, String nodeKind,
+                          boolean blocking) {
+            this(line, column, endLine, endColumn, message, code, severity, featureId, nodeKind, blocking,
+                java.util.Map.of());
+        }
 
         /** 语法/语义错误的兼容工厂（无 code/featureId，severity=error，end=start）。 */
         public static Diagnostic error(int line, int column, String message) {

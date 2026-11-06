@@ -1,0 +1,419 @@
+{
+  "description": "ADR 0051 §16 R56/R57 双引擎诊断 parity 夹具。aster-lang-ts shared/parse_diagnostics_parity.json 与 aster-lang-core src/test/resources/diagnostics/parse_diagnostics_parity.json 必须 byte-identical。判定：有解析错误时，ts 取第一条错误，core 取第一条非 E063 的诊断（全是 E063 时取第一条），codes 恰为该条的 [码, 行]；无解析错误时 codes 为名称解析（R1）的全部 error [码, 行]。only=ts / only=core 表示该码在另一引擎结构上不产生（见 ADR 0051 §16 映射附件），只在该引擎断言。lexicon 缺省为 en-US。 structs 为可选的类型词汇 [[规范名, 本地名]]（R1 以此建 VocabularyScopes）。",
+  "cases": [
+    {
+      "name": "E050 非法字符",
+      "source": "Module m.\n\nRule f given x as Int, produce Int:\n  Return x § 1.\n",
+      "codes": [
+        [
+          "E050",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E050 非法字符（zh-CN）",
+      "lexicon": "zh-CN",
+      "source": "模块 m。\n\n规则 f 给定 x 作为 整数，产出 整数：\n  返回 x § 1。\n",
+      "codes": [
+        [
+          "E050",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E050 非法字符（de-DE）",
+      "lexicon": "de-DE",
+      "source": "Modul m.\n\nRegel f gegeben x als Ganzzahl, liefert Ganzzahl:\n  Gib x § 1 zurück.\n",
+      "codes": [
+        [
+          "E050",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E050 非法转义",
+      "source": "Module m.\n\nRule f, produce Text:\n  Return \"a\\qb\".\n",
+      "codes": [
+        [
+          "E050",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E051 字符串未闭合",
+      "source": "Module m.\n\nRule f, produce Text:\n  Return \"abc.\n",
+      "codes": [
+        [
+          "E051",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E051 字符串未闭合（zh-CN）",
+      "lexicon": "zh-CN",
+      "source": "模块 m。\n\n规则 f 给定 x 作为 整数，产出 文本：\n  返回 「abc。\n",
+      "codes": [
+        [
+          "E051",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E052 缩进不是 2 的倍数",
+      "source": "Module m.\n\nRule f given x as Int, produce Int:\n   Return x.\n",
+      "codes": [
+        [
+          "E052",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E053 Int 字面量越界",
+      "source": "Module m.\n\nRule f given x as Int, produce Int:\n  Return 99999999999.\n",
+      "codes": [
+        [
+          "E053",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E053 Int 字面量越界（zh-CN）",
+      "lexicon": "zh-CN",
+      "source": "模块 m。\n\n规则 f 给定 x 作为 整数，产出 整数：\n  返回 99999999999。\n",
+      "codes": [
+        [
+          "E053",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E053 Decimal 有效位超限",
+      "source": "Module m.\n\nRule f, produce Decimal:\n  Return 1111111111111111111111111111111111111111111111m.\n",
+      "codes": [
+        [
+          "E053",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E054 嵌套过深",
+      "source": "Module m.\n\nRule f given x as Int, produce Int:\n  Return ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))).\n",
+      "codes": [
+        [
+          "E054",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E055 缺能力名",
+      "source": "Module m.\n\nRule f, produce Int. It performs io [with]:\n  Return 1.\n",
+      "codes": [
+        [
+          "E055",
+          3
+        ]
+      ]
+    },
+    {
+      "name": "E056 治理结论非法",
+      "source": "Module m.\n\nRule f given x as Int, produce Text:\n  When x > 1, banana.\n",
+      "codes": [
+        [
+          "E056",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E057 构造缺 set to",
+      "source": "Module m.\n\nDefine User has name as Text.\n\nRule f, produce User:\n  Return User with name 1.\n",
+      "codes": [
+        [
+          "E057",
+          6
+        ]
+      ]
+    },
+    {
+      "name": "E058 构造 set 后缺 to",
+      "only": "ts",
+      "source": "Module m.\n\nDefine User has name as Text.\n\nRule f, produce User:\n  Return User with name set 1.\n",
+      "codes": [
+        [
+          "E058",
+          6
+        ]
+      ]
+    },
+    {
+      "name": "E059 语句末缺句点",
+      "source": "Module m.\n\nRule f given x as Int, produce Int:\n  Let y be 1\n  Return y.\n",
+      "codes": [
+        [
+          "E059",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E059 语句末缺句点（zh-CN）",
+      "lexicon": "zh-CN",
+      "source": "模块 m。\n\n规则 f 给定 x 作为 整数，产出 整数：\n  返回 x\n",
+      "codes": [
+        [
+          "E059",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E060 缺右括号",
+      "only": "core",
+      "source": "Module m.\n\nRule f given x as Int, produce Int:\n  Return (x + 1.\n",
+      "codes": [
+        [
+          "E060",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E061 多余记号",
+      "only": "core",
+      "source": "Module m.\n\nRule f given x as Int, produce Int:\n  Return x.\n  ).\n",
+      "codes": [
+        [
+          "E061",
+          5
+        ]
+      ]
+    },
+    {
+      "name": "E061 结论位置的逗号",
+      "only": "ts",
+      "source": "Module m.\n\nRule f given x as Int, produce Text:\n  When x > 1, , allow.\n",
+      "codes": [
+        [
+          "E061",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E062 记号不符合期望集合",
+      "only": "core",
+      "source": "Module m.\n\nRule f given x as, produce Int:\n  Return 1.\n",
+      "codes": [
+        [
+          "E062",
+          3
+        ]
+      ]
+    },
+    {
+      "name": "E063 无法解析（顶层 Return）",
+      "only": "core",
+      "source": "Module m.\n\nReturn 1.\n",
+      "codes": [
+        [
+          "E063",
+          3
+        ]
+      ]
+    },
+    {
+      "name": "E064 位置式构造已声明类型",
+      "source": "Module m.\n\nDefine User has name as Text.\n\nRule f, produce User:\n  Return User(\"a\").\n",
+      "codes": [
+        [
+          "E064",
+          6
+        ]
+      ]
+    },
+    {
+      "name": "E065 Otherwise 不在块末",
+      "source": "Module m.\n\nRule f given x as Int, produce Text:\n  Otherwise allow.\n  Return \"x\".\n",
+      "codes": [
+        [
+          "E065",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E066 retry 缺 backoff",
+      "source": "Module m.\n\nRule f, produce. It performs io:\n  workflow:\n    step a:\n      Return ok of \"x\".\n    retry:\n      max attempts: 5.\n\n  .\n",
+      "codes": [
+        [
+          "E066",
+          7
+        ]
+      ]
+    },
+    {
+      "name": "E067 backoff 取值非法",
+      "source": "Module m.\n\nRule f, produce. It performs io:\n  workflow:\n    step a:\n      Return ok of \"x\".\n    retry:\n      max attempts: 5.\n      backoff: random.\n\n  .\n",
+      "codes": [
+        [
+          "E067",
+          9
+        ]
+      ]
+    },
+    {
+      "name": "E068 前缀运算符参数个数",
+      "source": "Module m.\n\nRule f given x as Int, produce Int:\n  Return +(x, 1, 2).\n",
+      "codes": [
+        [
+          "E068",
+          4
+        ]
+      ]
+    },
+    {
+      "name": "E069 未知 retry 指令",
+      "only": "ts",
+      "source": "Module m.\n\nRule f, produce. It performs io:\n  workflow:\n    step a:\n      Return ok of \"x\".\n    retry:\n      banana: 3.\n\n  .\n",
+      "codes": [
+        [
+          "E069",
+          8
+        ]
+      ]
+    },
+    {
+      "name": "R57 导入别名与枚举同名",
+      "source": "Module m.\n\nUse lib.status as Status.\n\nDefine Status as one of Active, Closed.\n",
+      "codes": [
+        [
+          "E807",
+          5
+        ]
+      ]
+    },
+    {
+      "name": "R57 Data 与导入别名同名",
+      "source": "Module m.\n\nDefine Status has v as Int.\n\nUse lib.status as Status.\n",
+      "codes": [
+        [
+          "E807",
+          5
+        ]
+      ]
+    },
+    {
+      "name": "R57 无 as 时以末段为可见名",
+      "source": "Module m.\n\nUse lib.Status.\n\ntype Status as Int.\n",
+      "codes": [
+        [
+          "E807",
+          5
+        ]
+      ]
+    },
+    {
+      "name": "R57 别名与枚举不同名",
+      "source": "Module m.\n\nUse lib.status as Lib.\n\nDefine Status as one of Active, Closed.\n",
+      "codes": []
+    },
+    {
+      "name": "R57 别名与函数同名不冲突",
+      "source": "Module m.\n\nUse lib.calc as calc.\n\nRule calc given x as Int, produce Int:\n  Return x.\n",
+      "codes": []
+    },
+    {
+      "name": "R57 大小写不同不冲突（与 Data/Data 同口径：按规范名精确比较）",
+      "source": "Module m.\n\nUse lib.status as status.\n\nDefine Status as one of Active, Closed.\n",
+      "codes": []
+    },
+    {
+      "name": "R57 导入别名与枚举同名（zh-CN）",
+      "lexicon": "zh-CN",
+      "source": "模块 m。\n\n引用 lib.status 作为 状态。\n\n定义 状态 为以下之一 待处理、已删除。\n",
+      "codes": [
+        [
+          "E807",
+          5
+        ]
+      ]
+    },
+    {
+      "name": "R57 导入别名与枚举不同名（zh-CN）",
+      "lexicon": "zh-CN",
+      "source": "模块 m。\n\n引用 lib.status 作为 库。\n\n定义 状态 为以下之一 待处理、已删除。\n",
+      "codes": []
+    },
+    {
+      "name": "R57 导入别名与枚举同名（de-DE）",
+      "lexicon": "de-DE",
+      "source": "Modul m.\n\nverwende lib.status als Status.\n\nDefiniere Status als eines von Aktiv, Geloescht.\n",
+      "codes": [
+        [
+          "E807",
+          5
+        ]
+      ]
+    },
+    {
+      "name": "R57 导入别名与枚举不同名（de-DE）",
+      "lexicon": "de-DE",
+      "source": "Modul m.\n\nverwende lib.status als Bib.\n\nDefiniere Status als eines von Aktiv, Geloescht.\n",
+      "codes": []
+    },
+    {
+      "name": "R57 别名写本地名、类型写规范名（词汇折叠到同一规范名）",
+      "structs": [
+        [
+          "Status",
+          "Zustand"
+        ]
+      ],
+      "source": "Module m.\n\nUse lib.status as Zustand.\n\nDefine Status as one of Active, Closed.\n",
+      "codes": [
+        [
+          "E807",
+          5
+        ]
+      ]
+    },
+    {
+      "name": "R57 类型写本地名、别名写规范名（词汇折叠到同一规范名）",
+      "structs": [
+        [
+          "Status",
+          "Zustand"
+        ]
+      ],
+      "source": "Module m.\n\nDefine Zustand as one of Active, Closed.\n\nUse lib.status as Status.\n",
+      "codes": [
+        [
+          "E807",
+          5
+        ]
+      ]
+    },
+    {
+      "name": "R57 有词汇但别名不同名不冲突",
+      "structs": [
+        [
+          "Status",
+          "Zustand"
+        ]
+      ],
+      "source": "Module m.\n\nUse lib.status as Bib.\n\nDefine Zustand as one of Active, Closed.\n",
+      "codes": []
+    }
+  ]
+}

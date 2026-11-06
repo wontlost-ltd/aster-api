@@ -136,6 +136,25 @@ final class KeywordLocalizer {
         return local != null ? local : canonicalKeyword;
     }
 
+    /**
+     * 诊断参数 {@code kw.<name>} → 作者语言的关键词拼写。
+     *
+     * <p>core 的 {@code kw.*} 取值有两种来源：出错 token 的小写文本（{@code kw.return}），或期望集合里的
+     * 小写符号名（{@code kw.else}，对应规范拼写 Otherwise；多词符号名的下划线写成空格）。先按符号名、
+     * 再按小写拼写找回规范拼写，然后回译；都找不到时原样返回 name。
+     */
+    String keywordParam(String name) {
+        if (name == null) {
+            return "";
+        }
+        KeywordTokens tokens = KeywordTokens.get();
+        String canonical = tokens.symbolicToCanonical.get(name.toUpperCase(Locale.ROOT).replace(' ', '_'));
+        if (canonical == null) {
+            canonical = tokens.lowerToCanonical.getOrDefault(name.toLowerCase(Locale.ROOT), name);
+        }
+        return localize(canonical);
+    }
+
     /** 提示文案里用的关键词：优先 locale 拼写，缺失时退回规范英文。 */
     String keyword(SemanticTokenKind kind, String fallback) {
         if (target == null) {
@@ -163,10 +182,14 @@ final class KeywordLocalizer {
         final Set<Integer> types;
         /** token 符号名 → 规范拼写（如 ELSE → Otherwise），用于回译 expecting 集合里的裸符号名。 */
         final Map<String, String> symbolicToCanonical;
+        /** 小写规范拼写 → 规范拼写（如 return → Return），用于还原诊断参数 {@code kw.*} 的大小写。 */
+        final Map<String, String> lowerToCanonical;
 
-        private KeywordTokens(Set<Integer> types, Map<String, String> symbolicToCanonical) {
+        private KeywordTokens(Set<Integer> types, Map<String, String> symbolicToCanonical,
+                Map<String, String> lowerToCanonical) {
             this.types = types;
             this.symbolicToCanonical = symbolicToCanonical;
+            this.lowerToCanonical = lowerToCanonical;
         }
 
         private static final class Holder {
@@ -180,20 +203,22 @@ final class KeywordLocalizer {
         private static KeywordTokens build() {
             Set<Integer> types = new HashSet<>();
             Map<String, String> symbolic = new HashMap<>();
+            Map<String, String> lower = new HashMap<>();
             Lexicon canonical;
             try {
                 canonical = LexiconRegistry.getInstance().getDefault();
             } catch (RuntimeException e) {
-                return new KeywordTokens(Set.of(), Map.of());
+                return new KeywordTokens(Set.of(), Map.of(), Map.of());
             }
             if (canonical == null) {
-                return new KeywordTokens(Set.of(), Map.of());
+                return new KeywordTokens(Set.of(), Map.of(), Map.of());
             }
             for (Map.Entry<SemanticTokenKind, String> entry : inKindOrder(canonical)) {
                 String spelling = entry.getValue();
                 if (spelling == null || spelling.isBlank()) {
                     continue;
                 }
+                lower.putIfAbsent(spelling.toLowerCase(Locale.ROOT), spelling);
                 Token only = singleToken(spelling);
                 if (only == null || !only.getText().equalsIgnoreCase(spelling)) {
                     continue;   // 多词拼写（会被拆成多个 token）或被规范化成符号的，不在 token 层面判定
@@ -207,7 +232,7 @@ final class KeywordLocalizer {
                 types.add(only.getType());
                 symbolic.putIfAbsent(name, spelling);
             }
-            return new KeywordTokens(Set.copyOf(types), Map.copyOf(symbolic));
+            return new KeywordTokens(Set.copyOf(types), Map.copyOf(symbolic), Map.copyOf(lower));
         }
 
         /** 词法分析一段文本；只产出恰好一个有意义 token 时返回它。 */

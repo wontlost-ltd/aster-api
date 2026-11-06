@@ -1,6 +1,9 @@
 package io.aster.policy.parser;
 
+import aster.core.typecheck.ErrorCode;
 import org.junit.jupiter.api.Test;
+
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,15 +67,18 @@ class CnlErrorFriendlyTest {
     }
 
     @Test
-    void humanize_directUnit() {
-        assertThat(CnlErrorListener.humanize("rule softComparator failed predicate: {x}?"))
+    void render_directUnit() {
+        KeywordLocalizer en = KeywordLocalizer.IDENTITY;
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_NO_VIABLE,
+            Map.of("token", "'x'", "hint", "hint.unknownOperator"), en))
             .contains("Unrecognized operator");
-        assertThat(CnlErrorListener.humanize("mismatched input '.' expecting {':', ',', NEWLINE}"))
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING,
+            Map.of("token", "'.'", "expected", "':' | ',' | token.newline"), en))
             .isEqualTo("Unexpected '.'; expected ':' or ',' or newline")
             .doesNotContain("NEWLINE");
-        assertThat(CnlErrorListener.humanize("extraneous input '<INDENT>' expecting {<EOF>}"))
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_INDENTATION, Map.of(), en))
             .contains("Incorrect indentation");
-        assertThat(CnlErrorListener.humanize("no viable alternative at input 'Definehas'"))
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_NO_VIABLE, Map.of("token", "'Definehas'"), en))
             .contains("Cannot parse the syntax near");
     }
 

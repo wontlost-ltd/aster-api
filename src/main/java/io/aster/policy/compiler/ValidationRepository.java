@@ -3,6 +3,7 @@ package io.aster.policy.compiler;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.entity.PolicyVersionValidation;
+import io.aster.policy.parser.LegacySyntaxCodes;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;
@@ -67,8 +68,22 @@ public class ValidationRepository {
 
     private static List<CompilationResult.Diagnostic> decodeDiagnostics(Object value) {
         if (value == null) return List.of();
-        try { return MAPPER.readValue(value.toString(), new TypeReference<>() {}); }
+        List<CompilationResult.Diagnostic> decoded;
+        try { decoded = MAPPER.readValue(value.toString(), new TypeReference<>() {}); }
         catch (Exception e) { throw new IllegalStateException("验证诊断 JSON 损坏", e); }
+        return decoded.stream().map(ValidationRepository::withLegacySyntaxCode).toList();
+    }
+
+    /**
+     * 升级前落库的语法诊断没有码（code=null，消息是改码前的英文句型）：读取时按兼容映射补上 E050–E069，
+     * 认不出的保持原样。过渡一个车次（ADR 0051 §16「兼容与迁移」），随 {@link LegacySyntaxCodes} 一起删除。
+     */
+    static CompilationResult.Diagnostic withLegacySyntaxCode(CompilationResult.Diagnostic d) {
+        if (d.code() != null) return d;
+        String code = LegacySyntaxCodes.codeForMessage(d.message());
+        if (code == null) return d;
+        return new CompilationResult.Diagnostic(d.line(), d.column(), d.endLine(), d.endColumn(), d.message(), code,
+            d.severity(), d.featureId(), d.nodeKind(), d.blocking(), d.params());
     }
 
     public record ValidationStatus(String status, List<CompilationResult.Diagnostic> diagnostics) {}
