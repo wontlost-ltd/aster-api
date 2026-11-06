@@ -248,6 +248,10 @@ Rule decide given applicant as Applicant, produce Verdict:
    | `Let f be pick(req.action). Let v be apply f to req.context …`（函数值来自变量） | `*` → E708 |
    | `If req.principal_roles contains "ops" …` | `principal.roles`（数组整叶子；与 ADR 0040 §11 D1 一致） |
    | 规则只用常量与 `req.action` | `action.name` |
+   | `Let c be req.context. Let lim be limitFor(c.tier). If c.amount > lim …`（`limitFor` 读 `t` 做比较，不再读输入） | `context.tier`、`context.amount`（同模块内联，形参 `t` 代入 `context.tier`） |
+   | 内联深度**恰好 8 层**：`decide → h1 → h2 → … → h8`，`h8 given c as GuardContext` 读 `c.amount`，每层把 `req.context` 原样传下去 | `context.amount`（8 层在上界内，仍可静态定位；两引擎 parity 夹具钉住该边界） |
+   | 同上但 **9 层**（`h9` 才读 `c.amount`） | `*` → E708（超过内联上界；夹具与上一条成对） |
+   | 互递归：`isOk(c)` 调 `isBad(c)`，`isBad(c)` 调 `isOk(c)`，任一方读 `c.amount` | `*` → E708（一次展开后未达定点） |
 
    运行时对 `"*"` 的保守处理（写明，供 ⑤ 之前已发布 IR 或 E708 被绕过的情形）：aster-api 在档案要求 `verifiedInputs` 时把 `"*"` 视为「引用全部输入叶子」，即请求中**每个** declared 叶子都算被引用 → DENY `unverified_input`，收据 `unverifiedFields` 写 `["*"]`。编译期 E708 与运行期保守处理是同一条规则的两道门，前者让作者改源码，后者保证前者缺位时不放行。
 2. **E708 `GOV_PROFILE_INPUT_UNRESOLVABLE`（error）**：档案要求 `verifiedInputs` 且某 Verdict 规则的 `inputRefs` 含 `"*"`。消息参数 `rule / profile / construct`。这是唯一的新编译期诊断，它管的是**可判定性**而不是来源：高风险规则必须让「读了什么」静态可见，否则运行期无从比对。aster-api 编译通道保持 error 级（与 E705/E706 同列）；cloud 保存门随之拒绝。
@@ -269,7 +273,13 @@ Rule decide given applicant as Applicant, produce Verdict:
 **D5 兼容与翻转时点（默认方案，不留二选一）。** 未声明档案、或档案 `verifiedInputs=false` 的模块：IR、诊断、运行行为逐字节不变。`eu-ai-act-high-risk` 今天的使用者只有信贷试点 `pol-credit-pilot` v3（§6），走 `/evaluate-source` + from-evidence；若该档案在引擎发布时即要求 verifiedInputs，from-evidence 决策会因输入 declared 而 DENY（ADR 0040 §11 D5），试点脚本与 Playwright 的「Credit Officer 批准」步骤失败。因此：
 
 1. **registry 1.2.0（aster-lang-locales）**：只加键，`eu-ai-act-high-risk.requires.verifiedInputs = false`。随 ③ 发布的引擎与 ⑤ 的 aster-api 对任何现有策略**不改变行为**；E708 此时对 `eu-ai-act-high-risk` 模块也不会触发（要求项为 false 时不做 `*` 检查）。
-2. **aster-cloud 具备签发能力**（责任仓 aster-cloud）：(a) 团队设置页维护签发方（ADR 0040 §11 D3）；(b) 执行路由在调用 from-evidence 时可为输入附 facts——第一期只做一个内置签发方「cloud-execution」：cloud 以自己的租户级密钥对**执行人在表单里填写的输入**签名？**不做**——cloud 签名不会把人手填的值变成事实，这与「事实必须来自可信数据源」矛盾。第一期的可信来源限定为：`principal.id`（已由 HMAC 签过）与 cloud **从策略租户数据目录 / 身份系统查得**的值（如执行人的 `businessRoles`）；其他 context 字段仍 declared。(c) 为信贷试点配置一个测试签发方（seed 脚本生成 Ed25519 密钥对、写入 `guard_fact_issuers`），`run-credit-pilot.ts` 与 Playwright 用它对四组 fixture 的 `context.*` 签名后执行，使 from-evidence 在要求 verifiedInputs 时得到 PENDING 而非 DENY。
+2. **aster-cloud 具备签发能力**（责任仓 aster-cloud）：(a) 团队设置页维护签发方（ADR 0040 §11 D3）；(b) 执行路由在调用 from-evidence 时可为输入附 facts——第一期只做一个内置签发方「cloud-execution」：cloud 以自己的租户级密钥对**执行人在表单里填写的输入**签名？**不做**——cloud 签名不会把人手填的值变成事实，这与「事实必须来自可信数据源」矛盾。第一期的可信来源限定为：`principal.id`（已由 HMAC 签过）与 cloud **从策略租户数据目录 / 身份系统查得**的值（如执行人的 `businessRoles`）；其他 context 字段仍 declared。
+
+   「不签手填值」的可执行约束（责任仓 aster-cloud）：
+   - cloud 内部签发端（服务端模块 `services/guard/fact-signer.ts`，无公开 HTTP 入口；执行路由与试点脚本都经它）**不接受 claims 原值**。它的输入只有 `{ path, source, args }` 三元组：`source` 必须是 cloud 配置中登记的**来源函数**之一，签名载荷的 `claims[path]` 由该函数在服务端取得，调用方传入的任何 `value` 字段 → 400 `claims_not_allowed`（响应体 `path`）。
+   - 第一期来源函数清单（`src/config/fact-sources.ts`，每项 `{ id, allowedPaths, resolve(ctx, args) }`，新增须改代码与测试，不可运行时配置）：`hmac.userId`（路径 `principal.id`，取签入 canonical 的 userId）；`idp.businessRoles`（路径 `principal.roles`，取策略租户的 `TeamMember.businessRoles` / `User.businessRoles`）；`catalog.piiMark`（路径 `context.<field>.$pii`，取数据目录对该字段的 PII 标记——供 ADR 0042 §11 的标记交叉核对，不签业务值）；试点专用 `fixture.creditPilot`（路径 `context.*`，只在 `NODE_ENV !== 'production'` 且租户为 `credit-pilot` 时登记，从 seed 固定 fixture 文件读值，**不读请求体**）。
+   - 每条签出的事实在 `claims` 之外带 `sources: { "<path>": "<source id>" }`，进入签名载荷（aster-api 验签时原样校验，不解释）；aster-api 收据 `factIssuers` 旁增 `factSources`（`path=source` 列表，≤ 64 项，缩短顺序排在 `verifiedFields` 之后），证据包 `guardInputSources.factSources` 展示每条事实的 source。
+   - 验收（cloud 集成测试）：提交含 `value` 的签发请求 → 400 `claims_not_allowed`；`source` 不在清单 → 400 `unknown_fact_source`；`path` 不在该 source 的 `allowedPaths` → 400 `path_not_allowed`；执行路由产出的事实其 `sources` 与清单一致；证据包 v6 条目展示 `factSources`。(c) 为信贷试点配置一个测试签发方（seed 脚本生成 Ed25519 密钥对、写入 `guard_fact_issuers`），`run-credit-pilot.ts` 与 Playwright 用它对四组 fixture 的 `context.*` 签名后执行，使 from-evidence 在要求 verifiedInputs 时得到 PENDING 而非 DENY。
 3. **registry 1.3.0（aster-lang-locales）**：第 2 项合并并在本地栈跑通（九款状态不变、`reviewers[]` 仍含 Credit Officer）后，把 `eu-ai-act-high-risk.requires.verifiedInputs` 翻为 `true` 并发布；aster-api 与 cloud 升 locales pin。翻转是数据变更，不需要引擎列车（引擎已在 ③ 支持该键）。翻转后，任何声明该档案而没有签名事实的生产策略会在 guard 路径被 DENY——发布 1.3.0 前由用户在生产库只读扫描声明了该档案的策略（SQL 与 ADR 0051 §16.2 的扫描同法），逐一确认有签发方配置。
 4. 期间若有租户想在 1.3.0 前启用：自定义档案可在注册表加 `…-verified` 变体（如 `eu-ai-act-high-risk-verified`，要求 verifiedInputs=true），由该租户策略显式声明。
 

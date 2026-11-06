@@ -543,6 +543,12 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
   - 选择「重放不重验、标注 stale」而不是「重放前重验、失效则 DENY」的理由：(1) §3.1 的重放语义是「同一决策」，收据与决策行已经固定，让重放改判会制造一条没有收据的 DENY，违反「无收据则拒绝」的反向——没有新事件却有新结论；(2) 事实过期是对**新**决策的约束（事实在被引用时必须新鲜），对已作出的决策，它的新鲜度已在收据里（`factIssuers` + 本列），审计方可自行判断；(3) 吊销签发方的正确反应是在 cloud 侧处置已依赖该签发方的待审批（收件箱按 `factIssuers` 过滤，审批人据此拒绝），而不是让 Agent 重试时得到一个静默变化的结论。
   - 重放响应与首次的差别只有 `factsStale` 这一个追加键（同 §3.1 对 `approval.status` 的处理）；重放不写新收据，所以链上没有 stale 标记，`guard_decisions.response_json` 也不改写。
   - PENDING 审批的审批视图（ADR 0042 §11）同样显示 `factsStale`，审批人可据此拒绝。
+- **签发方禁用 / 吊销的处置（fail-closed，服务端主动）。** `guard_fact_issuers` 行被置 `enabled=false`、删除或过 `not_after` 时（管理端点内同步执行；`not_after` 到期由 `GuardApprovalExpiryScheduler` 同一轮扫描处理）：
+  1. 找出本租户所有 `status = PENDING` 且决策收据 `factIssuers` 含该 `issuer#kid` 的审批（决策行新列 `fact_issuers JSONB` 供查询，同 `V6.36.0`；不解析收据），逐条走与过期相同的「追加事件 → tx2 加锁迁移」（§4.2 / §4.3）转为 **EXPIRED**，`effectiveOutcome = DENY`，审批行新列 `expired_reason = fact_issuer_revoked`（自然过期为 null），审批事件 metadata 增 `expiredReason`。
+  2. 追加一条新事件类型 `EventType.GUARD_FACT_ISSUER_REVOKED`（metadata：`issuer`、`kid`、`performedBy`（操作者，`not_after` 到期为 `SYSTEM`）、`affectedDecisionIds`（≤ 64 项，超出写 `affectedCount` 与 `affectedTruncated: true`），身份键豁免脱敏），`decision_id` 列不投影（一对多）。
+  3. 已终态的决策不变，只在重放响应与审批视图标 `factsStale`（上文）。吊销后的新请求须附新签发方的事实，否则按 D3 400 `invalid_fact`。
+  4. cloud：收件箱对 `expiredReason = fact_issuer_revoked` 的项显示「签发方已吊销，自动拒绝」；`guard.approval_decided` 通知沿用（ADR 0042 §5.3），payload 增 `expiredReason`。
+  - 理由：PENDING 审批是「等人替输入背书」，而输入的可信前提已消失，继续等人只会让审批人替一个不再可证的事实签字；与 §4.3「过期即 DENY」同一哲学，复用同一迁移路径，不新增状态。
 - 收据键见 ADR 0041 §11 R61。审批视图（ADR 0042 §11 R59）的 `piiMarks` 旁并列 `inputSources`，收件箱对每个字段同时显示「来源」与「PII」徽标。
 
 **D5 与 Profile 的衔接（执行点）。** 模块档案要求 `verifiedInputs`（ADR 0046 §11 R62）时，guard 在评估**之前**把规则的静态输入引用集 `inputRefs` 与本请求的 verified 集合比对：存在被引用却为 `declared` 的路径 → 不评估，直接 DENY `unverified_input`（200，fail-closed 表与 §3.2 同体：`reason` 为 null，收据 `unverifiedFields` 列出路径），写收据与决策行但**不**建待审批（人不能替未验证的输入背书）。模块 IR 没有 `inputRefs`（旧引擎编译）而档案要求 verifiedInputs → DENY `input_refs_unavailable`（与 E707 同精神：基础设施缺位不读成策略违规）。`from-evidence` 同样执行：cloud 执行输入是人手填的 `declared`，高风险模块的 from-evidence 决策将是 DENY 而非 PENDING，除非 cloud 附签名事实——这是有意的；档案何时开始要求 verifiedInputs、cloud 何时具备附 facts 的能力，按 ADR 0046 §11 D5 的默认方案排期（registry 1.2.0 不要求，1.3.0 翻转）。
@@ -556,7 +562,8 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
 3. 幂等重放不重新验签；同键不同 facts 不触发 422（不在指纹里）。
 4. 高风险档案模块：规则引用 `context.amount` 而请求未附事实 → DENY `unverified_input`、无审批行、收据 `unverifiedFields: ["context.amount"]`；附事实后 → 正常评估。旧引擎 IR → DENY `input_refs_unavailable`。
 5. `guard_fact_issuers` 端点：Bearer 403；HMAC 写入后立即生效；吊销后 `invalid_fact`。
-6. `PublicApiContractTest`、`MigrationGovernanceTest`、`NonDeterminismSourceTest`（验签的时间窗判定用到 `Instant.now()`，按 §8.1 先例登记白名单并写明理由）通过；`GuardReceiptBuilderTest` 新缩短顺序。
+6. 吊销集成测试：建签发方 → 附事实决策得 PENDING → 禁用签发方 → 该审批 `status = EXPIRED`、`expiredReason = fact_issuer_revoked`，链上有 `GUARD_FACT_ISSUER_REVOKED` 事件且 `affectedDecisionIds` 含该决策；对它 approve → 409 `approval_not_pending`（响应体附 `expiredReason`）；同一动作换新键重试且不附事实 → 400 `invalid_fact`（档案要求时）或 `declared`；附新签发方事实 → PENDING。收件箱显示吊销原因。
+7. `PublicApiContractTest`、`MigrationGovernanceTest`、`NonDeterminismSourceTest`（验签的时间窗判定用到 `Instant.now()`，按 §8.1 先例登记白名单并写明理由）通过；`GuardReceiptBuilderTest` 新缩短顺序。
 
 ### 11.4 分阶段落地顺序
 
