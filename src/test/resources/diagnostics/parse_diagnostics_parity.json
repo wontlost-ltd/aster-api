@@ -116,6 +116,21 @@
       ]
     },
     {
+      "name": "E054 嵌套深度=上限放行（63 层括号 + Return 表达式 = 64 层）",
+      "source": "Module m.\n\nRule f given x as Int, produce Int:\n  Return (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((x))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))).\n",
+      "codes": []
+    },
+    {
+      "name": "E054 嵌套深度=上限+1（64 层括号）",
+      "source": "Module m.\n\nRule f given x as Int, produce Int:\n  Return ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((x)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))).\n",
+      "codes": [
+        [
+          "E054",
+          4
+        ]
+      ]
+    },
+    {
       "name": "E055 缺能力名",
       "source": "Module m.\n\nRule f, produce Int. It performs io [with]:\n  Return 1.\n",
       "codes": [

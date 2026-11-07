@@ -106,8 +106,8 @@ public class PolicyCompileResourceTest {
     // 越界、E065 位置不对）三个阶段抛出；InProcessCnlParser 三处都经 codedFailure 返回带码诊断。
     // 这里锁住端点契约：HTTP 200、success=false、恰一条 error 级阻断诊断带码与 1-based 行列、不是内部故障码。
 
-    /** 按 1.0.42 core 的 AsterCustomLexer.MAX_NESTING_DEPTH（300）多套一层括号。 */
-    private static final int NESTING_LIMIT = 300;
+    /** 按 core 的 AsterCustomLexer.MAX_NESTING_DEPTH（1.0.43 起为 64 且 public）多套一层括号。 */
+    private static final int NESTING_LIMIT = aster.core.parser.AsterCustomLexer.MAX_NESTING_DEPTH;
 
     private static String nested(int depth) {
         return "(".repeat(depth) + "1" + ")".repeat(depth);
