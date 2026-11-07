@@ -39,4 +39,22 @@ class LegacySyntaxCodesTest {
         assertThat(LegacySyntaxCodes.codeForMessage("कथन के अंत में '।' अपेक्षित है")).isEqualTo("E059");
         assertThat(LegacySyntaxCodes.codeForMessage("'x' के पास का सिंटैक्स समझा नहीं जा सका")).isEqualTo("E063");
     }
+
+    /**
+     * aster-api#467：英文模板去空白后 {@code expectedIn} 曾变成 {@code ^Expected.+in.+$}，参数里含 {@code in}
+     * 子串的原句（newline / string …）被它先认走。模板字面里的空白必须真的对应原句里的词边界。
+     */
+    @Test
+    void englishTemplateOverlap_parametersContainingIn_mapToOwnCode() {
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected newline")).isEqualTo("E055");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected string")).isEqualTo("E055");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected newline before identifier")).isEqualTo("E060");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected newline before 'x'")).isEqualTo("E060");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected '.' after 'string'")).isEqualTo("E056");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected newline after 'string'")).isEqualTo("E056");
+        // 真正的 E057 / E058 句子不受影响
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected '.' in rule header")).isEqualTo("E057");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected newline in function body")).isEqualTo("E057");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected '.' after 'string' in rule header")).isEqualTo("E058");
+    }
 }
