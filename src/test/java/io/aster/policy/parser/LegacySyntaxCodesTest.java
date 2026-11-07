@@ -1,6 +1,5 @@
 package io.aster.policy.parser;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -96,7 +95,6 @@ class LegacySyntaxCodesTest {
         assertThat(LegacySyntaxCodes.codeForMessage("'x' के पास का सिंटैक्स समझा नहीं जा सका")).isEqualTo("E063");
     }
 
-<<<<<<< HEAD
     /**
      * aster-api#467：英文模板去空白后 {@code expectedIn} 曾变成 {@code ^Expected.+in.+$}，参数里含 {@code in}
      * 子串的原句（newline / string …）被它先认走。模板字面里的空白必须真的对应原句里的词边界。
@@ -146,7 +144,8 @@ class LegacySyntaxCodesTest {
         assertThat(LegacySyntaxCodes.codeForMessage("'से पहले' के बाद 'में' अपेक्षित है")).isEqualTo("E056");
         assertThat(LegacySyntaxCodes.codeForMessage("'के बाद' में 'से पहले' अपेक्षित है")).isEqualTo("E057");
         assertThat(LegacySyntaxCodes.codeForMessage("'में' में 'के बाद' के बाद 'से पहले' अपेक्षित है")).isEqualTo("E058");
-=======
+    }
+
     // ---------------------------------------------------------------- 完整四语映射表（aster-api#458 ①）
 
     /** 兼容表的 key 集合与码一一对应；外框 / 名词 key 不是诊断。 */
@@ -219,19 +218,6 @@ class LegacySyntaxCodesTest {
     }
 
     /**
-     * 已知缺陷（aster-api#467）：英文模板去空白后 {@code expectedIn} 变成 {@code ^Expected.+in.+$}，参数里含
-     * {@code in} 子串的原句（newline / string …）被它先认走。本用例在旧实现上必红，留痕待修或随 1.0.43 一并删除。
-     */
-    @Disabled("aster-api#467：英文 expectedIn / expectedAfterIn 模板误吞含 in 子串的参数")
-    @Test
-    void englishTemplateOverlap_knownDefect() {
-        assertThat(LegacySyntaxCodes.codeForMessage("Expected newline")).isEqualTo("E055");
-        assertThat(LegacySyntaxCodes.codeForMessage("Expected string")).isEqualTo("E055");
-        assertThat(LegacySyntaxCodes.codeForMessage("Expected newline before identifier")).isEqualTo("E060");
-        assertThat(LegacySyntaxCodes.codeForMessage("Expected '.' after 'string'")).isEqualTo("E056");
-    }
-
-    /**
      * 历史原句锚点：从 aster-lang-locales v1.0.41 的 {@code syntax-diagnostics/<locale>.json} 模板逐字填出的句子
      * 写死在这里，不经目录渲染——目录日后被改写时，上面按目录生成的用例会跟着漂移，这里不会。
      */
@@ -264,6 +250,5 @@ class LegacySyntaxCodesTest {
             assertThat(LegacySyntaxCodes.codeForMessage(catalog.text("moreErrors.other", "count", "2",
                 "message", "x"))).as(lang).isNull();
         }
->>>>>>> origin/main
     }
 }
