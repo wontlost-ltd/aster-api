@@ -412,7 +412,7 @@ public class PolicyVersion extends PanacheEntityBase {
 
     /**
      * 计算策略内容的 SHA-256 hex：版本身份 {@link #sourceHash} 的唯一算法。公开给 /evaluate-source
-     * 给即时源码算同口径哈希（aster-api#459），保证可与封存版本比对。
+     * 给即时源码算同口径哈希（aster-api#459），与 guard 收据、封存版本三处可直接比较。
      */
     public static String computeSourceHash(String content) {
         try {

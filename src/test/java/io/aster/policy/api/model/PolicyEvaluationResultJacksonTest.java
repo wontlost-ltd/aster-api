@@ -52,18 +52,22 @@ class PolicyEvaluationResultJacksonTest {
     @Test
     void 版本键往返相等且旧JSON读回为null() throws Exception {
         PolicyEvaluationResult withVersion = new PolicyEvaluationResult(true, 1.5, false, null, "R-1", List.of(),
-            null, 42L, "ab".repeat(32));
+            null, 42L, "ab".repeat(32), "ef".repeat(32));
         String json = mapper.writeValueAsString(withVersion);
-        assertThat(json).contains("\"policyVersionId\":42").contains("\"sourceHash\":\"" + "ab".repeat(32) + "\"");
+        assertThat(json).contains("\"policyVersionId\":42").contains("\"sourceHash\":\"" + "ab".repeat(32) + "\"")
+            .contains("\"sourceEnvelopeSha256\":\"" + "ef".repeat(32) + "\"");
         PolicyEvaluationResult back = mapper.readValue(json, PolicyEvaluationResult.class);
         assertThat(back).isEqualTo(withVersion);
         assertThat(back.getPolicyVersionId()).isEqualTo(42L);
         assertThat(back.getSourceHash()).isEqualTo("ab".repeat(32));
+        assertThat(back.getSourceEnvelopeSha256()).isEqualTo("ef".repeat(32));
 
         PolicyEvaluationResult legacy = mapper.readValue(REDIS_JSON, PolicyEvaluationResult.class);
         assertThat(legacy.getPolicyVersionId()).isNull();
         assertThat(legacy.getSourceHash()).isNull();
-        assertThat(mapper.writeValueAsString(legacy)).doesNotContain("policyVersionId").doesNotContain("sourceHash");
+        assertThat(legacy.getSourceEnvelopeSha256()).isNull();
+        assertThat(mapper.writeValueAsString(legacy)).doesNotContain("policyVersionId").doesNotContain("sourceHash")
+            .doesNotContain("sourceEnvelopeSha256");
     }
 
     @Test

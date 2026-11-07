@@ -326,7 +326,7 @@ public class PolicyEvaluationService {
         // 版本身份（aster-api#459）取自编译产物：它由解析到的 PolicyVersion 构造，与门禁校验的是同一版本
         return new PolicyEvaluationResult(executionResult.result(), durationNanos / 1_000_000.0, false,
             VerdictView.from(executionResult.result()).orElse(null), meta.ruleId(), meta.controls(), meta.profile(),
-            parseVersionId(compiled.getVersionId()), compiled.getSourceHash());
+            parseVersionId(compiled.getVersionId()), compiled.getSourceHash(), compiled.getSourceEnvelopeSha256());
     }
 
     /** 编译产物的 versionId 由 {@code String.valueOf(version.id)} 生成；非数字（测试直构）按无版本处理。 */
@@ -497,15 +497,14 @@ public class PolicyEvaluationService {
     private static io.aster.policy.cache.CompiledPolicy toCompiledPolicy(PolicyCacheKey cacheKey,
             PolicyVersion version, CompilationResult compilationResult) {
         String versionId = String.valueOf(version.id);
-        // 链接哈希（envelope 优先，否则 content sourceHash）：随结果进证据事件，口径与版本链 prevHash 一致
-        String sourceHash = version.chainLink();
         try {
             String entryCoreJson = io.aster.policy.parser.CoreIrEntrySelector.withEntry(
                 compilationResult.getCoreJson(), cacheKey.getPolicyFunction());
+            // 内容哈希与信封哈希随产物进证据事件（aster-api#459）
             return new io.aster.policy.cache.CompiledPolicy(
-                versionId, sourceHash, entryCoreJson, compilationResult.getMetadata());
+                versionId, version.sourceHash, version.sourceEnvelopeSha256, entryCoreJson, compilationResult.getMetadata());
         } catch (io.aster.policy.parser.EntryFunctionException e) {
-            return io.aster.policy.cache.CompiledPolicy.entryFailure(versionId, sourceHash, e.getMessage());
+            return io.aster.policy.cache.CompiledPolicy.entryFailure(versionId, version.sourceHash, e.getMessage());
         }
     }
 
@@ -616,7 +615,8 @@ public class PolicyEvaluationService {
             original.getControls(),
             original.getProfile(),
             original.getPolicyVersionId(),
-            original.getSourceHash()
+            original.getSourceHash(),
+            original.getSourceEnvelopeSha256()
         );
     }
 

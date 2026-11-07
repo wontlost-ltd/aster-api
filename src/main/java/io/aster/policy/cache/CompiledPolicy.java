@@ -12,8 +12,10 @@ import java.time.Instant;
  */
 public class CompiledPolicy {
     private final String versionId;
-    /** 版本链接哈希（{@code PolicyVersion#chainLink}：envelope 优先，否则 content sourceHash），随评估结果进证据事件。 */
+    /** 版本源码内容哈希（{@code PolicyVersion.sourceHash}），随评估结果进证据事件。 */
     private final String sourceHash;
+    /** 完整编译输入的信封哈希（{@code PolicyVersion.sourceEnvelopeSha256}），旧版本为 null。 */
+    private final String sourceEnvelopeSha256;
     private final String coreJson;
     private final CompilationMetadata metadata;
     private final Instant compiledAt;
@@ -26,18 +28,30 @@ public class CompiledPolicy {
         String coreJson,
         CompilationMetadata metadata
     ) {
-        this(versionId, sourceHash, coreJson, metadata, null);
+        this(versionId, sourceHash, null, coreJson, metadata, null);
+    }
+
+    public CompiledPolicy(
+        String versionId,
+        String sourceHash,
+        String sourceEnvelopeSha256,
+        String coreJson,
+        CompilationMetadata metadata
+    ) {
+        this(versionId, sourceHash, sourceEnvelopeSha256, coreJson, metadata, null);
     }
 
     private CompiledPolicy(
         String versionId,
         String sourceHash,
+        String sourceEnvelopeSha256,
         String coreJson,
         CompilationMetadata metadata,
         String entryFailure
     ) {
         this.versionId = versionId;
         this.sourceHash = sourceHash;
+        this.sourceEnvelopeSha256 = sourceEnvelopeSha256;
         this.coreJson = coreJson;
         this.metadata = metadata;
         this.compiledAt = Instant.now();
@@ -49,7 +63,7 @@ public class CompiledPolicy {
      * 缓存下来避免配置错误的部署在每个请求上都重新加载并编译。
      */
     public static CompiledPolicy entryFailure(String versionId, String sourceHash, String message) {
-        return new CompiledPolicy(versionId, sourceHash, null, null, message);
+        return new CompiledPolicy(versionId, sourceHash, null, null, null, message);
     }
 
     /** 入口选择失败的原因；成功编译时为 null。 */
@@ -63,6 +77,10 @@ public class CompiledPolicy {
 
     public String getSourceHash() {
         return sourceHash;
+    }
+
+    public String getSourceEnvelopeSha256() {
+        return sourceEnvelopeSha256;
     }
 
     public String getCoreJson() {

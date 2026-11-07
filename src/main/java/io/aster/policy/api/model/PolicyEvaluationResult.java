@@ -16,9 +16,9 @@ import java.util.Objects;
  * ruleId / controls 来自被执行函数的 {@code @id} / {@code @control} 注解，无注解时为 null / 空列表。
  * profile 为模块声明的治理档案 id（ADR 0046 §6），未声明时为 null 且不进入缓存 JSON。
  *
- * <p>policyVersionId / sourceHash 为被执行封存版本的 id 与链接哈希（{@code PolicyVersion#chainLink}，
- * aster-api#459）：供 /evaluate 把决策钉到版本。结果缓存键已含 versionId，命中值与键指向同一版本；
- * 非动态加载或无版本时为 null 且不进入缓存 JSON。
+ * <p>policyVersionId / sourceHash / sourceEnvelopeSha256 为被执行封存版本的 id、源码内容哈希与信封哈希
+ * （aster-api#459）：供 /evaluate 把决策钉到版本。sourceHash 与 guard 收据同口径（内容哈希）；信封哈希
+ * 旧版本为 null。结果缓存键已含 versionId，命中值与键指向同一版本；无版本时为 null 且不进入缓存 JSON。
  *
  * <p>本类会作为 {@code policy-results} 缓存值写入 Redis（生产默认缓存后端）并在命中时按 JSON 还原。
  * 类有两个多参构造器，Jackson 无法自行推断用哪个创建实例，命中时会报 “no Creators” 解码失败，
@@ -37,6 +37,7 @@ public class PolicyEvaluationResult {
     private final String profile;
     private final Long policyVersionId;
     private final String sourceHash;
+    private final String sourceEnvelopeSha256;
 
     /** 不携带治理字段的构造（decision / ruleId 为 null，controls 为空）。 */
     public PolicyEvaluationResult(Object result, double executionTimeMs, boolean fromCache) {
@@ -52,7 +53,7 @@ public class PolicyEvaluationResult {
     /** 无版本身份的构造（policyVersionId / sourceHash 为 null）。 */
     public PolicyEvaluationResult(Object result, double executionTimeMs, boolean fromCache,
                                   VerdictView decision, String ruleId, List<String> controls, String profile) {
-        this(result, executionTimeMs, fromCache, decision, ruleId, controls, profile, null, null);
+        this(result, executionTimeMs, fromCache, decision, ruleId, controls, profile, null, null, null);
     }
 
     @JsonCreator
@@ -64,7 +65,8 @@ public class PolicyEvaluationResult {
                                   @JsonProperty("controls") List<String> controls,
                                   @JsonProperty("profile") String profile,
                                   @JsonProperty("policyVersionId") Long policyVersionId,
-                                  @JsonProperty("sourceHash") String sourceHash) {
+                                  @JsonProperty("sourceHash") String sourceHash,
+                                  @JsonProperty("sourceEnvelopeSha256") String sourceEnvelopeSha256) {
         this.result = result;
         this.executionTimeMs = executionTimeMs;
         this.fromCache = fromCache;
@@ -74,6 +76,7 @@ public class PolicyEvaluationResult {
         this.profile = profile;
         this.policyVersionId = policyVersionId;
         this.sourceHash = sourceHash;
+        this.sourceEnvelopeSha256 = sourceEnvelopeSha256;
     }
 
     public Object getResult() {
@@ -115,6 +118,11 @@ public class PolicyEvaluationResult {
         return sourceHash;
     }
 
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public String getSourceEnvelopeSha256() {
+        return sourceEnvelopeSha256;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -132,12 +140,13 @@ public class PolicyEvaluationResult {
             && Objects.equals(controls, that.controls)
             && Objects.equals(profile, that.profile)
             && Objects.equals(policyVersionId, that.policyVersionId)
-            && Objects.equals(sourceHash, that.sourceHash);
+            && Objects.equals(sourceHash, that.sourceHash)
+            && Objects.equals(sourceEnvelopeSha256, that.sourceEnvelopeSha256);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(result, executionTimeMs, fromCache, decision, ruleId, controls, profile,
-            policyVersionId, sourceHash);
+            policyVersionId, sourceHash, sourceEnvelopeSha256);
     }
 }
