@@ -61,12 +61,9 @@ class InProcessCnlParserStackOverflowTest {
     }
 
     @Test
-    void limitHintMatchesCoreGuard() throws ReflectiveOperationException {
-        // core 的 AsterCustomLexer.MAX_NESTING_DEPTH 在 1.0.42 为包内可见，api 只能镜像一个常量；
-        // 用反射锁住两者一致，core 调阈值（1.0.43 → 64）后本用例变红，强制同步。
-        var field = aster.core.parser.AsterCustomLexer.class.getDeclaredField("MAX_NESTING_DEPTH");
-        field.setAccessible(true);
-        assertEquals(field.getInt(null), InProcessCnlParser.NESTING_DEPTH_LIMIT,
+    void limitHintMatchesCoreGuard() {
+        // 1.0.43 起 api 直接引用 core 的 public 常量；这里锁住它确实是 core 的值（而不是又被改回硬编码）
+        assertEquals(aster.core.parser.AsterCustomLexer.MAX_NESTING_DEPTH, InProcessCnlParser.NESTING_DEPTH_LIMIT,
             "api 侧的上限提示必须与 core 守卫阈值一致");
     }
 
