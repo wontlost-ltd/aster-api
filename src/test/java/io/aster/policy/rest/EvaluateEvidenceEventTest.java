@@ -7,13 +7,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.common.JacksonMappers;
 import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.policy.api.PolicyEvaluationService;
+import io.aster.policy.compiler.PolicyExecutionGate;
 import io.aster.policy.entity.AuditLog;
+import io.aster.policy.entity.PolicyCatalog;
+import io.aster.policy.entity.PolicyVersion;
+import io.aster.policy.entity.VersionStatus;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.policy.stability.ToolchainIdentityProvider;
 import io.aster.replay.core.parser.ReplayMappers;
 import io.aster.security.apikey.InternalCallerSigning;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import io.quarkus.test.junit.mockito.InjectSpy;
 import io.restassured.http.ContentType;
@@ -21,7 +26,9 @@ import io.restassured.response.Response;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,7 +36,10 @@ import java.util.UUID;
 
 import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 
 /**
  * ADR 0041 §2.2–§2.3 端到端：三条 /evaluate* 端点生成 correlationId、在响应 evidence 中回传，
@@ -38,10 +48,24 @@ import static org.mockito.Mockito.doThrow;
  * <p>沿用 {@link PolicyEvaluationReplayOrderingTest.HmacProfile}：该 profile 下 /evaluate-source 只接受
  * HMAC 已验证的内部调用方，而 simulate 模式本身也只对 HMAC 已验证调用方生效，两者都需要签名请求。
  * 事件行按 audit_logs.correlation_id 列定位（{@link AuditLog#findByCorrelationIds}）。
+ *
+ * <p>版本解析缓存 TTL 缩短为 {@value #VERSION_TTL_MS} ms（{@link ShortVersionTtlProfile}），让「不手动失效、
+ * 等 TTL 过期」的版本切换用例在秒级完成；其余配置与 HmacProfile 一致。
  */
 @QuarkusTest
-@TestProfile(PolicyEvaluationReplayOrderingTest.HmacProfile.class)
+@TestProfile(EvaluateEvidenceEventTest.ShortVersionTtlProfile.class)
 class EvaluateEvidenceEventTest {
+
+  static final long VERSION_TTL_MS = 5000;
+
+  public static class ShortVersionTtlProfile extends PolicyEvaluationReplayOrderingTest.HmacProfile {
+    @Override
+    public Map<String, String> getConfigOverrides() {
+      Map<String, String> m = new HashMap<>(super.getConfigOverrides());
+      m.put("aster.policy.version-cache.ttl-ms", String.valueOf(VERSION_TTL_MS));
+      return m;
+    }
+  }
 
   private static final String RUN = UUID.randomUUID().toString().substring(0, 8);
   private static final String TENANT = "tenant-evidence-" + RUN;
@@ -67,9 +91,15 @@ class EvaluateEvidenceEventTest {
       .replace("@id(\"PROBE-001\")", "@id(\"GOV-001\")\n@control(\"EU_AI_ACT:ART14\")");
 
   private static boolean deployed;
+  /** 走 /evaluate 数据库加载路径的已部署版本 id，用于核对事件里的 policyVersionId。 */
+  private static Long probeVersionId;
 
   @Inject
   PolicyEvaluationService policyEvaluationService;
+
+  /** 只做观察（不打桩）：核对门禁读阶段拿到的版本 id 与事件所写一致。%test 下门禁为 off，但读阶段仍以版本 id 进入。 */
+  @InjectSpy
+  PolicyExecutionGate executionGate;
 
   /** 只在「成功事件后抛错」用例里打桩，其余用例走真实实现。 */
   @InjectSpy
@@ -78,8 +108,8 @@ class EvaluateEvidenceEventTest {
   @BeforeEach
   void deployOnce() {
     if (deployed) return;
-    DeployedMapParamProbeTest.deploy(TENANT, DeployedMapParamProbeTest.MODULE, DeployedMapParamProbeTest.FUNCTION,
-        DeployedMapParamProbeTest.SOURCE);
+    probeVersionId = DeployedMapParamProbeTest.deploy(TENANT, DeployedMapParamProbeTest.MODULE,
+        DeployedMapParamProbeTest.FUNCTION, DeployedMapParamProbeTest.SOURCE);
     DeployedMapParamProbeTest.deploy(TENANT, GOVERNED_MODULE, DeployedMapParamProbeTest.FUNCTION,
         GOVERNED_DEPLOYED_SOURCE);
     deployed = true;
@@ -101,9 +131,75 @@ class EvaluateEvidenceEventTest {
         .containsEntry("agentProvider", "anthropic").containsEntry("agentModel", "claude-fable-5-1")
         .containsEntry("agentSession", "s-1").containsEntry("agentSource", "declared")
         .containsEntry("contextSize", 1);
-    // /evaluate 本期不写版本（ADR 0041 修正 #2）
-    assertThat(md).doesNotContainKeys("policyVersionId", "profile");
+    assertThat(md).doesNotContainKey("profile");
     assertThat(MAPPER.readTree(resp.asString()).has("profile")).as(resp.asString()).isFalse();
+
+    // issue #459：事件指向被执行的封存版本；sourceHash 是源码内容哈希（与 guard 收据、版本行同口径），
+    // 测试部署的版本无 envelope，故不写 sourceEnvelopeSha256。
+    PolicyVersion executed = QuarkusTransaction.requiringNew().call(() -> PolicyVersion.findById(probeVersionId));
+    assertThat(md).containsEntry("policyVersionId", probeVersionId.intValue())
+        .containsEntry("sourceHash", executed.sourceHash)
+        .containsEntry("sourceHash", PolicyVersion.computeSourceHash(DeployedMapParamProbeTest.SOURCE))
+        .doesNotContainKey("sourceEnvelopeSha256");
+    // 响应契约不变：版本键只进链，不回给调用方
+    assertThat(MAPPER.readTree(resp.asString()).has("policyVersionId")).isFalse();
+    assertThat(MAPPER.readTree(resp.asString()).has("sourceHash")).isFalse();
+    assertThat(MAPPER.readTree(resp.asString()).has("sourceEnvelopeSha256")).isFalse();
+  }
+
+  /**
+   * issue #459：按请求绑定——同一请求内门禁读阶段拿到的 versionId 与该请求证据事件的 policyVersionId 相等
+   * （全新模块，每个版本首评必经编译路径）；激活切换并显式失效缓存后，新事件指向新版本；
+   * sourceHash 始终是内容哈希，带 envelope 的版本另写 sourceEnvelopeSha256。
+   */
+  @Test
+  void evaluate版本与门禁按请求一致且显式失效后指向新版本() throws Exception {
+    String module = freshModule("switch");
+    String function = DeployedMapParamProbeTest.FUNCTION;
+    String source = sourceFor(module);
+    Long v1 = DeployedMapParamProbeTest.deploy(TENANT, module, function, source);
+    Map<String, Object> md1 = evaluateAndAssertGateBound(module, function);
+    assertThat(md1).containsEntry("policyVersionId", v1.intValue())
+        .containsEntry("sourceHash", PolicyVersion.computeSourceHash(source))
+        .doesNotContainKey("sourceEnvelopeSha256");
+
+    String envelope = "e".repeat(64);
+    String source2 = source.replace("@id(\"PROBE-001\")", "@id(\"PROBE-002\")");
+    Long v2 = activateNewVersion(module, function, source2, envelope);
+    policyEvaluationService.invalidateCache(TENANT, module, function).await().indefinitely();
+
+    Map<String, Object> md2 = evaluateAndAssertGateBound(module, function);
+    assertThat(md2).containsEntry("policyVersionId", v2.intValue()).containsEntry("ruleId", "PROBE-002")
+        .containsEntry("sourceHash", PolicyVersion.computeSourceHash(source2))
+        .containsEntry("sourceEnvelopeSha256", envelope);
+  }
+
+  /**
+   * issue #459：不手动失效，只等版本解析缓存 TTL 过期。切换后 TTL 内的请求仍整体指向旧版本
+   * （门禁、执行、事件一致，不会出现「校验新版本、事件写旧版本」），TTL 过后指向新版本。
+   */
+  @Test
+  void evaluate版本切换后等解析缓存TTL过期即指向新版本() throws Exception {
+    String module = freshModule("ttl");
+    String function = DeployedMapParamProbeTest.FUNCTION;
+    String source = sourceFor(module);
+    Long v1 = DeployedMapParamProbeTest.deploy(TENANT, module, function, source);
+    assertThat(evaluateAndAssertGateBound(module, function)).containsEntry("policyVersionId", v1.intValue());
+    // 计时起点取「首次确认事件指向 v1」的时刻：解析缓存条目在此之前已写入，故据此算出的剩余 TTL 只会偏小，
+    // 不会把实际已过期的请求当作「TTL 内」。
+    long confirmedV1At = System.currentTimeMillis();
+
+    Long v2 = activateNewVersion(module, function, source.replace("@id(\"PROBE-001\")", "@id(\"PROBE-003\")"), null);
+    // 仍在 TTL 内：旧解析继续生效，且本次请求的门禁与事件一起指向 v1（事件版本按请求绑定）。
+    // 该断言必须执行：若切换 + 请求 + 落链已耗尽 TTL，则是测试 TTL 过短，直接失败而不是跳过。
+    Map<String, Object> stale = evaluateDeployedMetadata(module, function);
+    long elapsed = System.currentTimeMillis() - confirmedV1At;
+    assertThat(elapsed).as("切换后首个请求须落在解析缓存 TTL 内；超出请调大 VERSION_TTL_MS").isLessThan(VERSION_TTL_MS);
+    assertThat(stale).containsEntry("policyVersionId", v1.intValue());
+
+    Thread.sleep(Math.max(0, VERSION_TTL_MS - (System.currentTimeMillis() - confirmedV1At)) + 500);
+    Map<String, Object> fresh = evaluateAndAssertGateBound(module, function);
+    assertThat(fresh).containsEntry("policyVersionId", v2.intValue()).containsEntry("ruleId", "PROBE-003");
   }
 
   /** 首次走编译+执行（Core JSON 宽松重解析取档案），第二次命中 policy-results 缓存，两次都须带 profile。 */
@@ -143,6 +239,7 @@ class EvaluateEvidenceEventTest {
     assertThat(md).containsEntry("role", "Data Protection Officer").containsKey("reason");
   }
 
+  /** issue #459：/evaluate 失败（无版本可解析）时不写版本键，不编造。 */
   @Test
   void evaluate失败也生成correlationId并落链() throws Exception {
     Response resp = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
@@ -155,7 +252,8 @@ class EvaluateEvidenceEventTest {
 
     AuditLog row = awaitEvent(TENANT, cid);
     assertThat(row.success).isFalse();
-    assertThat(metadataOf(row)).containsEntry("agentProvider", "anthropic").doesNotContainKey("outcome");
+    assertThat(metadataOf(row)).containsEntry("agentProvider", "anthropic")
+        .doesNotContainKeys("outcome", "policyVersionId", "sourceHash", "sourceEnvelopeSha256");
   }
 
   @Test
@@ -221,6 +319,12 @@ class EvaluateEvidenceEventTest {
         .containsEntry("agentSource", "declared").containsEntry("sourceFormat", "cnl")
         .doesNotContainKey("profile");
     assertThat(MAPPER.readTree(resp.asString()).has("profile")).as(resp.asString()).isFalse();
+    // issue #459：即时源码无已保存版本 → 不写 policyVersionId / sourceEnvelopeSha256，
+    // 但写与封存同算法的源码内容 sourceHash（与 guard 收据、版本行可直接比对）
+    assertThat(md).doesNotContainKeys("policyVersionId", "sourceEnvelopeSha256")
+        .containsEntry("sourceHash", PolicyVersion.computeSourceHash(VERDICT_SOURCE));
+    assertThat(md.get("sourceHash")).asString().matches("^[0-9a-f]{64}$");
+    assertThat(MAPPER.readTree(resp.asString()).has("sourceHash")).isFalse();
   }
 
   @Test
@@ -280,6 +384,65 @@ class EvaluateEvidenceEventTest {
   }
 
   // ---------------------------------------------------------------- helpers
+
+  /** 模块段须是合法标识符：RUN 可能以数字开头（CNL 语法错误），故映射为纯字母。 */
+  private static String freshModule(String tag) {
+    String letters = RUN.chars().mapToObj(c -> String.valueOf((char) ('a' + Character.digit(c, 16))))
+        .reduce("", String::concat);
+    return "evidence." + tag + "." + letters;
+  }
+
+  private static String sourceFor(String module) {
+    return DeployedMapParamProbeTest.SOURCE.replace("Module guard.probe.", "Module " + module + ".");
+  }
+
+  /** 停用现活跃版本，新建并激活一个版本（可带 envelope），返回其 id；不触碰任何缓存。 */
+  private static Long activateNewVersion(String module, String function, String content, String envelope) {
+    return QuarkusTransaction.requiringNew().call(() -> {
+      PolicyVersion.update("active = false where tenantId = ?1 and moduleName = ?2 and functionName = ?3",
+          TENANT, module, function);
+      PolicyVersion next = new PolicyVersion();
+      next.policyId = module + "." + function; next.version = System.nanoTime();
+      next.moduleName = module; next.functionName = function; next.content = content;
+      next.sourceEnvelopeSha256 = envelope;
+      next.locale = "en-US"; next.active = true; next.status = VersionStatus.APPROVED;
+      next.tenantId = TENANT; next.createdAt = Instant.now(); next.createdBy = "probe";
+      next.persist();
+      PolicyCatalog.update("defaultVersionId = ?1 where tenantId = ?2 and moduleName = ?3 and functionName = ?4",
+          next.id, TENANT, module, function);
+      return next.id;
+    });
+  }
+
+  /**
+   * 一次 /evaluate 请求：清空 spy 记录 → 请求 → 捕获本请求内门禁读阶段的 versionId，断言与该请求事件的
+   * policyVersionId 相等；返回事件 metadata。调用方须保证本次必走编译路径（新版本首评）。
+   */
+  private Map<String, Object> evaluateAndAssertGateBound(String module, String function) throws Exception {
+    clearInvocations(executionGate);
+    Map<String, Object> md = evaluateDeployedMetadata(module, function);
+    ArgumentCaptor<Long> gateVersion = ArgumentCaptor.forClass(Long.class);
+    verify(executionGate, atLeastOnce()).prefetch(gateVersion.capture());
+    assertThat(gateVersion.getAllValues()).as("本请求门禁读阶段的版本").containsOnly(
+        ((Number) md.get("policyVersionId")).longValue());
+    return md;
+  }
+
+  private static Map<String, Object> evaluateDeployedMetadata(String module, String function) throws Exception {
+    return metadataOf(awaitEvent(TENANT, evaluateDeployed(module, function)));
+  }
+
+  /** 评估已部署策略并返回响应里的 correlationId。 */
+  private static String evaluateDeployed(String module, String function) {
+    Response resp = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
+        .body(Map.of("policyModule", module, "policyFunction", function,
+            "context", List.of(guardRequest("read_customer_record")), "agent", AGENT))
+        .post("/api/v1/policies/evaluate");
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    String cid = resp.jsonPath().getString("evidence.correlationId");
+    assertThat(cid).isNotBlank();
+    return cid;
+  }
 
   private static Map<String, Object> guardRequest(String action) {
     Map<String, Object> m = new HashMap<>();

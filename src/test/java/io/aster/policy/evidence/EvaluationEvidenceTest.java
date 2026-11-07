@@ -35,6 +35,22 @@ class EvaluationEvidenceTest {
     assertThat(e.toMetadata()).containsOnlyKeys("correlationId");
   }
 
+  /** issue #459：版本三键由 withVersion 附加，correlationId 不变；null 不写键，哈希逐字入链。 */
+  @Test void withVersion写版本三键且保留correlationId() {
+    EvaluationEvidence base = EvaluationEvidence.of("ALLOW", "R-1", List.of(), null, null);
+    EvaluationEvidence e = base.withVersion(42L, "ab".repeat(32), "ef".repeat(32));
+    assertThat(e.correlationId()).isEqualTo(base.correlationId());
+    assertThat(e.toMetadata()).containsEntry("policyVersionId", 42L).containsEntry("sourceHash", "ab".repeat(32))
+        .containsEntry("sourceEnvelopeSha256", "ef".repeat(32));
+    // 无 envelope 的旧版本：只有 id 与内容哈希
+    assertThat(base.withVersion(42L, "ab".repeat(32), null).toMetadata()).doesNotContainKey("sourceEnvelopeSha256");
+    // /evaluate-source：无已保存版本但有源码内容哈希
+    assertThat(base.withVersion(null, "cd".repeat(32), null).toMetadata())
+        .doesNotContainKeys("policyVersionId", "sourceEnvelopeSha256").containsEntry("sourceHash", "cd".repeat(32));
+    assertThat(base.withVersion(null, null, null).toMetadata())
+        .doesNotContainKeys("policyVersionId", "sourceHash", "sourceEnvelopeSha256");
+  }
+
   @Test void of生成UUID相关键() {
     EvaluationEvidence e = EvaluationEvidence.of("DENY", null, null, 7L, null);
     assertThat(e.correlationId()).matches("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");

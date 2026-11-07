@@ -142,6 +142,7 @@ public class CompiledPolicyCache {
             w += stringHeapBytes(value.getCoreJson());
             w += stringHeapBytes(value.getVersionId());
             w += stringHeapBytes(value.getSourceHash());
+            w += stringHeapBytes(value.getSourceEnvelopeSha256());
             CompilationMetadata meta = value.getMetadata();
             if (meta != null) {
                 w += stringHeapBytes(meta.getFunctionSignature());

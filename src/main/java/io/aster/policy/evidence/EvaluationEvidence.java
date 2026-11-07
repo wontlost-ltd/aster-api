@@ -9,10 +9,17 @@ import java.util.UUID;
 /**
  * 一次评估的证据键（ADR 0041 §2.2）：进入 POLICY_EVALUATION 事件 metadata，并把 correlationId 回给调用方。
  * profile 为被执行模块声明的治理档案 id（ADR 0046 §6），未声明时为 null 且不写键。
+ *
+ * <p>版本三键把决策钉到封存版本（aster-api#459）。{@code sourceHash} 一律是源码内容哈希
+ * （{@code PolicyVersion#computeSourceHash}），与 guard 收据（ADR 0040 §5.3）、`PolicyVersion.sourceHash`
+ * 同口径，三处可直接比较：/evaluate 取被执行活跃版本的 {@code id / sourceHash / sourceEnvelopeSha256}；
+ * /evaluate-source 没有已保存版本，只写即时源码的 {@code sourceHash}。{@code sourceEnvelopeSha256} 是完整编译
+ * 输入的信封哈希（ADR 0022 §11.5），有则写，旧版本与即时源码为 null。三键由 {@link #withVersion} 在评估
+ * 结束后附加，correlationId 不变。
  */
 public record EvaluationEvidence(String correlationId, String outcome, String ruleId, List<String> controls,
                                  Long policyVersionId, AgentIdentity agent, String role, String reason,
-                                 String profile) {
+                                 String profile, String sourceHash, String sourceEnvelopeSha256) {
   public static final int MAX_CONTROLS = 16;
   public static final int MAX_CONTROL_LENGTH = 64;
   public static final String SOURCE_DECLARED = "declared";
@@ -26,6 +33,16 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
   public static final String KEY_ROLE = "role";
   public static final String KEY_REASON = "reason";
   public static final String KEY_PROFILE = "profile";
+  public static final String KEY_POLICY_VERSION_ID = "policyVersionId";
+  public static final String KEY_SOURCE_HASH = "sourceHash";
+  public static final String KEY_SOURCE_ENVELOPE_SHA256 = "sourceEnvelopeSha256";
+
+  /** 无版本哈希的构造（版本键经 {@link #withVersion} 附加）。 */
+  public EvaluationEvidence(String correlationId, String outcome, String ruleId, List<String> controls,
+                            Long policyVersionId, AgentIdentity agent, String role, String reason,
+                            String profile) {
+    this(correlationId, outcome, ruleId, controls, policyVersionId, agent, role, reason, profile, null, null);
+  }
 
   /** 无治理档案的构造。 */
   public EvaluationEvidence(String correlationId, String outcome, String ruleId, List<String> controls,
@@ -52,6 +69,15 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
         role, reason, profile);
   }
 
+  /**
+   * 附加被执行版本的身份：同一 correlationId，只替换版本三键。各自可为 null（null 不写键）：
+   * /evaluate 失败路径全为 null，/evaluate-source 只有内容哈希，无 envelope 的旧版本无信封哈希。
+   */
+  public EvaluationEvidence withVersion(Long policyVersionId, String sourceHash, String sourceEnvelopeSha256) {
+    return new EvaluationEvidence(correlationId, outcome, ruleId, controls, policyVersionId, agent, role, reason,
+        profile, sourceHash, sourceEnvelopeSha256);
+  }
+
   /** 扁平键而非嵌套对象：追加器的脱敏与 guard 的预算收缩只处理顶层 String/List；null/空不写键。 */
   public Map<String, Object> toMetadata() {
     Map<String, Object> m = new LinkedHashMap<>();
@@ -60,7 +86,10 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
     put(m, "ruleId", clip(ruleId));
     List<String> c = clipControls(controls);
     if (!c.isEmpty()) m.put("controls", c);
-    if (policyVersionId != null) m.put("policyVersionId", policyVersionId);
+    if (policyVersionId != null) m.put(KEY_POLICY_VERSION_ID, policyVersionId);
+    // 两个哈希是身份键（AuditChainAppender.IDENTITY_METADATA_KEYS），逐字入链、不脱敏；64 位 hex 远低于裁剪上界
+    put(m, KEY_SOURCE_HASH, clip(sourceHash));
+    put(m, KEY_SOURCE_ENVELOPE_SHA256, clip(sourceEnvelopeSha256));
     put(m, KEY_ROLE, clip(role));
     put(m, KEY_REASON, clip(reason));
     put(m, KEY_PROFILE, clip(profile));

@@ -92,7 +92,7 @@ guard 服务把它扁平成**一个 Map** 作为规则的唯一位置参数，�
 - `policyModule`、`policyFunction`、`principal.id`、`action.name` 不得为空白。
 - 文本字段 `principal.id`、`principal.type`、`action.name`、`resource.type`、`resource.id`、`agent.model` ≤ 255 字符且不含控制字符（`Character.isISOControl`）。上限与 `guard_decisions` 列宽一致，也给收据 metadata 一个确定上界（§5.2）。
 - `principal.roles` 至多 16 项，元素非 null，每项同样 ≤ 255 字符且不含控制字符。roles 不入列，但会写进收据 metadata（§5.2）。
-- `context`：键必须是字符串，值**允许为 null**（null 叶子原样保留、原样进 `contextHash` / `actionHash`，不剔除、不补缺省；缺失键与 null 值是两个不同的文档，§12 D2），嵌套深度 ≤ 8（context 自身为第 1 层），键排序序列化后 ≤ 65536 字节。
+- `context`：键必须是字符串，值不得为 null，嵌套深度 ≤ 8（context 自身为第 1 层），键排序序列化后 ≤ 65536 字节。
 
 传给规则的 Map 及其中的 `context` / `principal_roles` 是**深度不可变**的副本（`Map.copyOf` / `List.copyOf`），原因见 §2.3。
 
@@ -344,7 +344,7 @@ metadata 预算：追加器在 metadata 超过 4 KB 时会截断成非法 JSON�
 
 ### 5.3 策略版本信息
 
-`PolicyEvaluationResult` 不带版本 id 与 sourceHash。guard 服务在评估之前自行解析活跃 `PolicyVersion`，取 `id / version / sourceHash` 写进响应、决策行与收据；查不到时返回 404 `policy_not_found`。解析方式是在 `requiringNew` 事务中直接查仓库（`PolicySourceRepository.findActiveCatalog` + `findActiveVersion`），**不经** `PolicyVersionResolutionCache`。
+~~`PolicyEvaluationResult` 不带版本 id 与 sourceHash。~~（aster-api#459 起携带 `policyVersionId / sourceHash / sourceEnvelopeSha256`，`sourceHash` 与本节收据同为内容哈希，收据口径不变；guard 仍自行解析，统一来源见 §10。）guard 服务在评估之前自行解析活跃 `PolicyVersion`，取 `id / version / sourceHash` 写进响应、决策行与收据；查不到时返回 404 `policy_not_found`。解析方式是在 `requiringNew` 事务中直接查仓库（`PolicySourceRepository.findActiveCatalog` + `findActiveVersion`），**不经** `PolicyVersionResolutionCache`。
 
 评估服务内部仍经 `PolicyVersionResolutionCache` 解析版本，该缓存的 TTL 为 `aster.policy.version-cache.ttl-ms`，默认 5000 ms。所以在激活版本切换后至多约 5 秒内，收据记录的版本可能与实际评估的版本不一致。统一两者的版本来源列入 §10。
 
@@ -603,6 +603,7 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
 
 - `payload` 字段即 #463 所列 `{ v, decisionId, tenantId, actionHash, policyVersionId, outcome, issuedAt, expiresAt, kid }`，字母序输出；`kid` 在 `payload` 内（受签名覆盖）与外层各写一次，外层只是方便取键。
 - **签名**：Ed25519，作用于 `payload` 经 `sha256-sorted-json/v1` 同一序列化配方（Jackson `ORDER_MAP_ENTRIES_BY_KEYS`，无空白；§5.2 / §11 D3）得到的 UTF-8 字节串，不二次哈希。只此一个算法、一个载荷配方，不用 JWT/JWS（与 §11 D3 同一理由）。
+- 载荷**不含** `sourceHash`：版本由 `policyVersionId` 唯一确定；`sourceHash`（内容哈希，与 `sourceEnvelopeSha256` 分键，§5.3 / aster-api#468）照旧只在链收据与决策行里。执行方核对的是 `actionHash`（自己将执行什么），不是策略内容（那是 Guard 的事）。
 - `outcome` 恒为 `ALLOW`：只有 ALLOW 才签发。DENY / PENDING 响应没有 `executionReceipt`（§3.1「null / 空不写」）。
 - **何时签发**：(1) 决策即 ALLOW 时，与决策行同一 `requiringNew` 事务写入（D4）；(2) 审批 APPROVED 时，在 tx2（`completeApproval`）内与 `response_json` 改写同一事务签发，`issuedAt` 取加锁后的 `now`；(3) 幂等重放与 `GET /decisions/{id}` 返回**已存储**的同一份收据，不重签。REJECTED / EXPIRED 不签发。
 

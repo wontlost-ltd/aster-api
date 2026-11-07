@@ -37,6 +37,14 @@ public class InProcessCnlParser {
     private static final Logger LOG = Logger.getLogger(InProcessCnlParser.class);
 
     /**
+     * 嵌套深度上限提示（aster-api#472 纵深防御）：线程栈先于 core 守卫溢出时，以此值填 E054 的 {@code limit}。
+     *
+     * <p>core 的守卫阈值 {@code AsterCustomLexer.MAX_NESTING_DEPTH} 在 1.0.42 为包内可见，api 无法直接引用，
+     * 这里镜像一份；{@code InProcessCnlParserStackOverflowTest} 用反射锁住两者一致，core 调阈值后本常量必须同步。
+     */
+    static final int NESTING_DEPTH_LIMIT = 300;
+
+    /**
      * CNL 解析结果
      *
      * @param module           R1 之后的 AST（标识符保持原写法，带解析结果）；供需要源码位置的分析使用
@@ -149,6 +157,8 @@ public class InProcessCnlParser {
             throw new CnlParseException("CNL 源代码不能为空");
         }
 
+        // 错误监听器在 try 内按 lexicon 创建；提到外层是为了让栈溢出的兜底出口也能按同一语言渲染 E054
+        CnlErrorListener errorListener = null;
         try {
             // 1. 根据 locale 获取对应的 Lexicon，并叠加用户自定义别名（方案 D）后规范化源代码
             Lexicon lexicon = AliasOverlayLexicon.wrap(getLexiconForLocale(locale), aliasSet);
@@ -170,7 +180,7 @@ public class InProcessCnlParser {
             // 漏掉的 token 会让 parser 看到一个"看起来合法但语义残缺"的流。
             // 显式挂同一份错误监听器，保证 lexer 错误能传给 CnlParseException。
             // 报错里的关键词回译成作者所写语言（canonicalize 之后 ANTLR 只见英文规范拼写）
-            CnlErrorListener errorListener = new CnlErrorListener(KeywordLocalizer.forTarget(lexicon));
+            errorListener = new CnlErrorListener(KeywordLocalizer.forTarget(lexicon));
             lexer.removeErrorListeners();
             lexer.addErrorListener(errorListener);
 
@@ -200,6 +210,9 @@ public class InProcessCnlParser {
                 moduleCtx = parser.module();
             } catch (aster.core.parser.ParseDiagnosticException e) {
                 throw codedFailure(errorListener, e);
+            } catch (StackOverflowError e) {
+                // 语法分析期递归先于守卫溢出：位置取溢出时的当前 token（仍在深嵌套表达式所在行）
+                throw codedFailure(errorListener, nestingOverflow(parser.getCurrentToken()));
             }
 
             // 检查解析错误：抛给用户的是友好化的首个错误（根因），原始 ANTLR
@@ -251,9 +264,24 @@ public class InProcessCnlParser {
 
         } catch (CnlParseException e) {
             throw e;
+        } catch (StackOverflowError e) {
+            // aster-api#472：StackOverflowError 是 Error 级，不归入上面的 catch (Exception)，此前会穿透到
+            // GlobalExceptionMapper 变成 500。嵌套深到打爆线程栈只可能来自用户源码（构建 AST / 名称解析 /
+            // 降级都按嵌套递归），与 core 守卫触发时同一出口：带码 E054 的用户源码错误。位置不可知，按 1:1 报。
+            CnlErrorListener listener = errorListener != null ? errorListener
+                : new CnlErrorListener(KeywordLocalizer.forTarget(getLexiconForLocale(locale)));
+            throw codedFailure(listener, nestingOverflow(null));
         } catch (Exception e) {
             throw internalFailure(e);
         }
+    }
+
+    /** 线程栈先于 core 守卫溢出时合成的 E054（aster-api#472）；{@code at} 为 null 表示位置未知。 */
+    private static aster.core.parser.ParseDiagnosticException nestingOverflow(org.antlr.v4.runtime.Token at) {
+        return new aster.core.parser.ParseDiagnosticException(
+            aster.core.typecheck.ErrorCode.PARSE_NESTING_TOO_DEEP,
+            Map.of("limit", String.valueOf(NESTING_DEPTH_LIMIT)),
+            "嵌套过深（线程栈溢出，上限 " + NESTING_DEPTH_LIMIT + "）", at);
     }
 
     /** 带码的解析错误（词法 / 语法 / 构建 AST 阶段抛出）记为用户源码错误，与 ANTLR 事件走同一出口。 */
