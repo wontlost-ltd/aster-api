@@ -166,7 +166,7 @@ class CnlErrorLocaleTest {
         assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING, p, localizer("zh-CN")))
             .isEqualTo("意外的 'x'；期望 '。' 或 '：'");
         assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING, p, localizer("de-DE")))
-            .isEqualTo("Unerwartetes 'x'; erwartet: '.' oder ':'");
+            .isEqualTo("Unerwartet: 'x'; erwartet: '.' oder ':'");
         assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_EXPECTING, p, localizer("hi-IN")))
             .isEqualTo("अप्रत्याशित 'x'; अपेक्षित '।' या ':'");
     }
@@ -209,7 +209,7 @@ class CnlErrorLocaleTest {
         assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_TOKEN, p, localizer("zh-CN")))
             .isEqualTo("意外的文件结尾");
         assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_TOKEN, p, localizer("de-DE")))
-            .isEqualTo("Unerwartetes Dateiende");
+            .isEqualTo("Unerwartet: Dateiende");
         assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_TOKEN, p, localizer("hi-IN")))
             .isEqualTo("अप्रत्याशित फ़ाइल का अंत");
     }
