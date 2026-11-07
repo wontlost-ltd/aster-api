@@ -56,7 +56,7 @@ import static org.mockito.Mockito.verify;
 @TestProfile(EvaluateEvidenceEventTest.ShortVersionTtlProfile.class)
 class EvaluateEvidenceEventTest {
 
-  static final long VERSION_TTL_MS = 2000;
+  static final long VERSION_TTL_MS = 5000;
 
   public static class ShortVersionTtlProfile extends PolicyEvaluationReplayOrderingTest.HmacProfile {
     @Override
@@ -184,17 +184,20 @@ class EvaluateEvidenceEventTest {
     String function = DeployedMapParamProbeTest.FUNCTION;
     String source = sourceFor(module);
     Long v1 = DeployedMapParamProbeTest.deploy(TENANT, module, function, source);
-    long resolvedAt = System.currentTimeMillis();
     assertThat(evaluateAndAssertGateBound(module, function)).containsEntry("policyVersionId", v1.intValue());
+    // 计时起点取「首次确认事件指向 v1」的时刻：解析缓存条目在此之前已写入，故据此算出的剩余 TTL 只会偏小，
+    // 不会把实际已过期的请求当作「TTL 内」。
+    long confirmedV1At = System.currentTimeMillis();
 
     Long v2 = activateNewVersion(module, function, source.replace("@id(\"PROBE-001\")", "@id(\"PROBE-003\")"), null);
-    // 仍在 TTL 内：旧解析继续生效，且本次请求的门禁与事件一起指向 v1（事件版本按请求绑定）
+    // 仍在 TTL 内：旧解析继续生效，且本次请求的门禁与事件一起指向 v1（事件版本按请求绑定）。
+    // 该断言必须执行：若切换 + 请求 + 落链已耗尽 TTL，则是测试 TTL 过短，直接失败而不是跳过。
     Map<String, Object> stale = evaluateDeployedMetadata(module, function);
-    if (System.currentTimeMillis() - resolvedAt < VERSION_TTL_MS) {
-      assertThat(stale).containsEntry("policyVersionId", v1.intValue());
-    }
+    long elapsed = System.currentTimeMillis() - confirmedV1At;
+    assertThat(elapsed).as("切换后首个请求须落在解析缓存 TTL 内；超出请调大 VERSION_TTL_MS").isLessThan(VERSION_TTL_MS);
+    assertThat(stale).containsEntry("policyVersionId", v1.intValue());
 
-    Thread.sleep(VERSION_TTL_MS - (System.currentTimeMillis() - resolvedAt) + 500);
+    Thread.sleep(Math.max(0, VERSION_TTL_MS - (System.currentTimeMillis() - confirmedV1At)) + 500);
     Map<String, Object> fresh = evaluateAndAssertGateBound(module, function);
     assertThat(fresh).containsEntry("policyVersionId", v2.intValue()).containsEntry("ruleId", "PROBE-003");
   }
