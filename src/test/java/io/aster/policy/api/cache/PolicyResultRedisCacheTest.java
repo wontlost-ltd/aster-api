@@ -10,6 +10,9 @@ import io.aster.policy.entity.PolicyArtifact;
 import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.test.RedisEnabledTest;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.aster.common.JacksonMappers;
+import io.quarkus.redis.datasource.RedisDataSource;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
@@ -42,6 +45,7 @@ class PolicyResultRedisCacheTest {
     @Inject PolicyEvaluationService evaluationService;
     @Inject CompiledPolicyCache compiledPolicyCache;
     @Inject PolicyVersionResolutionCache versionResolutionCache;
+    @Inject RedisDataSource redis;
 
     /** 租户带随机后缀，确保缓存键不与其他测试或历史运行冲突。 */
     private String tenant;
@@ -128,6 +132,40 @@ class PolicyResultRedisCacheTest {
         assertThat(second.isFromCache()).isTrue();
         assertThat(second.getProfile()).isEqualTo("governed");
         assertThat(second.getRuleId()).isEqualTo("PROBE-001");
+    }
+
+    /**
+     * issue #459 滚动发布兼容：Redis 里由旧实例写入、缺版本三键的 policy-results 条目，新实例命中时读回 null、不抛。
+     * 先让真实评估写入一条，再把该键的值改写成剔除三键的旧格式 JSON（保留 TTL），第二次评估须命中且版本键为 null。
+     */
+    @Test
+    void 旧格式缺版本键的Redis条目命中时读回null不抛() throws Exception {
+        String t = deployFreshTenant("tenant-redis-cache-legacy-");
+        Map<String, Object> req = Map.of(
+            "principal_id", "agent-42", "principal_type", "agent", "principal_roles", List.of("ops-bot"),
+            "action", "read_customer_record", "resource_type", "customer", "resource_id", "C-1001",
+            "context", Map.of("amount", 250000), "agent_model", "claude-fable-5-1");
+
+        PolicyEvaluationResult first = evaluate(t, req);
+        assertThat(first.getPolicyVersionId()).isNotNull();
+        assertThat(first.getSourceHash()).isEqualTo(PolicyVersion.computeSourceHash(DeployedMapParamProbeTest.SOURCE));
+
+        List<String> keys = redis.key().keys("*test-run-" + RedisBackedCacheProfile.RUN_ID + "*policy-results*")
+            .stream().filter(k -> k.contains(t)).toList();
+        assertThat(keys).as("本租户的 policy-results 键").hasSize(1);
+        String key = keys.get(0);
+        ObjectNode stored = (ObjectNode) JacksonMappers.DEFAULT.readTree(redis.value(String.class).get(key));
+        assertThat(stored.has("policyVersionId")).isTrue();
+        stored.remove("policyVersionId"); stored.remove("sourceHash"); stored.remove("sourceEnvelopeSha256");
+        long ttl = redis.key().ttl(key);
+        redis.value(String.class).setex(key, ttl > 0 ? ttl : 60, JacksonMappers.DEFAULT.writeValueAsString(stored));
+
+        PolicyEvaluationResult second = evaluate(t, req);
+        assertThat(second.isFromCache()).isTrue();
+        assertThat(second.getDecision().outcome()).isEqualTo("ALLOW");
+        assertThat(second.getPolicyVersionId()).isNull();
+        assertThat(second.getSourceHash()).isNull();
+        assertThat(second.getSourceEnvelopeSha256()).isNull();
     }
 
     private PolicyEvaluationResult evaluate(String t, Map<String, Object> req) {

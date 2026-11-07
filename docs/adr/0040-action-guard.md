@@ -344,7 +344,7 @@ metadata 预算：追加器在 metadata 超过 4 KB 时会截断成非法 JSON�
 
 ### 5.3 策略版本信息
 
-`PolicyEvaluationResult` 不带版本 id 与 sourceHash。guard 服务在评估之前自行解析活跃 `PolicyVersion`，取 `id / version / sourceHash` 写进响应、决策行与收据；查不到时返回 404 `policy_not_found`。解析方式是在 `requiringNew` 事务中直接查仓库（`PolicySourceRepository.findActiveCatalog` + `findActiveVersion`），**不经** `PolicyVersionResolutionCache`。
+~~`PolicyEvaluationResult` 不带版本 id 与 sourceHash。~~（aster-api#459 起携带 `policyVersionId / sourceHash / sourceEnvelopeSha256`，`sourceHash` 与本节收据同为内容哈希，收据口径不变；guard 仍自行解析，统一来源见 §10。）guard 服务在评估之前自行解析活跃 `PolicyVersion`，取 `id / version / sourceHash` 写进响应、决策行与收据；查不到时返回 404 `policy_not_found`。解析方式是在 `requiringNew` 事务中直接查仓库（`PolicySourceRepository.findActiveCatalog` + `findActiveVersion`），**不经** `PolicyVersionResolutionCache`。
 
 评估服务内部仍经 `PolicyVersionResolutionCache` 解析版本，该缓存的 TTL 为 `aster.policy.version-cache.ttl-ms`，默认 5000 ms。所以在激活版本切换后至多约 5 秒内，收据记录的版本可能与实际评估的版本不一致。统一两者的版本来源列入 §10。
 

@@ -51,7 +51,7 @@ public class AuditChainAppender {
      */
     private static final Set<String> IDENTITY_METADATA_KEYS = Set.of(
         "decisionId", "correlationId", "approvalId", "idempotencyKey", "decisionReceiptHash", "contextHash", "sourceHash",
-        "policiesHash", "schemaHash");
+        "sourceEnvelopeSha256", "policiesHash", "schemaHash");
     /** 规范 UUID 形态（8-4-4-4-12 十六进制），整串匹配。 */
     private static final Pattern CANONICAL_UUID = Pattern.compile(
         "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
