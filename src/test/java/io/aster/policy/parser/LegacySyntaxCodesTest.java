@@ -57,4 +57,37 @@ class LegacySyntaxCodesTest {
         assertThat(LegacySyntaxCodes.codeForMessage("Expected newline in function body")).isEqualTo("E057");
         assertThat(LegacySyntaxCodes.codeForMessage("Expected '.' after 'string' in rule header")).isEqualTo("E058");
     }
+
+    /**
+     * 反向断言：参数本身就是分隔词（en 的 in / after / before，zh 的 之前 / 之后 / 中，de 的 Vor / Nach / In / wird，
+     * hi 的 से पहले / के बाद / में）时，不被更宽泛的句型抢先分类；含两个占位符都是分隔词的 E058 句型。
+     */
+    @Test
+    void separatorWordsAsParameters_doNotLeakIntoBroaderTemplates() {
+        // en
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected 'in'")).isEqualTo("E055");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected 'after' before 'in'")).isEqualTo("E060");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected 'in' after 'before'")).isEqualTo("E056");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected 'before' in 'after'")).isEqualTo("E057");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected 'before' after 'after' in 'in'")).isEqualTo("E058");
+        assertThat(LegacySyntaxCodes.codeForMessage("Unexpected 'expected'; expected 'in'")).isEqualTo("E062");
+        // zh（模板靠字面锚「之前应为 / 之后应为 / 中应为 / 中，」，分隔字出现在引号里不构成锚）
+        assertThat(LegacySyntaxCodes.codeForMessage("此处应为 '中'")).isEqualTo("E055");
+        assertThat(LegacySyntaxCodes.codeForMessage("'之后' 之前应为 '中'")).isEqualTo("E060");
+        assertThat(LegacySyntaxCodes.codeForMessage("'之前' 之后应为 '中'")).isEqualTo("E056");
+        assertThat(LegacySyntaxCodes.codeForMessage("'之后' 中应为 '之前'")).isEqualTo("E057");
+        assertThat(LegacySyntaxCodes.codeForMessage("'中' 中，'之后' 之后应为 '之前'")).isEqualTo("E058");
+        // de
+        assertThat(LegacySyntaxCodes.codeForMessage("'erwartet' erwartet")).isEqualTo("E055");
+        assertThat(LegacySyntaxCodes.codeForMessage("Vor 'In' wird 'Nach' erwartet")).isEqualTo("E060");
+        assertThat(LegacySyntaxCodes.codeForMessage("Nach 'Vor' wird 'In' erwartet")).isEqualTo("E056");
+        assertThat(LegacySyntaxCodes.codeForMessage("In 'Nach' wird 'wird' erwartet")).isEqualTo("E057");
+        assertThat(LegacySyntaxCodes.codeForMessage("In 'wird' wird nach 'nach' 'In' erwartet")).isEqualTo("E058");
+        // hi
+        assertThat(LegacySyntaxCodes.codeForMessage("'में' अपेक्षित है")).isEqualTo("E055");
+        assertThat(LegacySyntaxCodes.codeForMessage("'के बाद' से पहले 'में' अपेक्षित है")).isEqualTo("E060");
+        assertThat(LegacySyntaxCodes.codeForMessage("'से पहले' के बाद 'में' अपेक्षित है")).isEqualTo("E056");
+        assertThat(LegacySyntaxCodes.codeForMessage("'के बाद' में 'से पहले' अपेक्षित है")).isEqualTo("E057");
+        assertThat(LegacySyntaxCodes.codeForMessage("'में' में 'के बाद' के बाद 'से पहले' अपेक्षित है")).isEqualTo("E058");
+    }
 }
