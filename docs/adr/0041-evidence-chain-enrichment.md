@@ -233,3 +233,99 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 - 内部调用者 HMAC 签名覆盖查询串（§7.1）。
 - `source: "key-bound"` 模型身份；证据包签名或链锚定引用；`agent.session` 的跨请求关联。
 - `/evaluate` 事件异步落链的丢失率监控（missing 计数指标）。
+
+## 11. 2026-11 修订：决策事件与证据包的逐字段来源（R61）
+
+状态：**PROPOSED**（2026-11-07 起草，待用户评审）。本节定稿前不得据此合并实现；定稿后与正文冲突时以本节为准。
+相关：wontlost-ltd/aster-api#461；ADR 0040 §11 R60（请求契约与验签）、ADR 0046 §11 R62（Profile 要求）、ADR 0042 §11 R59（审批快照键，同车次）。
+
+### 11.1 现状
+
+- `ACTION_GUARD_DECISION` metadata（ADR 0040 §5.2 行 335；`GuardReceiptBuilder.java:79-99`）记录 `principalId / principalRoles / contextHash / agent*`，来源只有 `agentSource: "declared"` 一项（本 ADR §3 行 101）。
+- `POLICY_EVALUATION` metadata（§2.2）没有任何输入来源标记。
+- 证据包 entry 的 `agent.source: "declared"`（§5.1 行 125）是唯一来源字段。
+
+### 11.2 决策
+
+**D1 `ACTION_GUARD_DECISION` 新键**（null / 空不写）：
+
+| 键 | 类型 | 内容 |
+|---|---|---|
+| `verifiedFields` | List of Text，≤ 64 项、每项 ≤ 128 字符 | 本请求 verified 的叶子路径（ADR 0040 §11 D1），字典序；缺省即全 declared |
+| `factIssuers` | List of Text，≤ 8 项 | `issuer#kid`，字典序 |
+| `unverifiedFields` | List of Text，≤ 64 项 | 仅 DENY `unverified_input` 时：规则引用却为 declared 的路径 |
+| `inputSourcesTruncated` | Boolean | 仅当上述任一列表因预算被缩短时写 `true` |
+| `principalIdentityMatched` | Boolean | ADR 0040 §11 D2 第 3 条：服务端解析是否证实 `principal.id` 即提交者；仅 `principal.type == "user"` 时写 |
+| `factSources` | List of Text，≤ 64 项 | `<path>=<source id>`，取自**已验签**载荷的 `sources`（ADR 0040 §11 D3；签发端来源函数见 ADR 0046 §11 D5），字典序；缩短顺序排在 `verifiedFields` 之后 |
+| `factExpiresAt` | Text（ISO-8601） | 本次请求全部 facts 中最早的 `expiresAt`；无 facts 不写。幂等重放的 `factsStale` 不上链（重放不写事件），由本键与签发方表推导 |
+
+3800 字符预算（ADR 0040 §5.2）缩短顺序改为：`reason → agentSession → agentVersion → principalRoles → factIssuers → verifiedFields → unverifiedFields → agentModel → agentProvider → principalType → resourceType → resourceId → actionName → principalId`；列表每轮删末项，首次缩短即置 `inputSourcesTruncated`。身份与完整性键集合不变，`inputSourcesTruncated` 本身永不删除。`decision_id` 列投影不变。
+
+审批事件新键 `expiredReason`（`fact_issuer_revoked`，自然过期不写）；新事件类型 `GUARD_FACT_ISSUER_REVOKED`（ADR 0040 §11 D4，metadata `issuer / kid / affectedDecisionIds / affectedCount / affectedTruncated`，`decision_id` 列不投影）。证据包 `guardInputSources` 增 `factSources`。
+
+**D2 `POLICY_EVALUATION` 新键**：`inputSource: "declared"`（常量，与 `agentSource` 同法，凡发事件即写）。`/evaluate*` 的输入全部来自请求体，没有验签通道，这个键的价值是让证据包能诚实标出「评估输入未经验证」；将来 cloud 若对 `/evaluate-source` 附签名事实，键值可扩为 `"mixed"` 并补 `verifiedFields`，形状不变。
+
+**D3 收据查询接口**（§2.4）：`receipts[].metadata` 已原样透传，无需改；`approvals[]` 增 ADR 0042 §11 D3 的四个键（`inputSnapshotHash / inputSnapshotAttested / inputRevealed / inputStatus`）。
+
+**D4 证据包**（与 ADR 0042 §11 同一 `schemaVersion: '6'`，一次升版）：
+
+- entry 增 `inputSource: 'declared' | 'mixed' | 'legacy'`（取评估事件 `inputSource`；旧事件无键 → `legacy`）；对带 `guardDecisionId` 的条目增 `guardInputSources: { verified: string[], factIssuers: string[], unverifiedFields?: string[], truncated?: boolean } | null`（取决策收据 metadata；取不到 → null）。两者进 `bundleHash`。
+- manifest 增 `inputSourceTally: { declared, mixed, legacy }`、`verifiedInputsUsed: number`（`guardInputSources.verified` 非空的条目数）。manifest 不进 `bundleHash`（既有规则）。
+- 报告页在条目旁显示来源徽标；Article 14 对照（ADR 0044 §3.1）**不**因来源改变状态——输入来源对应的是 Art.15（准确性、稳健性与网络安全）而非 Art.14，留待控制注册表增加框架条款时再映射。
+
+**D5 兼容。** 新键全部可选；旧收据不变（链不可改）；旧 cloud 忽略新键；v1–v5 包按原样下载。`AuditChainAppender` 只脱敏顶层 String，新列表键元素原样入链（路径名不是 PII）。
+
+### 11.3 验收
+
+1. 带 facts 的决策收据含 `verifiedFields / factIssuers`，与 `guard_decisions.verified_fields` 一致；超预算构造（64 条 128 字符路径）→ 列表缩短、`inputSourcesTruncated: true`，身份键不动（`GuardReceiptBuilderTest`）。
+2. `/evaluate` 三端点事件含 `inputSource: "declared"`；simulate 不发事件（既有）。
+3. `GET /api/v1/audit/receipts?decisionIds=` 的 `approvals[]` 带审批快照键。
+4. cloud 导出 `schemaVersion '6'`：entry `inputSource`、`guardInputSources`；旧执行 `legacy`；`bundleHash` 重算配方文档化（`notes.verification`）。
+
+### 11.4 落地顺序
+
+与 ADR 0040 §11.4 同：aster-api 先（收据键与查询接口）→ cloud（证据包 v6）。不需要引擎发版。
+
+## 12. 2026-11 修订：执行收据的消耗与结果事件入链（R64）
+
+状态：**PROPOSED**（2026-11-07 起草，待用户评审）。本节定稿前不得据此合并实现；定稿后与正文冲突时以本节为准。
+相关：wontlost-ltd/aster-api#463；ADR 0040 §12 R63（执行收据、consume / result 端点）、ADR 0054（执行点）、#465（对账消费本节事件）。
+
+### 12.1 现状
+
+- guard 相关事件只有两种：`ACTION_GUARD_DECISION`、`ACTION_GUARD_APPROVAL`（`src/main/java/io/aster/policy/event/EventType.java:23-24`）。链上记录止于「决定了什么」与「谁批了」，没有任何执行侧事件；证据包 `reviewers[]`（§5.2）也只到审批人。
+- `GET /api/v1/audit/receipts?decisionIds=`（§2.4）返回 `receipts[] / approvals[] / missing[]`；审批事件靠 `decision_id` 冗余列（V6.28.0）按决策聚合。
+- `AuditChainAppender.IDENTITY_METADATA_KEYS`（`AuditChainAppender.java:52-54`）决定哪些键免 PII 脱敏；执行方标识与哈希类值若不入白名单，会被 `CREDIT_CARD_PATTERN` 改写（ADR 0040 §9 终审条目）。
+
+### 12.2 决策
+
+**D1 三种新事件**（`EventType` 增 `ACTION_GUARD_CONSUME_ATTEMPT`、`ACTION_GUARD_CONSUME_OUTCOME`、`ACTION_GUARD_RESULT`；列 VARCHAR(50)，无需迁移）。`decision_id` 列照常投影，`correlation_id` 不写。
+
+| 事件 | 触发 | `success` | `performed_by` | metadata（null 不写） |
+|---|---|---|---|---|
+| `ACTION_GUARD_CONSUME_ATTEMPT` | consume 请求通过入参校验后、加锁判定前（ADR 0040 §12 D5「先入链」） | 恒 `true`——与链上 `success` 的既有语义一致：「这条事件所记的事（一次消耗尝试）已记录」，**不**表示已消耗；metadata 带 `kind: "attempt"`；是否生效只看 `guard_receipts.consume_audit_id` | 请求身份 `performedBy()`（Bearer 用户或 HMAC 签入的用户；`executorId` 只是关联字段，不是身份） | `decisionId, actionHash, attemptId, executorId, kid, receiptIssuedAt, receiptExpiresAt, decisionReceiptHash`（指回决策链收据哈希，与审批事件同法） |
+| `ACTION_GUARD_CONSUME_OUTCOME` | 加锁判定提交之后（成功或 409 都写；进程在此前崩溃则缺失，属预期） | `outcome == "consumed"` | 同上 | `kind: "outcome", decisionId, attemptId, executorId, outcome: consumed \| rejected:<409 code>, attemptReceiptHash`（指回尝试事件 `currentHash`） |
+| `ACTION_GUARD_RESULT` | result 请求通过「已被该 attempt 消耗」判定后、写行前 | `status == "executed"` | 同上 | `decisionId, attemptId, executorId, status, resultHash, errorCode, finishedAt, consumeReceiptHash`（指回**权威**尝试事件的 `currentHash`） |
+
+- 三者都走 `GuardReceiptBuilder` 新方法 `consumeAttemptEvent / consumeOutcomeEvent / resultEvent`，沿用 3800 字符预算；可缩短键只有 `errorCode`（结果事件），其余全部是身份与哈希键，永不缩短。
+- 新增身份键 `actionHash / attemptId / executorId / resultHash / consumeReceiptHash / attemptReceiptHash` 加入 `AuditChainAppender.IDENTITY_METADATA_KEYS`（`executorId` 是执行方自报的标识如 `aster-guard-mcp@host:inst`，不是人；进白名单的代价与 ADR 0040 §9 终审条目相同：调用方若把 PII 塞进 `executorId` 会原样入链）。`AuditIdentifierRedactionTest` 同步断言。
+- 顺序不变量：对同一 `decisionId`，权威尝试事件的 `auditId` 恒小于 RESULT 事件（结果端点在加锁判定里要求行已消耗，ADR 0040 §12 D7）。
+- `kind` 是普通文本键（不脱敏、永不缩短），让只看 `event_type + success` 的通用查询也能区分「尝试」与「结果」；但判定消耗与否**不能**用 `success`——
+- **读法（对账与查询方的唯一规则）**：有效消耗 = `guard_receipts.consume_audit_id` 指向的那条尝试事件；其余尝试事件无论有没有结果事件都不算消耗。权威尝试事件没有结果事件 → `crashed-unknown`（行已消耗，结果事件未写成）。不允许「数 CONSUME 事件」或「看 success 列」来判定消耗。
+
+**D2 收据查询接口**（§2.4）：`decisionIds` 路径增 `consumes[]`（每个尝试事件一项，`{ auditId, currentHash, decisionId, authoritative: boolean, outcome: consumed | rejected:<code> | crashed-unknown, ... }`，`outcome` 由对应 OUTCOME 事件合入、缺失且 `authoritative` 为 `crashed-unknown`、缺失且非权威为 `unknown`）、`results[]`，每项加该事件 metadata 的同名键（形状与 `approvals[]` 同法：时间取行时间戳）。`correlationIds` 路径不变。空集合不输出。`authoritativeConsumeAuditId`（来自 `guard_receipts.consume_audit_id`）随 `receipts[]` 中对应的决策收据一并返回。
+
+**D3 证据包**：对带 `guardDecisionId` 的条目增 `execution: { consumed: boolean, executorId?: string, attemptId?: string, resultStatus?: 'executed' | 'failed' | 'aborted' | null, consumeAuditId?: number } | null`（取不到收据 → null；决策为 ALLOW 且 `consumed=false` 就是「未消耗的 ALLOW」）。进 `bundleHash`。manifest 增 `executionTally: { consumed, unconsumedAllow, executed, failed, aborted }`，不进 `bundleHash`。`schemaVersion`：与 ADR 0042 §11 / 本 ADR §11 的 `'6'` 同车次则并入 `'6'`，否则 `'7'`，一次升版。
+
+**D4 兼容**：新键全部可选；旧收据不变；旧 cloud 忽略新数组与新字段；v1–v5 包按原样下载。
+
+### 12.3 验收
+
+1. consume 200 后链上有尝试 + `outcome: consumed` 两条事件且 `guard_receipts.consume_audit_id` 指向尝试事件；并发两次 consume 产生两条尝试事件、只有一条被行引用，落败者的 OUTCOME 为 `rejected:receipt_consumed`；`verify-chain` 对含新事件区间返回 valid。
+2. `result` 事件 `consumeReceiptHash` 等于权威尝试事件 `currentHash`，`auditId` 更大。
+3. `GET /api/v1/audit/receipts?decisionIds=` 返回 `consumes[] / results[]` 与 `authoritativeConsumeAuditId`。
+4. cloud 导出：`execution.consumed=false` 的 ALLOW 条目计入 `unconsumedAllow`。
+
+### 12.4 落地顺序
+
+与 ADR 0040 §12.4 同：aster-api（事件类型、构造器、白名单、查询接口）→ cloud（证据包）。不需要引擎发版。

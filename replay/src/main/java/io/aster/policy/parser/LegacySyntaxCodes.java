@@ -20,7 +20,7 @@ public final class LegacySyntaxCodes {
     /** 改码前语法目录覆盖的语言。 */
     private static final List<String> LANGUAGES = List.of("en", "zh", "de", "hi");
 
-    /** 空白：zh 旧排版在汉字与引号之间补过空格，比较时整体忽略。 */
+    /** 空白段：模板字面里的空白是词边界，原句对应位置也必须有空白（zh 旧排版在引号两侧补的空格落在占位符片段里）。 */
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     /**
@@ -80,19 +80,38 @@ public final class LegacySyntaxCodes {
             "after", "{token}", "context", "{token}"};
     }
 
-    /** 骨架 → 正则：字面部分逐字匹配，{@code {name}} 匹配任意非空片段。 */
+    /**
+     * 骨架 → 正则：{@code {name}} 匹配任意非空片段；字面部分逐字匹配，其中的空白按词边界处理——
+     * 要求原句对应位置也有空白（{@code Expected {token} in {context}} 里的 {@code in} 必须是独立的词，
+     * 不能是 {@code newline} 的一截，aster-api#467）。zh 模板的占位符两侧没有空白，旧排版补的空格由
+     * 占位符自身吸收。
+     */
     private static Pattern toPattern(String skeleton) {
         StringBuilder regex = new StringBuilder("^");
-        String[] parts = WHITESPACE.matcher(skeleton).replaceAll("").split("\\{token\\}", -1);
+        String[] parts = skeleton.split("\\{token\\}", -1);
         for (int i = 0; i < parts.length; i++) {
             if (i > 0) {
                 regex.append(".+");
             }
-            if (!parts[i].isEmpty()) {
-                regex.append(Pattern.quote(parts[i]));
-            }
+            appendLiteral(regex, parts[i]);
         }
         return Pattern.compile(regex.append('$').toString(), Pattern.DOTALL);
+    }
+
+    /** 字面片段：非空白段逐字匹配，空白段转成 {@code \\s+}。 */
+    private static void appendLiteral(StringBuilder regex, String literal) {
+        java.util.regex.Matcher m = WHITESPACE.matcher(literal);
+        int last = 0;
+        while (m.find()) {
+            if (m.start() > last) {
+                regex.append(Pattern.quote(literal.substring(last, m.start())));
+            }
+            regex.append("\\s+");
+            last = m.end();
+        }
+        if (last < literal.length()) {
+            regex.append(Pattern.quote(literal.substring(last)));
+        }
     }
 
     /** 旧句型 key 对应的码；外框或未知 key 返回 null。 */
@@ -105,9 +124,9 @@ public final class LegacySyntaxCodes {
         if (message == null || message.isBlank()) {
             return null;
         }
-        String compact = WHITESPACE.matcher(message).replaceAll("");
+        String trimmed = message.strip();
         for (Map.Entry<Pattern, String> e : SENTENCE_TO_CODE) {
-            if (e.getKey().matcher(compact).matches()) {
+            if (e.getKey().matcher(trimmed).matches()) {
                 return e.getValue();
             }
         }

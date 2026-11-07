@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -65,6 +67,21 @@ class InProcessCnlParserStackOverflowTest {
         // 1.0.43 起 api 直接引用 core 的 public 常量；这里锁住它确实是 core 的值（而不是又被改回硬编码）
         assertEquals(aster.core.parser.AsterCustomLexer.MAX_NESTING_DEPTH, InProcessCnlParser.NESTING_DEPTH_LIMIT,
             "api 侧的上限提示必须与 core 守卫阈值一致");
+    }
+
+    @Test
+    void stackOverflowOutsideParseStagesIsInternalFailureNotE054() {
+        // 必修项（Codex 审查 #474）：只有词法 / 语法分析 / 构建 AST 三个按输入嵌套递归的阶段的溢出才是 E054；
+        // 名称解析 / 降级等阶段溢出是实现缺陷，不得伪装成用户源码错误。在名称解析接缝注入 StackOverflowError。
+        String source = "Module M.\n\nRule p given x as Int, produce Int:\n  Return x.";
+        InProcessCnlParser.CnlParseException e = assertThrows(InProcessCnlParser.CnlParseException.class,
+            () -> InProcessCnlParser.parseUnsafeWithAliases(source, "en-US", null, null,
+                (ast, scopes) -> { throw new StackOverflowError("lowering 深递归"); }));
+
+        assertInstanceOf(StackOverflowError.class, e.getCause(), "内部故障必须保留原始 Error 作为 cause");
+        assertTrue(e.getDiagnostics().isEmpty(), "不得产出带码诊断，实际: " + e.getDiagnostics());
+        assertFalse(e.getMessage().contains("E054") || e.getMessage().contains("嵌套"),
+            "不得标为嵌套过深，实际: " + e.getMessage());
     }
 
     @Test
