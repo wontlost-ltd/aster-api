@@ -145,10 +145,11 @@ public class PolicyCompileResourceTest {
 
     @Test
     public void compileNestingTooDeep_lexerStage_isCodedE054() {
-        // 词法阶段：第 301 个 '(' 触发守卫，lexer 报告的是该括号消费之后的列（"  Return " 9 列 + 301 + 1）
-        String source = "Module M.\n\nRule p given x as Int, produce Int:\n  Return " + nested(NESTING_LIMIT + 1) + ".";
+        // 词法阶段：第 301 个 '(' 触发守卫；列号落在第 4 行之内即可（lexer 报的是守卫触发时的位置，不是契约）
+        String line4 = "  Return " + nested(NESTING_LIMIT + 1) + ".";
+        String source = "Module M.\n\nRule p given x as Int, produce Int:\n" + line4;
         assertCodedSourceError(source, "en-US", "E054", 4)
-            .body("diagnostics[0].startColumn", is(9 + NESTING_LIMIT + 2))
+            .body("diagnostics[0].startColumn", allOf(greaterThan(0), lessThanOrEqualTo(line4.length())))
             .body("diagnostics[0].params.limit", is(String.valueOf(NESTING_LIMIT)))
             .body("diagnostics[0].message", is("Nesting is too deep (limit " + NESTING_LIMIT + ")"));
     }

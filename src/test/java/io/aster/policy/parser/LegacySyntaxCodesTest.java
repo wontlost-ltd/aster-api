@@ -180,6 +180,30 @@ class LegacySyntaxCodesTest {
         assertThat(LegacySyntaxCodes.codeForMessage("Expected '.' after 'string'")).isEqualTo("E056");
     }
 
+    /**
+     * 历史原句锚点：从 aster-lang-locales v1.0.41 的 {@code syntax-diagnostics/<locale>.json} 模板逐字填出的句子
+     * 写死在这里，不经目录渲染——目录日后被改写时，上面按目录生成的用例会跟着漂移，这里不会。
+     */
+    @Test
+    void historicalSentences_fromLocales_1_0_41_mapToCode() {
+        // en-US 1.0.41
+        assertThat(LegacySyntaxCodes.codeForMessage("Unexpected 'Return'; expected newline")).isEqualTo("E062");
+        assertThat(LegacySyntaxCodes.codeForMessage("Expected '.' before 'Rule'")).isEqualTo("E060");
+        assertThat(LegacySyntaxCodes.codeForMessage("Unknown statement")).isEqualTo("E064");
+        // zh-CN 1.0.41
+        assertThat(LegacySyntaxCodes.codeForMessage("'规则' 之前应为 '。'")).isEqualTo("E060");
+        assertThat(LegacySyntaxCodes.codeForMessage("无法解析 '返回 n' 附近的语法")).isEqualTo("E063");
+        assertThat(LegacySyntaxCodes.codeForMessage("缩进层级不正确（多了一级缩进或缩进不一致，请用 2 空格对齐）")).isEqualTo("E052");
+        // de-DE 1.0.41
+        assertThat(LegacySyntaxCodes.codeForMessage("Unerwartet: 'Return'; erwartet wird Zeilenumbruch")).isEqualTo("E062");
+        assertThat(LegacySyntaxCodes.codeForMessage("Vor 'Rule' wird '.' erwartet")).isEqualTo("E060");
+        assertThat(LegacySyntaxCodes.codeForMessage("Unbekannte Anweisung")).isEqualTo("E064");
+        // hi-IN 1.0.41
+        assertThat(LegacySyntaxCodes.codeForMessage("अप्रत्याशित 'Return'; यहाँ नई पंक्ति अपेक्षित है")).isEqualTo("E062");
+        assertThat(LegacySyntaxCodes.codeForMessage("'Rule' से पहले '.' अपेक्षित है")).isEqualTo("E060");
+        assertThat(LegacySyntaxCodes.codeForMessage("अतिरिक्त 'of'")).isEqualTo("E061");
+    }
+
     /** 外框句型渲染出的整句不是诊断原句，不得补码（summary / located 带前缀，改码前只有裸句落库）。 */
     @Test
     void frameSentences_areNotDiagnostics() {
