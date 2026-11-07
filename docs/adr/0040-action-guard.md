@@ -569,3 +569,131 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
 ### 11.4 分阶段落地顺序
 
 ① 本节与 ADR 0041 §11、ADR 0046 §11 同车次定稿 → ② **aster-api**（`V6.36.0`、来源判定 (a)、facts 验签 (b)、签发方表与端点、响应与收据键；D5 的执行点先实现但只在 IR 带 `inputRefs` 且档案要求时生效，故可先于引擎发版部署，不需要发版列车）→ ③ aster-guard SDK → ④ aster-cloud（签发方设置页、收件箱来源徽标、证据包字段）→ ⑤ 引擎发版列车（ADR 0046 §11：registry 1.2.0 + core/ts `inputRefs` + E708）→ ⑥ aster-api / cloud 升级 pin（发版列车会自动部署 aster-api）。⑤ 之前任何模块都不会被 `unverified_input` 拒绝。
+
+## 12. 2026-11 修订：可验真执行收据与一次性消耗（R63）
+
+状态：**PROPOSED**（2026-11-07 起草，待用户评审）。本节定稿前不得据此合并实现；定稿后与正文冲突时以本节为准。
+相关：wontlost-ltd/aster-api#463（本节）、#464 / ADR 0054（执行点契约，消费本节接口）、#465（对账，消费本节的 consume / result 事件）、#466（绕过套件）；ADR 0041 §12 R64（事件 schema）；§11 R60（签名事实片段，本节复用其 Ed25519 与序列化配方）。
+
+### 12.1 现状（已核对分支 docs/adr-0040-0042-rev 16138dc）
+
+- 今天的「收据」是**链收据**：`GuardDecisionResponse.ReceiptView(auditId, hash, prevHash)`（`src/main/java/io/aster/guard/api/GuardDecisionResponse.java:61`），由 `GuardDecisionAssembler.buildResponse` 从 `AuditChainAppender.AppendedRecord` 组出（`GuardDecisionAssembler.java:46-47`）。它证明「决策已入链」，但执行方拿到它之后：
+  - **无法离线验真**：`hash` 是链上行哈希（`AuditHashPayload.digest`，`AuditChainAppender.java:279`），只有持库者能重算；执行方要验真只能再调 `GET /api/v1/audit/receipts?decisionIds=`（ADR 0041 §2.4），而那是只读查询，不是对「这次执行」的授权。
+  - **不绑定将要执行的对象**：收据 metadata 只有 `contextHash`（`GuardReceiptBuilder.java:93`；配方 `sha256-sorted-json/v1`，§5.2 行 337），不含 `action.name / resource` 的摘要；决策行分列存 `principal_id / action_name / resource_type / resource_id / context_hash`（`GuardDecisionEntity.java:31-35`），没有一个覆盖整个 action 的单一哈希。
+  - **没有「已使用」状态**：`guard_decisions` 无任何消耗列（`V6.27.0__create_guard_tables.sql`）；`GuardDecisionStore` 只有 `saveDecision / completeApproval` 两个写入口（`GuardDecisionStore.java:35,54`）。同一 ALLOW 可被执行任意次。
+  - **幂等重放返回同一决策**（§3.1；`GuardDecisionService.findByIdempotencyKey`，`GuardDecisionService.java:195-205`）：重放是「同一 decisionId、同一链收据」，这与「一个动作只执行一次」并不矛盾，但现在没有任何机制把「同一决策」与「只执行一次」连起来。
+- 执行点侧（aster-guard 0.1.0，本地仓 `src/mcp/proxy.ts:127-141`）：`decide → isConfirmedAllow → upstream.callTool`，`isConfirmedAllow` 只看 `effectiveOutcome === 'ALLOW' && decisionId !== ''`（`proxy.ts:272-274`）。转发给上游的 `args` 与送去 guard 的 `context` 是同一个对象的两次使用，中间没有任何哈希比对。
+- 已有可复用件：§11 D3 已定下 Ed25519（JDK 内建 `EdDSA`，不引新依赖）与「签名作用于 `sha256-sorted-json/v1` 序列化字节串」的配方；审批迁移的「先入链 → 再加锁迁移，以行上的 `receipt_audit_id` 为权威事件」模式（§4.2；`GuardApprovalService.complete`，`GuardApprovalService.java:208-215`；`GuardDecisionJpaStore.transition`，`GuardDecisionJpaStore.java:91-108`）。
+
+### 12.2 决策
+
+**D1 两种收据，名字分开。** 现有 `receipt`（链收据）不动。ALLOW 决策（含审批后转 ALLOW）另签发**执行收据** `executionReceipt`：
+
+```json
+"executionReceipt": {
+  "kid": "2026-11a",
+  "payload": {
+    "actionHash": "…64hex…", "decisionId": "d-7c1e…", "expiresAt": "2026-11-07T01:05:00Z",
+    "issuedAt": "2026-11-07T01:00:00Z", "kid": "2026-11a", "outcome": "ALLOW",
+    "policyVersionId": 1730890123456, "tenantId": "t-…", "v": 1
+  },
+  "signature": "<base64url, 64 字节>"
+}
+```
+
+- `payload` 字段即 #463 所列 `{ v, decisionId, tenantId, actionHash, policyVersionId, outcome, issuedAt, expiresAt, kid }`，字母序输出；`kid` 在 `payload` 内（受签名覆盖）与外层各写一次，外层只是方便取键。
+- **签名**：Ed25519，作用于 `payload` 经 `sha256-sorted-json/v1` 同一序列化配方（Jackson `ORDER_MAP_ENTRIES_BY_KEYS`，无空白；§5.2 / §11 D3）得到的 UTF-8 字节串，不二次哈希。只此一个算法、一个载荷配方，不用 JWT/JWS（与 §11 D3 同一理由）。
+- 载荷**不含** `sourceHash`：版本由 `policyVersionId` 唯一确定；`sourceHash`（内容哈希，与 `sourceEnvelopeSha256` 分键，§5.3 / aster-api#468）照旧只在链收据与决策行里。执行方核对的是 `actionHash`（自己将执行什么），不是策略内容（那是 Guard 的事）。
+- `outcome` 恒为 `ALLOW`：只有 ALLOW 才签发。DENY / PENDING 响应没有 `executionReceipt`（§3.1「null / 空不写」）。
+- **何时签发**：(1) 决策即 ALLOW 时，与决策行同一 `requiringNew` 事务写入（D4）；(2) 审批 APPROVED 时，在 tx2（`completeApproval`）内与 `response_json` 改写同一事务签发，`issuedAt` 取加锁后的 `now`；(3) 幂等重放与 `GET /decisions/{id}` 返回**已存储**的同一份收据，不重签。REJECTED / EXPIRED 不签发。
+
+**D2 `actionHash`：整个 `action` 一个哈希，不做字段挑选。**
+
+- 定义：请求体 `action` 对象（`principal / action / resource / context / agent`，以及 §11 的 `facts` 若有）**按服务端收到的 JSON** 经 `sha256-sorted-json/v1` 得到的 SHA-256 hex。在 `GuardActionMapper.flatten` 之前对解析后的 JSON 树计算（与 `contextHash` 同一实现 `mapper.contextHash`，`GuardDecisionService.java:122`，只是输入从 `context` 换成 `action` 整体），存入决策行新列 `action_hash`（D4）。
+- 为什么是整体而不是「name、resource、参数」三样：挑字段就要有一份「哪些字段进哈希」的配置，配置本身就是绕过面（把要改的参数放到不进哈希的字段里）。整体哈希没有这份配置，`actionHash` 与 `contextHash` 的关系是超集，执行点只需保证**一条不变式**：送去 guard 的 `action` 对象与算哈希的对象是同一个，且转发给工具的参数正是该对象 `context` 中的参数（执行点契约见 ADR 0054 §3；参数不想入 `context` 的以摘要代入，而不是省略）。
+- **跨语言一致性**：执行方须独立算出同一哈希才能把收据绑到「它将要执行的对象」上，所以 `sha256-sorted-json/v1` 的字节级定义写入本节并以 golden 向量在两仓锁定：对象键按 UTF-16 码元序排序（Jackson `ORDER_MAP_ENTRIES_BY_KEYS` 对 `String` 键的自然序）、无空白、字符串按 JSON 标准转义（非 ASCII 原样 UTF-8，不 `\u` 转义）、整数按十进制无指数、非整数按 Java `Double.toString` 形态、`true/false/null` 字面量；超出 2^53 的整数与非整数在 JS 侧**不保证**与 Java 一致——这类值算出的哈希若不一致，consume 得到 409 `action_mismatch`，方向是 fail-closed，可接受；执行点文档建议金额等用整数最小单位或字符串。aster-api 新增 `GuardActionHashVectorsTest`，向量文件 `src/test/resources/guard/action-hash-vectors.json` 与 aster-guard 仓 `test/fixtures/action-hash-vectors.json` 逐字节相同（两仓各自的测试读本仓副本，PR 评审时人工比对；CI 跨仓校验留 ADR 0054 §7）。
+- 执行方自算的哈希与服务端不一致（实现漂移）在 consume 时就暴露，不会放行；不一致的方向永远是「不执行」。
+- **`context` 允许 null 叶子**（§2.2 已同步改写；原「值不得为 null」是本节之前的口径）：执行点必须把送 Guard 与转发给工具的对象保持逐字节同一（ADR 0054 §3.2），而工具参数里的显式 null 是合法值，剔除它会让「缺省」与「null」共用一份收据。`GuardActionMapper` 放开 null 值校验，深度 / 大小上限不变；传给规则的 Map 中 null 原样出现，规则作者按需处理。
+
+**D3 TTL。** `aster.guard.receipt.ttl=${ASTER_GUARD_RECEIPT_TTL:PT5M}`；`expiresAt = issuedAt + ttl`。审批转 ALLOW 时从审批时刻重新起算（D1 (2)）。Agent 轮询慢于 5 分钟才看到 ALLOW 的，收据已过期，只能换新 `Idempotency-Key` 重新申请决策（若规则仍 REQUIRE_APPROVAL，就要重新审批——这是有意的：审批人批准的是「现在做」，不是「随时做」）。`GET /decisions/{id}` 不写库，**不**为过期收据续签。
+
+**D4 存储（Flyway `V6.37.0`；§11 R59/R60 的 `V6.35.0` / `V6.36.0` 尚未合并，编号按合并顺序最终定）。**
+
+- `guard_decisions` 新列 `action_hash VARCHAR(64)`（旧行 NULL = 无执行收据）。
+- 新表 `guard_receipts`：`decision_id UUID PK → guard_decisions.id`、`tenant_id`、`action_hash VARCHAR(64) NOT NULL`、`kid VARCHAR(64) NOT NULL`、`issued_at`、`expires_at`、`signature VARCHAR(128)`、`consumed_at TIMESTAMPTZ`、`executor_id VARCHAR(255)`、`attempt_id VARCHAR(64)`、`consume_audit_id BIGINT`、`result_status VARCHAR(16)`（`executed / failed / aborted`）、`result_at`、`result_audit_id BIGINT`、`created_at`。索引 `guard_receipts_tenant_consumed_ix (tenant_id, consumed_at)`（对账扫描，#465）。
+- **一决策一行**：行在签发时插入（直接 ALLOW）或在审批 tx2 插入（APPROVED）；审批前不存在。`executionReceipt` 同时写进 `response_json`（它本就在审批时改写，§3.3），`guard_receipts` 行是 consume 判定的**唯一权威**，`response_json` 只是视图。
+- 签名私钥（D6）不落库。
+
+**D5 `POST /api/v1/guard/receipts/{decisionId}/consume`。**
+
+- 鉴权：Bearer API key（`/api/v1/guard/*` 前缀已覆盖，`ApiKeyAuthFilter.java:249`）与 HMAC 内部调用者（cloud 执行路径，与 `from-evidence` 同法，`InternalCallerFilter.java:218`）；`@RequireRole(MEMBER)`；租户取自 `RequestIdentityResolver`，跨租户与非法 UUID 一律 404（空体，与 §3.4 同口径）。配额：与 `/decisions` 同一口径计量一次（§3.1 第 3 条），不限速（它不含评估，每决策至多一次成功）。
+- 请求：`{ actionHash, attemptId, executorId }`。`executorId` ≤ 255 字符、`attemptId` 为 UUID 形态、`actionHash` 为 64 hex；任一不合法 → 400 `invalid_consume`。
+- **原子语义**：追加 `ACTION_GUARD_CONSUME_ATTEMPT` 事件（ADR 0041 §12；自身事务，失败 → 503 `receipt_unavailable`，状态不变；事件名就叫「尝试」，它不表示已消耗）→ tx2 `requiringNew` 以 `PESSIMISTIC_WRITE` 锁 `guard_receipts` 行，先校验 `kid` 未被紧急撤销（D6；撤销 → 409 `kid_revoked`，排在下表第 1 条之后、第 2 条之前），再按固定顺序判定，任一不满足即回滚不写：
+
+| 顺序 | 条件 | HTTP / `error` | 响应体附加 |
+|---|---|---|---|
+| 1 | 行不存在（决策为 DENY / PENDING / REJECTED / EXPIRED，或 `V6.37.0` 之前的旧 ALLOW 决策） | 409 `not_allowed` | `effectiveOutcome`（当前值；旧决策为 `ALLOW` 但附 `legacy: true`） |
+| 2 | `consumed_at IS NOT NULL` | 409 `receipt_consumed` | `consumedAt / executorId / attemptId`（原消耗者，便于执行方判断是否是自己上一次丢了响应） |
+| 3 | 加锁后的 `now > expires_at` | 409 `receipt_expired` | `expiresAt` |
+| 4 | `actionHash ≠ 行 action_hash` | 409 `action_mismatch` | 不回显任何哈希 |
+| 5 | 通过 | 200 | `{ consumedAt, decisionId, executionReceipt }` |
+
+  通过时写 `consumed_at / executor_id / attempt_id / consume_audit_id`。判定结果写回**第二条**事件 `ACTION_GUARD_CONSUME_OUTCOME`（metadata `outcome: consumed | rejected:<409 code>`，`attemptReceiptHash` 指回尝试事件；追加失败只记日志，行已提交不回滚）——所以链上对一次 consume 调用是「尝试 → 结果」两条事件，而**进程在行提交后、结果事件追加前崩溃**时只有尝试事件，这是预期状态，不是异常：对账与查询方（#465、ADR 0041 §12 D2）**只以 `guard_receipts.consume_audit_id` 指向的尝试事件判定有效消耗**，没有被行引用的尝试事件一律按「未生效」读，其结果事件若缺失视为 `crashed-unknown`。顺序的理由：1、2 是状态性问题，先答；3 在 4 前是因为过期收据不该再让人关心参数对不对；4 最后但**必判**。全部 409 对执行方的意义相同——不执行。
+- **同 decisionId 第二次 consume 必 409**（含同一 `executorId / attemptId` 重发）。consume 响应在网络上丢失的执行方不知道自己是否已消耗，按 fail-closed 不执行；它可以用同一 `attemptId` 调 D7 的结果回写报 `aborted`（回写只要求「行由该 attempt 消耗」），让对账把它归为「已消耗、未执行」而不是「执行侧丢失」。要重试动作，换新 `Idempotency-Key` 申请新决策。不做「同 attempt 幂等重放 200」：它让 consume 的语义从「原子标记」变成「至多一次 + 身份比对」，多一个分支换来的只是省一次决策请求。列入 §12.5 可改项。
+- 先入链再加锁与审批一致（§4.2）：并发两次 consume 各留一条尝试事件，只有 `guard_receipts.consume_audit_id` 指向的那条是权威；落败者的事件是「一次未生效的消耗尝试」，其结果事件 `outcome: rejected:receipt_consumed`。对账（#465）只认权威指针，不数事件。
+- `executorId / attemptId` 是**关联与审计字段**，由执行方自报，不承担身份认证；身份始终是鉴权层解析出的 API key / HMAC 调用者（`RequestIdentityResolver`），并作为 `performed_by` 入链。`executorId` 的值不参与任何放行判定。
+
+**D6 密钥、`kid` 轮换与 `GET /api/v1/guard/keys`。**
+
+- 签发方是 aster-api 自己，密钥按**部署**配置、不按租户（`tenantId` 在载荷内）。配置 `aster.guard.receipt.signing-keys`（环境变量 `ASTER_GUARD_RECEIPT_SIGNING_KEYS`，JSON 数组 `[{ "kid", "privateKey": "<base64url 32 字节种子>", "notAfter"?: "<ISO-8601>" }]`）与 `aster.guard.receipt.active-kid`。公钥从种子推导，不单独配置。
+- 来源：本仓今天没有任何 Vault 客户端（`grep -ri vault src/main` 只命中无关的 BYOK / HMAC 注释），HMAC 密钥同样走环境变量（`HmacSignatureService.java:131-137`）。本节沿用：私钥由部署侧秘密管理注入环境变量（k3s Secret；上游可以是 Vault / External Secrets，由 aster-deploy 决定），aster-api 进程不直连 Vault。直连 Vault Transit 做远程签名列入可改项——它让每次 ALLOW 多一次网络调用并引入新依赖，现阶段代价大于收益。
+- **启动即校验**：`active-kid` 不在列表、种子长度不对、或列表为空 → 启动失败（fail-fast）。没有密钥就没有执行收据，没有执行收据执行点就什么都不执行；与其让生产静默地全量「不可消耗」，不如部署时就失败。测试 profile 带固定测试密钥。
+- **计划轮换**：列表里保留旧 `kid`（验签用）与新 `kid`，`active-kid` 指向新的；旧 `kid` 到 `notAfter`（≥ 最长 TTL，建议 24 h）后从列表移除。签发只用 `active-kid`；`/keys` 列出全部未过 `notAfter` 的公钥。
+- **紧急撤销**：列表项加 `"revoked": true`（或直接从列表删除并把 `kid` 写进 `aster.guard.receipt.revoked-kids`）后滚动重启；服务端 consume 对 `kid` 已撤销的行返回 409 `kid_revoked`（D5）——**服务端是唯一权威**。生效口径：**撤销在所有副本完成重启后生效，上界 = 滚动重启时长；期间尚未重启的旧副本可能接受该 `kid` 的 consume**（它们还不知道撤销）。这是预期状态（§12.3 第 6 条），runbook 要求紧急撤销时先把副本数缩到 1 或用 `kubectl rollout restart` 并等待 `rollout status` 完成后才算撤销完成。离线验签的生效上界是 JWKS 缓存 `max-age`（300 s）：一个已撤销 `kid` 签出的收据最多还能在执行方本地通过验签 300 s，但 consume 必被拒，所以**不会被执行**；本节不承诺「即时撤销离线验签」，只承诺「服务端 consume 立即生效，离线验签最多滞后 300 s」。
+- `/keys` 响应带 `revision`：密钥配置自带的**显式单调版本号**（`ASTER_GUARD_RECEIPT_SIGNING_KEYS` JSON 顶层 `{ "revision": <整数>, "keys": [...] }`；任何改动——加 key、改 `active-kid`、`notAfter`、撤销——都必须递增，运维规约 + 启动校验：aster-api 启动时把 `revision` 与持久化的最新值（新表 `guard_signing_key_revisions(revision PK, applied_at, kids JSONB)`，同 `V6.37.0`）比较，**小于**已持久化值 → 启动失败，等于 → 不写，大于 → 插入一行；多副本因此只会看到单调序列，而不是由配置哈希派生（哈希无法单调，审查指出）。consume 的 409 `kid_revoked` 与 `executionReceipt` 都带当前 `revision`。SDK 规则：验签失败、收到 `kid_revoked`、或响应里的 `revision` 大于本地缓存的 → 立即强制刷新 `/keys`（无视 `max-age`），每 60 s 至多一次强制刷新，刷新失败则本次按验签失败处理。
+- `GET /api/v1/guard/keys`：JWKS（RFC 7517 + RFC 8037）`{ "keys": [{ "alg": "EdDSA", "crv": "Ed25519", "kid", "kty": "OKP", "use": "sig", "x": "<base64url>", "exp"?: <epoch 秒> }] }`，`Cache-Control: max-age=300`。要求 Bearer（不在 `shouldProtect` 开豁免：少一个特例；执行方本来就持有 key）。写入 `public-api-contract.golden`。
+- 执行方验签顺序（写进 ADR 0054 与 SDK 文档）：`kid` 在缓存的 JWKS 中（未命中则刷新一次，仍未命中 → 不执行）→ 签名对 `payload` 的规范化字节串有效 → `payload.tenantId` 等于自己的租户、`payload.decisionId` 等于决策 id、`payload.outcome == "ALLOW"` → `now ∈ [issuedAt − 60 s, expiresAt]` → `payload.actionHash` 等于本地自算的哈希。任一失败 → 不 consume、不执行，按 DENY `receipt_invalid` 记录。验签是**快速失败**，不替代 consume：伪造签名的收据在执行方就止步（#463 验收「伪造 / 篡改签名 401」指的是执行方的本地拒绝，服务端没有「提交收据」的入口，consume 只收 `actionHash`，无签名可验；记为 ADR 0054 的 e2e 断言）。
+
+**D7 结果回写 `POST /api/v1/guard/receipts/{decisionId}/result`。**
+
+- 请求：`{ attemptId, executorId, status: "executed" | "failed" | "aborted", finishedAt?, resultHash?, errorCode? }`；`resultHash` 为执行方对工具返回值自算的 `sha256-sorted-json/v1`（可选；不传结果明文），`errorCode` ≤ 64 字符。
+- 判定（tx 加锁行）：行不存在或未消耗 → 409 `not_consumed`；`executorId / attemptId` 与消耗者不符 → 409 `attempt_mismatch`；已有结果 → 409 `result_recorded`；通过 → 追加 `ACTION_GUARD_RESULT`（ADR 0041 §12）→ 写 `result_status / result_at / result_audit_id` → 200。事件在前、行在后，与 D5 同法。
+- 对账语义（#465）：`consumed_at` 非空且 `result_status` 为空、超过 `aster.guard.result-grace=${ASTER_GUARD_RESULT_GRACE:PT15M}` → 「执行侧丢失」；`aborted` → 「已消耗未执行」（不是孤儿）。执行结果**必须在 consume 之后**才能写（判定第 1 条），所以链上 `ACTION_GUARD_CONSUME` 恒在 `ACTION_GUARD_RESULT` 之前（#463 验收第 5 条）。
+
+**D8 执行点语义（修订 §3.1 `effectiveOutcome` 的含义）。** `effectiveOutcome = ALLOW` 的含义从「执行」改为「**可消耗**」：执行方必须 验签 → consume 200 → 执行 → 回写，缺一步都不是合规执行。§0 图中「Agent 执行」一格在本节后读作「Agent consume 后执行」。`DENY` 与 `PENDING` 不变。fail-closed 契约扩展到执行方：验签失败、consume 非 200、网络错误、超时，一律不执行；需要重试的动作必须重新申请决策（新 `Idempotency-Key`）。
+
+**D9 与幂等重放的关系（§3.1 不变）。** 重放返回同一 `decisionId` 与同一 `executionReceipt`；对它第二次 consume 必然 409 `receipt_consumed`——这是正确行为，不是缺陷：幂等键保证「同一次尝试的网络重试拿到同一个决策」，consume 保证「同一个决策只执行一次」，两者合起来才是 exactly-once。SDK 的幂等键规则（§6）不变。`from-evidence`（ADR 0042 §3.1）的 ALLOW 同样签发执行收据：cloud 执行路径在落副作用前 consume（HMAC 通道），这是 #465 对账能覆盖 cloud 执行方的前提。
+
+**D10 兼容。**
+
+- 不读 `executionReceipt` 的旧 SDK / 旧代理：看到 ALLOW 照旧执行、从不 consume。服务端无法阻止（它们不经任何新端点），这正是 #465「有 ALLOW 决策、从未 consume」要抓的情形；aster-guard 0.2.0 发布后，README 与 cloud 治理页把「未消耗的 ALLOW」标为治理缺口。
+- `V6.37.0` 之前的 ALLOW 决策没有 `guard_receipts` 行、没有 `kid`：consume → 409 `not_allowed`（`legacy: true`）。不回填——给旧决策补签就是给当时没人验证过的放行追加授权。**切换要求**：顺序必须是 aster-api 先（旧代理不 consume，不受影响）→ 代理 / SDK 后；升级代理前先排空仍在处理中的旧决策（待审批 PENDING 的要么处理完、要么等 24 h 过期；cloud 治理页列出「迁移前 ALLOW、未执行」的决策供人工确认），升级后这些决策只能换新键重新申请。
+- `GuardDecisionResponse` 增可选字段，旧 cloud 忽略；`response_json` 往返（`GuardDecisionResponse.java:12-13`）加字段即可。
+- 回滚：删两个端点与签发路径；新表、新列、新事件类型留存无害。
+
+### 12.3 验收（对应 #463 六条）
+
+1. **改参数后 consume 409**：ALLOW 决策 → 对改了 `context.amount` 的对象自算哈希 → consume → 409 `action_mismatch`，行未消耗，链上有一条尝试事件 + 一条 `outcome: rejected:action_mismatch` 的结果事件，`consume_audit_id` 为空（`GuardReceiptResourceTest`）。
+2. **同收据两次 consume 第二次 409**：首次 200；同 `attemptId` 重发与换 `attemptId` 重发都 409 `receipt_consumed`，响应体含首次的 `executorId / attemptId`。
+3. **伪造 / 篡改签名**：aster-guard SDK `verifyReceipt` 对改动 `payload` 任一字节或换签名的收据返回失败且 `GuardClient.run` 不调用执行回调（ADR 0054 §7，vitest）；aster-api 侧 `ExecutionReceiptSignerTest` 用 JDK `Signature.getInstance("Ed25519")` 复验签发结果。
+4. **过期 409**：注入时钟使 `now > expiresAt` → 409 `receipt_expired`；审批 APPROVED 后收据 `issuedAt` 为审批时刻、`expiresAt = +PT5M`。
+5. **consume 事件位于执行结果之前**：`GET /api/v1/audit/receipts?decisionIds=` 返回的 `consumes[].auditId < results[].auditId`；未 consume 先 `result` → 409 `not_consumed`。
+6. **密钥轮换期间新旧 kid 均可验**：配置两把 key、`active-kid` 切到新 key → `/keys` 两个 `kid` 都在、`revision` +1；用旧 `kid` 签发的未过期收据在 SDK 侧仍验签通过；移除旧 key 后 → 验签失败。**紧急撤销**：标记 `revoked`、`revision` +1 并滚动重启 → 重启完成后该 `kid` 的收据 consume 409 `kid_revoked`（带 `revision`）；SDK 收到后强制刷新 `/keys`，之后本地验签也失败。**预期状态**：滚动期间旧副本对该 `kid` 仍返回 200，测试以两副本模拟（一旧一新）断言「新副本 409、旧副本 200、全部重启后全 409」；`revision` 回退（配置写小了）→ 启动失败，有用例。
+8. **崩溃窗口**：测试在行提交后、结果事件追加前注入失败 → 链上只有尝试事件，`consume_audit_id` 指向它，`GET /api/v1/audit/receipts` 的 `consumes[]` 标 `outcome: crashed-unknown`，对账计为已消耗。
+7. 既有守卫：`PublicApiContractTest`（三个新路径）、`MigrationGovernanceTest`（`V6.37.0` checksum）、`NonDeterminismSourceTest`（`Instant.now()`、`SecureRandom`/`UUID` 白名单登记并写理由）、`AuditIdentifierRedactionTest`（新身份键 `actionHash / attemptId / executorId / consumeReceiptHash`，ADR 0041 §12）。
+
+### 12.4 分阶段落地顺序
+
+① 本节与 ADR 0041 §12、ADR 0054 同车次定稿 → ② **aster-api**（`V6.37.0`、`action_hash` 计算与 golden 向量、签发器与启动校验、`/keys`、consume / result 端点与事件、`response_json` 字段、契约 golden；纯 aster-api 改动，不需要引擎发版列车；**部署前**需用户生成签名密钥并写入 k3s Secret）→ ③ aster-guard 0.2.0（ADR 0054：验签、consume、`run` 固定顺序、绕过套件）→ ④ aster-cloud（`from-evidence` 执行路径 consume + 回写；治理页「未消耗 ALLOW」）→ ⑤ #465 对账任务 → ⑥ #466 套件逐条启用。② 之后、③ 之前：旧代理照旧执行，不 consume，对账尚未上线，行为与今天一致。
+
+### 12.5 已选默认与可改项
+
+| 项 | 已选默认（定稿即生效） | 可改为 | 改动影响 |
+|---|---|---|---|
+| `actionHash` 覆盖范围 | 整个 `action` 对象 | 只覆盖 `action.name / resource / context` | 需要一份「哪些字段进哈希」的定义；`principal / agent` 改动不再被收据绑定 |
+| 同 `attemptId` 重发 consume | 409 `receipt_consumed`（Codex 审查后定稿，不再列为可改项） | — | — |
+| TTL | 统一 `PT5M` | 审批转 ALLOW 另设 `approved-ttl`（如 `PT15M`） | 多一个配置；审批后拖延执行的窗口变长 |
+| 私钥来源 | 环境变量（k3s Secret 注入） | Vault Transit 远程签名 | 新依赖；每次 ALLOW 多一次网络调用；签名失败需新增 fail-closed 分支 |
+| 缺密钥时 | 启动失败 | 降级：ALLOW 不带 `executionReceipt`，consume 409 `receipt_unavailable` | 生产可能在无人察觉下全量不可执行 |
+| `/keys` 鉴权 | Bearer | 公开 | `shouldProtect` 多一个豁免 |
+| 旧 ALLOW 决策 | 不可 consume（`not_allowed`，`legacy: true`） | 回填签发 | 给当时无人验证的放行追加授权，不采 |
