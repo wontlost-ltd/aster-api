@@ -150,7 +150,7 @@ class CnlErrorCodeTest {
         assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_TOKEN, params, KeywordLocalizer.IDENTITY))
             .isEqualTo("Unexpected end of file");
         assertThat(CnlErrorListener.render(ErrorCode.PARSE_UNEXPECTED_TOKEN, params, localizer("de-DE")))
-            .isEqualTo("Unerwartetes Dateiende");
+            .isEqualTo("Unerwartet: Dateiende");
     }
 
     @Test

@@ -39,10 +39,9 @@ public class InProcessCnlParser {
     /**
      * 嵌套深度上限提示（aster-api#472 纵深防御）：线程栈先于 core 守卫溢出时，以此值填 E054 的 {@code limit}。
      *
-     * <p>core 的守卫阈值 {@code AsterCustomLexer.MAX_NESTING_DEPTH} 在 1.0.42 为包内可见，api 无法直接引用，
-     * 这里镜像一份；{@code InProcessCnlParserStackOverflowTest} 用反射锁住两者一致，core 调阈值后本常量必须同步。
+     * <p>直接引用 core 的守卫阈值（1.0.43 起为 public），api 不再镜像常量，core 调阈值时自动跟随。
      */
-    static final int NESTING_DEPTH_LIMIT = 300;
+    static final int NESTING_DEPTH_LIMIT = aster.core.parser.AsterCustomLexer.MAX_NESTING_DEPTH;
 
     /**
      * CNL 解析结果

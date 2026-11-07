@@ -156,9 +156,17 @@ class LegacySyntaxCodesTest {
             assertThat(LegacySyntaxCodes.codeForKey(frame)).as(frame).isNull();
         }
         assertThat(LegacySyntaxCodes.codeForKey("token.newline")).isNull();
+        CODED_ONLY_KEYS.forEach(key -> assertThat(LegacySyntaxCodes.codeForKey(key)).as(key).isNull());
     }
 
-    /** 四语目录（locales 1.0.42）仍保留全部旧句型 key，且除诊断、外框与 token.* 之外没有别的 key。 */
+    /**
+     * 只有带码路径才用的句子模板（locales 1.0.43 #127 补齐 E051 / E053 / E054 / E065–E069）：这些码从来没有
+     * 旧英文句型，不进兼容表，旧句型补码也绝不能映射到它们。
+     */
+    private static final Set<String> CODED_ONLY_KEYS = Set.of("unterminatedString", "literalOutOfRange",
+        "nestingTooDeep", "misplaced", "emptyBlock", "invalidValue", "callArity", "unknownName");
+
+    /** 四语目录（locales 1.0.43）仍保留全部旧句型 key，且除诊断、外框、带码模板与 token.* 之外没有别的 key。 */
     @ParameterizedTest
     @ValueSource(strings = {"en", "zh", "de", "hi"})
     void catalog_stillCarriesEveryLegacyKey(String lang) {
@@ -167,6 +175,7 @@ class LegacySyntaxCodesTest {
         Set<String> unknown = new TreeSet<>(keys);
         unknown.removeAll(TABLE.keySet());
         unknown.removeAll(FRAME_KEYS);
+        unknown.removeAll(CODED_ONLY_KEYS);
         unknown.removeIf(k -> k.startsWith("token."));
         assertThat(unknown).as("%s 目录里既不是诊断也不是外框的 key", lang).isEmpty();
     }

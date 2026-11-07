@@ -21,8 +21,8 @@ import static org.hamcrest.Matchers.*;
 @RedisEnabledTest
 public class PolicyCompileNestingDepthTest {
 
-    /** core 1.0.42 的守卫上限（AsterCustomLexer.MAX_NESTING_DEPTH）；1.0.43 起为 64。 */
-    private static final int CORE_NESTING_LIMIT = 300;
+    /** core 的守卫上限（AsterCustomLexer.MAX_NESTING_DEPTH，1.0.43 起为 64 且 public）。 */
+    private static final int CORE_NESTING_LIMIT = aster.core.parser.AsterCustomLexer.MAX_NESTING_DEPTH;
 
     private static String nestedSource(int depth) {
         return "Module M.\n\nRule p given x as Int, produce Int:\n  Return "
