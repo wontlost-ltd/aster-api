@@ -33,6 +33,8 @@ public class GuardDecisionEntity extends PanacheEntityBase {
   @Column(name = "resource_type", nullable = false) public String resourceType = "";
   @Column(name = "resource_id", nullable = false) public String resourceId = "";
   @Column(name = "context_hash", nullable = false) public String contextHash;
+  /** 请求体 action 子树的 jcs-sha256/v1 哈希（ADR 0040 §12 D2）；V6.35.0 之前的旧行为 null。 */
+  @Column(name = "action_hash") public String actionHash;
   @Column(name = "outcome", nullable = false) public String outcome;
   @Column(name = "reason") public String reason;
   @Column(name = "required_role") public String requiredRole;
