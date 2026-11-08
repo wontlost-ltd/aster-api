@@ -28,6 +28,9 @@ NET="aster-cap-net"
 PG_NAME="aster-cap-pg"
 API_NAME="aster-cap-api"
 IMG="aster/policy-api:capacity"
+# ADR 0040 §12 D1：执行收据签名密钥无默认值，缺失即启动失败。
+# 仅测试/仅压测：固定种子 0x0d×32 的公开密钥，非生产，不得用于任何真实环境。
+RECEIPT_KEYS_TEST_ONLY='{"revision":1,"keys":[{"kid":"perf-only","privateKey":"DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0"}]}'
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PERF="$ROOT/perf"
 OUT="$PERF/capacity-results"
@@ -91,6 +94,8 @@ start_api() {
     -e ASTER_SECURITY_APIKEY_ENABLED=false \
     -e ASTER_SECURITY_SIGNATURE_ENABLED=false \
     -e ASTER_RATELIMIT_ENABLED="$ratelimit" \
+    -e ASTER_GUARD_RECEIPT_SIGNING_KEYS="$RECEIPT_KEYS_TEST_ONLY" \
+    -e ASTER_GUARD_RECEIPT_ACTIVE_KID=perf-only \
     -e QUARKUS_REDIS_HOSTS="redis://localhost:6379" \
     -p "$API_PORT:8080" \
     "$IMG" >/dev/null

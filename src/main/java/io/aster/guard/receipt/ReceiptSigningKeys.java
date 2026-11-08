@@ -105,7 +105,7 @@ public class ReceiptSigningKeys {
   ReceiptSigningKeys(@ConfigProperty(name = KEYS_PROPERTY) String json,
                      @ConfigProperty(name = ACTIVE_KID_PROPERTY) String activeKid,
                      Clock clock) {
-    this(parse(json, activeKid, clock.instant()));
+    this(parse(json, activeKid, clock));
   }
 
   private ReceiptSigningKeys(ReceiptSigningKeys parsed) {
@@ -118,17 +118,13 @@ public class ReceiptSigningKeys {
     this.active = active;
   }
 
-  /** 以当前时间解析，见 {@link #parse(String, String, Instant)}。 */
-  public static ReceiptSigningKeys parse(String json, String activeKid) {
-    return parse(json, activeKid, Instant.now());
-  }
-
   /**
-   * 解析并校验密钥配置；{@code now} 只用于判断 active key 的 {@code notAfter}。
+   * 解析并校验密钥配置；{@code clock} 只用于判断 active key 的 {@code notAfter}。
    *
    * @throws IllegalStateException 配置无效（消息不含种子）
    */
-  public static ReceiptSigningKeys parse(String json, String activeKid, Instant now) {
+  public static ReceiptSigningKeys parse(String json, String activeKid, Clock clock) {
+    Instant now = clock.instant();
     JsonNode root = readTree(json);
     requireOnlyFields(root, TOP_FIELDS, "顶层");
     long revision = readRevision(root.get("revision"));

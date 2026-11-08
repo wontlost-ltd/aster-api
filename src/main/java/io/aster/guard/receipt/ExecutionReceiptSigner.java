@@ -1,6 +1,7 @@
 package io.aster.guard.receipt;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.quarkus.runtime.Startup;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -23,7 +24,10 @@ import java.util.Optional;
  * <p>{@link #verify} 复现执行方的本地验签（供测试与自检）：外层 kid 与载荷 kid 一致、kid 在当前密钥列表中、
  * 签名有效、{@code v == 1 && outcome == ALLOW}，且 {@code issuedAt − 60s <= now < expiresAt}。
  * 它不检查 revoked——撤销由服务端 consume 判定（409 {@code kid_revoked}），执行方只看 JWKS。
+ *
+ * <p>{@link Startup}：ttl 非正等配置错误在启动时即失败，而不是推迟到首次签发。
  */
+@Startup
 @Singleton
 public class ExecutionReceiptSigner {
   static final String OUTCOME_ALLOW = "ALLOW";

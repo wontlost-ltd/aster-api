@@ -13,6 +13,7 @@ import java.time.ZoneOffset;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** 执行收据签发与本地验签（ADR 0040 §12 D1/D6）：JCS 载荷字节、Ed25519 签名、时间窗。 */
 class ExecutionReceiptSignerTest {
@@ -52,7 +53,7 @@ class ExecutionReceiptSignerTest {
   }
 
   private final MutableClock clock = new MutableClock(T0);
-  private final ReceiptSigningKeys keys = ReceiptSigningKeys.parse(CONFIG, "k1", T0);
+  private final ReceiptSigningKeys keys = ReceiptSigningKeys.parse(CONFIG, "k1", Clock.fixed(T0, ZoneOffset.UTC));
   private final ExecutionReceiptSigner signer = new ExecutionReceiptSigner(keys, Duration.ofMinutes(5), clock);
 
   private ExecutionReceipt sign() {
@@ -140,5 +141,15 @@ class ExecutionReceiptSignerTest {
     assertThat(signer.verify(r)).isTrue();
     clock.set(expiresAt);
     assertThat(signer.verify(r)).isFalse();
+  }
+
+  /** ttl 非正即构造失败；配合 @Startup，配置错误在启动时暴露。 */
+  @Test
+  void nonPositiveTtlFailsFast() {
+    for (Duration bad : new Duration[] {Duration.ZERO, Duration.ofSeconds(-1)}) {
+      assertThatThrownBy(() -> new ExecutionReceiptSigner(keys, bad, clock))
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("aster.guard.receipt.ttl");
+    }
   }
 }

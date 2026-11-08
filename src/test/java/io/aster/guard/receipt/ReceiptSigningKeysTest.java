@@ -5,11 +5,19 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.Signature;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Properties;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -19,6 +27,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 class ReceiptSigningKeysTest {
   private static final HexFormat HEX = HexFormat.of();
   private static final Instant NOW = Instant.parse("2026-11-08T00:00:00Z");
+  private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
   private static final String SEED_A = b64(new byte[32]);
   private static final String SEED_B = b64(filled(0x02));
 
@@ -59,7 +68,7 @@ class ReceiptSigningKeysTest {
     };
     for (String[] v : vectors) {
       String json = config(1, key("rfc", b64(HEX.parseHex(v[0])), ""));
-      ReceiptSigningKeys keys = ReceiptSigningKeys.parse(json, "rfc", NOW);
+      ReceiptSigningKeys keys = ReceiptSigningKeys.parse(json, "rfc", CLOCK);
       ReceiptSigningKeys.SigningKey k = keys.active();
       assertThat(HEX.formatHex(k.rawPublicKey())).isEqualTo(v[1]);
 
@@ -81,7 +90,7 @@ class ReceiptSigningKeysTest {
     String json = config(7,
         key("a", SEED_A, ",\"notAfter\":\"2027-01-01T00:00:00Z\""),
         key("b", SEED_B, ",\"revoked\":true"));
-    ReceiptSigningKeys keys = ReceiptSigningKeys.parse(json, "a", NOW);
+    ReceiptSigningKeys keys = ReceiptSigningKeys.parse(json, "a", CLOCK);
 
     assertThat(keys.revision()).isEqualTo(7L);
     assertThat(keys.active().kid()).isEqualTo("a");
@@ -97,7 +106,7 @@ class ReceiptSigningKeysTest {
   @Test
   void emptyKeysFailsFast() {
     for (String json : new String[] {null, "", "  ", config(1)}) {
-      assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", NOW))
+      assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", CLOCK))
           .isInstanceOf(IllegalStateException.class)
           .hasMessageContaining("signing-keys");
     }
@@ -106,14 +115,14 @@ class ReceiptSigningKeysTest {
   @Test
   void activeKidMissingFailsFast() {
     String json = config(1, key("a", SEED_A, ""));
-    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "zzz", NOW))
+    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "zzz", CLOCK))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("active-kid")
         .hasMessageContaining("zzz");
-    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, null, NOW))
+    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, null, CLOCK))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("active-kid");
-    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, " ", NOW))
+    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, " ", CLOCK))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("active-kid");
   }
@@ -122,16 +131,26 @@ class ReceiptSigningKeysTest {
   void seedNot32BytesFailsFast() {
     for (String seed : new String[] {b64(new byte[31]), b64(new byte[33]), "", "!!!not-base64!!!"}) {
       String json = config(1, key("a", seed, ""));
-      assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", NOW))
+      assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", CLOCK))
           .isInstanceOf(IllegalStateException.class)
           .hasMessageContaining("32");
     }
   }
 
   @Test
+  void seedLengthMismatchMessageHasLengthButNoSeed() {
+    String seed31 = b64(Arrays.copyOf(filled(0x07), 31));
+    assertThatThrownBy(() -> ReceiptSigningKeys.parse(config(1, key("a", seed31, "")), "a", CLOCK))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("实际 31 字节")
+        .hasNoCause()
+        .satisfies(t -> assertThat(t.getMessage()).doesNotContain(seed31));
+  }
+
+  @Test
   void activeKidRevokedFailsFast() {
     String json = config(1, key("a", SEED_A, ",\"revoked\":true"), key("b", SEED_B, ""));
-    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", NOW))
+    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", CLOCK))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("revoked");
   }
@@ -139,7 +158,7 @@ class ReceiptSigningKeysTest {
   @Test
   void duplicateKidFailsFast() {
     String json = config(1, key("a", SEED_A, ""), key("a", SEED_B, ""));
-    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", NOW))
+    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", CLOCK))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("重复");
   }
@@ -157,7 +176,7 @@ class ReceiptSigningKeysTest {
         config(1, key("a", SEED_A, ",\"revoked\":\"yes\"")),
         config(1, key("a", SEED_A, ",\"privatekey\":\"x\"")));
     for (String json : bad) {
-      assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", NOW))
+      assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", CLOCK))
           .as(json)
           .isInstanceOf(IllegalStateException.class)
           .hasMessageContaining("signing-keys");
@@ -166,19 +185,22 @@ class ReceiptSigningKeysTest {
 
   @Test
   void errorMessageNeverContainsSeed() {
-    String seed31 = b64(filled(0x07)).substring(0, 41);
+    String seed31 = b64(Arrays.copyOf(filled(0x07), 31));
+    String invalidB64 = SEED_B.substring(0, 41);
+    assertThat(seed31).hasSize(42);
     List<String> bad = List.of(
         config(1, key("a", seed31, "")),
+        config(1, key("a", invalidB64, "")),
         config(1, key("a", SEED_B, ""), key("a", SEED_B, "")),
         config(1, key("a", SEED_B, ",\"revoked\":true")),
         config(1, key("a", SEED_B, ",\"notAfter\":\"2020-01-01T00:00:00Z\"")),
         config(1, key("a", SEED_B, ",\"unknown\":1")),
         "{\"revision\":1,\"keys\":[{\"kid\":\"a\",\"privateKey\":\"" + SEED_B + "\" oops}]}");
     for (String json : bad) {
-      Throwable t = catchThrowable(() -> ReceiptSigningKeys.parse(json, "a", NOW));
+      Throwable t = catchThrowable(() -> ReceiptSigningKeys.parse(json, "a", CLOCK));
       assertThat(t).as(json).isInstanceOf(IllegalStateException.class);
       for (Throwable c = t; c != null; c = c.getCause()) {
-        assertThat(String.valueOf(c.getMessage())).doesNotContain(SEED_B).doesNotContain(seed31);
+        assertThat(String.valueOf(c.getMessage())).doesNotContain(SEED_B).doesNotContain(seed31).doesNotContain(invalidB64);
       }
     }
   }
@@ -187,20 +209,20 @@ class ReceiptSigningKeysTest {
   @Test
   void activeKidPastNotAfterFailsFast() {
     String json = config(1, key("a", SEED_A, ",\"notAfter\":\"" + NOW + "\""));
-    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", NOW))
+    assertThatThrownBy(() -> ReceiptSigningKeys.parse(json, "a", CLOCK))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("notAfter");
-    assertThat(ReceiptSigningKeys.parse(json, "a", NOW.minusMillis(1)).active().kid()).isEqualTo("a");
+    assertThat(ReceiptSigningKeys.parse(json, "a", Clock.fixed(NOW.minusMillis(1), ZoneOffset.UTC)).active().kid()).isEqualTo("a");
 
     String expiredNonActive = config(1, key("a", SEED_A, ""), key("old", SEED_B, ",\"notAfter\":\"2020-01-01T00:00:00Z\""));
-    assertThat(ReceiptSigningKeys.parse(expiredNonActive, "a", NOW).find("old")).isPresent();
+    assertThat(ReceiptSigningKeys.parse(expiredNonActive, "a", CLOCK).find("old")).isPresent();
   }
 
   /** 每把 key 启动时签一段固定字节并用推导公钥验签；私钥与公钥不配对即启动失败。 */
   @Test
   void startupSelfCheckSignsAndVerifies() {
     ReceiptSigningKeys keys = ReceiptSigningKeys.parse(
-        config(1, key("a", SEED_A, ""), key("b", SEED_B, ",\"revoked\":true")), "a", NOW);
+        config(1, key("a", SEED_A, ""), key("b", SEED_B, ",\"revoked\":true")), "a", CLOCK);
     for (ReceiptSigningKeys.SigningKey k : keys.all()) {
       ReceiptSigningKeys.selfCheck(k.kid(), k.keyPair());
     }
@@ -212,5 +234,33 @@ class ReceiptSigningKeysTest {
         .hasMessageContaining("mixed")
         .hasMessageContaining("自检");
     assertThat(new String(ReceiptSigningKeys.SELF_CHECK_BYTES, StandardCharsets.UTF_8)).isNotEmpty();
+  }
+
+  /** application.properties 的 %dev 密钥（quarkus dev 启动用）必须能通过同一套校验。 */
+  @Test
+  void devProfileKeysParse() throws Exception {
+    Properties props = new Properties();
+    try (InputStream in = Files.newInputStream(Path.of("src/main/resources/application.properties"))) {
+      props.load(in);
+    }
+    String json = props.getProperty("%dev.aster.guard.receipt.signing-keys");
+    String activeKid = props.getProperty("%dev.aster.guard.receipt.active-kid");
+    assertThat(json).isNotNull();
+    assertThat(ReceiptSigningKeys.parse(json, activeKid, CLOCK).active().kid()).isEqualTo("dev-only");
+    assertThat(props.getProperty("aster.guard.receipt.signing-keys")).isEqualTo("${ASTER_GUARD_RECEIPT_SIGNING_KEYS}");
+    assertThat(props.getProperty("aster.guard.receipt.active-kid")).isEqualTo("${ASTER_GUARD_RECEIPT_ACTIVE_KID}");
+  }
+
+  /** perf.yml 与两份本地脚本里的仅测试密钥必须能通过同一套校验（否则这些启动路径会 fail-fast）。 */
+  @Test
+  void perfAndScriptKeysParse() throws Exception {
+    Pattern single = Pattern.compile("'(\\{\"revision\".*?)'");
+    for (String file : List.of(".github/workflows/perf.yml", "perf/run-capacity.sh", "scripts/test-pluggable-locally.sh")) {
+      String text = Files.readString(Path.of(file));
+      Matcher m = single.matcher(text);
+      assertThat(m.find()).as(file).isTrue();
+      assertThat(ReceiptSigningKeys.parse(m.group(1), "perf-only", CLOCK).active().kid()).as(file).isEqualTo("perf-only");
+      assertThat(text).as(file).contains("ASTER_GUARD_RECEIPT_ACTIVE_KID").contains("ASTER_GUARD_RECEIPT_SIGNING_KEYS");
+    }
   }
 }
