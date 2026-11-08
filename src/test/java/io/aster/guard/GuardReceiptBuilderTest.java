@@ -3,6 +3,8 @@ package io.aster.guard;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.guard.api.GuardActionRequest.Action;
+import io.aster.guard.api.ResultRequest;
+import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.guard.api.GuardActionRequest.ActionName;
 import io.aster.guard.api.GuardActionRequest.Principal;
 import io.aster.guard.api.GuardActionRequest.Resource;
@@ -406,5 +408,94 @@ class GuardReceiptBuilderTest {
     assertThat(event.success()).isFalse();
     assertThat(event.metadata()).containsEntry("outcome", "EXPIRED")
         .doesNotContainKeys("requiredRole", "decidedBy", "comment", "decisionReceiptHash");
+  }
+
+  private GuardReceiptEntity receipt() {
+    GuardReceiptEntity r = new GuardReceiptEntity();
+    r.decisionId = UUID.randomUUID();
+    r.tenantId = "t1";
+    r.actionHash = HASH;
+    r.kid = "k1";
+    r.issuedAt = Instant.parse("2026-11-08T00:00:00Z");
+    r.expiresAt = Instant.parse("2026-11-08T00:05:00Z");
+    return r;
+  }
+
+  @Test
+  void consume尝试事件键集合与success() {
+    GuardReceiptEntity r = receipt();
+
+    AuditEvent event = builder.consumeAttemptEvent(r, HASH, "att-1", "exec-1", HASH, "svc");
+
+    assertThat(event.eventType()).isEqualTo(EventType.ACTION_GUARD_CONSUME_ATTEMPT);
+    assertThat(event.tenantId()).isEqualTo("t1");
+    assertThat(event.performedBy()).isEqualTo("svc");
+    assertThat(event.success()).isTrue();
+    assertThat(event.metadata()).containsOnlyKeys("kind", "decisionId", "actionHash", "attemptId", "executorId",
+        "kid", "receiptIssuedAt", "receiptExpiresAt", "decisionReceiptHash")
+        .containsEntry("kind", "attempt")
+        .containsEntry("decisionId", r.decisionId.toString())
+        .containsEntry("receiptIssuedAt", "2026-11-08T00:00:00Z")
+        .containsEntry("receiptExpiresAt", "2026-11-08T00:05:00Z")
+        .doesNotContainKey("correlationId");
+  }
+
+  @Test
+  void consume结果事件按outcome决定success() {
+    UUID id = UUID.randomUUID();
+
+    AuditEvent ok = builder.consumeOutcomeEvent(id, "att-1", "exec-1", "consumed", HASH, "svc");
+    AuditEvent rejected = builder.consumeOutcomeEvent(id, "att-1", "exec-1", "rejected:receipt_expired", HASH, "svc");
+
+    assertThat(ok.eventType()).isEqualTo(EventType.ACTION_GUARD_CONSUME_OUTCOME);
+    assertThat(ok.success()).isTrue();
+    assertThat(ok.metadata()).containsOnlyKeys("kind", "decisionId", "attemptId", "executorId", "outcome",
+        "attemptReceiptHash").containsEntry("kind", "outcome").containsEntry("outcome", "consumed")
+        .containsEntry("decisionId", id.toString());
+    assertThat(rejected.success()).isFalse();
+    assertThat(rejected.metadata()).containsEntry("outcome", "rejected:receipt_expired");
+  }
+
+  @Test
+  void 带租户重载写入租户且其余一致() {
+    UUID id = UUID.randomUUID();
+
+    assertThat(builder.consumeOutcomeEvent("t1", id, "a", "e", "consumed", HASH, "svc").tenantId()).isEqualTo("t1");
+    assertThat(builder.resultEvent("t1", id, result("executed", null), HASH, "svc").tenantId()).isEqualTo("t1");
+  }
+
+  private ResultRequest result(String status, String errorCode) {
+    return new ResultRequest("att-1", "exec-1", status, "2026-11-08T00:01:00Z", HASH, errorCode);
+  }
+
+  @Test
+  void 执行结果事件键集合与success() {
+    UUID id = UUID.randomUUID();
+
+    AuditEvent ok = builder.resultEvent(id, result("executed", null), HASH, "svc");
+    AuditEvent failed = builder.resultEvent(id, result("failed", "E_TIMEOUT"), HASH, "svc");
+
+    assertThat(ok.eventType()).isEqualTo(EventType.ACTION_GUARD_RESULT);
+    assertThat(ok.success()).isTrue();
+    assertThat(ok.metadata()).containsOnlyKeys("decisionId", "attemptId", "executorId", "status", "finishedAt",
+        "resultHash", "consumeReceiptHash").containsEntry("status", "executed")
+        .doesNotContainKey("correlationId");
+    assertThat(failed.success()).isFalse();
+    assertThat(failed.metadata()).containsEntry("errorCode", "E_TIMEOUT");
+  }
+
+  @Test
+  void 执行结果事件超预算时只删errorCode() {
+    UUID id = UUID.randomUUID();
+    ResultRequest req = new ResultRequest("a".repeat(255), "e".repeat(255), "failed", "2026-11-08T00:01:00Z", HASH,
+        "\"".repeat(1900));
+
+    AuditEvent event = builder.resultEvent(id, req, HASH, "svc");
+
+    assertThat(builder.measure(new LinkedHashMap<>(event.metadata()))).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat(event.metadata()).containsEntry("attemptId", "a".repeat(255))
+        .containsEntry("executorId", "e".repeat(255))
+        .containsEntry("resultHash", HASH).containsEntry("consumeReceiptHash", HASH).containsEntry("status", "failed");
+    assertThat(String.valueOf(event.metadata().get("errorCode")).length()).isLessThan(1900);
   }
 }

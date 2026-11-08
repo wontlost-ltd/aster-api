@@ -3,6 +3,8 @@ package io.aster.guard;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.audit.chain.AuditChainAppender;
+import io.aster.guard.api.ResultRequest;
+import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.common.PIIRedactor;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
@@ -61,6 +63,8 @@ public class GuardReceiptBuilder {
    * 其余 ≤ 255）最坏转义约 3.3 KB，本不会触发；走同一预算是为了列宽日后放宽时不会退回非法 JSON 截断。
    */
   static final List<String> APPROVAL_SHRINK_ORDER = List.of("comment");
+  /** 执行结果事件唯一可缩短的键：errorCode 是执行方自填文本，其余为身份与摘要，永不改动。 */
+  static final List<String> RESULT_SHRINK_ORDER = List.of("errorCode");
   /** 只用于测量长度：对 String / List / Long 值，序列化结果与 Quarkus 托管的 ObjectMapper 相同。 */
   private static final ObjectMapper MEASURE = new ObjectMapper();
   private final PIIRedactor piiRedactor = new PIIRedactor();
@@ -122,6 +126,76 @@ public class GuardReceiptBuilder {
     return new AuditEvent(EventType.ACTION_GUARD_APPROVAL, Instant.now(), a.tenantId,
         null, null, null, null, null, actor, a.status == GuardApprovalStatus.APPROVED, null, null,
         Collections.unmodifiableMap(fitBudget(m, APPROVAL_SHRINK_ORDER)), null, null, null, null);
+  }
+
+  /**
+   * 消耗尝试事件（ADR 0040 §12 D1）：先于判定入链，是权威消耗点。attemptId / executorId 为执行方自报，
+   * 只截断不校验；只投影 decision_id 列，不写 correlationId。
+   */
+  public AuditEvent consumeAttemptEvent(GuardReceiptEntity r, String actionHash, String attemptId,
+                                        String executorId, String decisionReceiptHash, String performedBy) {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("kind", "attempt");
+    put(m, "decisionId", r.decisionId);
+    put(m, "actionHash", actionHash);
+    put(m, "attemptId", clip(attemptId, MAX_TEXT));
+    put(m, "executorId", clip(executorId, MAX_TEXT));
+    put(m, "kid", clip(r.kid, MAX_TEXT));
+    put(m, "receiptIssuedAt", r.issuedAt == null ? null : r.issuedAt.toString());
+    put(m, "receiptExpiresAt", r.expiresAt == null ? null : r.expiresAt.toString());
+    put(m, "decisionReceiptHash", decisionReceiptHash);
+    return receiptEvent(EventType.ACTION_GUARD_CONSUME_ATTEMPT, r.tenantId, performedBy, true, m, List.of());
+  }
+
+  /** 消耗判定事件：outcome 为 {@code consumed} 或 {@code rejected:<code>}；attemptReceiptHash 指回尝试事件。 */
+  public AuditEvent consumeOutcomeEvent(UUID decisionId, String attemptId, String executorId, String outcome,
+                                        String attemptReceiptHash, String performedBy) {
+    return consumeOutcomeEvent(null, decisionId, attemptId, executorId, outcome, attemptReceiptHash, performedBy);
+  }
+
+  /**
+   * 同上并指定租户：追加器按 tenantId 分链，缺省会落入 {@code system} 链，
+   * 真实调用方应使用本重载，使判定事件与尝试事件在同一租户链上。
+   */
+  public AuditEvent consumeOutcomeEvent(String tenantId, UUID decisionId, String attemptId, String executorId,
+                                        String outcome, String attemptReceiptHash, String performedBy) {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("kind", "outcome");
+    put(m, "decisionId", decisionId);
+    put(m, "attemptId", clip(attemptId, MAX_TEXT));
+    put(m, "executorId", clip(executorId, MAX_TEXT));
+    put(m, "outcome", clip(outcome, MAX_TEXT));
+    put(m, "attemptReceiptHash", attemptReceiptHash);
+    return receiptEvent(EventType.ACTION_GUARD_CONSUME_OUTCOME, tenantId, performedBy, "consumed".equals(outcome), m,
+        List.of());
+  }
+
+  /** 执行结果事件：success 仅在 status 为 executed 时为 true；唯一可缩短的键是调用方自填的 errorCode。 */
+  public AuditEvent resultEvent(UUID decisionId, ResultRequest req, String consumeReceiptHash, String performedBy) {
+    return resultEvent(null, decisionId, req, consumeReceiptHash, performedBy);
+  }
+
+  /** 同上并指定租户，理由同 {@link #consumeOutcomeEvent(String, UUID, String, String, String, String, String)}。 */
+  public AuditEvent resultEvent(String tenantId, UUID decisionId, ResultRequest req, String consumeReceiptHash,
+                                String performedBy) {
+    Map<String, Object> m = new LinkedHashMap<>();
+    put(m, "decisionId", decisionId);
+    put(m, "attemptId", clip(req.attemptId(), MAX_TEXT));
+    put(m, "executorId", clip(req.executorId(), MAX_TEXT));
+    put(m, "status", clip(req.status(), MAX_TEXT));
+    put(m, "finishedAt", clip(req.finishedAt(), MAX_TEXT));
+    put(m, "resultHash", req.resultHash());
+    put(m, "errorCode", clip(req.errorCode(), MAX_TEXT));
+    put(m, "consumeReceiptHash", consumeReceiptHash);
+    return receiptEvent(EventType.ACTION_GUARD_RESULT, tenantId, performedBy, "executed".equals(req.status()), m,
+        RESULT_SHRINK_ORDER);
+  }
+
+  private AuditEvent receiptEvent(EventType type, String tenantId, String performedBy, boolean success,
+                                  Map<String, Object> m, List<String> shrinkOrder) {
+    return new AuditEvent(type, Instant.now(), tenantId, null, null, null, null, null,
+        clip(performedBy, MAX_PERFORMED_BY), success, null, null,
+        Collections.unmodifiableMap(fitBudget(m, shrinkOrder)), null, null, null, null);
   }
 
   /** 按给定顺序缩短自由文本直到测量长度 ≤ {@link #METADATA_BUDGET}；仍超限则删除 controls（审批事件没有该键）。 */
