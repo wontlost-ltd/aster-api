@@ -11,6 +11,8 @@ import io.aster.guard.api.GuardActionRequest.Resource;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.provenance.FactIssuerStore;
 import io.aster.guard.provenance.FactVerifier;
+import io.aster.guard.provenance.GuardFactIssuerEntity;
+import io.aster.guard.provenance.InputSourceResolver;
 import io.aster.guard.receipt.ExecutionReceipt;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptSigner;
@@ -39,6 +41,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
@@ -83,6 +86,7 @@ class GuardDecisionServiceTest {
   private final ObjectMapper json = new ObjectMapper();
   private GuardDecisionService service;
   private ExecutionReceiptSigner signer;
+  private final FactIssuerStore issuerStore = mock(FactIssuerStore.class);
 
   @BeforeEach
   void setUp() {
@@ -106,9 +110,15 @@ class GuardDecisionServiceTest {
   }
 
   private GuardDecisionService serviceWith(ExecutionReceiptIssuer issuer) {
+    return serviceWith(issuer, NOW);
+  }
+
+  /** {@code readClock}：重放 / 回读判定 factsStale 用的时刻（签发方表以 {@link #issuerStore} 代替）。 */
+  private GuardDecisionService serviceWith(ExecutionReceiptIssuer issuer, Instant readClock) {
     return new GuardDecisionService(evaluationService, repository, appender, store, new GuardActionMapper(),
-        new GuardReceiptBuilder(), json, issuer, new FactVerifier(mock(FactIssuerStore.class), Clock.fixed(NOW, ZoneOffset.UTC)),
-        Duration.ofHours(24), Supplier::get);
+        new GuardReceiptBuilder(), json, issuer, new FactVerifier(issuerStore, Clock.fixed(NOW, ZoneOffset.UTC)),
+        new InputSourceResolver(issuerStore, Clock.fixed(readClock, ZoneOffset.UTC)), Duration.ofHours(24),
+        Supplier::get);
   }
 
   /** 与决策同一次调用写入的执行收据行（null 表示未签发）。 */
@@ -874,5 +884,129 @@ class GuardDecisionServiceTest {
     assertThat(body.indexOf("\"decisionId\"")).isLessThan(body.indexOf("\"effectiveOutcome\""));
     assertThat(body.indexOf("\"policyVersion\"")).isLessThan(body.indexOf("\"receipt\""));
     assertThat(body).contains("\"policyVersion\":{\"id\":1730890123456,\"sourceHash\":\"" + "d".repeat(64) + "\",\"version\":3}");
+  }
+
+  // ---- ADR 0040 §11 D4 / D6：输入来源进响应、决策行与收据 ----
+
+  /**
+   * 不带事实、主体非 user 的现有调用方：响应与引入来源标记之前逐字节相同（字面量录自改动前的序列化），
+   * 决策行三列为 null，收据不含任何来源键。
+   */
+  @Test
+  void noFactsResponseByteIdenticalToToday() throws Exception {
+    verdict("DENY", null, "amount too large");
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
+
+    String expected = "{\"controls\":[\"GDPR:ART17\"],\"decisionId\":\"" + r.decisionId() + "\","
+        + "\"effectiveOutcome\":\"DENY\",\"outcome\":\"DENY\","
+        + "\"policyVersion\":{\"id\":1730890123456,\"sourceHash\":\"" + "d".repeat(64) + "\",\"version\":3},"
+        + "\"reason\":\"amount too large\",\"receipt\":{\"auditId\":88213,\"hash\":\"" + HASH + "\",\"prevHash\":\""
+        + PREV + "\"},\"ruleId\":\"CUST-DEL-001\"}";
+    assertThat(json.writeValueAsString(r)).isEqualTo(expected);
+    GuardDecisionEntity e = savedDecision();
+    assertThat(e.responseJson).isEqualTo(expected);
+    assertThat(e.verifiedFields).isNull();
+    assertThat(e.factIssuers).isNull();
+    assertThat(e.factExpiresAt).isNull();
+    assertThat(appendedEvent().metadata()).doesNotContainKeys("verifiedFields", "factIssuers", "factSources",
+        "principalIdentityMatched", "factExpiresAt", "inputSourcesTruncated");
+  }
+
+  /** principal.type=user 且 id 等于提交者：principal.id / roles verified，进响应、决策行与收据（无事实）。 */
+  @Test
+  void userPrincipalVerifiedIntoResponseRowAndReceipt() throws Exception {
+    verdict("DENY", null, "no");
+    Action a = new Action(new Principal("user-1", "user", List.of("ops")), new ActionName("delete_customer_record"),
+        new Resource("customer", "C-1001"), Map.of("amount", 250000), null);
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", Set.of("ops", "finance"),
+        new GuardActionRequest(MODULE, FUNCTION, a, null), ACTION_HASH, null, null);
+
+    assertThat(r.inputSources()).isEqualTo(new GuardDecisionResponse.InputSourcesView(List.of(), null,
+        List.of("principal.id", "principal.roles")));
+    assertThat(json.writeValueAsString(r)).contains("\"inputSources\":{\"verified\":[\"principal.id\",\"principal.roles\"]}");
+    GuardDecisionEntity e = savedDecision();
+    assertThat(e.verifiedFields).isEqualTo("[\"principal.id\",\"principal.roles\"]");
+    assertThat(e.factIssuers).isNull();
+    assertThat(e.factExpiresAt).isNull();
+    assertThat(appendedEvent().metadata()).containsEntry("verifiedFields", List.of("principal.id", "principal.roles"))
+        .containsEntry("principalIdentityMatched", true)
+        .doesNotContainKeys("factIssuers", "factSources", "factExpiresAt", "inputSourcesTruncated");
+  }
+
+  /** 7 参 decide 不带已验证业务角色：roles 不能被证实，principal.id 仍按提交者判定。 */
+  @Test
+  void decideWithoutBusinessRolesLeavesRolesDeclared() {
+    verdict("DENY", null, "no");
+    Action a = new Action(new Principal("user-1", "user", List.of("ops")), new ActionName("delete_customer_record"),
+        new Resource("customer", "C-1001"), Map.of("amount", 250000), null);
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", new GuardActionRequest(MODULE, FUNCTION, a, null),
+        ACTION_HASH, null, null);
+
+    assertThat(r.inputSources().verified()).containsExactly("principal.id");
+  }
+
+  private GuardDecisionEntity storedWithFacts(Instant factExpiresAt) throws Exception {
+    GuardDecisionResponse stored = new GuardDecisionResponse(null, List.of(), UUID.randomUUID().toString(), "ALLOW",
+        null, new GuardDecisionResponse.InputSourcesView(List.of("idp.example.com#2026-11"), null,
+        List.of("context.amount")), "ALLOW", null, null, null, new GuardDecisionResponse.ReceiptView(1L, HASH, PREV),
+        null, "R");
+    GuardDecisionEntity e = storedFor(request(), stored);
+    e.id = UUID.fromString(stored.decisionId());
+    e.tenantId = TENANT;
+    e.verifiedFields = "[\"context.amount\"]";
+    e.factIssuers = "[\"idp.example.com#2026-11\"]";
+    e.factExpiresAt = factExpiresAt;
+    return e;
+  }
+
+  private void issuerEnabled() {
+    GuardFactIssuerEntity row = new GuardFactIssuerEntity();
+    row.enabled = true;
+    when(issuerStore.find(TENANT, "idp.example.com", "2026-11")).thenReturn(Optional.of(row));
+  }
+
+  /**
+   * 重放不重验首次的事实（ADR 0040 §11 D4）：now >= fact_expires_at 时只追加 inputSources.factsStale，
+   * 其余与存储响应相同；不评估、不写事件、不改写决策行。过期前重放与存储响应完全相同。
+   */
+  @Test
+  void replayAfterFactExpiryMarksStaleWithoutNewEvent() throws Exception {
+    Instant expires = NOW.plusSeconds(60);
+    GuardDecisionEntity row = storedWithFacts(expires);
+    GuardDecisionResponse stored = json.readValue(row.responseJson, GuardDecisionResponse.class);
+    when(store.findByIdempotencyKey(TENANT, "idem-1")).thenReturn(Optional.of(row));
+    issuerEnabled();
+    ExecutionReceiptIssuer issuer = new ExecutionReceiptIssuer(signer, Clock.fixed(NOW, ZoneOffset.UTC));
+
+    GuardDecisionResponse fresh = serviceWith(issuer, expires.minusMillis(1))
+        .decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
+    GuardDecisionResponse stale = serviceWith(issuer, expires)
+        .decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
+
+    assertThat(fresh).isEqualTo(stored);
+    assertThat(stale.inputSources()).isEqualTo(new GuardDecisionResponse.InputSourcesView(
+        List.of("idp.example.com#2026-11"), true, List.of("context.amount")));
+    assertThat(json.writeValueAsString(stale)).isEqualTo(json.writeValueAsString(stored)
+        .replace("\"inputSources\":{\"factIssuers\":[\"idp.example.com#2026-11\"],",
+            "\"inputSources\":{\"factIssuers\":[\"idp.example.com#2026-11\"],\"factsStale\":true,"));
+    verifyNoInteractions(evaluationService, appender, repository);
+    verify(store, never()).saveDecision(any(), any(), any());
+  }
+
+  /** 首次记录的签发方现已禁用：GET 回读同样标 factsStale。 */
+  @Test
+  void getAfterIssuerDisabledMarksStale() throws Exception {
+    GuardDecisionEntity row = storedWithFacts(NOW.plusSeconds(600));
+    when(store.findDecision(TENANT, row.id)).thenReturn(Optional.of(row));
+    GuardFactIssuerEntity disabled = new GuardFactIssuerEntity();
+    disabled.enabled = false;
+    when(issuerStore.find(TENANT, "idp.example.com", "2026-11")).thenReturn(Optional.of(disabled));
+
+    GuardDecisionResponse r = service.get(TENANT, row.id).orElseThrow();
+
+    assertThat(r.inputSources().factsStale()).isTrue();
   }
 }

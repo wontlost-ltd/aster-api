@@ -45,7 +45,10 @@ import java.util.TreeSet;
  *   <li>签名 = Ed25519 作用于除 {@code signature} 外八个成员的 JCS 字节串（{@code jcs-sha256/v1} 的规范化部分）；</li>
  *   <li>每个 claim 路径（点路径，只沿对象成员下行）在 {@code action} 中存在，且两边 JCS 字节相等
  *       （{@code 250000}、{@code 250000.0}、{@code 2.5E5} 相等；与字符串 {@code "250000"} 不等）；</li>
- *   <li>{@code sources} 键集 == {@code claims} 键集，值为 ≤ {@value #MAX_SOURCE_LENGTH} 字符的字符串。</li>
+ *   <li>{@code sources} 键集 == {@code claims} 键集，值为 ≤ {@value #MAX_SOURCE_LENGTH} 字符的字符串；</li>
+ *   <li>点路径只按嵌套解释：路径所经对象里与该路径相撞的含 {@code .} 字面键 → {@code ambiguous_path}；</li>
+ *   <li>类型化字符串字段（{@link #TYPED_STRING_PATHS}）上的值必须是 JSON 字符串，{@code principal.roles} 必须是
+ *       字符串数组（覆盖其父对象的 claim 同样检查）→ 否则 {@code claim_type_mismatch}。</li>
  * </ul>
  *
  * <p>签发方按主键直查（不缓存，至多 {@value #MAX_FACTS} 次），时间取注入的 {@link Clock}。
@@ -64,6 +67,14 @@ public class FactVerifier {
   private static final String SIGNATURE_FIELD = "signature";
   private static final int SIGNATURE_BYTES = 64;
   private static final int PUBLIC_KEY_BYTES = 32;
+  /**
+   * 请求体中按 {@code String} 类型绑定的字段：Jackson 会把数字 / 布尔强转为字符串、null 由 mapper 补缺省值，
+   * 规则读到的不是原文值，所以这些路径上只认 JSON 字符串。
+   */
+  static final Set<String> TYPED_STRING_PATHS = Set.of("principal.id", "principal.type", "action.name",
+      "resource.type", "resource.id", "agent.provider", "agent.model", "agent.version", "agent.session");
+  /** 按 {@code List<String>} 绑定的字段：只认字符串数组。 */
+  static final String TYPED_STRING_ARRAY_PATH = "principal.roles";
   /** Ed25519 SubjectPublicKeyInfo 前缀（RFC 8410）：其后接 32 字节原始公钥即为 X.509 编码。 */
   private static final byte[] ED25519_SPKI_PREFIX = HexFormat.of().parseHex("302a300506032b6570032100");
 
@@ -329,6 +340,7 @@ public class FactVerifier {
   }
 
   private static void requireClaimMatches(JsonNode rawAction, SignedFact fact, String path, JsonNode claimed) {
+    requireUnambiguous(rawAction, fact, path);
     JsonNode actual = resolve(rawAction, path);
     if (actual == null) {
       throw fact.reject(GuardInvalidFactException.CLAIM_PATH_ABSENT, "claim 路径在 action 中不存在: " + path);
@@ -336,6 +348,68 @@ public class FactVerifier {
     if (!Arrays.equals(JcsCanonicalizer.canonicalize(claimed), canonicalActionValue(actual))) {
       throw fact.reject(GuardInvalidFactException.CLAIM_MISMATCH, "claim 与 action 中的值不相等: " + path);
     }
+    requireTypedValues(fact, path, claimed);
+  }
+
+  /**
+   * 沿 claim 路径逐级下行，检查经过的每个对象：其中含 {@code .} 的字面键拼成的点路径若等于 claim 路径、是它的前缀
+   * 或以它为前缀，同一点路径就有两种解读（收据与审批视图只记点路径），整个请求拒绝。
+   * claim 覆盖的值内部的键不检查：那些叶子都随 claim 一起 verified，不存在歧义。
+   */
+  private static void requireUnambiguous(JsonNode rawAction, SignedFact fact, String path) {
+    JsonNode node = rawAction;
+    String prefix = "";
+    for (String segment : path.split("\\.", -1)) {
+      if (node == null || !node.isObject()) {
+        return;
+      }
+      String base = prefix;
+      node.fieldNames().forEachRemaining(key -> {
+        String dotted = base.isEmpty() ? key : base + "." + key;
+        if (key.indexOf('.') >= 0 && collides(dotted, path)) {
+          throw fact.reject(GuardInvalidFactException.AMBIGUOUS_PATH,
+              "claim 路径与 action 中含 '.' 的字面键相撞: " + path);
+        }
+      });
+      prefix = base.isEmpty() ? segment : base + "." + segment;
+      node = node.get(segment);
+    }
+  }
+
+  private static boolean collides(String dotted, String path) {
+    return dotted.equals(path) || path.startsWith(dotted + ".") || dotted.startsWith(path + ".");
+  }
+
+  /** claim 路径本身或其下的类型化字段：值（若存在）须为字符串，{@code principal.roles} 须为字符串数组。 */
+  private static void requireTypedValues(SignedFact fact, String path, JsonNode claimed) {
+    for (String typed : TYPED_STRING_PATHS) {
+      JsonNode value = valueAt(claimed, path, typed);
+      if (value != null && !value.isTextual()) {
+        throw fact.reject(GuardInvalidFactException.CLAIM_TYPE_MISMATCH, typed + " 的 claim 必须是字符串");
+      }
+    }
+    JsonNode roles = valueAt(claimed, path, TYPED_STRING_ARRAY_PATH);
+    if (roles != null && !(roles.isArray() && allTextual(roles))) {
+      throw fact.reject(GuardInvalidFactException.CLAIM_TYPE_MISMATCH,
+          TYPED_STRING_ARRAY_PATH + " 的 claim 必须是字符串数组");
+    }
+  }
+
+  /** claim 路径为 {@code path}、值为 {@code claimed} 时，{@code typed} 处的值；typed 不在该 claim 覆盖范围内返回 null。 */
+  private static JsonNode valueAt(JsonNode claimed, String path, String typed) {
+    if (typed.equals(path)) {
+      return claimed;
+    }
+    return typed.startsWith(path + ".") ? resolve(claimed, typed.substring(path.length() + 1)) : null;
+  }
+
+  private static boolean allTextual(JsonNode array) {
+    for (JsonNode item : array) {
+      if (!item.isTextual()) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** 点路径只沿对象成员下行；任一段缺失或遇到非对象返回 null（显式 null 叶子是存在的值）。 */

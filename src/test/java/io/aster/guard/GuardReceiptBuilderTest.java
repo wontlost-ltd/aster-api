@@ -8,6 +8,7 @@ import io.aster.guard.api.GuardActionRequest.Principal;
 import io.aster.guard.api.GuardActionRequest.Resource;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
 import io.aster.guard.api.ResultRequest;
+import io.aster.guard.provenance.InputSources;
 import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
@@ -16,9 +17,12 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
@@ -198,8 +202,8 @@ class GuardReceiptBuilderTest {
   @Test
   void 缩短顺序固定_principalId最后() {
     assertThat(GuardReceiptBuilder.SHRINK_ORDER).containsExactly("reason", "agentSession", "agentVersion",
-        "principalRoles", "agentModel", "agentProvider", "principalType", "resourceType", "resourceId", "actionName",
-        "principalId");
+        "principalRoles", "factIssuers", "verifiedFields", "factSources", "unverifiedFields", "agentModel",
+        "agentProvider", "principalType", "resourceType", "resourceId", "actionName", "principalId");
   }
 
   @Test
@@ -512,5 +516,122 @@ class GuardReceiptBuilderTest {
         .containsEntry("executorId", "e".repeat(255))
         .containsEntry("resultHash", HASH).containsEntry("consumeReceiptHash", HASH).containsEntry("status", "failed");
     assertThat(String.valueOf(event.metadata().get("errorCode")).length()).isLessThan(1900);
+  }
+
+  // ---- ADR 0041 §11 D1：输入来源键 ----
+
+  private static InputSources sources(List<String> verified, List<String> issuers, Map<String, String> factSources,
+                                      Boolean identityMatched, Instant expiresAt) {
+    return new InputSources(new TreeSet<>(verified), new TreeSet<>(issuers), new TreeMap<>(factSources), identityMatched,
+        expiresAt);
+  }
+
+  @Test
+  void 决策事件写入输入来源键() {
+    Instant expires = Instant.parse("2026-11-08T01:10:00Z");
+    GuardDecisionDraft d = draft("ALLOW", "ok", List.of(), "agent-42", null).withInputSources(sources(
+        List.of("principal.id", "context.amount"), List.of("idp.example.com#2026-11"),
+        Map.of("context.amount", "ledger.amount"), true, expires));
+
+    Map<String, Object> m = builder.decisionEvent(d, UUID.randomUUID(), null, "user-1").metadata();
+
+    assertThat(m).containsEntry("verifiedFields", List.of("context.amount", "principal.id"))
+        .containsEntry("factIssuers", List.of("idp.example.com#2026-11"))
+        .containsEntry("factSources", List.of("context.amount=ledger.amount"))
+        .containsEntry("principalIdentityMatched", true)
+        .containsEntry("factExpiresAt", "2026-11-08T01:10:00Z")
+        .doesNotContainKey("inputSourcesTruncated");
+  }
+
+  /** 全 declared（无事实、非 user 主体）：一个新键都不写，与引入来源标记之前的收据键集相同。 */
+  @Test
+  void 无来源信息时不写任何来源键() {
+    Map<String, Object> plain = builder.decisionEvent(draft("ALLOW", "ok", List.of(), "agent-42", null),
+        UUID.randomUUID(), null, "user-1").metadata();
+    Map<String, Object> unmatchedUser = builder.decisionEvent(draft("ALLOW", "ok", List.of(), "agent-42", null)
+        .withInputSources(sources(List.of(), List.of(), Map.of(), false, null)), UUID.randomUUID(), null, "user-1")
+        .metadata();
+
+    assertThat(plain).doesNotContainKeys("verifiedFields", "factIssuers", "factSources", "principalIdentityMatched",
+        "factExpiresAt", "inputSourcesTruncated");
+    assertThat(unmatchedUser).containsEntry("principalIdentityMatched", false)
+        .doesNotContainKeys("verifiedFields", "factIssuers", "factSources", "factExpiresAt", "inputSourcesTruncated");
+  }
+
+  /**
+   * 64 条 128 字符路径（ADR 0041 §11.3 第 1 条）：缩短顺序 factIssuers → verifiedFields → factSources，
+   * 列表每轮删末项，首次缩短即置 inputSourcesTruncated；身份与完整性键、principal / action / resource 键不动。
+   */
+  @Test
+  void receiptTruncationOrderAndFlag() throws Exception {
+    List<String> paths = IntStream.range(0, 64)
+        .mapToObj(i -> "context." + String.format("%03d", i) + "x".repeat(128 - 11)).toList();
+    Map<String, String> factSources = new TreeMap<>();
+    paths.forEach(p -> factSources.put(p, "s".repeat(64)));
+    List<String> issuers = IntStream.range(0, 8).mapToObj(i -> "issuer-" + i + ".example.com#kid-" + i).toList();
+    GuardDecisionDraft base = draft("REQUIRE_APPROVAL", "r".repeat(255), List.of("GDPR:ART17"), "agent-42", "idem-1");
+    GuardDecisionDraft d = base.withInputSources(sources(paths, issuers, factSources, true,
+        Instant.parse("2026-11-08T01:10:00Z")));
+    UUID decisionId = UUID.randomUUID();
+    UUID approvalId = UUID.randomUUID();
+
+    AuditEvent event = builder.decisionEvent(d, decisionId, approvalId, "user-1");
+    Map<String, Object> m = event.metadata();
+
+    assertThat(paths).allSatisfy(p -> assertThat(p).hasSize(128));
+    assertThat(builder.measure(new LinkedHashMap<>(m))).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat(appenderLength(event)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat(m).containsEntry("inputSourcesTruncated", true)
+        .containsEntry("reason", "")
+        .containsEntry("factIssuers", List.of())
+        .containsEntry("verifiedFields", List.of())
+        .containsEntry("principalIdentityMatched", true)
+        .containsEntry("factExpiresAt", "2026-11-08T01:10:00Z")
+        .containsEntry("decisionId", decisionId.toString())
+        .containsEntry("approvalId", approvalId.toString())
+        .containsEntry("contextHash", d.contextHash())
+        .containsEntry("idempotencyKey", "idem-1")
+        .containsEntry("principalId", "agent-42")
+        .containsEntry("principalType", "agent")
+        .containsEntry("actionName", "delete_customer_record")
+        .containsEntry("resourceId", "agent-42")
+        .containsEntry("agentModel", "claude-fable-5-1")
+        .containsEntry("controls", List.of("GDPR:ART17"));
+    @SuppressWarnings("unchecked")
+    List<String> keptSources = (List<String>) m.get("factSources");
+    List<String> allSources = factSources.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()).toList();
+    assertThat(keptSources).isNotEmpty().hasSizeLessThan(64).isEqualTo(allSources.subList(0, keptSources.size()));
+  }
+
+  /** 只缩到 verifiedFields 就达标时：factSources 原样保留，verifiedFields 是原列表的前缀。 */
+  @Test
+  void verifiedFieldsShrinksBeforeFactSources() {
+    List<String> paths = IntStream.range(0, 40)
+        .mapToObj(i -> "context." + String.format("%03d", i) + "x".repeat(128 - 11)).toList();
+    GuardDecisionDraft d = draft("ALLOW", "ok", List.of(), "agent-42", null).withInputSources(sources(paths,
+        List.of("idp.example.com#2026-11"), Map.of(paths.get(0), "ledger"), null, null));
+
+    Map<String, Object> m = builder.decisionEvent(d, UUID.randomUUID(), null, "user-1").metadata();
+
+    @SuppressWarnings("unchecked")
+    List<String> kept = (List<String>) m.get("verifiedFields");
+    assertThat(m).containsEntry("inputSourcesTruncated", true).containsEntry("factIssuers", List.of())
+        .containsEntry("factSources", List.of(paths.get(0) + "=ledger"));
+    assertThat(kept).isNotEmpty().hasSizeLessThan(40).isEqualTo(paths.subList(0, kept.size()));
+  }
+
+  /** verifiedFields 至多 64 项（ADR 0041 §11 D1）：服务端解析的两项让总数超过 64 时截到 64 并置 truncated。 */
+  @Test
+  void verifiedFieldsCappedAt64() {
+    List<String> paths = new ArrayList<>(IntStream.range(0, 64).mapToObj(i -> "context.k" + i).toList());
+    paths.add("principal.id");
+    paths.add("principal.roles");
+    GuardDecisionDraft d = draft("ALLOW", "ok", List.of(), "agent-42", null)
+        .withInputSources(sources(paths, List.of(), Map.of(), true, null));
+
+    Map<String, Object> m = builder.decisionEvent(d, UUID.randomUUID(), null, "user-1").metadata();
+
+    assertThat((List<?>) m.get("verifiedFields")).hasSize(64);
+    assertThat(m).containsEntry("inputSourcesTruncated", true);
   }
 }

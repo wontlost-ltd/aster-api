@@ -5,11 +5,15 @@ import io.aster.audit.chain.AuditChainAppender;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardDecisionResponse.ReceiptView;
 import io.aster.guard.api.GuardFromEvidenceRequest;
+import io.aster.guard.provenance.FactIssuerStore;
+import io.aster.guard.provenance.FactVerifier;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,7 +32,8 @@ class GuardEvidenceDecisionServiceTest {
   private final GuardDecisionStore store = mock(GuardDecisionStore.class);
   private final GuardDecisionService decisionService = mock(GuardDecisionService.class);
   private final GuardEvidenceDecisionService service = new GuardEvidenceDecisionService(store, decisionService,
-      new GuardActionMapper(), mock(AuditChainAppender.class), mock(GuardReceiptBuilder.class), objectMapper, Duration.ofHours(24));
+      new GuardActionMapper(), mock(AuditChainAppender.class), mock(GuardReceiptBuilder.class), objectMapper,
+      new FactVerifier(mock(FactIssuerStore.class), Clock.systemUTC()), Duration.ofHours(24));
 
   private GuardDecisionEntity storedRow(GuardDecisionResponse response) throws Exception {
     GuardDecisionEntity e = new GuardDecisionEntity();
@@ -52,7 +57,7 @@ class GuardEvidenceDecisionServiceTest {
     when(store.findByEvidenceCorrelationId(TENANT, CID)).thenReturn(Optional.of(row));
     when(decisionService.get(TENANT, row.id)).thenReturn(Optional.of(current));
 
-    assertThat(service.createFromEvidence(TENANT, "u-req", new GuardFromEvidenceRequest(CID, null), null)).isEqualTo(current);
+    assertThat(service.createFromEvidence(TENANT, "u-req", Set.of(), new GuardFromEvidenceRequest(CID, null), null, null)).isEqualTo(current);
     verify(store, never()).saveDecision(any(), any(), any());
   }
 
@@ -63,7 +68,7 @@ class GuardEvidenceDecisionServiceTest {
     when(store.findByEvidenceCorrelationId(TENANT, CID)).thenReturn(Optional.of(row));
     when(decisionService.get(TENANT, row.id)).thenReturn(Optional.empty());
 
-    assertThat(service.createFromEvidence(TENANT, "u-req", new GuardFromEvidenceRequest(CID, null), null)).isEqualTo(stored);
+    assertThat(service.createFromEvidence(TENANT, "u-req", Set.of(), new GuardFromEvidenceRequest(CID, null), null, null)).isEqualTo(stored);
     verify(store, never()).saveDecision(any(), any(), any());
   }
 }

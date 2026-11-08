@@ -42,6 +42,18 @@ final class GuardJson {
     }
   }
 
+  /** 读取 {@code guard_decisions.fact_issuers}（jsonb 字符串数组，{@code issuer#kid}）；列为空时返回空列表。 */
+  List<String> readFactIssuers(GuardDecisionEntity e) {
+    if (e.factIssuers == null || e.factIssuers.isBlank()) {
+      return List.of();
+    }
+    try {
+      return List.copyOf(mapper.readValue(e.factIssuers, STRING_LIST));
+    } catch (JsonProcessingException ex) {
+      throw new IllegalStateException("guard_decisions.fact_issuers 无法解析: " + e.id, ex);
+    }
+  }
+
   String writeJson(Object value) {
     try {
       return mapper.writeValueAsString(value);

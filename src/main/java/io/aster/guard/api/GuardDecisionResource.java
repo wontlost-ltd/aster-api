@@ -32,6 +32,7 @@ import java.io.InputStream;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -102,6 +103,8 @@ public class GuardDecisionResource {
     String tenantId = identityResolver.tenantId();
     String performedBy = identityResolver.performedBy();
     String apiKeyId = identityResolver.apiKeyId();
+    // 已验证业务角色：principal.roles 只有在其中才能被服务端证实（ADR 0040 §11 D2 (a)）
+    Set<String> businessRoles = Set.copyOf(identityResolver.businessRoles());
     // 月度配额按归属取键（ADR 0015 §3）：团队 key 计入 team owner 的池。
     String quotaOwnerId = identityResolver.quotaOwnerId();
     // 套餐门禁与计量只针对 API 调用；HMAC 已验签、无 API key 的内部会话调用两者都不经过。
@@ -114,8 +117,8 @@ public class GuardDecisionResource {
       return quotaRejection.get();
     }
     try {
-      GuardDecisionResponse decision = service.decide(tenantId, performedBy, apiKeyId, req.value(), req.actionHash(),
-          req.action(), idempotencyKey);
+      GuardDecisionResponse decision = service.decide(tenantId, performedBy, apiKeyId, businessRoles, req.value(),
+          req.actionHash(), req.action(), idempotencyKey);
       if (apiCall) {
         apiQuotaGuard.recordAsync(quotaOwnerId, performedBy, tenantId, apiKeyId, PATH, "success",
             System.currentTimeMillis() - startTime);
@@ -145,7 +148,8 @@ public class GuardDecisionResource {
     try {
       GuardRequestBodyReader.Parsed<GuardFromEvidenceRequest> req = bodyReader.read(body, GuardFromEvidenceRequest.class);
       return Response.ok(evidenceService.createFromEvidence(identityResolver.tenantId(),
-          identityResolver.performedBy(), req.value(), req.actionHash())).build();
+          identityResolver.performedBy(), Set.copyOf(identityResolver.businessRoles()), req.value(), req.actionHash(),
+          req.action())).build();
     } catch (GuardInvalidFactException bad) {
       return invalidFact(bad);
     } catch (GuardInvalidActionException bad) {

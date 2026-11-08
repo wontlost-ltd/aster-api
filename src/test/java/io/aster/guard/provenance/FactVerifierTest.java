@@ -402,4 +402,68 @@ class FactVerifierTest {
           assertThat(e.reason()).isEqualTo(GuardInvalidFactException.UNKNOWN_ISSUER);
         });
   }
+
+  // ---- 点路径歧义与类型化字段（Task 12 评审遗留 (c) / (d)） ----
+
+  private ObjectNode signedClaim(String claims, String sources) {
+    return signer.fresh().audience(TENANT).window(ISSUED, EXPIRES).claims(claims).sources(sources).sign();
+  }
+
+  /** claim 路径按嵌套解释；路径所经对象里有含 '.' 的字面键且与该路径相撞 → ambiguous_path。 */
+  @Test
+  void dottedLiteralKeyUnderClaimedPrefixIsRejected() {
+    String nested = "{\"principal\":{\"id\":\"agent-42\"},\"action\":{\"name\":\"refund\"},"
+        + "\"context\":{\"customer\":{\"tier\":\"gold\"},\"customer.tier\":\"bronze\"}}";
+    String literalOnly = "{\"principal\":{\"id\":\"agent-42\"},\"action\":{\"name\":\"refund\"},"
+        + "\"context\":{\"customer.tier\":\"gold\"}}";
+    String deeper = "{\"principal\":{\"id\":\"agent-42\"},\"action\":{\"name\":\"refund\"},"
+        + "\"context\":{\"customer\":{\"tier\":\"gold\"},\"customer.tier.extra\":1}}";
+    ObjectNode fact = signedClaim("{\"context.customer.tier\":\"gold\"}", "{\"context.customer.tier\":\"crm.tier\"}");
+
+    assertRejected(action(nested, fact), GuardInvalidFactException.AMBIGUOUS_PATH);
+    assertRejected(action(literalOnly, fact), GuardInvalidFactException.AMBIGUOUS_PATH);
+    assertRejected(action(deeper, fact), GuardInvalidFactException.AMBIGUOUS_PATH);
+  }
+
+  /** 与 claim 路径不相撞的含 '.' 字面键（另一分支、或 claim 覆盖的值内部）不影响验签。 */
+  @Test
+  void dottedKeyOutsideClaimedPathIsAccepted() {
+    String other = "{\"principal\":{\"id\":\"agent-42\"},\"action\":{\"name\":\"refund\"},"
+        + "\"context\":{\"customer\":{\"tier\":\"gold\"},\"note.text\":\"x\",\"order\":{\"line.1\":2}}}";
+    ObjectNode tierFact = signedClaim("{\"context.customer.tier\":\"gold\"}", "{\"context.customer.tier\":\"crm.tier\"}");
+    ObjectNode orderFact = signedClaim("{\"context.order\":{\"line.1\":2}}", "{\"context.order\":\"erp.order\"}");
+
+    assertThat(verify(action(other, tierFact)).paths()).containsExactly("context.customer.tier");
+    assertThat(verify(action(other, orderFact)).paths()).containsExactly("context.order");
+  }
+
+  /**
+   * principal.id 等类型化字符串字段：Jackson 会把数字强转成字符串（42 → "42"），规则看到的与签发方签的不是同一类型，
+   * 所以这些路径上的 claim 必须是 JSON 字符串；principal.roles 必须是字符串数组；覆盖其父对象的 claim 同样检查。
+   */
+  @Test
+  void nonStringClaimOnTypedStringFieldIsRejected() {
+    String numericId = "{\"principal\":{\"id\":42,\"type\":\"user\"},\"action\":{\"name\":\"refund\"}}";
+    String numericRole = "{\"principal\":{\"id\":\"u-1\",\"roles\":[7]},\"action\":{\"name\":\"refund\"}}";
+    String nullResource = "{\"principal\":{\"id\":\"u-1\"},\"action\":{\"name\":\"refund\"},\"resource\":{\"id\":null}}";
+
+    assertRejected(action(numericId, signedClaim("{\"principal.id\":42}", "{\"principal.id\":\"idp.sub\"}")),
+        GuardInvalidFactException.CLAIM_TYPE_MISMATCH);
+    assertRejected(action(numericId, signedClaim("{\"principal\":{\"id\":42,\"type\":\"user\"}}",
+        "{\"principal\":\"idp.subject\"}")), GuardInvalidFactException.CLAIM_TYPE_MISMATCH);
+    assertRejected(action(numericRole, signedClaim("{\"principal.roles\":[7]}", "{\"principal.roles\":\"idp.roles\"}")),
+        GuardInvalidFactException.CLAIM_TYPE_MISMATCH);
+    assertRejected(action(nullResource, signedClaim("{\"resource.id\":null}", "{\"resource.id\":\"erp.id\"}")),
+        GuardInvalidFactException.CLAIM_TYPE_MISMATCH);
+  }
+
+  @Test
+  void stringClaimOnTypedStringFieldIsAccepted() {
+    String userAction = "{\"principal\":{\"id\":\"u-1\",\"type\":\"user\",\"roles\":[\"ops\"]},\"action\":{\"name\":\"refund\"},"
+        + "\"agent\":{\"provider\":\"anthropic\",\"model\":\"m\"}}";
+    ObjectNode fact = signedClaim("{\"principal.id\":\"u-1\",\"principal.roles\":[\"ops\"],\"agent.model\":\"m\"}",
+        "{\"principal.id\":\"idp.sub\",\"principal.roles\":\"idp.roles\",\"agent.model\":\"gw.model\"}");
+
+    assertThat(verify(action(userAction, fact)).paths()).containsExactly("agent.model", "principal.id", "principal.roles");
+  }
 }

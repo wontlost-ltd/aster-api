@@ -42,6 +42,16 @@ public class GuardInvalidFactException extends GuardInvalidActionException {
   public static final String CLAIM_MISMATCH = "claim_mismatch";
   /** {@code sources} 键集与 {@code claims} 键集不相等。 */
   public static final String SOURCES_MISMATCH = "sources_mismatch";
+  /**
+   * claim 路径按嵌套解释，而路径所经的某个对象里有含 {@code .} 的字面键与该路径相撞
+   * （如 claim {@code context.customer.tier} 与字面键 {@code context["customer.tier"]}）：同一点路径指向两个值。
+   */
+  public static final String AMBIGUOUS_PATH = "ambiguous_path";
+  /**
+   * claim 落在类型化字符串字段（{@code principal.id / type}、{@code action.name}、{@code resource.*}、{@code agent.*}）上
+   * 却不是 JSON 字符串，或 {@code principal.roles} 不是字符串数组：请求解析会把数字强转为字符串，规则看到的值与签发方签的不是同一个。
+   */
+  public static final String CLAIM_TYPE_MISMATCH = "claim_type_mismatch";
 
   private final String issuer;
   private final String kid;

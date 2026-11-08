@@ -1,6 +1,7 @@
 package io.aster.guard;
 
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
+import io.aster.guard.provenance.InputSources;
 import io.aster.policy.evidence.AgentIdentity;
 import io.aster.policy.governance.VerdictView;
 
@@ -21,6 +22,7 @@ import java.util.Set;
  * @param role       Verdict 的 role（REQUIRE_APPROVAL 时即所需审批角色）
  * @param reasonCode fail-closed 原因；Verdict 正常返回时为 null
  * @param agent      调用方自报的模型身份（已校验归一）；请求未带 agent 时为 null
+ * @param inputSources 逐字段来源（ADR 0040 §11 D1）：不传给规则，只进响应、决策行与收据；null 归一为全 declared
  */
 public record GuardDecisionDraft(
     String tenantId,
@@ -37,7 +39,8 @@ public record GuardDecisionDraft(
     String ruleId,
     List<String> controls,
     GuardReasonCode reasonCode,
-    AgentIdentity agent) {
+    AgentIdentity agent,
+    InputSources inputSources) {
 
   static final String ALLOW = "ALLOW";
   static final String DENY = "DENY";
@@ -50,30 +53,46 @@ public record GuardDecisionDraft(
   public GuardDecisionDraft {
     action = action == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(action));
     controls = controls == null ? List.of() : List.copyOf(controls);
+    inputSources = inputSources == null ? InputSources.NONE : inputSources;
+  }
+
+  /** 无来源信息（全部 declared）的草稿。 */
+  public GuardDecisionDraft(String tenantId, String policyModule, String policyFunction, String idempotencyKey,
+                            Map<String, Object> action, String contextHash, String actionHash,
+                            PolicyVersionView policyVersion, String outcome, String role, String reason, String ruleId,
+                            List<String> controls, GuardReasonCode reasonCode, AgentIdentity agent) {
+    this(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash, policyVersion, outcome,
+        role, reason, ruleId, controls, reasonCode, agent, null);
+  }
+
+  /** 附上本次请求的逐字段来源。 */
+  public GuardDecisionDraft withInputSources(InputSources sources) {
+    return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
+        policyVersion, outcome, role, reason, ruleId, controls, reasonCode, agent, sources);
   }
 
   /** 补上评估前解析到的活跃策略版本（幂等查重在版本解析之前完成）。 */
   public GuardDecisionDraft withPolicyVersion(PolicyVersionView version) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
-        version, outcome, role, reason, ruleId, controls, reasonCode, agent);
+        version, outcome, role, reason, ruleId, controls, reasonCode, agent, inputSources);
   }
 
   /** 记录被执行规则的身份（{@code @id} / {@code @control}），与结论无关。 */
   public GuardDecisionDraft withRule(String newRuleId, List<String> newControls) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
-        policyVersion, outcome, role, reason, newRuleId, newControls, reasonCode, agent);
+        policyVersion, outcome, role, reason, newRuleId, newControls, reasonCode, agent, inputSources);
   }
 
   /** 采纳规则返回的 Verdict 结论。 */
   public GuardDecisionDraft withVerdict(VerdictView verdict) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
-        policyVersion, verdict.outcome(), verdict.role(), verdict.reason(), ruleId, controls, null, agent);
+        policyVersion, verdict.outcome(), verdict.role(), verdict.reason(), ruleId, controls, null, agent, inputSources);
   }
 
   /** fail-closed：改判 DENY 并记录原因；保留 ruleId / controls 以便追溯被评估的规则，清掉不再成立的 role / reason。 */
   public GuardDecisionDraft deny(GuardReasonCode code) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
-        policyVersion, DENY, null, null, ruleId, controls, code, agent);
+        policyVersion, DENY, null, null, ruleId, controls, code, agent, inputSources);
   }
 
   /** REQUIRE_APPROVAL / ESCALATE 需要人工复核。 */

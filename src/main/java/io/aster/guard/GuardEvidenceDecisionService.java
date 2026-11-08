@@ -2,11 +2,16 @@ package io.aster.guard;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardFromEvidenceRequest;
+import io.aster.guard.provenance.FactVerifier;
+import io.aster.guard.provenance.FactVerifier.VerifiedFacts;
+import io.aster.guard.provenance.GuardInvalidFactException;
+import io.aster.guard.provenance.InputSourceResolver;
 import io.aster.policy.entity.AuditLog;
 import io.aster.policy.event.EventType;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -37,6 +42,9 @@ import static io.aster.guard.GuardText.isBlank;
  * 决策另写一条 {@code ACTION_GUARD_DECISION} 收据行（metadata 含 {@code evidenceCorrelationId} 指回评估事件），
  * 使收据查询与证据导出能按 decisionId 取回审批；收据写入失败按 DENY {@code receipt_unavailable} 处理。同一租户同一相关键只开一次决策，重复调用返回既有决策（{@code action} 不比对）。
  *
+ * <p>与 {@code POST /decisions} 同一来源判定（ADR 0040 §11 D2 (b)(c)）：请求自带的签名事实在查既有决策之前验签，
+ * 失败即 400 {@code invalid_fact}；签名内的用户即 performedBy，{@code principal.type == "user"} 且 id 相同时 verified。
+ *
  * <p>阻塞方法：须在非事务的 worker 线程调用——存储层每步自开独立事务，唯一索引冲突时才能干净地回读先到者。
  */
 @ApplicationScoped
@@ -55,6 +63,7 @@ public class GuardEvidenceDecisionService {
   private ObjectMapper objectMapper;
   private GuardJson json;
   private GuardDecisionAssembler assembler;
+  private FactVerifier factVerifier;
   private Duration approvalTtl;
 
   /** CDI 客户端代理所需。 */
@@ -65,6 +74,7 @@ public class GuardEvidenceDecisionService {
   public GuardEvidenceDecisionService(GuardDecisionStore store, GuardDecisionService decisionService,
                                       GuardActionMapper mapper, AuditChainAppender appender,
                                       GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
+                                      FactVerifier factVerifier,
                                       @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl) {
     this.store = store;
     this.decisionService = decisionService;
@@ -74,23 +84,29 @@ public class GuardEvidenceDecisionService {
     this.objectMapper = objectMapper;
     this.json = new GuardJson(objectMapper);
     this.assembler = new GuardDecisionAssembler(json);
+    this.factVerifier = factVerifier;
     this.approvalTtl = approvalTtl;
   }
 
   /**
    * 以评估事件为锚开决策、写决策收据并建待审批；收据写不进链时决策改判 DENY 且不建审批。
    *
-   * @param performedBy 签名内的用户（{@code RequestIdentityResolver.performedBy}），记为请求方供四眼校验
-   * @param actionHash  请求体 {@code action} 原文的 {@code jcs-sha256/v1}，写入决策行；审批转 ALLOW 时据此签发执行收据
+   * @param performedBy   签名内的用户（{@code RequestIdentityResolver.performedBy}），记为请求方供四眼校验
+   * @param businessRoles 签名内的已验证业务角色，用于判定 {@code principal.roles} 是否 verified
+   * @param actionHash    请求体 {@code action} 原文的 {@code jcs-sha256/v1}，写入决策行；审批转 ALLOW 时据此签发执行收据
+   * @param rawAction     请求体 {@code action} 原文树，其中的 {@code facts} 在查既有决策之前验签；null 视为无签名事实
+   * @throws GuardInvalidFactException      签名事实验签失败（先于重放，不会被既有决策掩盖）
    * @throws GuardApprovalConflictException {@code user_required} / {@code invalid_action}(400)、
    *                                        {@code evidence_not_found}(404)、{@code evidence_not_approvable}(409)
    */
-  public GuardDecisionResponse createFromEvidence(String tenantId, String performedBy, GuardFromEvidenceRequest req,
-                                                  String actionHash) {
+  public GuardDecisionResponse createFromEvidence(String tenantId, String performedBy, Set<String> businessRoles,
+                                                  GuardFromEvidenceRequest req, String actionHash, JsonNode rawAction) {
     if (isAnonymous(performedBy)) {
       throw new GuardApprovalConflictException("user_required", "from-evidence 需要签名内的用户身份");
     }
     String correlationId = validCorrelationId(req);
+    // 与 POST /decisions 同序（ADR 0040 §11 D4）：本次请求自带的事实先验签再查既有决策；重放返回首次决策的来源
+    VerifiedFacts facts = factVerifier.verify(tenantId, rawAction);
     Optional<GuardDecisionResponse> replay = existing(tenantId, correlationId);
     if (replay.isPresent()) {
       return replay.get();
@@ -103,7 +119,8 @@ public class GuardEvidenceDecisionService {
       throw new GuardApprovalConflictException("evidence_not_approvable", "评估结论不需要审批",
           Map.of("outcome", String.valueOf(outcome)));
     }
-    GuardDecisionDraft draft = draftOf(tenantId, event, req, actionHash, metadata, outcome);
+    GuardDecisionDraft draft = draftOf(tenantId, event, req, actionHash, metadata, outcome)
+        .withInputSources(InputSourceResolver.resolve(req.action(), facts, performedBy, businessRoles));
 
     UUID decisionId = UUID.randomUUID();
     UUID approvalId = UUID.randomUUID();
