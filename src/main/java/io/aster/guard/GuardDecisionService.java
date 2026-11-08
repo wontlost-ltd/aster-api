@@ -1,11 +1,14 @@
 package io.aster.guard;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.api.GuardActionRequest;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
+import io.aster.guard.provenance.FactVerifier;
+import io.aster.guard.provenance.GuardInvalidFactException;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
 import io.aster.policy.api.PolicyEvaluationService;
@@ -35,8 +38,8 @@ import static io.aster.guard.GuardDecisionAssembler.toApproval;
 import static io.aster.guard.GuardText.isBlank;
 
 /**
- * Action Guard 决策编排（ADR 0040 §2–§5）：扁平化 → 幂等查重（指纹比对）→ 解析活跃版本 → 评估 → 同步收据 →
- * 决策行与待审批行同一事务落库。
+ * Action Guard 决策编排（ADR 0040 §2–§5）：扁平化 → 签名事实验签（§11 D4）→ 幂等查重（指纹比对）→ 解析活跃版本 →
+ * 评估 → 同步收据 → 决策行与待审批行同一事务落库。
  *
  * <p>fail-closed：非 Verdict、评估异常 / 超时、收据写入失败、执行收据签发失败一律判 DENY 并给出 reasonCode；
  * 收据写入失败时不创建待审批，保证「没有入链的决策不会被人批准放行」。
@@ -70,6 +73,7 @@ public class GuardDecisionService {
   private GuardJson json;
   private GuardDecisionAssembler assembler;
   private ExecutionReceiptIssuer receiptIssuer;
+  private FactVerifier factVerifier;
   private Duration approvalTtl;
   private VersionLookupTx versionLookupTx;
 
@@ -81,16 +85,17 @@ public class GuardDecisionService {
   public GuardDecisionService(PolicyEvaluationService evaluationService, PolicySourceRepository policySourceRepository,
                               AuditChainAppender appender, GuardDecisionStore store, GuardActionMapper mapper,
                               GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
-                              ExecutionReceiptIssuer receiptIssuer,
+                              ExecutionReceiptIssuer receiptIssuer, FactVerifier factVerifier,
                               @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl) {
     this(evaluationService, policySourceRepository, appender, store, mapper, receiptBuilder, objectMapper, receiptIssuer,
-        approvalTtl, lookup -> QuarkusTransaction.requiringNew().call(lookup::get));
+        factVerifier, approvalTtl, lookup -> QuarkusTransaction.requiringNew().call(lookup::get));
   }
 
   GuardDecisionService(PolicyEvaluationService evaluationService, PolicySourceRepository policySourceRepository,
                        AuditChainAppender appender, GuardDecisionStore store, GuardActionMapper mapper,
                        GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
-                       ExecutionReceiptIssuer receiptIssuer, Duration approvalTtl, VersionLookupTx versionLookupTx) {
+                       ExecutionReceiptIssuer receiptIssuer, FactVerifier factVerifier, Duration approvalTtl,
+                       VersionLookupTx versionLookupTx) {
     this.evaluationService = evaluationService;
     this.policySourceRepository = policySourceRepository;
     this.appender = appender;
@@ -100,6 +105,7 @@ public class GuardDecisionService {
     this.json = new GuardJson(objectMapper);
     this.assembler = new GuardDecisionAssembler(json);
     this.receiptIssuer = receiptIssuer;
+    this.factVerifier = factVerifier;
     this.approvalTtl = approvalTtl;
     this.versionLookupTx = versionLookupTx;
   }
@@ -113,21 +119,26 @@ public class GuardDecisionService {
    * @param apiKeyId    已验证的 API key（未经 API key 鉴权时为 null）
    * @param actionHash  请求体 {@code action} 原文的 {@code jcs-sha256/v1}（{@link GuardRequestBodyReader}）；
    *                    不参与幂等指纹（ADR 0040 §3.1 七项不变）
+   * @param rawAction   请求体 {@code action} 原文树，其中的 {@code facts} 在幂等查键之前验签；null 视为无签名事实
+   * @throws GuardInvalidFactException          签名事实验签失败（先于幂等查键，所以不会被重放掩盖）
    * @throws GuardInvalidActionException        请求体或幂等键校验失败
    * @throws GuardIdempotencyMismatchException  幂等键已绑定另一个提议动作
    * @throws GuardPolicyNotFoundException       策略不存在或无活跃版本
    */
   public GuardDecisionResponse decide(String tenantId, String performedBy, String apiKeyId, GuardActionRequest req,
-                                      String actionHash, String rawIdempotencyKey) {
-    GuardDecisionResponse response = decideOnce(tenantId, performedBy, apiKeyId, req, actionHash, rawIdempotencyKey);
+                                      String actionHash, JsonNode rawAction, String rawIdempotencyKey) {
+    GuardDecisionResponse response = decideOnce(tenantId, performedBy, apiKeyId, req, actionHash, rawAction,
+        rawIdempotencyKey);
     return awaitApproval(tenantId, response, clampWaitSeconds(req == null ? null : req.waitSeconds()));
   }
 
   private GuardDecisionResponse decideOnce(String tenantId, String performedBy, String apiKeyId, GuardActionRequest req,
-                                           String actionHash, String rawIdempotencyKey) {
+                                           String actionHash, JsonNode rawAction, String rawIdempotencyKey) {
     String idempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
     validateAddress(req);
     Map<String, Object> flat = mapper.flatten(req.action());
+    // 本次请求自带的事实必须有效：验签失败即 400，先于幂等查键（ADR 0040 §11 D4），重放不能替无效事实放行
+    factVerifier.verify(tenantId, rawAction);
     GuardDecisionDraft base = new GuardDecisionDraft(tenantId, req.policyModule(), req.policyFunction(),
         idempotencyKey, flat, mapper.contextHash(req.action().context()), actionHash, null, null, null, null, null, null,
         null, declaredAgent(req.action().agent()));

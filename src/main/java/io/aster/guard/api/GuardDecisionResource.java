@@ -8,6 +8,7 @@ import io.aster.guard.GuardIdempotencyMismatchException;
 import io.aster.guard.GuardInvalidActionException;
 import io.aster.guard.GuardPolicyNotFoundException;
 import io.aster.guard.GuardRequestBodyReader;
+import io.aster.guard.provenance.GuardInvalidFactException;
 import io.aster.guard.receipt.GuardReceiptService;
 import io.aster.policy.rest.RequestIdentityResolver;
 import io.aster.policy.security.rbac.RequireRole;
@@ -92,6 +93,8 @@ public class GuardDecisionResource {
     GuardRequestBodyReader.Parsed<GuardActionRequest> req;
     try {
       req = bodyReader.read(body, GuardActionRequest.class);
+    } catch (GuardInvalidFactException bad) {
+      return invalidFact(bad);
     } catch (GuardInvalidActionException bad) {
       return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_action", bad.getMessage());
     }
@@ -112,12 +115,14 @@ public class GuardDecisionResource {
     }
     try {
       GuardDecisionResponse decision = service.decide(tenantId, performedBy, apiKeyId, req.value(), req.actionHash(),
-          idempotencyKey);
+          req.action(), idempotencyKey);
       if (apiCall) {
         apiQuotaGuard.recordAsync(quotaOwnerId, performedBy, tenantId, apiKeyId, PATH, "success",
             System.currentTimeMillis() - startTime);
       }
       return Response.ok(decision).build();
+    } catch (GuardInvalidFactException bad) {
+      return invalidFact(bad);
     } catch (GuardInvalidActionException bad) {
       return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_action", bad.getMessage());
     } catch (GuardIdempotencyMismatchException mismatch) {
@@ -141,6 +146,8 @@ public class GuardDecisionResource {
       GuardRequestBodyReader.Parsed<GuardFromEvidenceRequest> req = bodyReader.read(body, GuardFromEvidenceRequest.class);
       return Response.ok(evidenceService.createFromEvidence(identityResolver.tenantId(),
           identityResolver.performedBy(), req.value(), req.actionHash())).build();
+    } catch (GuardInvalidFactException bad) {
+      return invalidFact(bad);
     } catch (GuardInvalidActionException bad) {
       return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_action", bad.getMessage());
     } catch (GuardApprovalConflictException e) {
@@ -227,6 +234,22 @@ public class GuardDecisionResource {
       default -> Response.Status.BAD_REQUEST;
     };
     return status.getStatusCode();
+  }
+
+  /**
+   * 400 {@code invalid_fact}（ADR 0040 §11 D3）：{@code error, message} 之后附 {@code issuer / kid / reason}；
+   * issuer、kid 无法从请求中确定时省略。不计量（与其他 400 一致）。
+   */
+  private static Response invalidFact(GuardInvalidFactException bad) {
+    Map<String, Object> details = new LinkedHashMap<>();
+    if (bad.issuer() != null) {
+      details.put("issuer", bad.issuer());
+    }
+    if (bad.kid() != null) {
+      details.put("kid", bad.kid());
+    }
+    details.put("reason", bad.reason());
+    return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_fact", bad.getMessage(), details);
   }
 
   private static Response error(int status, String code, String message) {

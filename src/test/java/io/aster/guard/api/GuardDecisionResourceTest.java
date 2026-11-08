@@ -1,10 +1,15 @@
 package io.aster.guard.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.aster.audit.chain.AuditChainAnchorService;
 import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardDecisionEntity;
+import io.aster.guard.provenance.FactIssuerStore;
+import io.aster.guard.provenance.GuardFactIssuerEntity;
+import io.aster.guard.provenance.TestFactSigner;
 import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.guard.receipt.ReceiptSigningKeys;
 import io.aster.policy.cache.CompiledPolicyCache;
@@ -70,6 +75,7 @@ class GuardDecisionResourceTest {
   @Inject CompiledPolicyCache compiledPolicyCache;
   @Inject PolicyVersionResolutionCache versionResolutionCache;
   @Inject AuditChainAnchorService anchorService;
+  @Inject FactIssuerStore factIssuerStore;
   @ConfigProperty(name = "aster.guard.receipt.signing-keys") String signingKeys;
 
   @BeforeEach
@@ -88,6 +94,7 @@ class GuardDecisionResourceTest {
       GuardApprovalEntity.delete("tenantId = ?1", tenant);
       GuardReceiptEntity.delete("tenantId = ?1", tenant);
       GuardDecisionEntity.delete("tenantId = ?1", tenant);
+      GuardFactIssuerEntity.delete("tenantId = ?1", tenant);
       PolicyCatalog.update("defaultVersionId = null where tenantId = ?1", tenant);
       PolicyArtifact.delete("policyVersionId in (select id from PolicyVersion where tenantId = ?1)", tenant);
       PolicyVersion.delete("tenantId = ?1", tenant);
@@ -539,5 +546,110 @@ class GuardDecisionResourceTest {
     assertThat(resp.statusCode()).isEqualTo(200);
     assertThat(resp.jsonPath().getBoolean("valid")).isTrue();
     assertThat(resp.jsonPath().getInt("recordsVerified")).isGreaterThanOrEqualTo(1);
+  }
+
+  // ---- ADR 0040 §11 D3 / D4：签名事实验签 ----
+
+  private static final ObjectMapper JSON = new ObjectMapper();
+
+  /** allowBody() 的 action（context.amount = 250000）附上给定事实后的原文请求体。 */
+  private static String withFacts(JsonNode... facts) {
+    ObjectNode body = JSON.valueToTree(allowBody());
+    var list = ((ObjectNode) body.get("action")).putArray("facts");
+    for (JsonNode f : facts) {
+      list.add(f);
+    }
+    return body.toString();
+  }
+
+  private static TestFactSigner amountFact(TestFactSigner signer) {
+    Instant now = Instant.now();
+    return signer.audience(TENANT).window(now.minusSeconds(30), now.plusSeconds(600))
+        .claims("{\"context.amount\":250000}").sources("{\"context.amount\":\"ledger.amount\"}");
+  }
+
+  private void register(TestFactSigner signer) {
+    var saved = factIssuerStore.upsert(TENANT, TestFactSigner.ISSUER, TestFactSigner.KID, signer.publicKey(), true, null,
+        "user-guard-rest", Instant.now());
+    assertThat(saved).isInstanceOf(FactIssuerStore.UpsertResult.Saved.class);
+  }
+
+  private static long auditRows() {
+    return QuarkusTransaction.requiringNew().call(() -> AuditLog.count("tenantId", TENANT));
+  }
+
+  @Test
+  void validFactIsAcceptedEndToEnd() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(signer);
+
+    Response resp = postRaw(withFacts(amountFact(signer).sign()));
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+  }
+
+  /** 未知 kid、签名被篡改 → 400 invalid_fact（带 issuer / kid / reason），不评估、不落决策行、不写链收据。 */
+  @Test
+  void invalidFactIs400AndWritesNoReceipt() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(signer);
+    ObjectNode tampered = amountFact(signer).sign();
+    ((ObjectNode) tampered.get("sources")).put("context.amount", "agent.selfReported");
+    long auditBefore = auditRows();
+
+    Response unknownKid = postRaw(withFacts(amountFact(TestFactSigner.newKey().kid("2026-12")).sign()));
+    Response badSignature = postRaw(withFacts(tampered));
+
+    assertThat(unknownKid.statusCode()).isEqualTo(400);
+    assertThat(unknownKid.jsonPath().getString("error")).isEqualTo("invalid_fact");
+    assertThat(unknownKid.jsonPath().getString("issuer")).isEqualTo(TestFactSigner.ISSUER);
+    assertThat(unknownKid.jsonPath().getString("kid")).isEqualTo("2026-12");
+    assertThat(unknownKid.jsonPath().getString("reason")).isEqualTo("unknown_issuer");
+    assertThat(badSignature.statusCode()).isEqualTo(400);
+    assertThat(badSignature.jsonPath().getString("error")).isEqualTo("invalid_fact");
+    assertThat(badSignature.jsonPath().getString("reason")).isEqualTo("bad_signature");
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.count("tenantId", TENANT))).isZero();
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("tenantId", TENANT))).isZero();
+    assertThat(auditRows()).isEqualTo(auditBefore);
+  }
+
+  /** facts 内的不安全整数报 invalid_fact（reason unsafe_integer），而不是笼统的 invalid_action。 */
+  @Test
+  void unsafeIntegerInFactIs400InvalidFact() {
+    ObjectNode fact = amountFact(TestFactSigner.newKey()).sign();
+    ((ObjectNode) fact.get("claims")).put("context.amount", 9_007_199_254_740_992L);
+
+    Response resp = postRaw(withFacts(fact));
+
+    assertThat(resp.statusCode()).isEqualTo(400);
+    assertThat(resp.jsonPath().getString("error")).isEqualTo("invalid_fact");
+    assertThat(resp.jsonPath().getString("reason")).isEqualTo("unsafe_integer");
+    assertThat(resp.jsonPath().getString("kid")).isEqualTo(TestFactSigner.KID);
+  }
+
+  /**
+   * 验签先于幂等查键（ADR 0040 §11 D4）：同键首次无事实得 200，再带无效事实 → 400 而非重放首次决策；
+   * 之后同键同体仍重放首次决策（无效请求没有占用或改写该键）。
+   */
+  @Test
+  void invalidFactRejectedBeforeIdempotencyReplay() {
+    String key = "idem-fact-" + UUID.randomUUID();
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(signer);
+    Response first = postRaw(withFacts(), key);
+    ObjectNode expired = amountFact(signer).window(Instant.now().minusSeconds(1200), Instant.now().minusSeconds(600))
+        .sign();
+
+    Response withBadFact = postRaw(withFacts(expired), key);
+    Response replay = postRaw(withFacts(), key);
+
+    assertThat(first.statusCode()).isEqualTo(200);
+    assertThat(withBadFact.statusCode()).isEqualTo(400);
+    assertThat(withBadFact.jsonPath().getString("error")).isEqualTo("invalid_fact");
+    assertThat(withBadFact.jsonPath().getString("reason")).isEqualTo("expired");
+    assertThat(replay.statusCode()).isEqualTo(200);
+    assertThat(replay.jsonPath().getString("decisionId")).isEqualTo(first.jsonPath().getString("decisionId"));
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.count("tenantId", TENANT))).isEqualTo(1);
   }
 }

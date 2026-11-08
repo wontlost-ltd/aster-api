@@ -25,13 +25,34 @@ import java.util.List;
  * <p>为何自行实现：运行期 classpath 没有任何 JCS 实现，且不新增依赖；RFC 8785 只有数字格式一处需要算法，
  * 其余是排序与转义，规模可控。
  *
- * <p>违反上述约束一律抛 {@link IllegalArgumentException}，由调用方映射为各自的 400 错误码。
+ * <p>违反上述约束一律抛 {@link IllegalArgumentException}，由调用方映射为各自的 400 错误码；其中不安全数值与
+ * 孤立代理项抛子类 {@link InvalidJsonValueException}，带共享向量的错误代码（{@link #UNSAFE_INTEGER} /
+ * {@link #INVALID_STRING}），供需要细分原因的调用方（签名事实的 {@code reason}）使用。
  */
 public final class JcsCanonicalizer {
   /** I-JSON 安全整数上界 2^53−1。 */
   static final long MAX_SAFE_INTEGER = 9_007_199_254_740_991L;
   private static final BigInteger MAX_SAFE = BigInteger.valueOf(MAX_SAFE_INTEGER);
   private static final char[] HEX = "0123456789abcdef".toCharArray();
+  /** 共享向量错误代码：非有限数，或按 double 解释后 |x| &gt; 2^53−1。 */
+  public static final String UNSAFE_INTEGER = "unsafe_integer";
+  /** 共享向量错误代码：字符串含孤立代理项（无法编码为 UTF-8）。 */
+  public static final String INVALID_STRING = "invalid_string";
+
+  /** 值本身不满足 I-JSON / UTF-8 约束；{@link #code()} 为共享向量的错误代码。 */
+  public static final class InvalidJsonValueException extends IllegalArgumentException {
+    private static final long serialVersionUID = 1L;
+    private final String code;
+
+    InvalidJsonValueException(String code, String message) {
+      super(message);
+      this.code = code;
+    }
+
+    public String code() {
+      return code;
+    }
+  }
 
   private JcsCanonicalizer() {
   }
@@ -119,7 +140,7 @@ public final class JcsCanonicalizer {
       out.append(c).append(s.charAt(i + 1));
       return i + 1;
     }
-    throw new IllegalArgumentException("字符串含孤立代理项 U+" + Integer.toHexString(c).toUpperCase());
+    throw new InvalidJsonValueException(INVALID_STRING, "字符串含孤立代理项 U+" + Integer.toHexString(c).toUpperCase());
   }
 
   /**
@@ -129,7 +150,7 @@ public final class JcsCanonicalizer {
   private static double requireIJsonNumber(JsonNode node) {
     if (node.isIntegralNumber()) {
       if (node.bigIntegerValue().abs().compareTo(MAX_SAFE) > 0) {
-        throw new IllegalArgumentException("整数超出 I-JSON 安全范围 ±(2^53−1)，须以字符串发送: " + node.asText());
+        throw unsafe("整数超出 I-JSON 安全范围 ±(2^53−1)，须以字符串发送: " + node.asText());
       }
       return node.doubleValue();
     }
@@ -146,18 +167,22 @@ public final class JcsCanonicalizer {
     if (n instanceof BigInteger || n instanceof Long || n instanceof Integer || n instanceof Short || n instanceof Byte) {
       BigInteger exact = n instanceof BigInteger b ? b : BigInteger.valueOf(n.longValue());
       if (exact.abs().compareTo(MAX_SAFE) > 0) {
-        throw new IllegalArgumentException("整数超出 I-JSON 安全范围 ±(2^53−1)，须以字符串发送: " + n);
+        throw unsafe("整数超出 I-JSON 安全范围 ±(2^53−1)，须以字符串发送: " + n);
       }
       return exact.doubleValue();
     }
     double d = n instanceof BigDecimal bd ? bd.doubleValue() : n.doubleValue();
     if (!Double.isFinite(d)) {
-      throw new IllegalArgumentException("数字不是有限值: " + n);
+      throw unsafe("数字不是有限值: " + n);
     }
     if (Math.abs(d) > MAX_SAFE_INTEGER) {
-      throw new IllegalArgumentException("整数超出 I-JSON 安全范围 ±(2^53−1)，须以字符串发送: " + n);
+      throw unsafe("整数超出 I-JSON 安全范围 ±(2^53−1)，须以字符串发送: " + n);
     }
     return d;
+  }
+
+  private static InvalidJsonValueException unsafe(String message) {
+    return new InvalidJsonValueException(UNSAFE_INTEGER, message);
   }
 
   /**
@@ -181,7 +206,7 @@ public final class JcsCanonicalizer {
    */
   static String formatNumber(double x) {
     if (!Double.isFinite(x)) {
-      throw new IllegalArgumentException("数字不是有限值: " + x);
+      throw unsafe("数字不是有限值: " + x);
     }
     if (x == 0) {
       return "0";
