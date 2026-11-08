@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.aster.audit.chain.AuditChainAppender;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -80,5 +81,16 @@ class AuditIdentifierRedactionTest {
         assertTrue(
                 src.contains("log.performedBy = redact("),
                 "performedBy 必须继续脱敏——它可能是 email，且不是链分区键");
+    }
+
+    @Test
+    @DisplayName("执行收据身份键逐字入链：卡号形态的 executorId 与 64 hex 摘要不被改写")
+    void receiptIdentityKeysAreExempt() {
+        for (String key : new String[] {"actionHash", "attemptId", "executorId", "resultHash",
+                "consumeReceiptHash", "attemptReceiptHash"}) {
+            assertTrue(AuditChainAppender.isRedactionExempt(key, "4111-1111-1111-1111@host"), key);
+            assertTrue(AuditChainAppender.isRedactionExempt(key, "a".repeat(64)), key);
+        }
+        assertFalse(AuditChainAppender.isRedactionExempt("comment", "4111-1111-1111-1111@host"));
     }
 }

@@ -3,8 +3,11 @@ package io.aster.guard.api;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.GuardDecisionEntity;
+import io.aster.guard.receipt.GuardReceiptEntity;
+import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
+import io.aster.policy.evidence.EvaluationEvidence;
 import io.aster.security.apikey.ApiKeyVerifierService;
 import io.aster.security.apikey.ApiKeyVerifyResult;
 import io.aster.security.apikey.InternalCallerSigning;
@@ -16,6 +19,7 @@ import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.response.Response;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -61,6 +65,7 @@ class GuardFromEvidenceResourceTest {
 
   @Inject AuditChainAppender appender;
   @Inject ApiKeyVerifierService verifier;
+  @ConfigProperty(name = "aster.guard.receipt.signing-keys") String signingKeys;
 
   @BeforeEach
   void setUp() {
@@ -68,10 +73,14 @@ class GuardFromEvidenceResourceTest {
         ApiKeyVerifyResult.valid("ak-ge-1", "user-ge", TENANT, "pro", "active", "MEMBER"));
   }
 
-  /** 写一条 POLICY_EVALUATION 评估事件；role 为 null 时不写该键（ESCALATE 或旧事件）。 */
+  /**
+   * 写一条 POLICY_EVALUATION 评估事件（带 policyVersionId，同 aster-api#459 之后的评估事件）；
+   * role 为 null 时不写该键（ESCALATE 或旧事件）。
+   */
   private AppendedRecord appendEvaluation(String tenant, String cid, String outcome, String role) {
     Map<String, Object> metadata = new HashMap<>(Map.of("correlationId", cid, "outcome", outcome,
-        "ruleId", "CUST-DEL-001", "controls", List.of("GDPR:ART17"), "reason", "删除客户记录需 DPO 复核"));
+        "ruleId", "CUST-DEL-001", "controls", List.of("GDPR:ART17"), "reason", "删除客户记录需 DPO 复核",
+        "policyVersionId", 1730890123456L));
     if (role != null) {
       metadata.put("role", role);
     }
@@ -159,6 +168,144 @@ class GuardFromEvidenceResourceTest {
     assertThat(after.jsonPath().getString("approvals[0].decisionReceiptHash"))
         .isEqualTo(opened.jsonPath().getString("receipt.hash"));
     assertThat(after.jsonPath().getList("missing")).isNull();
+  }
+
+  /** ADR 0040 §12 D9：from-evidence 开出的决策经审批转 ALLOW 同样签发执行收据，actionHash 为请求体 action 原文的哈希。 */
+  @Test
+  void fromEvidenceAllowIssuesReceipt() {
+    String cid = newCid();
+    Map<String, Object> metadata = new HashMap<>(Map.of("correlationId", cid, "outcome", "REQUIRE_APPROVAL",
+        "role", DPO, "ruleId", "CUST-DEL-001", "policyVersionId", 1730890123456L));
+    append(TENANT, metadata);
+    String body = "{\"correlationId\":\"" + cid + "\",\"action\":{\"principal\":{\"id\":\"agent-42\",\"type\":null},"
+        + "\"action\":{\"name\":\"delete_customer_record\"},\"context\":{\"amount\":250000.0,\"memo\":null}}}";
+    Response opened = signedPost(FROM_EVIDENCE, body, TENANT, "u-req", List.of());
+    assertThat(opened.statusCode()).as(opened.asString()).isEqualTo(200);
+    assertThat(opened.asString()).doesNotContain("executionReceipt");
+    String decisionId = opened.jsonPath().getString("decisionId");
+
+    Response ok = signedPost("/api/v1/guard/approvals/" + opened.jsonPath().getString("approval.id") + "/approve",
+        "{}", TENANT, "u-dpo", List.of(DPO));
+
+    assertThat(ok.statusCode()).as(ok.asString()).isEqualTo(200);
+    assertThat(ok.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+    var receipt = ExecutionReceiptAssert.assertVerifiable(ok.asString(), signingKeys);
+    assertThat(receipt.get("payload").get("actionHash").asText()).isEqualTo(ExecutionReceiptAssert.actionHashOf(body));
+    assertThat(receipt.get("payload").get("policyVersionId").asLong()).isEqualTo(1730890123456L);
+    Response read = signedGet("/api/v1/guard/decisions/" + decisionId, "", TENANT, "u-req");
+    assertThat(ExecutionReceiptAssert.tree(read.asString()).get("executionReceipt")).isEqualTo(receipt);
+    UUID id = UUID.fromString(decisionId);
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id))).isEqualTo(1);
+  }
+
+  /**
+   * aster-cloud {@code evaluateSource} 写出的评估事件形状（{@code PolicyEvaluationResource} 即时源码分支）：
+   * 经 {@link EvaluationEvidence#withVersion} 只附内容哈希、<b>没有</b> {@code policyVersionId}，另带即时执行的三个键。
+   */
+  private AppendedRecord appendEvaluateSourceEvaluation(String tenant, String cid, String outcome, String role) {
+    EvaluationEvidence evidence = new EvaluationEvidence(cid, outcome, "CUST-DEL-001", List.of("GDPR:ART17"), null,
+        null, role, "删除客户记录需 DPO 复核", null)
+        .withVersion(null, PolicyVersion.computeSourceHash("Module guard.customer."), null);
+    Map<String, Object> metadata = new HashMap<>(evidence.toMetadata());
+    assertThat(metadata).doesNotContainKey(EvaluationEvidence.KEY_POLICY_VERSION_ID)
+        .containsKey(EvaluationEvidence.KEY_SOURCE_HASH);
+    metadata.put("locale", "en-US");
+    metadata.put("dynamicExecution", true);
+    metadata.put("namedContext", true);
+    return append(tenant, metadata);
+  }
+
+  /** 以 HMAC 通道批准，返回批准响应。 */
+  private static Response approve(Response opened, String approver, List<String> roles) {
+    return signedPost("/api/v1/guard/approvals/" + opened.jsonPath().getString("approval.id") + "/approve",
+        "{}", TENANT, approver, roles);
+  }
+
+  /**
+   * C1 回归：evaluateSource 锚定的决策（有 action_hash、无策略版本）经审批转 ALLOW 照常签发执行收据，
+   * 载荷省略 policyVersionId（ADR 0040 §12 D1 / D9）；收据行恰一行。ESCALATE（无所需角色）同样适用。
+   */
+  @Test
+  void evaluateSourceEvidenceWithoutVersionApprovalIssuesReceipt() {
+    String cid = newCid();
+    appendEvaluateSourceEvaluation(TENANT, cid, "ESCALATE", null);
+    Response opened = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(opened.statusCode()).as(opened.asString()).isEqualTo(200);
+    assertThat(opened.jsonPath().getString("effectiveOutcome")).isEqualTo("PENDING");
+    String decisionId = opened.jsonPath().getString("decisionId");
+    UUID id = UUID.fromString(decisionId);
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.<GuardDecisionEntity>findById(id))
+        .policyVersionId).isNull();
+
+    Response ok = approve(opened, "u-reviewer", List.of());
+
+    assertThat(ok.statusCode()).as(ok.asString()).isEqualTo(200);
+    assertThat(ok.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+    var receipt = ExecutionReceiptAssert.assertVerifiable(ok.asString(), signingKeys);
+    assertThat(receipt.get("payload").has("policyVersionId")).isFalse();
+    assertThat(receipt.get("payload").get("actionHash").asText()).isEqualTo(ExecutionReceiptAssert.actionHashOf(body(cid)));
+    assertThat(receipt.get("payload").get("decisionId").asText()).isEqualTo(decisionId);
+    assertThat(receipt.get("revision").asLong()).isPositive();
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id))).isEqualTo(1);
+  }
+
+  /**
+   * C1 回归（端到端）：evaluateSource 形状的 REQUIRE_APPROVAL → 批准 → 收据 → HMAC consume 200；
+   * 之后决策回读带 actionHash / consumedBy（ADR 0054 §3.3），结果回写后带 result。
+   */
+  @Test
+  void evaluateSourceEvidenceWithoutVersionApproveThenConsume200() {
+    String cid = newCid();
+    appendEvaluateSourceEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+    Response opened = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(opened.statusCode()).as(opened.asString()).isEqualTo(200);
+    String decisionId = opened.jsonPath().getString("decisionId");
+
+    Response ok = approve(opened, "u-dpo", List.of(DPO));
+    assertThat(ok.statusCode()).as(ok.asString()).isEqualTo(200);
+    var receipt = ExecutionReceiptAssert.assertVerifiable(ok.asString(), signingKeys);
+    assertThat(receipt.get("payload").has("policyVersionId")).isFalse();
+
+    String actionHash = ExecutionReceiptAssert.actionHashOf(body(cid));
+    String attemptId = UUID.randomUUID().toString();
+    String consumeBody = "{\"actionHash\":\"" + actionHash + "\",\"attemptId\":\"" + attemptId
+        + "\",\"executorId\":\"aster-cloud-exec@cloud-1\"}";
+    Response consumed = signedPost("/api/v1/guard/receipts/" + decisionId + "/consume", consumeBody, TENANT, "u-exec",
+        List.of());
+    assertThat(consumed.statusCode()).as(consumed.asString()).isEqualTo(200);
+    assertThat(consumed.jsonPath().getString("decisionId")).isEqualTo(decisionId);
+    assertThat(ExecutionReceiptAssert.tree(consumed.asString()).get("executionReceipt")).isEqualTo(receipt);
+
+    Response read = signedGet("/api/v1/guard/decisions/" + decisionId, "", TENANT, "u-tool");
+    assertThat(read.statusCode()).as(read.asString()).isEqualTo(200);
+    assertThat(read.jsonPath().getString("actionHash")).isEqualTo(actionHash);
+    assertThat(read.jsonPath().getString("consumedBy.attemptId")).isEqualTo(attemptId);
+    assertThat(read.jsonPath().getString("consumedBy.executorId")).isEqualTo("aster-cloud-exec@cloud-1");
+    assertThat(read.jsonPath().getString("consumedBy.consumedAt")).isEqualTo(consumed.jsonPath().getString("consumedAt"));
+    assertThat(read.jsonPath().getString("result")).isNull();
+    assertThat(read.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+
+    String resultBody = "{\"attemptId\":\"" + attemptId + "\",\"executorId\":\"aster-cloud-exec@cloud-1\","
+        + "\"status\":\"executed\"}";
+    Response result = signedPost("/api/v1/guard/receipts/" + decisionId + "/result", resultBody, TENANT, "u-exec",
+        List.of());
+    assertThat(result.statusCode()).as(result.asString()).isEqualTo(200);
+    Response after = signedGet("/api/v1/guard/decisions/" + decisionId, "", TENANT, "u-tool");
+    assertThat(after.jsonPath().getString("result.status")).isEqualTo("executed");
+    assertThat(after.jsonPath().getString("result.resultAt")).isNotBlank();
+  }
+
+  @Test
+  void fromEvidenceDuplicateKeyIs400InvalidAction() {
+    String cid = newCid();
+    appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+    String body = "{\"correlationId\":\"" + cid + "\",\"action\":{\"principal\":{\"id\":\"a\",\"id\":\"b\"},"
+        + "\"action\":{\"name\":\"delete_customer_record\"}}}";
+
+    Response r = signedPost(FROM_EVIDENCE, body, TENANT, "u-req", List.of());
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(400);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("invalid_action");
   }
 
   @Test

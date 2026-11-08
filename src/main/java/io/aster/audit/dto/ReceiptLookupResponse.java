@@ -15,14 +15,35 @@ import java.util.Map;
  */
 @JsonPropertyOrder(alphabetic = true)
 @JsonInclude(JsonInclude.Include.NON_EMPTY)
-public record ReceiptLookupResponse(List<Approval> approvals, List<String> missing, List<Receipt> receipts) {
+public record ReceiptLookupResponse(List<Approval> approvals, List<Consume> consumes, List<String> missing,
+                                    List<Receipt> receipts, List<Result> results) {
 
     /** 链上一条审计行的收据；metadata 解析失败时为 {@code {"_raw": 原文}}。 */
     @JsonPropertyOrder(alphabetic = true)
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record Receipt(Long auditId, String correlationId, String currentHash, String decisionId,
+    public record Receipt(Long auditId, Long authoritativeConsumeAuditId, Long authoritativeResultAuditId,
+                          String correlationId, String currentHash, String decisionId,
                           String eventType, Short hashVersion, Map<String, Object> metadata,
                           String prevHash, Instant timestamp) {}
+
+    /**
+     * 一次 consume 尝试（ACTION_GUARD_CONSUME_ATTEMPT 行）及其判定。并发下同一决策可有多条尝试，
+     * 只有 {@code guard_receipts.consume_audit_id} 指向的那条 {@code authoritative=true}。
+     * outcome 取判定事件的 {@code consumed | rejected:<code>}；缺判定事件时权威尝试为
+     * {@code crashed-unknown}（行已提交、判定事件未写成），非权威尝试为 {@code unknown}。
+     */
+    @JsonPropertyOrder(alphabetic = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record Consume(String actionHash, Long auditId, String attemptId, boolean authoritative,
+                          String currentHash, String decisionId, String executorId, String outcome,
+                          Instant timestamp) {}
+
+    /** 一次执行结果回写（ACTION_GUARD_RESULT 行）；{@code authoritative} 表示是否为 {@code result_audit_id} 所指。 */
+    @JsonPropertyOrder(alphabetic = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record Result(Long auditId, String attemptId, boolean authoritative, String consumeReceiptHash,
+                         String currentHash, String decisionId, String errorCode, String executorId,
+                         String finishedAt, String resultHash, String status, Instant timestamp) {}
 
     /** Action Guard 人工审批结论，字段取自 ACTION_GUARD_APPROVAL 行的 metadata，decidedAt 取行时间戳。 */
     @JsonPropertyOrder(alphabetic = true)

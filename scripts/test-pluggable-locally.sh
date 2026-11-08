@@ -27,6 +27,9 @@ REDIS_CONTAINER="aster-pluggable-redis"
 APP_CONTAINER="aster-pluggable-app"
 NETWORK="aster-pluggable-net"
 APP_PORT="18080"   # 避免与本机 8080 冲突
+# ADR 0040 §12 D1：执行收据签名密钥无默认值，缺失即启动失败。
+# 仅测试/仅压测：固定种子 0x0d×32 的公开密钥，非生产，不得用于任何真实环境。
+RECEIPT_KEYS_TEST_ONLY='{"revision":1,"keys":[{"kid":"perf-only","privateKey":"DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0"}]}'
 
 cleanup() {
   echo
@@ -135,6 +138,8 @@ start_app() {
     -e ASTER_SECURITY_RBAC_ENABLED=false \
     -e ASTER_SECURITY_EVENTS_ENABLED=false \
     -e ASTER_SECURITY_EVALUATE_SOURCE_PUBLIC=true \
+    -e ASTER_GUARD_RECEIPT_SIGNING_KEYS="$RECEIPT_KEYS_TEST_ONLY" \
+    -e ASTER_GUARD_RECEIPT_ACTIVE_KID=perf-only \
     -p "$APP_PORT:8080" \
     "$IMAGE" >/dev/null
 

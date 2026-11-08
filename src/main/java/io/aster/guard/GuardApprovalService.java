@@ -5,6 +5,8 @@ import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.api.GuardApprovalView;
 import io.aster.guard.api.GuardDecisionResponse;
+import io.aster.guard.receipt.ExecutionReceiptIssuer;
+import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
@@ -14,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -30,7 +33,9 @@ import static io.aster.guard.GuardText.isBlank;
  *   <li>{@link AuditChainAppender#appendSync} 写 {@code ACTION_GUARD_APPROVAL} 事件（自身独立事务），
  *       metadata 的 decisionReceiptHash 指回决策收据；失败则 {@code receipt_unavailable}，状态不变；</li>
  *   <li>{@link GuardDecisionStore#completeApproval}：加 {@code PESSIMISTIC_WRITE} 锁复核仍可迁移，
- *       同一事务内写审批终态与决策行 response_json。</li>
+ *       同一事务内写审批终态与决策行 response_json；目标为 APPROVED 时以加锁后的 now 签发执行收据，
+ *       收据行与 response_json 中的收据同一事务写入（ADR 0040 §12 D1 (2) / D4）。签发失败则整个事务回滚，
+ *       报 {@code receipt_unavailable}，审批保持 PENDING。</li>
  * </ol>
  * 第 1 步与第 3 步之间若被并发处理（他人先批 / 刚好过期），第 3 步返回 false：已追加的事件作为
  * 「一次被否决的审批尝试」留在链上，本次调用报 {@code approval_not_pending}，审批行与决策不受影响。
@@ -50,6 +55,7 @@ public class GuardApprovalService {
   private AuditChainAppender appender;
   private GuardReceiptBuilder receiptBuilder;
   private GuardJson json;
+  private ExecutionReceiptIssuer receiptIssuer;
 
   /** CDI 客户端代理所需。 */
   protected GuardApprovalService() {
@@ -57,11 +63,12 @@ public class GuardApprovalService {
 
   @Inject
   public GuardApprovalService(GuardDecisionStore store, AuditChainAppender appender, GuardReceiptBuilder receiptBuilder,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper, ExecutionReceiptIssuer receiptIssuer) {
     this.store = store;
     this.appender = appender;
     this.receiptBuilder = receiptBuilder;
     this.json = new GuardJson(objectMapper);
+    this.receiptIssuer = receiptIssuer;
   }
 
   /**
@@ -202,16 +209,50 @@ public class GuardApprovalService {
 
   /**
    * 第 2、3 步：先入链，再加锁迁移。approval 已带目标状态；返回 empty 表示加锁后发现已不可迁移。
+   * 批准且需签发时，先预判签发器可用再写审批事件：不可签发（active key 已到期）时直接 {@code receipt_unavailable}，
+   * 不在链上为每次点击留下一条注定失败的审批事件。
    *
-   * @throws GuardApprovalConflictException {@code receipt_unavailable}：审批事件未入链，状态不变
+   * @throws GuardApprovalConflictException {@code receipt_unavailable}：审批事件未入链或执行收据签发失败，状态不变
    */
   private Optional<GuardDecisionResponse> complete(GuardApprovalEntity approval, GuardDecisionEntity decision) {
-    approval.receiptAuditId = appendEvent(approval, decision.receiptHash).auditId();
-    GuardDecisionResponse response = json.readResponse(decision).withApprovalStatus(approval.status);
-    if (!store.completeApproval(approval, json.writeJson(response))) {
-      return Optional.empty();
+    boolean issues = approval.status == GuardApprovalStatus.APPROVED && canIssue(decision);
+    if (issues && !receiptIssuer.available()) {
+      LOG.errorf("Action Guard 审批转 ALLOW 时执行收据不可签发，审批状态不变且不写审批事件: approval=%s", approval.id);
+      throw conflict("receipt_unavailable", "执行收据暂不可签发，请稍后重试");
     }
-    return Optional.of(response);
+    approval.receiptAuditId = appendEvent(approval, decision.receiptHash).auditId();
+    GuardDecisionResponse base = json.readResponse(decision).withApprovalStatus(approval.status);
+    AtomicReference<GuardDecisionResponse> written = new AtomicReference<>(base);
+    boolean completed;
+    try {
+      completed = store.completeApproval(approval, now -> {
+        if (!issues) {
+          return new GuardDecisionStore.ApprovalWrite(json.writeJson(base), null);
+        }
+        ExecutionReceiptIssuer.Issued issued = receiptIssuer.issue(decision.id, decision.tenantId, decision.actionHash,
+            decision.policyVersionId, now);
+        written.set(base.withExecutionReceipt(issued.receipt()));
+        return new GuardDecisionStore.ApprovalWrite(json.writeJson(written.get()), issued.row());
+      });
+    } catch (ExecutionReceiptUnavailableException e) {
+      LOG.errorf(e, "Action Guard 审批转 ALLOW 时执行收据签发失败，审批状态不变: approval=%s", approval.id);
+      throw conflict("receipt_unavailable", "执行收据签发失败，请稍后重试");
+    }
+    return completed ? Optional.of(written.get()) : Optional.empty();
+  }
+
+  /**
+   * 能否为审批转 ALLOW 签发执行收据。只有 V6.35.0 之前开出、没有 {@code action_hash} 的旧决策不签发
+   * （ALLOW 但无收据，consume 时 {@code not_allowed}，ADR 0040 §12 D10 不回填）。策略版本不是前提：
+   * aster-cloud {@code evaluateSource} 锚定的 from-evidence 决策没有已保存版本，收据载荷省略 {@code policyVersionId}
+   * 照常签发（ADR 0040 §12 D1 / D9）。
+   */
+  private static boolean canIssue(GuardDecisionEntity decision) {
+    if (decision.actionHash != null) {
+      return true;
+    }
+    LOG.warnf("Action Guard 旧决策（无 action_hash）审批转 ALLOW，不签发执行收据: decision=%s", decision.id);
+    return false;
   }
 
   private AppendedRecord appendEvent(GuardApprovalEntity approval, String decisionReceiptHash) {

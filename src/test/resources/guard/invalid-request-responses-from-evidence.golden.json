@@ -1,0 +1,14 @@
+{
+  "invalidJson" : {
+    "status" : 400,
+    "body" : "{\"errorCode\":\"HTTP_400\",\"message\":\"HTTP 400 Bad Request\",\"traceId\":\"<traceId>\",\"timestamp\":\"<timestamp>\",\"details\":null}"
+  },
+  "actionTypeMismatch" : {
+    "status" : 400,
+    "body" : "{\"objectName\":\"Class\",\"attributeName\":\"action.principal\",\"line\":1,\"column\":52,\"value\":null}"
+  },
+  "emptyBody" : {
+    "status" : 400,
+    "body" : "{\"error\":\"invalid_action\",\"message\":\"correlationId 必填且不超过 64 字符\"}"
+  }
+}

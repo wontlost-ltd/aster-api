@@ -51,7 +51,9 @@ public class AuditChainAppender {
      */
     private static final Set<String> IDENTITY_METADATA_KEYS = Set.of(
         "decisionId", "correlationId", "approvalId", "idempotencyKey", "decisionReceiptHash", "contextHash", "sourceHash",
-        "sourceEnvelopeSha256", "policiesHash", "schemaHash");
+        "sourceEnvelopeSha256", "policiesHash", "schemaHash",
+        // 执行收据（ADR 0040 §12）：摘要与执行方自报标识（executorId 可含卡号形态文本，仍须逐字入链）
+        "actionHash", "attemptId", "executorId", "resultHash", "consumeReceiptHash", "attemptReceiptHash");
     /** 规范 UUID 形态（8-4-4-4-12 十六进制），整串匹配。 */
     private static final Pattern CANONICAL_UUID = Pattern.compile(
         "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");

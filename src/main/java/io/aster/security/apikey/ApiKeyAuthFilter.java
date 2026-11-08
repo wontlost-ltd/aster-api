@@ -54,7 +54,8 @@ public class ApiKeyAuthFilter {
     /** 同上的前缀集合；不含 {@code /api/v1/guard/decisions} 本身——Agent 提交决策只走 Bearer。 */
     static final List<String> HMAC_BYPASS_PREFIXES = List.of(
         "/api/v1/guard/approvals/",
-        "/api/v1/guard/decisions/");
+        "/api/v1/guard/decisions/",
+        "/api/v1/guard/receipts/");
 
     @ConfigProperty(name = "aster.security.apikey.enabled", defaultValue = "true")
     boolean enabled;

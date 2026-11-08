@@ -7,6 +7,8 @@ import io.aster.guard.api.GuardActionRequest.ActionName;
 import io.aster.guard.api.GuardActionRequest.Principal;
 import io.aster.guard.api.GuardActionRequest.Resource;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
+import io.aster.guard.api.ResultRequest;
+import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import io.aster.policy.evidence.AgentIdentity;
@@ -34,7 +36,7 @@ class GuardReceiptBuilderTest {
     Action a = new Action(new Principal(id, "agent", List.of("ops-bot")), new ActionName("delete_customer_record"),
         new Resource("customer", id), Map.of("amount", 250000), AGENT);
     Map<String, Object> flat = mapper.flatten(a);
-    return new GuardDecisionDraft("t1", "guard.customer", "decide", idemKey, flat, mapper.contextHash(Map.of("amount", 250000)),
+    return new GuardDecisionDraft("t1", "guard.customer", "decide", idemKey, flat, mapper.contextHash(Map.of("amount", 250000)), null,
         new PolicyVersionView(1730890123456L, HASH, 3L), outcome, "Data Protection Officer", reason,
         "CUST-DEL-001", controls, null, AGENT);
   }
@@ -116,7 +118,7 @@ class GuardReceiptBuilderTest {
         Map.of("amount", 250000), new AgentIdentity(text, text, text, text));
     List<String> controls = IntStream.range(0, 16).mapToObj(i -> "\"\\".repeat(32)).toList();
     String contextHash = mapper.contextHash(Map.of("amount", 250000));
-    GuardDecisionDraft d = new GuardDecisionDraft("t1", "guard.customer", "decide", text, mapper.flatten(a), contextHash,
+    GuardDecisionDraft d = new GuardDecisionDraft("t1", "guard.customer", "decide", text, mapper.flatten(a), contextHash, null,
         new PolicyVersionView(Long.MAX_VALUE, HASH, Long.MAX_VALUE), "REQUIRE_APPROVAL", text, text, text, controls,
         null, new AgentIdentity(text, text, text, text));
     UUID decisionId = UUID.randomUUID();
@@ -216,7 +218,7 @@ class GuardReceiptBuilderTest {
   void 无agent时收据保留空agentModel且不含其余agent键() {
     GuardDecisionDraft d = draft("ALLOW", "ok", List.of(), "agent-42", null);
     GuardDecisionDraft noAgent = new GuardDecisionDraft(d.tenantId(), d.policyModule(), d.policyFunction(),
-        d.idempotencyKey(), d.action(), d.contextHash(), d.policyVersion(), d.outcome(), d.role(), d.reason(),
+        d.idempotencyKey(), d.action(), d.contextHash(), d.actionHash(), d.policyVersion(), d.outcome(), d.role(), d.reason(),
         d.ruleId(), d.controls(), null, null);
 
     Map<String, Object> m = builder.decisionEvent(noAgent, UUID.randomUUID(), null, "user-1").metadata();
@@ -299,7 +301,7 @@ class GuardReceiptBuilderTest {
   void 规则侧超长文本在收据中被截断() throws Exception {
     List<String> controls = IntStream.range(0, 40).mapToObj(i -> "x".repeat(300)).toList();
     GuardDecisionDraft d = new GuardDecisionDraft("t1", "guard.customer", "decide", "k".repeat(255),
-        draft("DENY", null, List.of(), "p".repeat(255), null).action(), HASH,
+        draft("DENY", null, List.of(), "p".repeat(255), null).action(), HASH, null,
         new PolicyVersionView(Long.MAX_VALUE, HASH, Long.MAX_VALUE), "DENY", "o".repeat(5000), "r".repeat(5000),
         "i".repeat(5000), controls, null, AGENT);
 
@@ -406,5 +408,109 @@ class GuardReceiptBuilderTest {
     assertThat(event.success()).isFalse();
     assertThat(event.metadata()).containsEntry("outcome", "EXPIRED")
         .doesNotContainKeys("requiredRole", "decidedBy", "comment", "decisionReceiptHash");
+  }
+
+  private GuardReceiptEntity receipt() {
+    GuardReceiptEntity r = new GuardReceiptEntity();
+    r.decisionId = UUID.randomUUID();
+    r.tenantId = "t1";
+    r.actionHash = HASH;
+    r.kid = "k1";
+    r.issuedAt = Instant.parse("2026-11-08T00:00:00Z");
+    r.expiresAt = Instant.parse("2026-11-08T00:05:00Z");
+    return r;
+  }
+
+  @Test
+  void consume尝试事件键集合与success() {
+    GuardReceiptEntity r = receipt();
+
+    AuditEvent event = builder.consumeAttemptEvent(r, HASH, "att-1", "exec-1", HASH, "svc");
+
+    assertThat(event.eventType()).isEqualTo(EventType.ACTION_GUARD_CONSUME_ATTEMPT);
+    assertThat(event.tenantId()).isEqualTo("t1");
+    assertThat(event.performedBy()).isEqualTo("svc");
+    assertThat(event.success()).isTrue();
+    assertThat(event.metadata()).containsOnlyKeys("kind", "decisionId", "actionHash", "attemptId", "executorId",
+        "kid", "receiptIssuedAt", "receiptExpiresAt", "decisionReceiptHash")
+        .containsEntry("kind", "attempt")
+        .containsEntry("decisionId", r.decisionId.toString())
+        .containsEntry("receiptIssuedAt", "2026-11-08T00:00:00Z")
+        .containsEntry("receiptExpiresAt", "2026-11-08T00:05:00Z")
+        .doesNotContainKey("correlationId");
+  }
+
+  @Test
+  void consume结果事件按outcome决定success() {
+    UUID id = UUID.randomUUID();
+
+    AuditEvent ok = builder.consumeOutcomeEvent("t1", id, "att-1", "exec-1", "consumed", HASH, "svc");
+    AuditEvent rejected = builder.consumeOutcomeEvent("t1", id, "att-1", "exec-1", "rejected:receipt_expired", HASH, "svc");
+
+    assertThat(ok.eventType()).isEqualTo(EventType.ACTION_GUARD_CONSUME_OUTCOME);
+    assertThat(ok.tenantId()).isEqualTo("t1");
+    assertThat(ok.success()).isTrue();
+    assertThat(ok.metadata()).containsOnlyKeys("kind", "decisionId", "attemptId", "executorId", "outcome",
+        "attemptReceiptHash").containsEntry("kind", "outcome").containsEntry("outcome", "consumed")
+        .containsEntry("decisionId", id.toString());
+    assertThat(rejected.success()).isFalse();
+    assertThat(rejected.metadata()).containsEntry("outcome", "rejected:receipt_expired");
+  }
+
+  @Test
+  void 缺租户时拒绝构造() {
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+        () -> builder.consumeOutcomeEvent(null, UUID.randomUUID(), "a", "e", "consumed", HASH, "svc"))
+        .isInstanceOf(NullPointerException.class);
+  }
+
+  @Test
+  void 摘要键超长时截断到64字符() {
+    String longText = "x".repeat(500);
+    GuardReceiptEntity r = receipt();
+    ResultRequest req = new ResultRequest("a", "e", "executed", null, longText, null);
+
+    assertThat(builder.consumeAttemptEvent(r, longText, "a", "e", longText, "svc").metadata())
+        .containsEntry("actionHash", "x".repeat(64)).containsEntry("decisionReceiptHash", "x".repeat(64));
+    assertThat(builder.consumeOutcomeEvent("t1", r.decisionId, "a", "e", "consumed", longText, "svc").metadata())
+        .containsEntry("attemptReceiptHash", "x".repeat(64));
+    assertThat(builder.resultEvent("t1", r.decisionId, req, longText, "svc").metadata())
+        .containsEntry("resultHash", "x".repeat(64)).containsEntry("consumeReceiptHash", "x".repeat(64));
+  }
+
+  private ResultRequest result(String status, String errorCode) {
+    return new ResultRequest("att-1", "exec-1", status, "2026-11-08T00:01:00Z", HASH, errorCode);
+  }
+
+  @Test
+  void 执行结果事件键集合与success() {
+    UUID id = UUID.randomUUID();
+
+    AuditEvent ok = builder.resultEvent("t1", id, result("executed", null), HASH, "svc");
+    AuditEvent failed = builder.resultEvent("t1", id, result("failed", "E_TIMEOUT"), HASH, "svc");
+
+    assertThat(ok.eventType()).isEqualTo(EventType.ACTION_GUARD_RESULT);
+    assertThat(ok.tenantId()).isEqualTo("t1");
+    assertThat(ok.success()).isTrue();
+    assertThat(ok.metadata()).containsOnlyKeys("decisionId", "attemptId", "executorId", "status", "finishedAt",
+        "resultHash", "consumeReceiptHash").containsEntry("status", "executed")
+        .doesNotContainKey("correlationId");
+    assertThat(failed.success()).isFalse();
+    assertThat(failed.metadata()).containsEntry("errorCode", "E_TIMEOUT");
+  }
+
+  @Test
+  void 执行结果事件超预算时只删errorCode() {
+    UUID id = UUID.randomUUID();
+    ResultRequest req = new ResultRequest("a".repeat(255), "e".repeat(255), "failed", "2026-11-08T00:01:00Z", HASH,
+        "\"".repeat(1900));
+
+    AuditEvent event = builder.resultEvent("t1", id, req, HASH, "svc");
+
+    assertThat(builder.measure(new LinkedHashMap<>(event.metadata()))).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    assertThat(event.metadata()).containsEntry("attemptId", "a".repeat(255))
+        .containsEntry("executorId", "e".repeat(255))
+        .containsEntry("resultHash", HASH).containsEntry("consumeReceiptHash", HASH).containsEntry("status", "failed");
+    assertThat(String.valueOf(event.metadata().get("errorCode")).length()).isLessThan(1900);
   }
 }

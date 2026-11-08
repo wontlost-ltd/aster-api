@@ -130,6 +130,20 @@ class NonDeterminismSourceTest {
                         "src/main/java/io/aster/guard/GuardDecisionService.java",
                         "src/main/java/io/aster/policy/cache/CompiledPolicyWarmup.java"
                 );
+
+        Map<String, List<Integer>> clockMatches = scanPattern(
+                "Clock.system",
+                Paths.get("src/main/java"),
+                Paths.get("../aster-runtime/src/main/java")
+        );
+        // 允许的 Clock.systemUTC / systemDefaultZone 白名单（新服务一律注入 java.time.Clock，只在 producer 处取系统时钟）：
+        // - GuardClockProducer: 执行收据（ADR 0040 §12 D1）的 CDI 时钟 producer（@DefaultBean），签发时刻、
+        //   过期判定与密钥 notAfter 检查都经注入的 Clock，测试以 Clock.fixed / 可变时钟替换；收据时间写进
+        //   治理账本与签名载荷，不入 workflow 重放状态
+        Assertions.assertThat(clockMatches.keySet())
+                .containsExactlyInAnyOrder(
+                        "src/main/java/io/aster/guard/receipt/GuardClockProducer.java"
+                );
     }
 
     private static Map<String, List<Integer>> scanPattern(String needle, Path... roots) throws IOException {

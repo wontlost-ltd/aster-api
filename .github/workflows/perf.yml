@@ -83,6 +83,10 @@ jobs:
           QUARKUS_DATASOURCE_PASSWORD: aster
           QUARKUS_REDIS_HOSTS: redis://localhost:6379
           QUARKUS_HTTP_PORT: "8080"
+          # ADR 0040 §12 D1：执行收据签名密钥无默认值，缺失即启动失败。
+          # 仅测试/仅压测：固定种子 0x0d×32 的公开密钥，非生产，不得用于任何真实环境。
+          ASTER_GUARD_RECEIPT_SIGNING_KEYS: '{"revision":1,"keys":[{"kid":"perf-only","privateKey":"DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0"}]}'
+          ASTER_GUARD_RECEIPT_ACTIVE_KID: perf-only
           # 禁用所有遥测/外部依赖，缩减启动时间
           OTEL_TRACES_EXPORTER: "none"
           # quarkus.otel.enabled is a build-time property; setting it via env

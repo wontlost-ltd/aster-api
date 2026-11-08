@@ -3,6 +3,7 @@ package io.aster.guard.api;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import io.aster.guard.GuardApprovalStatus;
+import io.aster.guard.receipt.ExecutionReceipt;
 
 import java.util.List;
 
@@ -13,6 +14,8 @@ import java.util.List;
  * 因此本类型必须能被 Jackson 无损往返（record 组件即 JSON 字段）。
  *
  * @param effectiveOutcome Agent 唯一需要看的字段：{@code ALLOW | DENY | PENDING}
+ * @param executionReceipt 执行收据（ADR 0040 §12 D1）：仅 {@code effectiveOutcome == ALLOW} 时存在；随 response_json 存储，
+ *                         重放与回读返回同一份，不重签。V6.35.0 之前的 ALLOW 决策没有
  * @param reasonCode       fail-closed 时的机器可读原因（见 {@link io.aster.guard.GuardReasonCode}），Verdict 正常返回时为 null
  */
 @JsonPropertyOrder(alphabetic = true)
@@ -22,6 +25,7 @@ public record GuardDecisionResponse(
     List<String> controls,
     String decisionId,
     String effectiveOutcome,
+    ExecutionReceipt executionReceipt,
     String outcome,
     PolicyVersionView policyVersion,
     String reason,
@@ -41,8 +45,14 @@ public record GuardDecisionResponse(
    */
   public GuardDecisionResponse withApprovalStatus(GuardApprovalStatus status) {
     ApprovalView a = new ApprovalView(approval.expiresAt(), approval.id(), approval.requiredRole(), status.name());
-    return new GuardDecisionResponse(a, controls, decisionId, status.effectiveOutcome(), outcome, policyVersion,
-        reason, reasonCode, receipt, role, ruleId);
+    return new GuardDecisionResponse(a, controls, decisionId, status.effectiveOutcome(), executionReceipt, outcome,
+        policyVersion, reason, reasonCode, receipt, role, ruleId);
+  }
+
+  /** 附上审批转 ALLOW 时签发的执行收据。 */
+  public GuardDecisionResponse withExecutionReceipt(ExecutionReceipt newReceipt) {
+    return new GuardDecisionResponse(approval, controls, decisionId, effectiveOutcome, newReceipt, outcome,
+        policyVersion, reason, reasonCode, receipt, role, ruleId);
   }
 
   /** 待审批视图；{@code expiresAt} 为 ISO-8601 字符串，{@code requiredRole} 为 null 表示任意复核人。 */

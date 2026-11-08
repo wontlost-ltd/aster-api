@@ -4,10 +4,12 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import io.aster.guard.api.GuardActionRequest;
+import io.aster.guard.receipt.JcsCanonicalizer;
 import jakarta.enterprise.context.ApplicationScoped;
 import org.apache.commons.codec.digest.DigestUtils;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,7 +25,9 @@ import static io.aster.guard.GuardText.isBlank;
  *   <li>键序固定：principal_id, principal_type, principal_roles, action, resource_type, resource_id, context, agent_model；</li>
  *   <li>文本字段 ≤ 255 字符且不含控制字符——与 guard_decisions 列宽一致，并保证收据 metadata 有确定上界；</li>
  *   <li>principal.roles ≤ 16 项，每项同文本字段规则（roles 进入收据 metadata）；</li>
- *   <li>context 深度 ≤ 8、序列化 ≤ 65536 字节、不允许 null 值；</li>
+ *   <li>context 深度 ≤ 8、序列化 ≤ 65536 字节；null 叶子原样保留（ADR 0054 §3.2：null、缺键与空串是三个不同文档，
+ *       规则读到 null 与读到缺键的行为由规则作者负责）；</li>
+ *   <li>context 中的数字按 I-JSON 校验（非有限数、整数值超出 ±(2^53−1) 拒绝），与 {@code jcs-sha256/v1} 同一规则；</li>
  *   <li>context 与 roles 深拷贝为不可变集合：规则运行时开启了 Map/List 访问，可变集合会被 interop 写入（Task 1 裁定）。</li>
  * </ul>
  */
@@ -101,7 +105,7 @@ public class GuardActionMapper {
     return List.copyOf(roles);
   }
 
-  /** 深拷贝为不可变 Map，同时校验深度（context 自身为第 1 层）与 null 值。 */
+  /** 深拷贝为不可变 Map（保留键序与 null 值），同时校验深度（context 自身为第 1 层）。 */
   private static Map<String, Object> freezeMap(Map<?, ?> source, int depth) {
     checkDepth(depth);
     LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
@@ -111,7 +115,7 @@ public class GuardActionMapper {
       }
       copy.put(key, freeze(e.getValue(), depth));
     }
-    return Map.copyOf(copy);
+    return Collections.unmodifiableMap(copy);
   }
 
   private static List<Object> freezeList(List<?> source, int depth) {
@@ -120,12 +124,13 @@ public class GuardActionMapper {
     for (Object item : source) {
       copy.add(freeze(item, depth));
     }
-    return List.copyOf(copy);
+    return Collections.unmodifiableList(copy);
   }
 
   private static Object freeze(Object value, int parentDepth) {
-    if (value == null) {
-      throw new GuardInvalidActionException("context 不允许 null 值");
+    if (value instanceof Number n) {
+      requireIJsonNumber(n);
+      return value;
     }
     if (value instanceof Map<?, ?> m) {
       return freezeMap(m, parentDepth + 1);
@@ -134,6 +139,14 @@ public class GuardActionMapper {
       return freezeList(l, parentDepth + 1);
     }
     return value;
+  }
+
+  private static void requireIJsonNumber(Number n) {
+    try {
+      JcsCanonicalizer.requireIJsonNumber(n);
+    } catch (IllegalArgumentException e) {
+      throw new GuardInvalidActionException("context " + e.getMessage());
+    }
   }
 
   private static void checkDepth(int depth) {

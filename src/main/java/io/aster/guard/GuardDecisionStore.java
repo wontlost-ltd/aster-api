@@ -1,10 +1,13 @@
 package io.aster.guard;
 
+import io.aster.guard.receipt.GuardReceiptEntity;
+
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 
 /**
  * guard 决策与待审批的持久化边界。抽成接口是为了让决策编排可以脱离数据库单测；
@@ -26,13 +29,14 @@ public interface GuardDecisionStore {
   Optional<GuardApprovalEntity> findApprovalByDecision(UUID decisionId);
 
   /**
-   * 在<b>同一个事务</b>中写入决策行与（可选的）待审批行：要么都落库，要么都不落库，
-   * 不会出现「决策显示 PENDING 却没有审批行」的孤儿状态。
+   * 在<b>同一个事务</b>中写入决策行与（可选的）待审批行、执行收据行：要么都落库，要么都不落库，
+   * 不会出现「决策显示 PENDING 却没有审批行」或「响应带收据却没有收据行」的孤儿状态。
    * {@code (tenant_id, idempotency_key)} 或 {@code (tenant_id, evidence_correlation_id)} 唯一索引冲突时抛 {@link GuardIdempotencyRaceException}。
    *
    * @param approvalOrNull REQUIRE_APPROVAL / ESCALATE 时的待审批行，其余为 null
+   * @param receiptOrNull  直接 ALLOW 时的执行收据行（ADR 0040 §12 D4），其余为 null
    */
-  void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull);
+  void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull, GuardReceiptEntity receiptOrNull);
 
   /** 按租户限定查找审批；跨租户返回 empty。 */
   Optional<GuardApprovalEntity> findApproval(String tenantId, UUID approvalId);
@@ -45,11 +49,22 @@ public interface GuardDecisionStore {
 
   /**
    * 在<b>一个事务</b>内完成审批状态迁移：以 {@code PESSIMISTIC_WRITE} 锁住审批行，确认它仍是 PENDING，
-   * 且（目标不是 EXPIRED 时）在<b>加锁后的当前时刻</b>尚未过期，然后写入 {@code decided} 的
-   * status / decidedBy / decidedAt / comment / receiptAuditId，并把关联决策行的 response_json 替换为
-   * {@code newResponseJson}。
+   * 且（目标不是 EXPIRED 时）在<b>加锁后的当前时刻</b> {@code now} 尚未过期；随后以同一个 {@code now} 调用
+   * {@code writeAt} 得到要写入的内容，写入 {@code decided} 的 status / decidedBy / decidedAt / comment / receiptAuditId，
+   * 把关联决策行的 response_json 替换为其 {@code responseJson}，并插入其执行收据行（仅 APPROVED 时有）。
    *
-   * @return false 表示加锁后发现已不可迁移（已被处理或已过期），此时不做任何修改
+   * <p>{@code writeAt} 在加锁后调用，是因为审批转 ALLOW 的执行收据以加锁时刻为 {@code issuedAt}（ADR 0040 §12 D1 (2)），
+   * 而收据要同时写进 response_json（D4）。{@code writeAt} 抛出的异常使整个事务回滚、状态不变。
+   *
+   * @return false 表示加锁后发现已不可迁移（已被处理或已过期），此时不做任何修改，{@code writeAt} 不被调用
    */
-  boolean completeApproval(GuardApprovalEntity decided, String newResponseJson);
+  boolean completeApproval(GuardApprovalEntity decided, Function<Instant, ApprovalWrite> writeAt);
+
+  /**
+   * 审批迁移要写入的内容。
+   *
+   * @param responseJson  决策行新的 response_json
+   * @param receiptOrNull 审批转 ALLOW 时签发的执行收据行；REJECTED / EXPIRED 为 null
+   */
+  record ApprovalWrite(String responseJson, GuardReceiptEntity receiptOrNull) {}
 }

@@ -7,6 +7,9 @@ import io.aster.guard.api.GuardApprovalView;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardDecisionResponse.ApprovalView;
 import io.aster.guard.api.GuardDecisionResponse.ReceiptView;
+import io.aster.guard.receipt.ExecutionReceiptIssuer;
+import io.aster.guard.receipt.ExecutionReceiptSigner;
+import io.aster.guard.receipt.ReceiptSigningKeys;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,19 +17,26 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -43,19 +53,37 @@ class GuardApprovalServiceTest {
   /** 提交决策请求的用户与 API key（决策行 requested_by / requested_api_key_id）。 */
   private static final String REQUESTER = "requester-1";
   private static final String REQUESTER_KEY = "ak-requester";
+  private static final String ACTION_HASH = "f".repeat(64);
+  private static final long POLICY_VERSION_ID = 1730890123456L;
+  private static final String KEYS = "{\"revision\":1,\"keys\":["
+      + "{\"kid\":\"k1\",\"privateKey\":\"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE\"}]}";
+  /** 模拟加锁后的 now：审批转 ALLOW 的收据 issuedAt 必须取它。 */
+  private static final Instant LOCKED_NOW = Instant.parse("2026-11-08T10:10:00.123456Z");
 
   private GuardDecisionStore store;
   private AuditChainAppender appender;
   private final ObjectMapper json = new ObjectMapper();
   private GuardApprovalService service;
+  private ExecutionReceiptSigner signer;
+  /** 存储层在加锁后以 {@link #LOCKED_NOW} 求得的写入内容，按调用顺序。 */
+  private final List<GuardDecisionStore.ApprovalWrite> writes = new ArrayList<>();
 
   @BeforeEach
   void setUp() {
     store = mock(GuardDecisionStore.class);
     appender = mock(AuditChainAppender.class);
-    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json);
+    Clock clock = Clock.fixed(LOCKED_NOW, ZoneOffset.UTC);
+    signer = new ExecutionReceiptSigner(ReceiptSigningKeys.parse(KEYS, "k1", clock), Duration.ofMinutes(5), clock);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json,
+        new ExecutionReceiptIssuer(signer, clock));
     when(appender.appendSync(any())).thenReturn(new AppendedRecord(9001L, APPROVAL_HASH, DECISION_HASH));
-    when(store.completeApproval(any(), anyString())).thenReturn(true);
+    when(store.completeApproval(any(), any())).thenAnswer(inv -> applyWrite(inv.getArgument(1)));
+  }
+
+  /** 与 {@link GuardDecisionJpaStore} 相同：可迁移时以加锁后的 now 求写入内容。 */
+  private boolean applyWrite(Function<Instant, GuardDecisionStore.ApprovalWrite> writeAt) {
+    writes.add(writeAt.apply(LOCKED_NOW));
+    return true;
   }
 
   /** 待审批行 + 对应决策行（决策响应为 PENDING），并挂到 store 上。 */
@@ -81,7 +109,7 @@ class GuardApprovalServiceTest {
   private GuardDecisionEntity decisionOf(GuardApprovalEntity a) throws Exception {
     GuardDecisionResponse r = new GuardDecisionResponse(
         new ApprovalView(a.expiresAt.toString(), a.id.toString(), a.requiredRole, "PENDING"),
-        List.of(), a.decisionId.toString(), "PENDING", a.outcome, null, "customer record deletion", null,
+        List.of(), a.decisionId.toString(), "PENDING", null, a.outcome, null, "customer record deletion", null,
         new ReceiptView(88L, DECISION_HASH, "0".repeat(64)), a.requiredRole, "PROBE-001");
     GuardDecisionEntity d = new GuardDecisionEntity();
     d.id = a.decisionId;
@@ -90,6 +118,8 @@ class GuardApprovalServiceTest {
     d.responseJson = json.writeValueAsString(r);
     d.requestedBy = REQUESTER;
     d.requestedApiKeyId = REQUESTER_KEY;
+    d.actionHash = ACTION_HASH;
+    d.policyVersionId = POLICY_VERSION_ID;
     return d;
   }
 
@@ -108,7 +138,7 @@ class GuardApprovalServiceTest {
 
   private void verifyNothingWritten() {
     verify(appender, never()).appendSync(any());
-    verify(store, never()).completeApproval(any(), anyString());
+    verify(store, never()).completeApproval(any(), any());
   }
 
   @Test
@@ -347,14 +377,158 @@ class GuardApprovalServiceTest {
     InOrder order = inOrder(appender, store);
     order.verify(appender).appendSync(any());
     ArgumentCaptor<GuardApprovalEntity> decided = ArgumentCaptor.forClass(GuardApprovalEntity.class);
-    ArgumentCaptor<String> responseJson = ArgumentCaptor.forClass(String.class);
-    order.verify(store).completeApproval(decided.capture(), responseJson.capture());
+    order.verify(store).completeApproval(decided.capture(), any());
     assertThat(decided.getValue().status).isEqualTo(GuardApprovalStatus.APPROVED);
     assertThat(decided.getValue().decidedBy).isEqualTo("dpo-1");
     assertThat(decided.getValue().decidedAt).isNotNull();
     assertThat(decided.getValue().comment).isEqualTo("ok");
     assertThat(decided.getValue().receiptAuditId).isEqualTo(9001L);
-    assertThat(json.readValue(responseJson.getValue(), GuardDecisionResponse.class)).isEqualTo(r);
+    assertThat(writes).hasSize(1);
+    assertThat(json.readValue(writes.get(0).responseJson(), GuardDecisionResponse.class)).isEqualTo(r);
+  }
+
+  /** ADR 0040 §12 D1 (2)：收据以加锁后的 now（截到毫秒）签发，收据行与 response_json 中的收据一致。 */
+  @Test
+  void 批准时以加锁时刻签发执行收据_收据行与响应一致() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null);
+
+    var receipt = r.executionReceipt();
+    assertThat(receipt).isNotNull();
+    assertThat(receipt.payload().issuedAt()).isEqualTo("2026-11-08T10:10:00.123Z");
+    assertThat(receipt.payload().expiresAt()).isEqualTo("2026-11-08T10:15:00.123Z");
+    assertThat(receipt.payload().actionHash()).isEqualTo(ACTION_HASH);
+    assertThat(receipt.payload().policyVersionId()).isEqualTo(POLICY_VERSION_ID);
+    assertThat(receipt.payload().decisionId()).isEqualTo(a.decisionId.toString());
+    assertThat(receipt.payload().tenantId()).isEqualTo(TENANT);
+    assertThat(signer.verify(receipt)).isTrue();
+    var row = writes.get(0).receiptOrNull();
+    assertThat(row.decisionId).isEqualTo(a.decisionId);
+    assertThat(row.signature).isEqualTo(receipt.signature());
+    assertThat(row.issuedAt).isEqualTo(Instant.parse("2026-11-08T10:10:00.123Z"));
+    assertThat(row.expiresAt).isEqualTo(Instant.parse("2026-11-08T10:15:00.123Z"));
+    assertThat(row.createdAt).isEqualTo(LOCKED_NOW);
+  }
+
+  @Test
+  void 拒绝与过期不签发执行收据() throws Exception {
+    GuardApprovalEntity rejected = pending(DPO);
+    service.decideApproval(TENANT, rejected.id, "dpo-1", null, List.of(DPO), false, "no");
+    Instant now = Instant.now();
+    GuardApprovalEntity expired = pending(DPO, now.minusSeconds(1));
+    when(store.findExpiredPending(eq(now), anyInt())).thenReturn(List.of(expired));
+    service.expireDue(now);
+
+    assertThat(writes).hasSize(2).allSatisfy(w -> {
+      assertThat(w.receiptOrNull()).isNull();
+      assertThat(w.responseJson()).doesNotContain("executionReceipt");
+    });
+  }
+
+  @Test
+  void 旧决策无action_hash时批准为ALLOW但不签发() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    GuardDecisionEntity legacy = decisionOf(a);
+    legacy.actionHash = null;
+    when(store.findDecision(TENANT, a.decisionId)).thenReturn(Optional.of(legacy));
+
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
+    assertThat(r.executionReceipt()).isNull();
+    assertThat(writes.get(0).receiptOrNull()).isNull();
+  }
+
+  /**
+   * 有 action_hash 却无策略版本（aster-cloud evaluateSource 锚定的 from-evidence 决策）：照常签发，
+   * 载荷省略 policyVersionId（ADR 0040 §12 D1 / D9）。
+   */
+  @Test
+  void 有action_hash但无策略版本_照常签发且载荷省略版本() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    GuardDecisionEntity noVersion = decisionOf(a);
+    noVersion.policyVersionId = null;
+    when(store.findDecision(TENANT, a.decisionId)).thenReturn(Optional.of(noVersion));
+
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
+    var receipt = r.executionReceipt();
+    assertThat(receipt).isNotNull();
+    assertThat(receipt.payload().policyVersionId()).isNull();
+    assertThat(receipt.payload().actionHash()).isEqualTo(ACTION_HASH);
+    assertThat(receipt.revision()).isEqualTo(1L);
+    assertThat(signer.verify(receipt)).isTrue();
+    assertThat(writes.get(0).receiptOrNull()).isNotNull();
+    assertThat(writes.get(0).responseJson()).doesNotContain("policyVersionId");
+  }
+
+  /** 签发器不可用（active key 已到期）时在写审批事件之前拒绝：重复点击不在链上留事件，状态不变。 */
+  @Test
+  void 签发器不可用_先于审批事件拒绝_不写链() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    ExecutionReceiptIssuer unavailable = mock(ExecutionReceiptIssuer.class);
+    when(unavailable.available()).thenReturn(false);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable);
+
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
+    // 模拟重试时重新读到的审批行（mock 返回同一实例，服务在校验后已就地写入目标状态）
+    a.status = GuardApprovalStatus.PENDING;
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
+    verify(appender, never()).appendSync(any());
+    verify(store, never()).completeApproval(any(), any());
+  }
+
+  /** 签发器不可用不影响拒绝：拒绝不签发，照常写事件并迁移。 */
+  @Test
+  void 签发器不可用时拒绝照常() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    ExecutionReceiptIssuer unavailable = mock(ExecutionReceiptIssuer.class);
+    when(unavailable.available()).thenReturn(false);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable);
+
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), false, "no");
+
+    assertThat(r.effectiveOutcome()).isEqualTo("DENY");
+    verify(appender).appendSync(any());
+  }
+
+  /** M1：active key 在运行中到期（可变时钟越过 notAfter）→ 审批 receipt_unavailable，不写链、不迁移。 */
+  @Test
+  void active_key运行中到期_审批receipt_unavailable且不写链() throws Exception {
+    Instant notAfter = LOCKED_NOW.plus(Duration.ofHours(1));
+    String config = "{\"revision\":2,\"keys\":[{\"kid\":\"k1\","
+        + "\"privateKey\":\"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE\",\"notAfter\":\"" + notAfter + "\"}]}";
+    Instant[] now = {LOCKED_NOW};
+    Clock running = new Clock() {
+      @Override public ZoneId getZone() { return ZoneOffset.UTC; }
+      @Override public Clock withZone(ZoneId zone) { return this; }
+      @Override public Instant instant() { return now[0]; }
+    };
+    ExecutionReceiptSigner expiring = new ExecutionReceiptSigner(ReceiptSigningKeys.parse(config, "k1", running),
+        Duration.ofMinutes(5), running);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json,
+        new ExecutionReceiptIssuer(expiring, running));
+    GuardApprovalEntity a = pending(DPO);
+    now[0] = notAfter;
+
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
+    verify(appender, never()).appendSync(any());
+    assertThat(writes).isEmpty();
+  }
+
+  @Test
+  void 签发失败_receipt_unavailable且存储事务回滚() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    ExecutionReceiptIssuer broken = mock(ExecutionReceiptIssuer.class);
+    when(broken.available()).thenReturn(true);
+    when(broken.issue(any(), any(), any(), anyLong(), any())).thenThrow(
+        new io.aster.guard.receipt.ExecutionReceiptUnavailableException("down", null));
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, broken);
+
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
+    assertThat(writes).isEmpty();
   }
 
   @Test
@@ -376,13 +550,13 @@ class GuardApprovalServiceTest {
     when(appender.appendSync(any())).thenThrow(new AuditChainAppender.AuditAppendException("down", null));
 
     assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
-    verify(store, never()).completeApproval(any(), anyString());
+    verify(store, never()).completeApproval(any(), any());
   }
 
   @Test
   void 加锁后发现已被他人处理_approval_not_pending() throws Exception {
     GuardApprovalEntity a = pending(DPO);
-    when(store.completeApproval(any(), anyString())).thenReturn(false);
+    doReturn(false).when(store).completeApproval(any(), any());
 
     assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "approval_not_pending");
   }
@@ -395,14 +569,14 @@ class GuardApprovalServiceTest {
     lockedRow.status = GuardApprovalStatus.PENDING;
     lockedRow.expiresAt = expiresAt;
     // 模拟 tx2：审计追加之后、加锁之前行已到期，按真实的可迁移判定（加锁时刻的 now）复核
-    when(store.completeApproval(any(), anyString())).thenAnswer(inv -> {
+    doAnswer(inv -> {
       Thread.sleep(300);
       return GuardDecisionJpaStore.transitionable(lockedRow, inv.getArgument(0), Instant.now());
-    });
+    }).when(store).completeApproval(any(), any());
 
     assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "approval_not_pending");
     ArgumentCaptor<GuardApprovalEntity> decided = ArgumentCaptor.forClass(GuardApprovalEntity.class);
-    verify(store).completeApproval(decided.capture(), anyString());
+    verify(store).completeApproval(decided.capture(), any());
     assertThat(decided.getValue().decidedAt).isBefore(expiresAt);
   }
 
@@ -429,15 +603,15 @@ class GuardApprovalServiceTest {
     assertThat(events.getAllValues()).extracting(ev -> ev.metadata().get("approvalId"))
         .containsExactly(e1.id.toString(), e2.id.toString());
     ArgumentCaptor<GuardApprovalEntity> decided = ArgumentCaptor.forClass(GuardApprovalEntity.class);
-    ArgumentCaptor<String> responseJson = ArgumentCaptor.forClass(String.class);
-    verify(store, times(2)).completeApproval(decided.capture(), responseJson.capture());
+    verify(store, times(2)).completeApproval(decided.capture(), any());
     assertThat(decided.getAllValues()).allSatisfy(d -> {
       assertThat(d.status).isEqualTo(GuardApprovalStatus.EXPIRED);
       assertThat(d.decidedBy).isNull();
       assertThat(d.receiptAuditId).isEqualTo(9001L);
     });
-    for (String s : responseJson.getAllValues()) {
-      GuardDecisionResponse r = json.readValue(s, GuardDecisionResponse.class);
+    for (GuardDecisionStore.ApprovalWrite w : writes) {
+      assertThat(w.receiptOrNull()).isNull();
+      GuardDecisionResponse r = json.readValue(w.responseJson(), GuardDecisionResponse.class);
       assertThat(r.effectiveOutcome()).isEqualTo("DENY");
       assertThat(r.approval().status()).isEqualTo("EXPIRED");
     }
@@ -454,6 +628,6 @@ class GuardApprovalServiceTest {
         .thenReturn(new AppendedRecord(9002L, APPROVAL_HASH, DECISION_HASH));
 
     assertThat(service.expireDue(now)).isEqualTo(1);
-    verify(store, times(1)).completeApproval(any(), anyString());
+    verify(store, times(1)).completeApproval(any(), any());
   }
 }

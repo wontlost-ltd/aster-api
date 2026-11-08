@@ -5,6 +5,7 @@ import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardDecisionResponse.ApprovalView;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
 import io.aster.guard.api.GuardDecisionResponse.ReceiptView;
+import io.aster.guard.receipt.ExecutionReceipt;
 import io.aster.policy.evidence.AgentIdentity;
 
 import java.time.Instant;
@@ -40,13 +41,13 @@ final class GuardDecisionAssembler {
   }
 
   static GuardDecisionResponse buildResponse(UUID decisionId, GuardDecisionDraft draft, AppendedRecord receipt,
-                                             UUID approvalId, Instant expiresAt) {
+                                             UUID approvalId, Instant expiresAt, ExecutionReceipt executionReceipt) {
     ApprovalView approval = approvalId == null ? null
         : new ApprovalView(expiresAt.toString(), approvalId.toString(), draft.requiredRole(), GuardApprovalStatus.PENDING.name());
     ReceiptView receiptView = receipt == null ? null
         : new ReceiptView(receipt.auditId(), receipt.currentHash(), receipt.prevHash());
     return new GuardDecisionResponse(approval, draft.controls(), decisionId.toString(), draft.effectiveOutcome(),
-        draft.outcome(), draft.policyVersion(), draft.reason(), draft.reasonCodeValue(), receiptView, draft.role(),
+        executionReceipt, draft.outcome(), draft.policyVersion(), draft.reason(), draft.reasonCodeValue(), receiptView, draft.role(),
         draft.ruleId());
   }
 
@@ -70,6 +71,7 @@ final class GuardDecisionAssembler {
     e.resourceType = draft.resourceType();
     e.resourceId = draft.resourceId();
     e.contextHash = draft.contextHash();
+    e.actionHash = draft.actionHash();
     e.outcome = draft.outcome();
     e.reason = draft.reason();
     e.requiredRole = draft.requiredRole();

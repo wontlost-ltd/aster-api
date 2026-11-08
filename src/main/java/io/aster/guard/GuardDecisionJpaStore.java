@@ -1,16 +1,20 @@
 package io.aster.guard;
 
+import io.aster.guard.receipt.GuardReceiptEntity;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import jakarta.persistence.LockModeType;
 import org.hibernate.exception.ConstraintViolationException;
 
 import java.sql.SQLException;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 
 /** {@link GuardDecisionStore} 的 Panache 实现：每次调用一个独立事务，返回的实体已脱管。 */
 @ApplicationScoped
@@ -21,6 +25,10 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
   static final String EVIDENCE_INDEX = "guard_decisions_evidence_uq";
   /** PostgreSQL unique_violation。 */
   private static final String UNIQUE_VIOLATION = "23505";
+
+  /** 审批迁移「加锁后的 now」的来源：过期复核与审批转 ALLOW 的收据 issuedAt 取同一时刻。 */
+  @Inject
+  Clock clock;
 
   @Override
   public Optional<GuardDecisionEntity> findByIdempotencyKey(String tenantId, String idempotencyKey) {
@@ -52,9 +60,10 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
   }
 
   @Override
-  public void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull) {
+  public void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull,
+                           GuardReceiptEntity receiptOrNull) {
     try {
-      QuarkusTransaction.requiringNew().run(() -> persist(decision, approvalOrNull));
+      QuarkusTransaction.requiringNew().run(() -> persist(decision, approvalOrNull, receiptOrNull));
     } catch (RuntimeException e) {
       if (isIdempotencyViolation(e)) {
         throw new GuardIdempotencyRaceException(e);
@@ -83,18 +92,20 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
   }
 
   @Override
-  public boolean completeApproval(GuardApprovalEntity decided, String newResponseJson) {
-    return QuarkusTransaction.requiringNew().call(() -> transition(decided, newResponseJson));
+  public boolean completeApproval(GuardApprovalEntity decided, Function<Instant, ApprovalWrite> writeAt) {
+    return QuarkusTransaction.requiringNew().call(() -> transition(decided, writeAt));
   }
 
-  /** 行锁保证同一审批只有一个迁移生效；审批行与决策行在同一事务内更新，二者不会不一致。 */
-  private static boolean transition(GuardApprovalEntity decided, String newResponseJson) {
+  /** 行锁保证同一审批只有一个迁移生效；审批行、决策行与收据行在同一事务内写入，三者不会不一致。 */
+  private boolean transition(GuardApprovalEntity decided, Function<Instant, ApprovalWrite> writeAt) {
     Optional<GuardApprovalEntity> locked = GuardApprovalEntity
         .<GuardApprovalEntity>find("id = ?1 and tenantId = ?2", decided.id, decided.tenantId)
         .withLock(LockModeType.PESSIMISTIC_WRITE).firstResultOptional();
-    if (locked.isEmpty() || !transitionable(locked.get(), decided, Instant.now())) {
+    Instant now = clock.instant();
+    if (locked.isEmpty() || !transitionable(locked.get(), decided, now)) {
       return false;
     }
+    ApprovalWrite write = writeAt.apply(now);
     GuardApprovalEntity row = locked.get();
     row.status = decided.status;
     row.decidedBy = decided.decidedBy;
@@ -103,7 +114,10 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
     row.receiptAuditId = decided.receiptAuditId;
     GuardDecisionEntity decision = GuardDecisionEntity.findByIdAndTenant(row.decisionId, row.tenantId).orElseThrow(
         () -> new IllegalStateException("审批 " + row.id + " 关联的决策不存在: " + row.decisionId));
-    decision.responseJson = newResponseJson;
+    decision.responseJson = write.responseJson();
+    if (write.receiptOrNull() != null) {
+      write.receiptOrNull().persist();
+    }
     return true;
   }
 
@@ -119,11 +133,15 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
     return decided.status == GuardApprovalStatus.EXPIRED || !current.isExpired(now);
   }
 
-  /** 先决策后审批（外键），flush 让约束错误在本事务内暴露。 */
-  private static void persist(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull) {
+  /** 先决策后审批与收据（外键），flush 让约束错误在本事务内暴露。 */
+  private static void persist(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull,
+                              GuardReceiptEntity receiptOrNull) {
     decision.persistAndFlush();
     if (approvalOrNull != null) {
       approvalOrNull.persistAndFlush();
+    }
+    if (receiptOrNull != null) {
+      receiptOrNull.persistAndFlush();
     }
   }
 

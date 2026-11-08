@@ -160,6 +160,8 @@ class ApiKeyAuthFilterShouldProtectTest {
         assertTrue(call("/api/v1/guard/decisions/abc"));
         assertTrue(call("/api/v1/guard/approvals"));
         assertTrue(call("/api/v1/guard/approvals/x/approve"));
+        assertTrue(call("/api/v1/guard/keys"));
+        assertTrue(call("/api/v1/guard/receipts/abc/consume"));
     }
 
     @Test
@@ -332,6 +334,8 @@ class ApiKeyAuthFilterShouldProtectTest {
         assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/approvals"));
         assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/approvals/abc/approve"));
         assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/decisions/abc"));
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/receipts/abc/consume"));
+        assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/receipts"));
         assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/decisions"));
         assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard"));
         assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/audit/receiptsX"));

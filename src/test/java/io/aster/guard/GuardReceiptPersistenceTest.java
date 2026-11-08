@@ -43,7 +43,7 @@ class GuardReceiptPersistenceTest {
     Action a = new Action(new Principal("agent-42", "agent", List.of("ops-bot")), new ActionName("delete_customer_record"),
         new Resource("customer", "C-1001"), Map.of("amount", 250000), AGENT);
     GuardDecisionDraft draft = new GuardDecisionDraft(TENANT, "guard.probe", "decide", IDEMPOTENCY_KEY, mapper.flatten(a),
-        mapper.contextHash(a.context()), new PolicyVersionView(1L, "b".repeat(64), 1L), "REQUIRE_APPROVAL",
+        mapper.contextHash(a.context()), null, new PolicyVersionView(1L, "b".repeat(64), 1L), "REQUIRE_APPROVAL",
         "Data Protection Officer", "customer record deletion", "PROBE-001", List.of(), null, AGENT);
 
     AppendedRecord appended = appender.appendSync(receiptBuilder.decisionEvent(draft, UUID.fromString(DECISION_ID),

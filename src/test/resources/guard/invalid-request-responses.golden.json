@@ -1,0 +1,34 @@
+{
+  "invalidJson" : {
+    "status" : 400,
+    "body" : "{\"errorCode\":\"HTTP_400\",\"message\":\"HTTP 400 Bad Request\",\"traceId\":\"<traceId>\",\"timestamp\":\"<timestamp>\",\"details\":null}"
+  },
+  "actionMissing" : {
+    "status" : 400,
+    "body" : "{\"error\":\"invalid_action\",\"message\":\"principal.id 必填\"}"
+  },
+  "principalIdNumber" : {
+    "status" : 404,
+    "body" : "{\"error\":\"policy_not_found\",\"message\":\"策略不存在或无活跃版本: guard.golden.missing.decide\"}"
+  },
+  "waitSecondsString" : {
+    "status" : 400,
+    "body" : "{\"objectName\":\"Class\",\"attributeName\":\"waitSeconds\",\"line\":1,\"column\":148,\"value\":\"soon\"}"
+  },
+  "emptyBody" : {
+    "status" : 400,
+    "body" : "{\"error\":\"invalid_action\",\"message\":\"policyModule 与 policyFunction 必填\"}"
+  },
+  "policyModuleMissing" : {
+    "status" : 400,
+    "body" : "{\"error\":\"invalid_action\",\"message\":\"policyModule 与 policyFunction 必填\"}"
+  },
+  "idempotencyKeyTooLong" : {
+    "status" : 400,
+    "body" : "{\"error\":\"invalid_action\",\"message\":\"Idempotency-Key 超过 255 字符或含控制字符\"}"
+  },
+  "contextDepth9" : {
+    "status" : 400,
+    "body" : "{\"error\":\"invalid_action\",\"message\":\"context 嵌套深度超过 8\"}"
+  }
+}
