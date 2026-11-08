@@ -40,8 +40,11 @@ import java.util.UUID;
 @Consumes(MediaType.APPLICATION_JSON)
 @RequireRole(Role.MEMBER)
 public class GuardReceiptResource {
-  /** 计量用的端点标签（不含 decisionId，避免按决策拆出无界的标签值）。 */
-  static final String CONSUME_METER_PATH = "/api/v1/guard/receipts/consume";
+  /**
+   * 计量标签：与 {@code /decisions} 同一口径（ADR 0040 §12 D5「与 /decisions 同一口径计量一次」、§3.1 第 3 条），
+   * 计入同一端点标签。
+   */
+  static final String CONSUME_METER_PATH = GuardDecisionResource.PATH;
   private static final String INVALID_CONSUME = "invalid_consume";
 
   @Inject
@@ -57,7 +60,7 @@ public class GuardReceiptResource {
   GuardRequestBodyReader bodyReader;
 
   /**
-   * 原子一次性消耗。200 时按 {@link #CONSUME_METER_PATH} 计量一次（与 {@code /decisions} 同一 {@code recordAsync} 口径），
+   * 原子一次性消耗。200 时按 {@link #CONSUME_METER_PATH}（即 {@code /api/v1/guard/decisions}）以同一 {@code recordAsync} 口径计量一次，
    * 不做配额与 RPS 判定：它不含评估，每个决策至多一次成功；HMAC 内部会话调用不计量。
    */
   @POST

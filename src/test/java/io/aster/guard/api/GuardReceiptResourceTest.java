@@ -1,5 +1,6 @@
 package io.aster.guard.api;
 
+import io.aster.audit.chain.AuditChainAppender;
 import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardDecisionEntity;
@@ -18,6 +19,7 @@ import io.restassured.response.Response;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -351,5 +353,55 @@ class GuardReceiptResourceTest {
       assertThat(r.jsonPath().getString("error")).as(body).isEqualTo("invalid_consume");
     }
     assertThat(events(decisionId, ATTEMPT)).hasSize(1);
+  }
+
+  /** 审批转 ALLOW 签发的收据可 consume（不是 legacy）；第二次 consume 409 receipt_consumed。 */
+  @Test
+  void approvedDecisionReceiptConsumable() {
+    String body = decisionBody(DeployedMapParamProbeTest.MODULE, "delete_customer_record", 250000);
+    Response pending = postDecision(TENANT, body);
+    assertThat(pending.jsonPath().getString("effectiveOutcome")).isEqualTo("PENDING");
+    String decisionId = pending.jsonPath().getString("decisionId");
+    Response approved = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "dpo-1")
+        .header("X-User-Business-Roles", DPO).contentType(ContentType.JSON).body(Map.of())
+        .when().post("/api/v1/guard/approvals/" + pending.jsonPath().getString("approval.id") + "/approve");
+    assertThat(approved.statusCode()).as(approved.asString()).isEqualTo(200);
+    assertThat(approved.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+    String hash = ExecutionReceiptAssert.actionHashOf(body);
+
+    Response first = consume(decisionId, hash, UUID.randomUUID().toString(), "exec-approved");
+
+    assertThat(first.statusCode()).as(first.asString()).isEqualTo(200);
+    assertThat(first.asString()).doesNotContain("legacy");
+    assertThat(ExecutionReceiptAssert.tree(first.asString()).get("executionReceipt"))
+        .isEqualTo(ExecutionReceiptAssert.tree(approved.asString()).get("executionReceipt"));
+    Response second = consume(decisionId, hash, UUID.randomUUID().toString(), "exec-approved");
+    assertThat(second.statusCode()).as(second.asString()).isEqualTo(409);
+    assertThat(second.jsonPath().getString("error")).isEqualTo("receipt_consumed");
+    assertThat(second.jsonPath().getString("executorId")).isEqualTo("exec-approved");
+  }
+
+  /** 尝试事件追加失败 → 503，响应体逐字为 {"error":"receipt_unavailable"}，收据行不动。 */
+  @Test
+  void attemptAppendFailureIs503ReceiptUnavailable() {
+    String body = allowBody(250000);
+    String decisionId = allowDecision(body);
+    AuditChainAppender failing = Mockito.mock(AuditChainAppender.class);
+    Mockito.when(failing.appendSync(Mockito.any()))
+        .thenThrow(new AuditChainAppender.AuditAppendException("模拟审计链不可用", null));
+    QuarkusMock.installMockForType(failing, AuditChainAppender.class);
+
+    Response r = consume(decisionId, ExecutionReceiptAssert.actionHashOf(body), UUID.randomUUID().toString(), "e");
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(503);
+    assertThat(r.asString()).isEqualTo("{\"error\":\"receipt_unavailable\"}");
+    assertThat(receiptRow(decisionId).consumedAt).isNull();
+    assertThat(events(decisionId, ATTEMPT)).isEmpty();
+  }
+
+  /** ADR 0040 §12 D5：consume 与 /decisions 同一计量口径与端点标签。 */
+  @Test
+  void consumeMeteredUnderDecisionsLabel() {
+    assertThat(GuardReceiptResource.CONSUME_METER_PATH).isEqualTo("/api/v1/guard/decisions");
   }
 }

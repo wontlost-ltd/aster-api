@@ -6,6 +6,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.LockModeType;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -84,7 +86,9 @@ public class GuardReceiptJpaStore implements GuardReceiptStore {
     if (!now.isBefore(row.expiresAt)) {
       return reject(RECEIPT_EXPIRED, Map.of("expiresAt", row.expiresAt.toString()));
     }
-    if (!row.actionHash.equals(req.actionHash())) {
+    // 定长比较：不因首个不同字节的位置泄露时序信息（入参已校验为 64 位 hex，非空）
+    if (!MessageDigest.isEqual(row.actionHash.getBytes(StandardCharsets.US_ASCII),
+        req.actionHash().getBytes(StandardCharsets.US_ASCII))) {
       return reject(ACTION_MISMATCH, Map.of());
     }
     return Optional.empty();
