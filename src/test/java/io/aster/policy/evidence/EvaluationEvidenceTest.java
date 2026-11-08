@@ -16,7 +16,8 @@ class EvaluationEvidenceTest {
         new AgentIdentity("anthropic", "claude", null, "s-1"), null, null);
     assertThat(e.toMetadata()).containsExactlyInAnyOrderEntriesOf(Map.of(
         "correlationId", "c-1", "outcome", "ALLOW", "ruleId", "R-1", "controls", List.of("GDPR:ART17"),
-        "agentProvider", "anthropic", "agentModel", "claude", "agentSession", "s-1", "agentSource", "declared"));
+        "agentProvider", "anthropic", "agentModel", "claude", "agentSession", "s-1", "agentSource", "declared",
+        "inputSource", "declared"));
   }
 
   @Test void 声明档案时写profile键() {
@@ -30,9 +31,17 @@ class EvaluationEvidenceTest {
     assertThat(new EvaluationEvidence("c-3", "ALLOW", null, List.of(), null, null, null, null).profile()).isNull();
   }
 
+  /** ADR 0041 §11 D2：评估输入全部来自请求体、没有验签通道，凡发事件即写常量 inputSource=declared。 */
+  @Test void 评估事件恒写inputSource为declared() {
+    assertThat(EvaluationEvidence.of("ALLOW", "R-1", List.of(), null, null).toMetadata())
+        .containsEntry("inputSource", "declared");
+    assertThat(new EvaluationEvidence("c-5", null, null, null, null, null, null, null).toMetadata())
+        .containsEntry("inputSource", "declared");
+  }
+
   @Test void 无agent无规则时只剩correlationId() {
     EvaluationEvidence e = new EvaluationEvidence("c-2", null, null, List.of(), null, null, null, null);
-    assertThat(e.toMetadata()).containsOnlyKeys("correlationId");
+    assertThat(e.toMetadata()).containsOnlyKeys("correlationId", "inputSource");
   }
 
   /** issue #459：版本三键由 withVersion 附加，correlationId 不变；null 不写键，哈希逐字入链。 */
@@ -78,7 +87,7 @@ class EvaluationEvidenceTest {
 
   @Test void controls为null时不写键() {
     EvaluationEvidence e = new EvaluationEvidence("c-4", null, null, null, null, null, null, null);
-    assertThat(e.toMetadata()).containsOnlyKeys("correlationId");
+    assertThat(e.toMetadata()).containsOnlyKeys("correlationId", "inputSource");
   }
 
   @Test void controls中的null项被丢弃() {

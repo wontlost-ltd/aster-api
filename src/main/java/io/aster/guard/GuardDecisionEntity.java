@@ -47,6 +47,12 @@ public class GuardDecisionEntity extends PanacheEntityBase {
   @Column(name = "requested_by") public String requestedBy;
   @Column(name = "requested_api_key_id") public String requestedApiKeyId;
   @Column(name = "evidence_correlation_id") public String evidenceCorrelationId;
+  /** verified 叶子路径（JSON 字符串数组，ADR 0040 §11 D4）；V6.36.0 之前的旧行与无 verified 字段时为 null。 */
+  @JdbcTypeCode(SqlTypes.JSON) @Column(name = "verified_fields", columnDefinition = "jsonb") public String verifiedFields;
+  /** 本决策引用的签发方 {@code issuer#kid}（JSON 字符串数组）；签发方吊销时按 jsonb 包含查询定位依赖它的审批。 */
+  @JdbcTypeCode(SqlTypes.JSON) @Column(name = "fact_issuers", columnDefinition = "jsonb") public String factIssuers;
+  /** 本次请求全部签名事实中最早的 expiresAt；无事实为 null。 */
+  @Column(name = "fact_expires_at") public Instant factExpiresAt;
   @Column(name = "created_at", nullable = false) public Instant createdAt = Instant.now();
 
   public static Optional<GuardDecisionEntity> findByIdempotencyKey(String tenantId, String key) {

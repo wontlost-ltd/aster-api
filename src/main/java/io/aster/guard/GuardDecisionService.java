@@ -1,16 +1,24 @@
 package io.aster.guard;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.api.GuardActionRequest;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
+import io.aster.guard.provenance.FactVerifier;
+import io.aster.guard.provenance.FactVerifier.VerifiedFacts;
+import io.aster.guard.provenance.GuardInvalidFactException;
+import io.aster.guard.provenance.InputSourceResolver;
+import io.aster.guard.provenance.InputSources;
+import io.aster.guard.provenance.VerifiedInputsGate;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.api.model.PolicyEvaluationResult;
 import io.aster.policy.entity.PolicyVersion;
+import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.repository.PolicySourceRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -25,6 +33,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -35,8 +44,9 @@ import static io.aster.guard.GuardDecisionAssembler.toApproval;
 import static io.aster.guard.GuardText.isBlank;
 
 /**
- * Action Guard 决策编排（ADR 0040 §2–§5）：扁平化 → 幂等查重（指纹比对）→ 解析活跃版本 → 评估 → 同步收据 →
- * 决策行与待审批行同一事务落库。
+ * Action Guard 决策编排（ADR 0040 §2–§5）：扁平化 → 签名事实验签与逐字段来源判定（§11 D2 / D4）→ 幂等查重（指纹比对）
+ * → 解析活跃版本 → 档案来源门（§11 D5）→ 评估 → 同步收据 → 决策行与待审批行同一事务落库。
+ * 来源不传给规则，只进响应、决策行与收据。
  *
  * <p>fail-closed：非 Verdict、评估异常 / 超时、收据写入失败、执行收据签发失败一律判 DENY 并给出 reasonCode；
  * 收据写入失败时不创建待审批，保证「没有入链的决策不会被人批准放行」。
@@ -70,6 +80,8 @@ public class GuardDecisionService {
   private GuardJson json;
   private GuardDecisionAssembler assembler;
   private ExecutionReceiptIssuer receiptIssuer;
+  private FactVerifier factVerifier;
+  private InputSourceResolver inputSourceResolver;
   private Duration approvalTtl;
   private VersionLookupTx versionLookupTx;
 
@@ -81,16 +93,18 @@ public class GuardDecisionService {
   public GuardDecisionService(PolicyEvaluationService evaluationService, PolicySourceRepository policySourceRepository,
                               AuditChainAppender appender, GuardDecisionStore store, GuardActionMapper mapper,
                               GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
-                              ExecutionReceiptIssuer receiptIssuer,
+                              ExecutionReceiptIssuer receiptIssuer, FactVerifier factVerifier,
+                              InputSourceResolver inputSourceResolver,
                               @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl) {
     this(evaluationService, policySourceRepository, appender, store, mapper, receiptBuilder, objectMapper, receiptIssuer,
-        approvalTtl, lookup -> QuarkusTransaction.requiringNew().call(lookup::get));
+        factVerifier, inputSourceResolver, approvalTtl, lookup -> QuarkusTransaction.requiringNew().call(lookup::get));
   }
 
   GuardDecisionService(PolicyEvaluationService evaluationService, PolicySourceRepository policySourceRepository,
                        AuditChainAppender appender, GuardDecisionStore store, GuardActionMapper mapper,
                        GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
-                       ExecutionReceiptIssuer receiptIssuer, Duration approvalTtl, VersionLookupTx versionLookupTx) {
+                       ExecutionReceiptIssuer receiptIssuer, FactVerifier factVerifier,
+                       InputSourceResolver inputSourceResolver, Duration approvalTtl, VersionLookupTx versionLookupTx) {
     this.evaluationService = evaluationService;
     this.policySourceRepository = policySourceRepository;
     this.appender = appender;
@@ -100,6 +114,8 @@ public class GuardDecisionService {
     this.json = new GuardJson(objectMapper);
     this.assembler = new GuardDecisionAssembler(json);
     this.receiptIssuer = receiptIssuer;
+    this.factVerifier = factVerifier;
+    this.inputSourceResolver = inputSourceResolver;
     this.approvalTtl = approvalTtl;
     this.versionLookupTx = versionLookupTx;
   }
@@ -113,31 +129,50 @@ public class GuardDecisionService {
    * @param apiKeyId    已验证的 API key（未经 API key 鉴权时为 null）
    * @param actionHash  请求体 {@code action} 原文的 {@code jcs-sha256/v1}（{@link GuardRequestBodyReader}）；
    *                    不参与幂等指纹（ADR 0040 §3.1 七项不变）
+   * @param rawAction   请求体 {@code action} 原文树，其中的 {@code facts} 在幂等查键之前验签；null 视为无签名事实
+   * @throws GuardInvalidFactException          签名事实验签失败（先于幂等查键，所以不会被重放掩盖）
    * @throws GuardInvalidActionException        请求体或幂等键校验失败
    * @throws GuardIdempotencyMismatchException  幂等键已绑定另一个提议动作
    * @throws GuardPolicyNotFoundException       策略不存在或无活跃版本
    */
   public GuardDecisionResponse decide(String tenantId, String performedBy, String apiKeyId, GuardActionRequest req,
-                                      String actionHash, String rawIdempotencyKey) {
-    GuardDecisionResponse response = decideOnce(tenantId, performedBy, apiKeyId, req, actionHash, rawIdempotencyKey);
+                                      String actionHash, JsonNode rawAction, String rawIdempotencyKey) {
+    return decide(tenantId, performedBy, apiKeyId, Set.of(), req, actionHash, rawAction, rawIdempotencyKey);
+  }
+
+  /**
+   * 同上，并带提交者的已验证业务角色（{@code RequestIdentityResolver.businessRoles()}）：
+   * {@code principal.roles} 只有在这些角色之内才能被服务端证实（ADR 0040 §11 D2 (a)）；不带时 roles 恒为 declared。
+   */
+  public GuardDecisionResponse decide(String tenantId, String performedBy, String apiKeyId, Set<String> businessRoles,
+                                      GuardActionRequest req, String actionHash, JsonNode rawAction,
+                                      String rawIdempotencyKey) {
+    GuardDecisionResponse response = decideOnce(tenantId, performedBy, apiKeyId, businessRoles, req, actionHash,
+        rawAction, rawIdempotencyKey);
     return awaitApproval(tenantId, response, clampWaitSeconds(req == null ? null : req.waitSeconds()));
   }
 
-  private GuardDecisionResponse decideOnce(String tenantId, String performedBy, String apiKeyId, GuardActionRequest req,
-                                           String actionHash, String rawIdempotencyKey) {
+  private GuardDecisionResponse decideOnce(String tenantId, String performedBy, String apiKeyId,
+                                           Set<String> businessRoles, GuardActionRequest req, String actionHash,
+                                           JsonNode rawAction, String rawIdempotencyKey) {
     String idempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
     validateAddress(req);
     Map<String, Object> flat = mapper.flatten(req.action());
+    // 本次请求自带的事实必须有效：验签失败即 400，先于幂等查键（ADR 0040 §11 D4），重放不能替无效事实放行。
+    // 来源只属于首次决策：重放返回存储的 inputSources，本次请求的事实不改写它（facts 不在幂等指纹里）
+    VerifiedFacts facts = factVerifier.verify(tenantId, rawAction);
+    InputSources sources = InputSourceResolver.resolve(req.action(), facts, performedBy, businessRoles);
     GuardDecisionDraft base = new GuardDecisionDraft(tenantId, req.policyModule(), req.policyFunction(),
         idempotencyKey, flat, mapper.contextHash(req.action().context()), actionHash, null, null, null, null, null, null,
-        null, declaredAgent(req.action().agent()));
+        null, declaredAgent(req.action().agent()), sources);
     IdempotencyFingerprint fingerprint = IdempotencyFingerprint.of(base);
     Optional<GuardDecisionResponse> replay = findByIdempotencyKey(tenantId, idempotencyKey, fingerprint);
     if (replay.isPresent()) {
       return replay.get();
     }
     PolicyVersionView version = resolveVersion(tenantId, req.policyModule(), req.policyFunction());
-    GuardDecisionDraft draft = evaluate(base.withPolicyVersion(version));
+    GuardDecisionDraft versioned = base.withPolicyVersion(version);
+    GuardDecisionDraft draft = gate(versioned, req.action()).orElseGet(() -> evaluate(versioned));
 
     UUID decisionId = UUID.randomUUID();
     ExecutionReceiptIssuer.Issued issued = draft.allowed() ? issueReceipt(draft, decisionId) : null;
@@ -222,11 +257,15 @@ public class GuardDecisionService {
   }
 
   /**
-   * 存储响应 + 审批现状。审批迁移会同步改写 response_json，所以只有仍显示 PENDING 的响应需要再看审批行：
-   * 读取时判定过期，不依赖调度器及时（ADR 0040 §4.3），不写库。
+   * 存储响应 + 审批现状 + 事实现状。审批迁移会同步改写 response_json，所以只有仍显示 PENDING 的响应需要再看审批行：
+   * 读取时判定过期，不依赖调度器及时（ADR 0040 §4.3），不写库。首次决策的事实已失效时追加
+   * {@code inputSources.factsStale}（ADR 0040 §11 D4）：不重验、不改判、不写事件、不改写 response_json。
    */
   private GuardDecisionResponse currentResponse(GuardDecisionEntity e) {
     GuardDecisionResponse stored = json.readResponse(e);
+    if (inputSourceResolver.factsStale(e.tenantId, e.factExpiresAt, json.readFactIssuers(e))) {
+      stored = stored.withFactsStale();
+    }
     if (!GuardDecisionDraft.PENDING.equals(stored.effectiveOutcome())) {
       return stored;
     }
@@ -262,6 +301,27 @@ public class GuardDecisionService {
             .flatMap(catalog -> policySourceRepository.findActiveVersion(catalog.id)))
         .orElseThrow(() -> new GuardPolicyNotFoundException("策略不存在或无活跃版本: " + module + "." + function));
     return new PolicyVersionView(v.id, v.sourceHash, v.version);
+  }
+
+  /**
+   * 档案来源门（ADR 0040 §11 D5）：档案要求 verifiedInputs 而规则引用的输入未全部 verified 时，不评估、直接 DENY
+   * （reason 为 null，收据列出 unverifiedFields）；之后照常写收据与决策行，DENY 不建审批、不签执行收据。
+   * 读不到规则元数据（编译失败等，评估也会以同一原因失败）按 evaluation_failed 拒绝，同样不执行规则。
+   * 档案不要求时返回 empty，由 {@link #evaluate} 照旧评估。
+   */
+  private Optional<GuardDecisionDraft> gate(GuardDecisionDraft base, GuardActionRequest.Action action) {
+    RuleMetadata meta;
+    try {
+      meta = evaluationService.ruleMetadata(base.tenantId(), base.policyModule(), base.policyFunction());
+    } catch (RuntimeException e) {
+      LOG.warnf("Action Guard 读取规则元数据失败，按 DENY 处理: %s.%s: %s: %s", base.policyModule(),
+          base.policyFunction(), e.getClass().getSimpleName(), e.getMessage());
+      LOG.debugf(e, "Action Guard 读取规则元数据失败堆栈: %s.%s", base.policyModule(), base.policyFunction());
+      return Optional.of(base.deny(GuardReasonCode.EVALUATION_FAILED));
+    }
+    return VerifiedInputsGate.check(meta, base.inputSources(), VerifiedInputsGate.presentLeafPaths(action))
+        .map(denial -> base.withRule(meta.ruleId(), meta.controls())
+            .denyUnverified(denial.code(), denial.unverifiedFields()));
   }
 
   /**

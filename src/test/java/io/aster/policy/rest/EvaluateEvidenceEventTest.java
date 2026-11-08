@@ -383,6 +383,28 @@ class EvaluateEvidenceEventTest {
         .doesNotContainKey("profile");
   }
 
+  /** ADR 0041 §11 D2：/evaluate、/evaluate-source、/evaluate-json 的事件（含失败与无 agent）都带 inputSource=declared。 */
+  @Test
+  void evaluateEventsCarryInputSourceDeclared() throws Exception {
+    Response evaluate = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
+        .body(Map.of("policyModule", DeployedMapParamProbeTest.MODULE, "policyFunction", DeployedMapParamProbeTest.FUNCTION,
+            "context", List.of(guardRequest("read_customer_record"))))
+        .post("/api/v1/policies/evaluate");
+    Response failed = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
+        .body(Map.of("policyModule", "evidence.missing", "policyFunction", "nope", "context", List.of(Map.of("x", 1))))
+        .post("/api/v1/policies/evaluate");
+    Response source = evaluateSource(TENANT, AGENT, false);
+    Response json = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
+        .body(Map.of("policy", coreIrJsonOf("evidence.json"), "context", Map.of("amount", 1), "agent", AGENT))
+        .post("/api/v1/policies/evaluate-json");
+
+    for (Response resp : List.of(evaluate, failed, source, json)) {
+      String cid = resp.jsonPath().getString("evidence.correlationId");
+      assertThat(cid).as(resp.asString()).isNotBlank();
+      assertThat(metadataOf(awaitEvent(TENANT, cid))).as(resp.asString()).containsEntry("inputSource", "declared");
+    }
+  }
+
   // ---------------------------------------------------------------- helpers
 
   /** 模块段须是合法标识符：RUN 可能以数字开头（CNL 语法错误），故映射为纯字母。 */

@@ -191,6 +191,8 @@ public class InternalCallerFilter {
         boolean isCompile = normalizedPath.equals(COMPILE_PATH);
         // 从证据开决策（ADR 0042 §3.1）：只对 cloud 开放，无 Bearer 通道，恒要求 HMAC。
         if (normalizedPath.equals(GUARD_FROM_EVIDENCE_PATH)) return Classification.REQUIRE_HMAC;
+        // 签名事实签发方管理（ADR 0040 §11 D3）：同 from-evidence，只对 cloud 开放，恒要求 HMAC。
+        if (isGuardFactIssuers(normalizedPath)) return Classification.REQUIRE_HMAC;
         // guard 审批、决策回读与执行收据（ADR 0042 §4.2、ADR 0040 §12 D5）：cloud 走 HMAC，SDK 走 Bearer，同收据先例。
         if (isAuditReceipts || isReplayItems || isCedarExport || isCompile
             || isGuardDualChannel(normalizedPath)) {
@@ -216,8 +218,14 @@ public class InternalCallerFilter {
     }
 
     static final String GUARD_FROM_EVIDENCE_PATH = "/api/v1/guard/decisions/from-evidence";
+    static final String GUARD_FACT_ISSUERS_PATH = "/api/v1/guard/fact-issuers";
     static final String CEDAR_EXPORT_PATH = "/api/v1/policies/export/cedar";
     static final String COMPILE_PATH = "/api/v1/policies/compile";
+
+    /** 签发方列表及其全部子路径：只接受 HMAC，子路径一律按前缀匹配（未知子路径同样不对 Bearer 开放）。 */
+    private static boolean isGuardFactIssuers(String p) {
+        return p.equals(GUARD_FACT_ISSUERS_PATH) || p.startsWith(GUARD_FACT_ISSUERS_PATH + "/");
+    }
 
     /** 审批列表、审批批准 / 拒绝、单个决策回读、执行收据 consume / 结果回写：既接受 HMAC 内部调用，也接受 Bearer API key。 */
     private static boolean isGuardDualChannel(String p) {

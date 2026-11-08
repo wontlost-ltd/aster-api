@@ -3,6 +3,7 @@
 # 新增端点（向后兼容）：运行 PublicApiContractTest 会自动追加，连同本文件提交。
 DELETE /api/v1/admin/lexicons/{fileName}
 DELETE /api/v1/admin/messages/{locale}
+DELETE /api/v1/guard/fact-issuers/{issuer}/{kid}
 DELETE /api/v1/policies/cache
 GET /api/v1/admin/byok-allowlist
 GET /api/v1/admin/policy-versions/source-hashes
@@ -27,6 +28,7 @@ GET /api/v1/audit/verify-chain
 GET /api/v1/audit/workflows/{workflowId}/version-history
 GET /api/v1/guard/approvals
 GET /api/v1/guard/decisions/{id}
+GET /api/v1/guard/fact-issuers
 GET /api/v1/guard/keys
 GET /api/v1/lexicons
 GET /api/v1/lexicons/stream
@@ -71,3 +73,4 @@ POST /api/v1/policies/validate
 POST /api/v1/policies/{policyId}/rollback
 POST /api/v1/policies/{policyId}/whatif-batches
 PUT /api/v1/admin/messages/{locale}
+PUT /api/v1/guard/fact-issuers/{issuer}/{kid}

@@ -771,6 +771,21 @@ class InternalCallerFilterTest {
             InternalCallerFilter.classify("/api/v1/guard/decisions/from-evidence", true, true, true, true, true));
     }
 
+    // ADR 0040 §11 D3：签发方管理端点只接受 HMAC（同 from-evidence），无 Bearer 通道。
+    @Test
+    void guardFactIssuersAlwaysRequireHmac() {
+        for (String p : List.of("/api/v1/guard/fact-issuers", "/api/v1/guard/fact-issuers/idp.example.com/2026-11",
+                "/api/v1/guard/fact-issuers/x", "/api/v1/guard/fact-issuers/a/b/c")) {
+            assertEquals(Classification.REQUIRE_HMAC,
+                InternalCallerFilter.classify(p, false, false, false, false, false), p);
+            assertEquals(Classification.REQUIRE_HMAC,
+                InternalCallerFilter.classify(p, true, true, true, true, true), p);
+        }
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/guard/fact-issuersX", false, false, false, false, false));
+        assertEquals("internal_only", InternalCallerFilter.missingCredentialReason("/api/v1/guard/fact-issuers"));
+    }
+
     @Test
     void guardApprovalPathsRequireHmacOnlyWithInternalCallerHeaders() {
         String id = "3f1c2a4e-0000-4000-8000-000000000001";

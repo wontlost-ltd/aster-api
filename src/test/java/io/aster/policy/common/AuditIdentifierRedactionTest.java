@@ -93,4 +93,13 @@ class AuditIdentifierRedactionTest {
         }
         assertFalse(AuditChainAppender.isRedactionExempt("comment", "4111-1111-1111-1111@host"));
     }
+
+    @Test
+    @DisplayName("签发方吊销事件的 issuer / kid 逐字入链（ADR 0040 §11 D4 身份键豁免）")
+    void factIssuerIdentityKeysAreExempt() {
+        for (String key : new String[] {"issuer", "kid"}) {
+            assertTrue(AuditChainAppender.isRedactionExempt(key, "security@idp.example.com"), key);
+        }
+        assertFalse(AuditChainAppender.isRedactionExempt("performedBy", "admin@example.com"));
+    }
 }

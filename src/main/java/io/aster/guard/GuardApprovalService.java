@@ -5,6 +5,7 @@ import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.api.GuardApprovalView;
 import io.aster.guard.api.GuardDecisionResponse;
+import io.aster.guard.provenance.InputSourceResolver;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -37,8 +38,9 @@ import static io.aster.guard.GuardText.isBlank;
  *       收据行与 response_json 中的收据同一事务写入（ADR 0040 §12 D1 (2) / D4）。签发失败则整个事务回滚，
  *       报 {@code receipt_unavailable}，审批保持 PENDING。</li>
  * </ol>
- * 第 1 步与第 3 步之间若被并发处理（他人先批 / 刚好过期），第 3 步返回 false：已追加的事件作为
+ * 第 1 步与第 3 步之间若被并发处理（他人先批 / 刚好过期 / 签发方吊销），第 3 步返回 false：已追加的事件作为
  * 「一次被否决的审批尝试」留在链上，本次调用报 {@code approval_not_pending}，审批行与决策不受影响。
+ * {@code approval_not_pending} 的错误体在审批已因签发方吊销转 EXPIRED 时附 {@code expiredReason}（ADR 0040 §11 D4）。
  *
  * <p>阻塞方法：须在非事务的 worker 线程调用（同 {@link GuardDecisionService}）。
  */
@@ -56,6 +58,10 @@ public class GuardApprovalService {
   private GuardReceiptBuilder receiptBuilder;
   private GuardJson json;
   private ExecutionReceiptIssuer receiptIssuer;
+  private InputSourceResolver inputSources;
+
+  /** 单条过期迁移的结果：已迁移、加锁后发现已不是 PENDING（被并发处理）、或审计 / 存储失败（状态不变）。 */
+  public enum ExpiryOutcome { EXPIRED, NOT_PENDING, FAILED }
 
   /** CDI 客户端代理所需。 */
   protected GuardApprovalService() {
@@ -63,12 +69,14 @@ public class GuardApprovalService {
 
   @Inject
   public GuardApprovalService(GuardDecisionStore store, AuditChainAppender appender, GuardReceiptBuilder receiptBuilder,
-                              ObjectMapper objectMapper, ExecutionReceiptIssuer receiptIssuer) {
+                              ObjectMapper objectMapper, ExecutionReceiptIssuer receiptIssuer,
+                              InputSourceResolver inputSources) {
     this.store = store;
     this.appender = appender;
     this.receiptBuilder = receiptBuilder;
     this.json = new GuardJson(objectMapper);
     this.receiptIssuer = receiptIssuer;
+    this.inputSources = inputSources;
   }
 
   /**
@@ -92,13 +100,20 @@ public class GuardApprovalService {
     GuardDecisionEntity decision = decisionOf(approval);
     Instant now = Instant.now();
     checkPending(approval, now);
+    expireIfIssuerRevoked(approval, decision, now);
     checkSegregation(approval, decision, decidedBy, approverApiKeyId);
     checkRoleAndInput(approval, decidedBy, businessRoles, approve, comment);
     approval.status = approve ? GuardApprovalStatus.APPROVED : GuardApprovalStatus.REJECTED;
     approval.decidedBy = decidedBy;
     approval.decidedAt = now;
     approval.comment = isBlank(comment) ? null : comment;
-    return complete(approval, decision).orElseThrow(() -> notPending(approvalId));
+    Optional<GuardDecisionResponse> done = complete(approval, decision);
+    if (done.isPresent()) {
+      return done.get();
+    }
+    // 加锁后不可迁移：可能是签发方恰在校验与加锁之间被吊销（批准在锁内被拒），此时按吊销路径就地转 EXPIRED
+    expireIfIssuerRevoked(approval, decision, now);
+    throw notPendingNow(tenantId, approvalId);
   }
 
   /**
@@ -139,31 +154,55 @@ public class GuardApprovalService {
   public int expireDue(Instant now) {
     int expired = 0;
     for (GuardApprovalEntity approval : store.findExpiredPending(now, EXPIRY_BATCH)) {
-      if (approval.isExpired(now) && expireOne(approval, now)) {
+      if (approval.isExpired(now) && expire(approval, now, null) == ExpiryOutcome.EXPIRED) {
         expired++;
       }
     }
     return expired;
   }
 
-  private boolean expireOne(GuardApprovalEntity approval, Instant now) {
+  /**
+   * 把一条审批转 EXPIRED，走与自然过期相同的「追加审批事件 → 加锁迁移」：审批事件 outcome 为 EXPIRED、由
+   * {@code SYSTEM} 发起，{@code expiredReason} 非 null 时写入审批行与事件 metadata。
+   * 加锁后已不是 PENDING（被批准 / 拒绝 / 已过期）则不改动、返回 {@link ExpiryOutcome#NOT_PENDING}。
+   * 失败只记日志、返回 {@link ExpiryOutcome#FAILED}，审批保持 PENDING。阻塞，须在非事务线程调用。
+   *
+   * @param expiredReason 自然过期为 null；签发方吊销为 {@link GuardApprovalEntity#EXPIRED_FACT_ISSUER_REVOKED}
+   */
+  public ExpiryOutcome expire(GuardApprovalEntity approval, Instant now, String expiredReason) {
     approval.status = GuardApprovalStatus.EXPIRED;
     approval.decidedBy = null;
     approval.decidedAt = now;
     approval.comment = null;
+    approval.expiredReason = expiredReason;
     try {
-      return complete(approval, decisionOf(approval)).isPresent();
+      return complete(approval, decisionOf(approval)).isPresent() ? ExpiryOutcome.EXPIRED : ExpiryOutcome.NOT_PENDING;
     } catch (RuntimeException e) {
-      LOG.errorf(e, "Action Guard 审批过期处理失败，下一轮重试: approval=%s", approval.id);
-      return false;
+      LOG.errorf(e, "Action Guard 审批过期处理失败，留待重试: approval=%s reason=%s", approval.id, expiredReason);
+      return ExpiryOutcome.FAILED;
     }
   }
 
-  // 校验顺序即 ADR 0040 §4.2 的规则顺序：存在 → PENDING 且未过期 → 四眼 → 角色 → comment → 列宽。
+  /**
+   * 吊销联动的就地兜底（ADR 0040 §11 D4，fail-closed）：决策所依赖的签发方已吊销而审批仍是 PENDING
+   * （吊销与决策落库并发、或联动中途失败而未覆盖到它）时，不放行人工处理，就地按吊销同一路径转 EXPIRED，
+   * 本次调用报 {@code approval_not_pending}（附 {@code expiredReason}）。迁移失败则报 {@code receipt_unavailable}，状态不变。
+   */
+  private void expireIfIssuerRevoked(GuardApprovalEntity approval, GuardDecisionEntity decision, Instant now) {
+    if (!inputSources.issuersRevoked(approval.tenantId, json.readFactIssuers(decision))) {
+      return;
+    }
+    if (expire(approval, now, GuardApprovalEntity.EXPIRED_FACT_ISSUER_REVOKED) == ExpiryOutcome.FAILED) {
+      throw conflict("receipt_unavailable", "审批事件写入审计链失败，请稍后重试");
+    }
+    throw notPendingNow(approval.tenantId, approval.id);
+  }
+
+  // 校验顺序即 ADR 0040 §4.2 的规则顺序：存在 → PENDING 且未过期 → 所依赖签发方未吊销（§11 D4）→ 四眼 → 角色 → comment → 列宽。
 
   private static void checkPending(GuardApprovalEntity a, Instant now) {
     if (a.status != GuardApprovalStatus.PENDING || a.isExpired(now)) {
-      throw notPending(a.id);
+      throw notPending(a);
     }
   }
 
@@ -264,8 +303,18 @@ public class GuardApprovalService {
     }
   }
 
-  private static GuardApprovalConflictException notPending(UUID approvalId) {
-    return conflict("approval_not_pending", "审批已处理或已过期: " + approvalId);
+  /** 被并发处理后重读审批行，使错误体反映它此刻的终态（如签发方吊销导致的 EXPIRED）。 */
+  private GuardApprovalConflictException notPendingNow(String tenantId, UUID approvalId) {
+    return store.findApproval(tenantId, approvalId).map(GuardApprovalService::notPending)
+        .orElseGet(() -> conflict("approval_not_pending", "审批已处理或已过期: " + approvalId));
+  }
+
+  /** {@code approval_not_pending}；审批行带 {@code expiredReason} 时并入错误体。 */
+  private static GuardApprovalConflictException notPending(GuardApprovalEntity current) {
+    String message = "审批已处理或已过期: " + current.id;
+    return current.expiredReason == null
+        ? conflict("approval_not_pending", message)
+        : conflict("approval_not_pending", message, Map.of("expiredReason", current.expiredReason));
   }
 
   private static GuardApprovalConflictException conflict(String code, String message) {
