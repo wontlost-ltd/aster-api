@@ -19,7 +19,7 @@
 
 - **ADR 状态门（硬门）**：用户已批准设计方向，但 R59–R64 与 ADR 0054 文本仍为 `PROPOSED`。Task 1 的状态翻转是单独的文档 PR，**由用户审阅并合并**；该 PR 合并前任何实现 PR 不得合并。
 - **迁移编号（本计划裁定，覆盖 ADR 文本）**：按合并顺序，阶段 1 用 `V6.35.0__guard_execution_receipts.sql`，阶段 2 用 `V6.36.0__guard_input_provenance.sql`；#460（ADR 0042 §11 R59 审批输入快照）顺延为 `V6.37.0`。三份 ADR（0040 / 0042 / 0054 引用处）在 Task 1 同步改写。每条迁移在 `src/test/resources/db/migration-checksums.golden` 追加 `文件名=sha256`（`shasum -a 256`，LF）。
-- **规范化配方 `jcs-sha256/v1`（取代 ADR 中 actionHash / 签名载荷用的 `sha256-sorted-json/v1`）**：SHA-256 hex（小写）作用于 **RFC 8785（JCS）** 规范化后的 UTF-8 字节串。字节级定义与语言无关：对象成员按键的 **UTF-16 码元序**排序；无空白；字符串先**解码全部转义**（`"\u00e9"` 与 `"é"` 是同一值），再按 RFC 8785 §3.2.2.2 输出（只转义 `"`、`\`、U+0000–U+001F，其中 `\b \t \n \f \r` 用短形式、其余 `\u00xx` 小写 hex；其余字符原样 UTF-8）；**不做 Unicode 正规化**（NFC 与 NFD 是不同值）；数字一律按 IEEE 754 double 解释，按 RFC 8785 §3.2.2.3（ECMAScript `Number.prototype.toString`）输出：`1`、`1.0`、`1e0` 同为 `1`，`-0.0` 为 `0`，`1e21` 为 `1e+21`，超出 double 精度的整数按舍入后的 double 输出，NaN/Infinity 不可出现；`true/false/null` 字面量保留，`null` 叶子与缺键是不同文档。依赖检查：运行期 classpath 无任何 JCS 实现（`./gradlew -q :dependencies --configuration runtimeClasspath | grep -i "jcs\|canonical\|erdtman\|webpki"` 无输出），因此按 RFC 8785 §3.2.2.3 自行实现 `JcsCanonicalizer`，以共享向量锁定。`contextHash` 仍用既有 `sha256-sorted-json/v1`（不改旧收据语义）。
+- **规范化配方 `jcs-sha256/v1`（取代 ADR 中 actionHash / 签名载荷用的 `sha256-sorted-json/v1`）**：SHA-256 hex（小写）作用于 **RFC 8785（JCS）** 规范化后的 UTF-8 字节串。字节级定义与语言无关：对象成员按键的 **UTF-16 码元序**排序；无空白；字符串先**解码全部转义**（`"\u00e9"` 与 `"é"` 是同一值），再按 RFC 8785 §3.2.2.2 输出（只转义 `"`、`\`、U+0000–U+001F，其中 `\b \t \n \f \r` 用短形式、其余 `\u00xx` 小写 hex；其余字符原样 UTF-8）；**不做 Unicode 正规化**（NFC 与 NFD 是不同值）；数字一律按 IEEE 754 double 解释，按 RFC 8785 §3.2.2.3（ECMAScript `Number.prototype.toString`）输出：`1`、`1.0`、`1e0` 同为 `1`，`-0.0` 为 `0`，`1e21` 为 `1e+21`，按 I-JSON（RFC 7493 §2.2）**拒绝**：`action`（含阶段 2 签名事实的 `claims` 与载荷）中任何整数值 |x| > 2^53−1（9007199254740991）或非有限数 → 400 `invalid_action`（事实内为 `invalid_fact`），不做舍入；这类值（大金额、长 ID）必须以字符串发送。判定在解析后、哈希前进行（`JsonNode.isIntegralNumber()` 且超界；小数 token 以 `BigDecimal` 判断是否为整数值且超界）；`true/false/null` 字面量保留，`null` 叶子与缺键是不同文档。依赖检查：运行期 classpath 无任何 JCS 实现（`./gradlew -q :dependencies --configuration runtimeClasspath | grep -i "jcs\|canonical\|erdtman\|webpki"` 无输出），因此按 RFC 8785 §3.2.2.3 自行实现 `JcsCanonicalizer`，以共享向量锁定。`contextHash` 仍用既有 `sha256-sorted-json/v1`（不改旧收据语义）。
 - **重复键**：guard 请求体（`/decisions`、`/decisions/from-evidence`、`/receipts/*`、`/fact-issuers/*`）的解析器开启 `JsonParser.Feature.STRICT_DUPLICATE_DETECTION`；任一层出现重复键 → 400 `invalid_action`（`/receipts/*` 为 `invalid_consume` / `invalid_result`），不进入哈希。
 - **`actionHash` 输入**：请求体中 `action` 子树**按服务端收到的 JSON**（含调用方写出的显式 `null`、未知键、阶段 2 的 `facts`），不是 `GuardActionRequest.Action` 再序列化（record 会补出 `"type":null` 等键，导致与执行方不一致）。
 - **执行收据载荷**字母序：`{ actionHash, decisionId, expiresAt, issuedAt, kid, outcome:"ALLOW", policyVersionId, tenantId, v:1 }`；签名 = Ed25519 作用于载荷 JCS 字节串（不二次哈希），base64url 无填充、64 字节。阶段 2 事实签名载荷与 claim 比对同样用 JCS 字节。
@@ -39,7 +39,7 @@
 2. **两个执行方并发 consume 同一收据**：恰一个 200，另一个 409 `receipt_consumed`，两条尝试事件只有一条被 `consume_audit_id` 引用。测试在 Task 8（`concurrentConsumeExactlyOneWins`）。
 3. **审批后转 ALLOW 的收据时间窗与重放**：`issuedAt` 为审批加锁时刻；幂等重放与 `GET /decisions/{id}` 返回同一份已存收据（不续签），过期后 GET 仍返回原收据而 consume 409 `receipt_expired`。测试在 Task 5（`approvedReceiptIssuedAtApprovalAndNeverResigned`）。
 4. **多副本密钥配置回退**：某副本以更小的 `revision` 启动必须失败；两副本同时以 N 与 N+1 启动（任一先后顺序）最终表中最大值为 N+1，且以 N 启动的副本**只有在 N+1 已提交后才**失败；同一 `revision` 并发启动不崩溃。测试在 Task 4（`revisionRegressionFailsStartup`、`concurrentNAndNPlus1BothOrders`、`concurrentSameRevisionStartupIsIdempotent`）。
-5. **事实 claim 的数值形态**：事实 claims `250000` 而 `action.context.amount` 为 `250000.0`（或 `2.5E5`）——两边经同一配方规范化后不等即 400 `invalid_fact`，不得因 `equals` 宽松比较而放行；字符串 `"250000"` 同样不等。测试在 Task 12（`claimNumericFormMustMatchCanonicalBytes`）。
+5. **事实 claim 的数值形态**：claims `250000` 与 `action.context.amount` 为 `250000.0` / `2.5E5` 在 JCS 下字节相等 → **接受**（同一数值，与执行方哈希一致）；claims 为数字而 action 为字符串 `"250000"`（或反之）→ 400 `invalid_fact`，不得宽松比较放行。测试在 Task 12（`claimEqualityIsJcsBytes`）。
 
 ---
 
@@ -96,13 +96,15 @@
 **Interfaces:**
 - Produces: `public final class JcsCanonicalizer { public static byte[] canonicalize(JsonNode node); static String formatNumber(double d); }`——遇 NaN/Infinity 抛 `IllegalArgumentException`；`public final class ActionHasher { public String hash(JsonNode action); }`（`action` 为 null / `MissingNode` / 非对象 → `GuardInvalidActionException`）。阶段 2 的事实签名与 claim 比对也调用 `JcsCanonicalizer.canonicalize`。
 
-- [ ] **Step 1: 写共享向量文件**（JSON 数组 `[{ "name", "input"（字符串，原文 JSON，保留转义与数字写法）, "canonical"（期望 JCS 文本）, "sha256" | "error": "duplicate_key" }]`）。必含：`1` / `1.0` / `1e0` 同哈希；`-0.0` → `0`；`1e21` → `1e+21`；`1e-7` → `1e-7`；`0.1`、`123456789012345680000`、`9007199254740993`（舍入为 `9007199254740992`）；`"\u00e9"` 与 `"é"` 同哈希；NFC `"é"` 与 NFD `"e\u0301"` 不同哈希；`"\u001f"` → `"\u001f"`、`"\t"` → `"\t"`、`"\/"` → `"/"`；键序 `{"b":1,"a":2}`、UTF-16 码元序 `{"\ud83d\ude00":1,"\uffff":2}`（emoji 代理对排在 U+FFFF 之前）；重复键 `{"a":1,"a":2}` 与嵌套重复键 → `error`；嵌套 null `{"a":{"b":null}}` vs `{"a":{}}` vs `{"a":{"b":""}}` 两两不同；ADR 0054 §3.2 `cc` 三例；`{"$sha256":"…"}` 摘要代入。文件头不能写注释（JSON），说明写进 `GuardActionHashVectorsTest` 的类 Javadoc：「#464 执行方 SDK 必须逐字节复制本文件并全部通过」。
+- [ ] **Step 1: 写共享向量文件**（JSON 数组 `[{ "name", "input"（字符串，原文 JSON，保留转义与数字写法）, "canonical"（期望 JCS 文本）, "sha256" | "error": "duplicate_key" | "unsafe_integer" }]`）。必含：`1` / `1.0` / `1e0` 同哈希；`-0.0` → `0`；`1e21` → `1e+21`；`1e-7` → `1e-7`；`0.1`、`1e-6` → `0.000001`、`1e-7` → `1e-7`、`1e20` → `100000000000000000000`、`123e-20` → `1.23e-18`、`9007199254740991` → 原样；`9007199254740992`、`9007199254740993`、`123456789012345680000`、`-9007199254740992` → `"error": "unsafe_integer"`；`"\u00e9"` 与 `"é"` 同哈希；NFC `"é"` 与 NFD `"e\u0301"` 不同哈希；`"\u001f"` → `"\u001f"`、`"\t"` → `"\t"`、`"\/"` → `"/"`；键序 `{"b":1,"a":2}`、UTF-16 码元序 `{"\ud83d\ude00":1,"\uffff":2}`（emoji 代理对排在 U+FFFF 之前）；重复键 `{"a":1,"a":2}` 与嵌套重复键 → `error`；嵌套 null `{"a":{"b":null}}` vs `{"a":{}}` vs `{"a":{"b":""}}` 两两不同；ADR 0054 §3.2 `cc` 三例；`{"$sha256":"…"}` 摘要代入。文件头不能写注释（JSON），说明写进 `GuardActionHashVectorsTest` 的类 Javadoc：「#464 执行方 SDK 必须逐字节复制本文件并全部通过」。
 - [ ] **Step 2: 写失败测试**
 
 ```java
 // JcsCanonicalizerTest
 @Test void rfc8785Appendix_B_numberSamples()  // RFC 8785 附录 B 表中全部 IEEE 值 → 期望字符串
 @Test void nanAndInfinityRejected()
+@Test void fixedVsExponentBoundaries()          // 1e-6→0.000001、1e-7→1e-7、1e20→100000000000000000000、1e21→1e+21、123e-20→1.23e-18、-0.0→0
+@Test void unsafeIntegerIs400InvalidAction()    // 资源层：context.amount=9007199254740992 → 400 invalid_action；以字符串发送 → 200
 // GuardActionHashVectorsTest
 @Test void everyVectorMatches()               // 用开启 STRICT_DUPLICATE_DETECTION 的 mapper 读 input；有 error 的向量断言抛 JsonParseException，其余 canonical 与 sha256 均相等
 // GuardActionMapperTest
@@ -113,7 +115,7 @@
 ```
 
 - [ ] **Step 3:** 跑本任务测试类 → FAIL。
-- [ ] **Step 4: 实现。** `formatNumber` 按 RFC 8785 §3.2.2.3 / ECMA-262 `Number::toString`：先取最短往返十进制位串（`Double.toString` 的有效数字在 JDK 19+ 已是最短往返，取其数字与指数重新排版；不可用时用 `BigDecimal` 逐位缩短），再按 ECMAScript 规则选择定点或 `e±` 形式（指数 `-7 < n <= 21` 用定点）；在方法 Javadoc 中写明算法来源与为何不依赖库（classpath 无 JCS 实现）。数字节点一律取 `node.doubleValue()`。字符串经 Jackson 解码后按 §3.2.2.2 重新输出。排序用 `String.compareTo`（即 UTF-16 码元序）。
+- [ ] **Step 4: 实现。** `formatNumber` 严格按 ECMA-262 `Number::toString(x)`（RFC 8785 §3.2.2.3 引用之）：`x = 0`（含 −0）→ `0`；负数输出 `-` 后对 |x| 处理。取最短往返十进制表示：整数 `k ≥ 1`、`n` 与 k 位、不以 0 结尾的数字串 `s`，使 `x = s × 10^(n−k)`（`Double.toString` 在 JDK 19+ 给出最短往返有效数字，取其数字串与指数换算出 `s/k/n`）。然后：`k ≤ n ≤ 21` → `s` 后补 `n−k` 个 `0`；`0 < n ≤ 21` → `s` 前 n 位、`.`、其余位；`−6 < n ≤ 0` → `0.`、`−n` 个 `0`、`s`；否则指数形式：`k = 1` 为 `s` + `e` + 符号 + `|n−1|`，`k > 1` 为 `s[0]` + `.` + `s[1..]` + `e` + 符号 + `|n−1|`（符号恒写 `+`/`-`）。等价表述：**定点当且仅当 −6 < n ≤ 21，即 1e-7 < |x| < 1e21**（另含 0）。Javadoc 写明以上与「为何不依赖库」（classpath 无 JCS 实现）。数字节点先过 I-JSON 检查（Global Constraints），再取 `doubleValue()`。字符串经 Jackson 解码后按 §3.2.2.2 重新输出。排序用 `String.compareTo`（UTF-16 码元序）。
 - [ ] **Step 5:** 本任务测试类 → PASS；完整 guard 套件（Global Constraints）→ PASS。
 - [ ] **Step 6: 提交** `feat(guard): jcs-sha256/v1 规范化与共享向量，context 允许 null 叶子（ADR 0040 §12 D2）`
 
@@ -134,7 +136,7 @@
 
 ```java
 // ReceiptSigningKeysTest
-@Test void rfc8032Vector1SeedDerivesKnownPublicKey()
+@Test void rfc8032Vectors1To3() // RFC 8032 §7.1 TEST 1/2/3：种子 → 公钥逐字节相等，且对给定消息（空、0x72、0xaf82）签名逐字节等于 RFC 给出的签名
   // 种子 9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60 → x = d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
 @Test void emptyKeysFailsFast()        // 抛 IllegalStateException，消息含 "signing-keys"
 @Test void activeKidMissingFailsFast()
@@ -153,7 +155,7 @@
 ```
 
 - [ ] **Step 2:** 跑两测试类 → FAIL。
-- [ ] **Step 3: 实现。** 私钥：`KeyFactory.getInstance("Ed25519").generatePrivate(new EdECPrivateKeySpec(NamedParameterSpec.ED25519, seed))`——JDK 15+ 的公开 API，直接以 RFC 8032 的 32 字节种子为私钥，无需手拼 PKCS8 前缀或伪造 `SecureRandom`（后者依赖 provider 内部读随机数的次数，不是契约）。公钥：JDK 无「由私钥推导公钥」的公开 API，因此按 RFC 8032 §5.1.5 在启动时推导一次：`SHA-512(seed)` 前 32 字节按 §5.1.5 第 2 步裁剪得标量 `s`，计算 `[s]B` 并按 §5.1.2 编码为 32 字节，再 `KeyFactory.generatePublic(new EdECPublicKeySpec(NamedParameterSpec.ED25519, EdECPoint))`；点乘用 `BigInteger` 实现扩展坐标加倍-加法（只在启动时每 key 一次，性能无关）。在类 Javadoc 中写明上述理由。正确性由 RFC 8032 向量 1 与启动自检（每把 key 签固定字节后用推导公钥验签，失败即启动失败）双重锁定。JWKS `x` = 该 32 字节编码。签名字节 = `JcsCanonicalizer.canonicalize(mapper.valueToTree(payload))`。`GuardClockProducer` `@Produces @ApplicationScoped Clock`（`@DefaultBean`）。
+- [ ] **Step 3: 实现。** 私钥：`KeyFactory.getInstance("Ed25519").generatePrivate(new EdECPrivateKeySpec(NamedParameterSpec.ED25519, seed))`——JDK 15+ 的公开 API，直接以 RFC 8032 的 32 字节种子为私钥，无需手拼 PKCS8 前缀或伪造 `SecureRandom`（后者依赖 provider 内部读随机数的次数，不是契约）。公钥：JDK 无「由私钥推导公钥」的公开 API，因此按 RFC 8032 §5.1.5 在启动时推导一次：`SHA-512(seed)` 前 32 字节按 §5.1.5 第 2 步裁剪得标量 `s`，计算 `[s]B` 并按 §5.1.2 编码为 32 字节，再 `KeyFactory.generatePublic(new EdECPublicKeySpec(NamedParameterSpec.ED25519, EdECPoint))`；点乘用 `BigInteger` 实现扩展坐标加倍-加法（只在启动时每 key 一次，性能无关）。在类 Javadoc 中写明上述理由。正确性由 RFC 8032 §7.1 向量 1–3 与启动自检（每把 key 签固定字节后用推导公钥验签，失败即启动失败）双重锁定。JWKS `x` = 该 32 字节编码。签名字节 = `JcsCanonicalizer.canonicalize(mapper.valueToTree(payload))`。`GuardClockProducer` `@Produces @ApplicationScoped Clock`（`@DefaultBean`）。
 - [ ] **Step 4:** 跑两测试类 → PASS。
 - [ ] **Step 5: 提交** `feat(guard): 执行收据签名密钥配置与 Ed25519 签名器（ADR 0040 §12 D1/D6）`
 
@@ -421,9 +423,9 @@ Bearer 一律 403 { "error": "internal_only" }；publicKey 解码非 32 字节 �
 - Consumes: `FactIssuerStore.find`（Task 11）、`JcsCanonicalizer.canonicalize`（Task 2）、`Clock`。
 - Produces: `FactVerifier.verify(String tenantId, JsonNode rawAction): VerifiedFacts`；`record VerifiedFacts(SortedSet<String> paths, SortedMap<String, SortedSet<String>> issuersByPath, SortedSet<String> issuerKids /* issuer#kid */, SortedMap<String,String> sourcesByPath, Instant earliestExpiresAt)`；无 `facts` 时返回 `VerifiedFacts.EMPTY`。
 
-规则逐字取 ADR 0040 §11 D3（配方改为 JCS，见 Global Constraints）：≤ 8 条、`claims` 总数 ≤ 64、路径 ≤ 128；签名载荷 `{ alg, audience, claims, expiresAt, issuedAt, issuer, kid, sources }` 规范化字节；`alg` 仅 `Ed25519`；签发方存在且 `enabled` 且未过 `not_after`；`audience == tenantId`；`now ∈ [issuedAt − 60s, expiresAt]`、`expiresAt − issuedAt ≤ 24h`；每个 claim 路径在 `rawAction` 中存在且两边**规范化字节相等**；`sources` 键集 == `claims` 键集、值 ≤ 64 字符。任一失败整个请求 400，不降级。
+规则逐字取 ADR 0040 §11 D3（配方改为 JCS，见 Global Constraints）：≤ 8 条、`claims` 总数 ≤ 64、路径 ≤ 128；签名载荷 `{ alg, audience, claims, expiresAt, issuedAt, issuer, kid, sources }` 规范化字节；`alg` 仅 `Ed25519`；签发方存在且 `enabled` 且未过 `not_after`；`audience == tenantId`；`issuedAt − 60s ≤ now < expiresAt`（`expiresAt` 排他，与收据一致）、`expiresAt − issuedAt ≤ 24h`；每个 claim 路径在 `rawAction` 中存在且两边**规范化字节相等**；`sources` 键集 == `claims` 键集、值 ≤ 64 字符。任一失败整个请求 400，不降级。
 
-- [ ] **Step 1: 写失败测试**：`validFactVerifiesPaths`；以下各 → `invalid_fact` 且 `reason` 区分：`tamperedClaim`、`tamperedSources`、`expired`、`notYetValidBeyondSkew`、`windowOver24h`、`audienceMismatch`、`unknownKid`、`disabledIssuer`、`pastNotAfter`、`nonEd25519Alg`、`claimPathAbsentInAction`、`sourcesKeySetMismatch`、`moreThan8Facts`、`moreThan64Claims`；`claimNumericFormMustMatchCanonicalBytes`（Review Focus 5：claims `250000` vs action `250000.0` / `"250000"` → 400）；`twoIssuersSamePathRecordsBoth`。
+- [ ] **Step 1: 写失败测试**：`validFactVerifiesPaths`；以下各 → `invalid_fact` 且 `reason` 区分：`tamperedClaim`、`tamperedSources`、`expired`、`notYetValidBeyondSkew`、`windowOver24h`、`audienceMismatch`、`unknownKid`、`disabledIssuer`、`pastNotAfter`、`nonEd25519Alg`、`claimPathAbsentInAction`、`sourcesKeySetMismatch`、`moreThan8Facts`、`moreThan64Claims`；`claimEqualityIsJcsBytes`（Review Focus 5：claims `250000` vs action `250000.0` / `2.5E5` → 通过；vs 字符串 `"250000"` → 400；claims 中 `9007199254740992` → 400 `invalid_fact` reason `unsafe_integer`）、`expiresAtBoundaryIsExclusive`（`now == expiresAt` → 400；`expiresAt − 1ms` → 通过；`issuedAt − 60s` 通过、`− 61s` 拒）、`signedPayloadExactJcsBytes`（测试签发器夹具：断言载荷 JCS 文本逐字节等于写死的期望字符串，再签名）；`twoIssuersSamePathRecordsBoth`。
 - [ ] **Step 2:** FAIL。 **Step 3:** 实现；`GuardDecisionService.decideOnce` 中在 `flatten` 之后、`findByIdempotencyKey` 之前调用（ADR 0040 §11 D4 顺序）。 **Step 4:** PASS + `GuardDecisionResourceTest` 新增 `invalidFactIs400AndWritesNoReceipt`、`invalidFactRejectedBeforeIdempotencyReplay`。
 - [ ] **Step 5: 提交** `feat(guard): 签名事实片段验签（ADR 0040 §11 D3）`
 
