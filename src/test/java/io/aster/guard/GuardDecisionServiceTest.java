@@ -26,6 +26,7 @@ import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import io.aster.policy.evidence.AgentIdentity;
+import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.repository.PolicySourceRepository;
 import io.smallrye.mutiny.Uni;
@@ -107,6 +108,7 @@ class GuardDecisionServiceTest {
     when(repository.findActiveVersion(catalog.id)).thenReturn(Optional.of(version));
     when(store.findByIdempotencyKey(anyString(), anyString())).thenReturn(Optional.empty());
     when(appender.appendSync(any())).thenReturn(new AppendedRecord(88213L, HASH, PREV));
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION)).thenReturn(RuleMetadata.NONE);
   }
 
   private GuardDecisionService serviceWith(ExecutionReceiptIssuer issuer) {
@@ -1008,5 +1010,96 @@ class GuardDecisionServiceTest {
     GuardDecisionResponse r = service.get(TENANT, row.id).orElseThrow();
 
     assertThat(r.inputSources().factsStale()).isTrue();
+  }
+  /** 档案要求 verifiedInputs 的规则元数据（ADR 0046 §11 D1）：inputRefs 为 null 表示 IR 未提供。 */
+  private void requiresVerifiedInputs(List<String> inputRefs) {
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION)).thenReturn(
+        new RuleMetadata("CUST-DEL-001", List.of("GDPR:ART17"), "eu-ai-act-high-risk", inputRefs, true));
+  }
+
+  /**
+   * ADR 0040 §11 D5：被引用的字段为 declared → 不评估、DENY unverified_input（reason 为 null），
+   * 写链收据（unverifiedFields）与决策行，但不建待审批、不签执行收据——即便规则本会 ALLOW / REQUIRE_APPROVAL。
+   */
+  @Test
+  void gateDenyCreatesNoApprovalAndNoExecutionReceipt() throws Exception {
+    verdict("REQUIRE_APPROVAL", "Data Protection Officer", "customer record deletion");
+    requiresVerifiedInputs(List.of("principal.id", "context.amount"));
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
+
+    assertThat(r.outcome()).isEqualTo("DENY");
+    assertThat(r.effectiveOutcome()).isEqualTo("DENY");
+    assertThat(r.reasonCode()).isEqualTo("unverified_input");
+    assertThat(r.reason()).isNull();
+    assertThat(r.role()).isNull();
+    assertThat(r.approval()).isNull();
+    assertThat(r.executionReceipt()).isNull();
+    assertThat(r.ruleId()).isEqualTo("CUST-DEL-001");
+    assertThat(r.receipt()).isEqualTo(new GuardDecisionResponse.ReceiptView(88213L, HASH, PREV));
+    AuditEvent event = appendedEvent();
+    assertThat(event.success()).isFalse();
+    assertThat(event.metadata()).containsEntry("outcome", "DENY").containsEntry("reasonCode", "unverified_input")
+        .containsEntry("unverifiedFields", List.of("context.amount", "principal.id"))
+        .doesNotContainKey("reason").doesNotContainKey("approvalId");
+    GuardDecisionEntity e = savedDecision();
+    assertThat(e.outcome).isEqualTo("DENY");
+    assertThat(e.reasonCode).isEqualTo("unverified_input");
+    assertThat(json.readValue(e.responseJson, GuardDecisionResponse.class)).isEqualTo(r);
+    assertThat(savedApproval()).isNull();
+    assertThat(savedReceipt()).isNull();
+  }
+
+  /** 门在版本解析之后、评估之前：被拒时规则根本不执行；IR 无 inputRefs → input_refs_unavailable，收据无 unverifiedFields。 */
+  @Test
+  void gateRunsBeforeEvaluation() {
+    verdict("ALLOW", null, null);
+    requiresVerifiedInputs(null);
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("DENY");
+    assertThat(r.reasonCode()).isEqualTo("input_refs_unavailable");
+    assertThat(r.executionReceipt()).isNull();
+    assertThat(appendedEvent().metadata()).containsEntry("reasonCode", "input_refs_unavailable")
+        .doesNotContainKey("unverifiedFields");
+    verify(evaluationService, never()).evaluatePolicy(any(), any(), any(), any());
+    InOrder order = inOrder(repository, evaluationService);
+    order.verify(repository).findActiveCatalog(TENANT, MODULE, FUNCTION);
+    order.verify(evaluationService).ruleMetadata(TENANT, MODULE, FUNCTION);
+    assertThat(savedReceipt()).isNull();
+  }
+
+  /** 被引用的字段全部 verified（principal.id 由服务端证实为提交者）→ 照常评估，结论与收据与无档案时同形。 */
+  @Test
+  void verifiedReferencedInputsProceedToEvaluation() {
+    verdict("ALLOW", null, null);
+    requiresVerifiedInputs(List.of("principal.id"));
+    Action a = new Action(new Principal("user-1", "user", null), new ActionName("delete_customer_record"),
+        new Resource("customer", "C-1001"), Map.of("amount", 250000), null);
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", new GuardActionRequest(MODULE, FUNCTION, a, null),
+        ACTION_HASH, null, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
+    assertThat(r.reasonCode()).isNull();
+    assertThat(r.executionReceipt()).isNotNull();
+    assertThat(appendedEvent().metadata()).doesNotContainKey("unverifiedFields");
+    verify(evaluationService).evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any());
+  }
+
+  /** 读不到规则元数据（编译失败等）与评估失败同一结论：DENY evaluation_failed，不执行规则。 */
+  @Test
+  void ruleMetadataFailureDeniesEvaluationFailed() {
+    verdict("ALLOW", null, null);
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION)).thenThrow(new RuntimeException("compile failed"));
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("DENY");
+    assertThat(r.reasonCode()).isEqualTo("evaluation_failed");
+    assertThat(r.ruleId()).isNull();
+    verify(evaluationService, never()).evaluatePolicy(any(), any(), any(), any());
+    assertThat(savedApproval()).isNull();
   }
 }

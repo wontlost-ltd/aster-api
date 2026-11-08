@@ -7,6 +7,7 @@ import io.aster.guard.api.GuardDecisionResponse.ReceiptView;
 import io.aster.guard.api.GuardFromEvidenceRequest;
 import io.aster.guard.provenance.FactIssuerStore;
 import io.aster.guard.provenance.FactVerifier;
+import io.aster.policy.api.PolicyEvaluationService;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
@@ -33,7 +34,8 @@ class GuardEvidenceDecisionServiceTest {
   private final GuardDecisionService decisionService = mock(GuardDecisionService.class);
   private final GuardEvidenceDecisionService service = new GuardEvidenceDecisionService(store, decisionService,
       new GuardActionMapper(), mock(AuditChainAppender.class), mock(GuardReceiptBuilder.class), objectMapper,
-      new FactVerifier(mock(FactIssuerStore.class), Clock.systemUTC()), Duration.ofHours(24));
+      new FactVerifier(mock(FactIssuerStore.class), Clock.systemUTC()), mock(PolicyEvaluationService.class),
+      Duration.ofHours(24));
 
   private GuardDecisionEntity storedRow(GuardDecisionResponse response) throws Exception {
     GuardDecisionEntity e = new GuardDecisionEntity();

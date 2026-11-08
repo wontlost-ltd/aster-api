@@ -55,7 +55,7 @@ public class GuardReceiptBuilder {
   static final int MAX_AFFECTED_DECISIONS = 64;
   /** metadata 序列化长度预算：低于追加器的 4096 上限，留出余量。 */
   static final int METADATA_BUDGET = 3800;
-  /** 输入来源键（ADR 0041 §11 D1）：verified 路径、签发方、签发端来源、未验证路径（Task 15 写入）。 */
+  /** 输入来源键（ADR 0041 §11 D1）：verified 路径、签发方、签发端来源、档案来源门拒绝时的未验证路径。 */
   static final String KEY_VERIFIED_FIELDS = "verifiedFields";
   static final String KEY_FACT_ISSUERS = "factIssuers";
   static final String KEY_FACT_SOURCES = "factSources";
@@ -64,7 +64,7 @@ public class GuardReceiptBuilder {
   /** 四个来源列表任一被缩短（含超过条数上限被截断）即写 {@code inputSourcesTruncated: true}；该键本身永不删除。 */
   static final Set<String> INPUT_SOURCE_LISTS =
       Set.of(KEY_VERIFIED_FIELDS, KEY_FACT_ISSUERS, KEY_FACT_SOURCES, KEY_UNVERIFIED_FIELDS);
-  /** verifiedFields / factSources 至多 64 项、factIssuers 至多 8 项（ADR 0041 §11 D1）。 */
+  /** verifiedFields / factSources / unverifiedFields 至多 64 项、factIssuers 至多 8 项（ADR 0041 §11 D1）。 */
   static final int MAX_INPUT_SOURCE_ITEMS = 64;
   static final int MAX_FACT_ISSUERS = 8;
   /**
@@ -125,6 +125,7 @@ public class GuardReceiptBuilder {
     put(m, "idempotencyKey", clip(draft.idempotencyKey(), MAX_TEXT));
     put(m, "evidenceCorrelationId", evidenceCorrelationId);
     putInputSources(m, draft.inputSources());
+    putList(m, KEY_UNVERIFIED_FIELDS, draft.unverifiedFields(), MAX_INPUT_SOURCE_ITEMS);
     Long version = draft.policyVersion() == null ? null : draft.policyVersion().version();
     return new AuditEvent(EventType.ACTION_GUARD_DECISION, Instant.now(), draft.tenantId(),
         draft.policyModule(), draft.policyFunction(), null, null, version,

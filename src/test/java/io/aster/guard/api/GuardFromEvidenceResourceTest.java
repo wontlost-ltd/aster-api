@@ -5,20 +5,24 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
+import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardDecisionEntity;
 import io.aster.guard.provenance.FactIssuerStore;
 import io.aster.guard.provenance.TestFactSigner;
 import io.aster.guard.receipt.GuardReceiptEntity;
+import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import io.aster.policy.evidence.EvaluationEvidence;
+import io.aster.policy.governance.RuleMetadata;
 import io.aster.security.apikey.ApiKeyVerifierService;
 import io.aster.security.apikey.ApiKeyVerifyResult;
 import io.aster.security.apikey.InternalCallerSigning;
 import io.aster.test.PostgresTestResource;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.QuarkusTestResource;
+import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
@@ -27,6 +31,7 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -530,5 +535,39 @@ public class GuardFromEvidenceResourceTest {
 
     assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
     assertThat(resp.jsonPath().getList("inputSources.verified")).containsExactly("principal.id", "principal.roles");
+  }
+  /**
+   * ADR 0040 §11 D5：from-evidence 同样执行档案门。规则引用的 context.amount 为 declared（人手填写、未附事实）
+   * → DENY unverified_input 而非 PENDING：写决策收据（unverifiedFields）与决策行，不建待审批。
+   * 规则元数据经 {@link QuarkusMock} 替换，只作用于当前用例（引擎尚不产出 inputRefs，见 Task 16）。
+   */
+  @Test
+  void fromEvidenceAlsoGated() {
+    PolicyEvaluationService evaluation = Mockito.mock(PolicyEvaluationService.class);
+    Mockito.when(evaluation.ruleMetadata(TENANT, "guard.customer", "decide")).thenReturn(
+        new RuleMetadata("CUST-DEL-001", List.of("GDPR:ART17"), "eu-ai-act-high-risk", List.of("context.amount"), true));
+    QuarkusMock.installMockForType(evaluation, PolicyEvaluationService.class);
+    String cid = newCid();
+    appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+
+    Response resp = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("outcome")).isEqualTo("DENY");
+    assertThat(resp.jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
+    assertThat(resp.jsonPath().getString("reasonCode")).isEqualTo("unverified_input");
+    assertThat(resp.jsonPath().getString("reason")).isNull();
+    assertThat(resp.jsonPath().getString("approval")).isNull();
+    String decisionId = resp.jsonPath().getString("decisionId");
+    UUID id = UUID.fromString(decisionId);
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.<GuardDecisionEntity>findById(id))
+        .reasonCode).isEqualTo("unverified_input");
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardApprovalEntity.count("decisionId", id))).isZero();
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id))).isZero();
+    Response receipts = signedGet(RECEIPTS, "decisionIds=" + decisionId, TENANT, "u-export");
+    assertThat(receipts.statusCode()).as(receipts.asString()).isEqualTo(200);
+    assertThat(receipts.jsonPath().getString("receipts[0].metadata.reasonCode")).isEqualTo("unverified_input");
+    assertThat(receipts.jsonPath().getList("receipts[0].metadata.unverifiedFields")).containsExactly("context.amount");
+    assertThat(receipts.jsonPath().getString("receipts[0].metadata.evidenceCorrelationId")).isEqualTo(cid);
   }
 }

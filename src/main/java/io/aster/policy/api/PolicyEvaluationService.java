@@ -91,6 +91,8 @@ public class PolicyEvaluationService {
     boolean dynamicLoadingEnabled;
 
     private static final Logger LOG = Logger.getLogger(PolicyEvaluationService.class);
+    /** {@link #ruleMetadata} 等待版本解析与编译的上限：与 guard 评估超时同量级，冷启动编译约 2–3s。 */
+    private static final java.time.Duration RULE_METADATA_TIMEOUT = java.time.Duration.ofSeconds(10);
 
     private static final java.util.List<String> HOT_POLICIES = java.util.List.of(
         "aster.insurance.life.generateLifeQuote",
@@ -147,6 +149,35 @@ public class PolicyEvaluationService {
 
         // 非动态加载模式，直接使用 null versionId
         return evaluatePolicyWithVersionId(tenantId, policyModule, policyFunction, null, normalizedContext);
+    }
+
+    /**
+     * 读取被执行规则的元数据而<b>不执行</b>规则（ADR 0040 §11 D5：guard 在评估之前按档案要求比对输入来源）。
+     * 与 {@link #evaluatePolicy} 同一套版本解析与编译缓存：命中即只解析 Core IR；未命中时走同一 single-flight
+     * 编译并回填缓存，随后的评估直接命中，不重复编译。
+     *
+     * <p>阻塞方法，须在 worker 线程调用（guard 决策路径即是）。
+     *
+     * @throws RuntimeException 策略不存在、不可执行、入口函数无效或编译失败——与同一次评估会失败的原因相同
+     */
+    public RuleMetadata ruleMetadata(String tenantId, String policyModule, String policyFunction) {
+        String versionId = null;
+        if (dynamicLoadingEnabled) {
+            PolicyVersionResolutionCache.Holder cached =
+                versionResolutionCache.get(tenantId, policyModule, policyFunction);
+            versionId = cached.isPresent()
+                ? cached.versionId()
+                : resolveVersionId(tenantId, policyModule, policyFunction).await().atMost(RULE_METADATA_TIMEOUT);
+        }
+        PolicyCacheKey cacheKey = new PolicyCacheKey(tenantId, policyModule, policyFunction, versionId, new Object[0]);
+        io.aster.policy.cache.CompiledPolicy compiled = cachedCompiled(cacheKey);
+        if (compiled == null) {
+            compiled = compileOnce(cacheKey).await().atMost(RULE_METADATA_TIMEOUT);
+        }
+        if (compiled.getEntryFailure() != null) {
+            throw io.aster.policy.parser.EntryFunctionException.cached(compiled.getEntryFailure());
+        }
+        return RuleMetadata.of(parseCoreModule(compiled.getCoreJson()), policyFunction);
     }
 
     /**

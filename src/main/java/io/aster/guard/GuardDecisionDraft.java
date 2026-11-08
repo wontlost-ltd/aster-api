@@ -23,6 +23,7 @@ import java.util.Set;
  * @param reasonCode fail-closed 原因；Verdict 正常返回时为 null
  * @param agent      调用方自报的模型身份（已校验归一）；请求未带 agent 时为 null
  * @param inputSources 逐字段来源（ADR 0040 §11 D1）：不传给规则，只进响应、决策行与收据；null 归一为全 declared
+ * @param unverifiedFields 档案来源门拒绝时被引用却为 declared 的路径（ADR 0040 §11 D5），只进收据；其余情形为空
  */
 public record GuardDecisionDraft(
     String tenantId,
@@ -40,7 +41,8 @@ public record GuardDecisionDraft(
     List<String> controls,
     GuardReasonCode reasonCode,
     AgentIdentity agent,
-    InputSources inputSources) {
+    InputSources inputSources,
+    List<String> unverifiedFields) {
 
   static final String ALLOW = "ALLOW";
   static final String DENY = "DENY";
@@ -54,6 +56,17 @@ public record GuardDecisionDraft(
     action = action == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(action));
     controls = controls == null ? List.of() : List.copyOf(controls);
     inputSources = inputSources == null ? InputSources.NONE : inputSources;
+    unverifiedFields = unverifiedFields == null ? List.of() : List.copyOf(unverifiedFields);
+  }
+
+  /** 未经来源门拒绝的草稿。 */
+  public GuardDecisionDraft(String tenantId, String policyModule, String policyFunction, String idempotencyKey,
+                            Map<String, Object> action, String contextHash, String actionHash,
+                            PolicyVersionView policyVersion, String outcome, String role, String reason, String ruleId,
+                            List<String> controls, GuardReasonCode reasonCode, AgentIdentity agent,
+                            InputSources inputSources) {
+    this(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash, policyVersion, outcome,
+        role, reason, ruleId, controls, reasonCode, agent, inputSources, null);
   }
 
   /** 无来源信息（全部 declared）的草稿。 */
@@ -68,31 +81,40 @@ public record GuardDecisionDraft(
   /** 附上本次请求的逐字段来源。 */
   public GuardDecisionDraft withInputSources(InputSources sources) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
-        policyVersion, outcome, role, reason, ruleId, controls, reasonCode, agent, sources);
+        policyVersion, outcome, role, reason, ruleId, controls, reasonCode, agent, sources, unverifiedFields);
   }
 
   /** 补上评估前解析到的活跃策略版本（幂等查重在版本解析之前完成）。 */
   public GuardDecisionDraft withPolicyVersion(PolicyVersionView version) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
-        version, outcome, role, reason, ruleId, controls, reasonCode, agent, inputSources);
+        version, outcome, role, reason, ruleId, controls, reasonCode, agent, inputSources, unverifiedFields);
   }
 
   /** 记录被执行规则的身份（{@code @id} / {@code @control}），与结论无关。 */
   public GuardDecisionDraft withRule(String newRuleId, List<String> newControls) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
-        policyVersion, outcome, role, reason, newRuleId, newControls, reasonCode, agent, inputSources);
+        policyVersion, outcome, role, reason, newRuleId, newControls, reasonCode, agent, inputSources, unverifiedFields);
   }
 
   /** 采纳规则返回的 Verdict 结论。 */
   public GuardDecisionDraft withVerdict(VerdictView verdict) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
-        policyVersion, verdict.outcome(), verdict.role(), verdict.reason(), ruleId, controls, null, agent, inputSources);
+        policyVersion, verdict.outcome(), verdict.role(), verdict.reason(), ruleId, controls, null, agent, inputSources,
+        unverifiedFields);
   }
 
-  /** fail-closed：改判 DENY 并记录原因；保留 ruleId / controls 以便追溯被评估的规则，清掉不再成立的 role / reason。 */
+  /**
+   * fail-closed：改判 DENY 并记录原因；保留 ruleId / controls 以便追溯被评估的规则，清掉不再成立的
+   * role / reason / unverifiedFields（它们只属于被替换的结论）。
+   */
   public GuardDecisionDraft deny(GuardReasonCode code) {
+    return denyUnverified(code, List.of());
+  }
+
+  /** 档案来源门拒绝（ADR 0040 §11 D5）：同 {@link #deny}，并记下收据要列出的 declared 路径。 */
+  public GuardDecisionDraft denyUnverified(GuardReasonCode code, List<String> fields) {
     return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
-        policyVersion, DENY, null, null, ruleId, controls, code, agent, inputSources);
+        policyVersion, DENY, null, null, ruleId, controls, code, agent, inputSources, fields);
   }
 
   /** REQUIRE_APPROVAL / ESCALATE 需要人工复核。 */

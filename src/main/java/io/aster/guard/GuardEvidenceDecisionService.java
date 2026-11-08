@@ -12,8 +12,11 @@ import io.aster.guard.provenance.FactVerifier;
 import io.aster.guard.provenance.FactVerifier.VerifiedFacts;
 import io.aster.guard.provenance.GuardInvalidFactException;
 import io.aster.guard.provenance.InputSourceResolver;
+import io.aster.guard.provenance.VerifiedInputsGate;
+import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.entity.AuditLog;
 import io.aster.policy.event.EventType;
+import io.aster.policy.governance.RuleMetadata;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -44,6 +47,8 @@ import static io.aster.guard.GuardText.isBlank;
  *
  * <p>与 {@code POST /decisions} 同一来源判定（ADR 0040 §11 D2 (b)(c)）：请求自带的签名事实在查既有决策之前验签，
  * 失败即 400 {@code invalid_fact}；签名内的用户即 performedBy，{@code principal.type == "user"} 且 id 相同时 verified。
+ * 同样执行档案来源门（ADR 0040 §11 D5）：模块档案要求 verifiedInputs 而规则引用的输入为 declared 时，决策为
+ * DENY（{@code unverified_input} / {@code input_refs_unavailable}）而非 PENDING，写决策收据与决策行但不建待审批。
  *
  * <p>阻塞方法：须在非事务的 worker 线程调用——存储层每步自开独立事务，唯一索引冲突时才能干净地回读先到者。
  */
@@ -64,6 +69,7 @@ public class GuardEvidenceDecisionService {
   private GuardJson json;
   private GuardDecisionAssembler assembler;
   private FactVerifier factVerifier;
+  private PolicyEvaluationService evaluationService;
   private Duration approvalTtl;
 
   /** CDI 客户端代理所需。 */
@@ -74,7 +80,7 @@ public class GuardEvidenceDecisionService {
   public GuardEvidenceDecisionService(GuardDecisionStore store, GuardDecisionService decisionService,
                                       GuardActionMapper mapper, AuditChainAppender appender,
                                       GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
-                                      FactVerifier factVerifier,
+                                      FactVerifier factVerifier, PolicyEvaluationService evaluationService,
                                       @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl) {
     this.store = store;
     this.decisionService = decisionService;
@@ -85,6 +91,7 @@ public class GuardEvidenceDecisionService {
     this.json = new GuardJson(objectMapper);
     this.assembler = new GuardDecisionAssembler(json);
     this.factVerifier = factVerifier;
+    this.evaluationService = evaluationService;
     this.approvalTtl = approvalTtl;
   }
 
@@ -119,11 +126,11 @@ public class GuardEvidenceDecisionService {
       throw new GuardApprovalConflictException("evidence_not_approvable", "评估结论不需要审批",
           Map.of("outcome", String.valueOf(outcome)));
     }
-    GuardDecisionDraft draft = draftOf(tenantId, event, req, actionHash, metadata, outcome)
-        .withInputSources(InputSourceResolver.resolve(req.action(), facts, performedBy, businessRoles));
+    GuardDecisionDraft draft = gate(draftOf(tenantId, event, req, actionHash, metadata, outcome)
+        .withInputSources(InputSourceResolver.resolve(req.action(), facts, performedBy, businessRoles)), req);
 
     UUID decisionId = UUID.randomUUID();
-    UUID approvalId = UUID.randomUUID();
+    UUID approvalId = draft.needsApproval() ? UUID.randomUUID() : null;
     AppendedRecord receipt = appendReceipt(draft, decisionId, approvalId, performedBy, correlationId);
     if (receipt == null) {
       draft = draft.deny(GuardReasonCode.RECEIPT_UNAVAILABLE);
@@ -144,6 +151,27 @@ public class GuardEvidenceDecisionService {
       return existing(tenantId, correlationId).orElseThrow(() -> race);
     }
     return response;
+  }
+
+  /**
+   * 档案来源门（ADR 0040 §11 D5），规则元数据取锚定事件所指模块的活跃编译产物。被拒时改判 DENY 并带上
+   * unverifiedFields，调用方随之不建待审批。
+   *
+   * <p>读不到元数据（如 evaluateSource 锚定的模块从未保存过版本）时按无档案要求处理：from-evidence 今天就不依赖
+   * 已保存版本，在这里改判会让既有的即时源码试点全部失败。引擎产出 verifiedInputs 之前门本身不会拒绝任何请求。
+   */
+  private GuardDecisionDraft gate(GuardDecisionDraft draft, GuardFromEvidenceRequest req) {
+    RuleMetadata meta;
+    try {
+      meta = evaluationService.ruleMetadata(draft.tenantId(), draft.policyModule(), draft.policyFunction());
+    } catch (RuntimeException e) {
+      LOG.debugf("from-evidence 读取规则元数据失败，按无档案要求处理: %s.%s: %s", draft.policyModule(),
+          draft.policyFunction(), e.getMessage());
+      return draft;
+    }
+    return VerifiedInputsGate.check(meta, draft.inputSources(), VerifiedInputsGate.presentLeafPaths(req.action()))
+        .map(denial -> draft.denyUnverified(denial.code(), denial.unverifiedFields()))
+        .orElse(draft);
   }
 
   /** 同步写决策收据（带锚定的评估相关键）；失败返回 null，由调用方改判 DENY receipt_unavailable。 */

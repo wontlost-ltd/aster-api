@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 // replay 模块测试只依赖 JUnit（无 AssertJ），断言语义与 brief 中 AssertJ 版本一致。
@@ -34,5 +35,15 @@ class RuleMetadataTest {
     mod.decls = List.of(func("decide", ann("id", "G-1")));
     assertEquals(new RuleMetadata("G-1", List.of(), "governed"), RuleMetadata.of(mod, "decide"));
     assertEquals(new RuleMetadata(null, List.of(), "governed"), RuleMetadata.of(mod, "nope"));
+  }
+  @Test void 引擎未提供inputRefs时为null且不要求verifiedInputs() {
+    var mod = new CoreModel.Module(); mod.profile = "eu-ai-act-high-risk";
+    mod.decls = List.of(func("decide", ann("id", "G-1")));
+    var meta = RuleMetadata.of(mod, "decide");
+    assertNull(meta.inputRefs());
+    assertFalse(meta.verifiedInputsRequired());
+    assertNull(RuleMetadata.NONE.inputRefs());
+    assertFalse(RuleMetadata.NONE.verifiedInputsRequired());
+    assertEquals(new RuleMetadata("G-1", List.of(), "eu-ai-act-high-risk", null, false), meta);
   }
 }

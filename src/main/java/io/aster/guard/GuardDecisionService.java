@@ -12,11 +12,13 @@ import io.aster.guard.provenance.FactVerifier.VerifiedFacts;
 import io.aster.guard.provenance.GuardInvalidFactException;
 import io.aster.guard.provenance.InputSourceResolver;
 import io.aster.guard.provenance.InputSources;
+import io.aster.guard.provenance.VerifiedInputsGate;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.api.model.PolicyEvaluationResult;
 import io.aster.policy.entity.PolicyVersion;
+import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.repository.PolicySourceRepository;
 import io.quarkus.narayana.jta.QuarkusTransaction;
@@ -43,7 +45,8 @@ import static io.aster.guard.GuardText.isBlank;
 
 /**
  * Action Guard 决策编排（ADR 0040 §2–§5）：扁平化 → 签名事实验签与逐字段来源判定（§11 D2 / D4）→ 幂等查重（指纹比对）
- * → 解析活跃版本 → 评估 → 同步收据 → 决策行与待审批行同一事务落库。来源不传给规则，只进响应、决策行与收据。
+ * → 解析活跃版本 → 档案来源门（§11 D5）→ 评估 → 同步收据 → 决策行与待审批行同一事务落库。
+ * 来源不传给规则，只进响应、决策行与收据。
  *
  * <p>fail-closed：非 Verdict、评估异常 / 超时、收据写入失败、执行收据签发失败一律判 DENY 并给出 reasonCode；
  * 收据写入失败时不创建待审批，保证「没有入链的决策不会被人批准放行」。
@@ -168,7 +171,8 @@ public class GuardDecisionService {
       return replay.get();
     }
     PolicyVersionView version = resolveVersion(tenantId, req.policyModule(), req.policyFunction());
-    GuardDecisionDraft draft = evaluate(base.withPolicyVersion(version));
+    GuardDecisionDraft versioned = base.withPolicyVersion(version);
+    GuardDecisionDraft draft = gate(versioned, req.action()).orElseGet(() -> evaluate(versioned));
 
     UUID decisionId = UUID.randomUUID();
     ExecutionReceiptIssuer.Issued issued = draft.allowed() ? issueReceipt(draft, decisionId) : null;
@@ -297,6 +301,27 @@ public class GuardDecisionService {
             .flatMap(catalog -> policySourceRepository.findActiveVersion(catalog.id)))
         .orElseThrow(() -> new GuardPolicyNotFoundException("策略不存在或无活跃版本: " + module + "." + function));
     return new PolicyVersionView(v.id, v.sourceHash, v.version);
+  }
+
+  /**
+   * 档案来源门（ADR 0040 §11 D5）：档案要求 verifiedInputs 而规则引用的输入未全部 verified 时，不评估、直接 DENY
+   * （reason 为 null，收据列出 unverifiedFields）；之后照常写收据与决策行，DENY 不建审批、不签执行收据。
+   * 读不到规则元数据（编译失败等，评估也会以同一原因失败）按 evaluation_failed 拒绝，同样不执行规则。
+   * 档案不要求时返回 empty，由 {@link #evaluate} 照旧评估。
+   */
+  private Optional<GuardDecisionDraft> gate(GuardDecisionDraft base, GuardActionRequest.Action action) {
+    RuleMetadata meta;
+    try {
+      meta = evaluationService.ruleMetadata(base.tenantId(), base.policyModule(), base.policyFunction());
+    } catch (RuntimeException e) {
+      LOG.warnf("Action Guard 读取规则元数据失败，按 DENY 处理: %s.%s: %s: %s", base.policyModule(),
+          base.policyFunction(), e.getClass().getSimpleName(), e.getMessage());
+      LOG.debugf(e, "Action Guard 读取规则元数据失败堆栈: %s.%s", base.policyModule(), base.policyFunction());
+      return Optional.of(base.deny(GuardReasonCode.EVALUATION_FAILED));
+    }
+    return VerifiedInputsGate.check(meta, base.inputSources(), VerifiedInputsGate.presentLeafPaths(action))
+        .map(denial -> base.withRule(meta.ruleId(), meta.controls())
+            .denyUnverified(denial.code(), denial.unverifiedFields()));
   }
 
   /**
