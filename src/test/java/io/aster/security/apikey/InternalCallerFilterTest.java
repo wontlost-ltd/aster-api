@@ -775,7 +775,8 @@ class InternalCallerFilterTest {
     void guardApprovalPathsRequireHmacOnlyWithInternalCallerHeaders() {
         String id = "3f1c2a4e-0000-4000-8000-000000000001";
         for (String p : List.of("/api/v1/guard/approvals", "/api/v1/guard/approvals/" + id + "/approve",
-                "/api/v1/guard/approvals/" + id + "/reject", "/api/v1/guard/decisions/" + id)) {
+                "/api/v1/guard/approvals/" + id + "/reject", "/api/v1/guard/decisions/" + id,
+                "/api/v1/guard/receipts/" + id + "/consume", "/api/v1/guard/receipts/" + id + "/result")) {
             assertEquals(Classification.REQUIRE_HMAC,
                 InternalCallerFilter.classify(p, false, false, false, false, true), p);
             assertEquals(Classification.NOT_PROTECTED,
@@ -784,7 +785,8 @@ class InternalCallerFilterTest {
         // Agent 提交决策与其它兄弟路径不归本 filter
         for (String p : List.of("/api/v1/guard/decisions", "/api/v1/guard/approvals/" + id,
                 "/api/v1/guard/approvals/" + id + "/delete", "/api/v1/guard/decisions/" + id + "/x",
-                "/api/v1/guard/approvalsX")) {
+                "/api/v1/guard/approvalsX", "/api/v1/guard/receipts/" + id,
+                "/api/v1/guard/receipts/" + id + "/consume/x", "/api/v1/guard/receipts/" + id + "/other")) {
             assertEquals(Classification.NOT_PROTECTED,
                 InternalCallerFilter.classify(p, false, false, false, false, true), p);
         }
