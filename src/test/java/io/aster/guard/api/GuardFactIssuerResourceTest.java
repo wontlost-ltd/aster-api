@@ -21,6 +21,12 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -132,13 +138,116 @@ class GuardFactIssuerResourceTest {
     assertThat(found.enabled).isTrue();
     assertThat(found.alg).isEqualTo("Ed25519");
 
-    // 同键再 PUT 为覆盖：创建时间与创建人保留
+    // 同键同公钥再 PUT 为幂等更新（notAfter 可改）：创建时间与创建人保留
     Response replaced = signed("PUT", path("idp.example.com", "2026-11"),
         "{\"publicKey\":\"" + PUBLIC_KEY + "\",\"enabled\":true,\"notAfter\":\"2027-06-01T00:00:00Z\"}", TENANT, "u-other");
     assertThat(replaced.statusCode()).as(replaced.asString()).isEqualTo(200);
     assertThat(replaced.jsonPath().getString("notAfter")).isEqualTo("2027-06-01T00:00:00Z");
     assertThat(replaced.jsonPath().getString("createdBy")).isEqualTo("u-admin");
     assertThat(replaced.jsonPath().getString("createdAt")).isEqualTo(created.jsonPath().getString("createdAt"));
+  }
+
+  @Test
+  void samePublicKeyIsIdempotentDifferentKeyIs409() {
+    assertThat(put("idp.example.com", "2026-11", putBody(PUBLIC_KEY), TENANT).statusCode()).isEqualTo(200);
+
+    Response same = put("idp.example.com", "2026-11", putBody(PUBLIC_KEY), TENANT);
+    assertThat(same.statusCode()).as(same.asString()).isEqualTo(200);
+    assertThat(same.jsonPath().getString("publicKey")).isEqualTo(PUBLIC_KEY);
+    // 带填充的同一公钥规范化后相同，同为幂等
+    assertThat(put("idp.example.com", "2026-11", putBody(PUBLIC_KEY + "="), TENANT).statusCode()).isEqualTo(200);
+
+    String otherKey = B64.encodeToString(bytes(32, (byte) 8));
+    Response conflict = put("idp.example.com", "2026-11", putBody(otherKey), TENANT);
+    assertThat(conflict.statusCode()).as(conflict.asString()).isEqualTo(409);
+    assertThat(conflict.jsonPath().getString("error")).isEqualTo("issuer_key_conflict");
+    assertThat(store.find(TENANT, "idp.example.com", "2026-11").orElseThrow().publicKey).isEqualTo(PUBLIC_KEY);
+  }
+
+  /** 裁定：吊销是终态，DELETE 或 PUT enabled=false 之后不可再启用，须轮换到新 kid。 */
+  @Test
+  void revokedIssuerCannotBeReEnabled() {
+    assertThat(put("idp.example.com", "2026-11", putBody(PUBLIC_KEY), TENANT).statusCode()).isEqualTo(200);
+    assertThat(signed("DELETE", path("idp.example.com", "2026-11"), "", TENANT, "u-admin").statusCode())
+        .isEqualTo(204);
+    Response reEnable = put("idp.example.com", "2026-11", putBody(PUBLIC_KEY), TENANT);
+    assertThat(reEnable.statusCode()).as(reEnable.asString()).isEqualTo(409);
+    assertThat(reEnable.jsonPath().getString("error")).isEqualTo("issuer_revoked");
+    // 缺省 enabled 视为 true，同样拒绝
+    Response defaulted = put("idp.example.com", "2026-11", "{\"publicKey\":\"" + PUBLIC_KEY + "\"}", TENANT);
+    assertThat(defaulted.statusCode()).isEqualTo(409);
+    assertThat(defaulted.jsonPath().getString("error")).isEqualTo("issuer_revoked");
+    assertThat(store.find(TENANT, "idp.example.com", "2026-11").orElseThrow().enabled).isFalse();
+
+    // PUT enabled=false 同为吊销
+    assertThat(put("idp.example.com", "2026-12", putBody(PUBLIC_KEY), TENANT).statusCode()).isEqualTo(200);
+    Response disabled = put("idp.example.com", "2026-12",
+        "{\"publicKey\":\"" + PUBLIC_KEY + "\",\"enabled\":false}", TENANT);
+    assertThat(disabled.statusCode()).as(disabled.asString()).isEqualTo(200);
+    assertThat(disabled.jsonPath().getBoolean("enabled")).isFalse();
+    // 已吊销行再次以 enabled=false 提交为幂等 200
+    assertThat(put("idp.example.com", "2026-12",
+        "{\"publicKey\":\"" + PUBLIC_KEY + "\",\"enabled\":false}", TENANT).statusCode()).isEqualTo(200);
+    Response again = put("idp.example.com", "2026-12", putBody(PUBLIC_KEY), TENANT);
+    assertThat(again.statusCode()).isEqualTo(409);
+    assertThat(again.jsonPath().getString("error")).isEqualTo("issuer_revoked");
+
+    // 轮换到新 kid 正常登记
+    assertThat(put("idp.example.com", "2027-01", putBody(PUBLIC_KEY), TENANT).statusCode()).isEqualTo(200);
+  }
+
+  /** 并发首次写入同一主键：不出现 500；同钥两边 200，异钥恰一边 409 issuer_key_conflict。 */
+  @Test
+  void concurrentFirstPutsResolveWithoutServerError() throws Exception {
+    String otherKey = B64.encodeToString(bytes(32, (byte) 3));
+    for (int round = 0; round < 10; round++) {
+      String sameKid = "same-" + round;
+      List<Response> same = race(prepared(sameKid, PUBLIC_KEY), prepared(sameKid, PUBLIC_KEY));
+      assertThat(same).extracting(Response::statusCode).containsExactly(200, 200);
+
+      String diffKid = "diff-" + round;
+      List<Response> diff = race(prepared(diffKid, PUBLIC_KEY), prepared(diffKid, otherKey));
+      assertThat(diff).extracting(Response::statusCode).containsExactlyInAnyOrder(200, 409);
+      assertThat(diff).filteredOn(r -> r.statusCode() == 409)
+          .extracting(r -> r.jsonPath().getString("error")).containsExactly("issuer_key_conflict");
+    }
+  }
+
+  /**
+   * 在主线程预先签好请求头：{@link InternalCallerSigning} 的 nonce 取 {@code System.nanoTime()}，
+   * 两个线程同时签名可能拿到同一 nonce 而被防重放拒绝（409 Nonce replay），与被测逻辑无关。
+   */
+  private static Callable<Response> prepared(String kid, String publicKey) {
+    String p = path("idp.example.com", kid);
+    String body = putBody(publicKey);
+    Map<String, String> headers = InternalCallerSigning.headers(HMAC_KEY, "PUT", p, "", body, TENANT, "member",
+        "u-admin", List.of());
+    return () -> given().headers(headers).contentType("application/json").body(body).put(p);
+  }
+
+  private static List<Response> race(Callable<Response> a, Callable<Response> b) throws Exception {
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      CountDownLatch start = new CountDownLatch(1);
+      Future<Response> fa = pool.submit(() -> { start.await(); return a.call(); });
+      Future<Response> fb = pool.submit(() -> { start.await(); return b.call(); });
+      start.countDown();
+      return List.of(fa.get(30, TimeUnit.SECONDS), fb.get(30, TimeUnit.SECONDS));
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  /** HMAC 调用缺签名租户时不回退到默认租户。 */
+  @Test
+  void missingSignedTenantIs400() {
+    for (Response r : List.of(signed("GET", BASE, "", null, "u-admin"),
+        signed("PUT", path("idp.example.com", "2026-11"), putBody(PUBLIC_KEY), null, "u-admin"),
+        signed("DELETE", path("idp.example.com", "2026-11"), "", null, "u-admin"))) {
+      // TenantFilter 先于资源以纯文本 400 拒绝缺租户的请求；资源内的同类检查是兜底，二者都不回退到默认租户。
+      assertThat(r.statusCode()).as(r.asString()).isEqualTo(400);
+    }
+    assertThat(store.find("default", "idp.example.com", "2026-11")).isEmpty();
   }
 
   @Test

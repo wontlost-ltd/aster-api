@@ -3,6 +3,7 @@ package io.aster.guard.api;
 import io.aster.guard.GuardInvalidActionException;
 import io.aster.guard.GuardRequestBodyReader;
 import io.aster.guard.provenance.FactIssuerStore;
+import io.aster.guard.provenance.FactIssuerStore.UpsertResult;
 import io.aster.guard.provenance.GuardFactIssuerEntity;
 import io.aster.policy.rest.RequestIdentityResolver;
 import io.aster.policy.security.rbac.RequireRole;
@@ -32,6 +33,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.TreeMap;
 
 /**
@@ -73,18 +75,29 @@ public class GuardFactIssuerResource {
     if (!InternalCallerFilter.isHmacVerified(requestContext)) {
       return internalOnly();
     }
-    List<Map<String, Object>> issuers = store.list(identityResolver.tenantId()).stream()
+    Optional<String> tenant = signedTenant();
+    if (tenant.isEmpty()) {
+      return tenantRequired();
+    }
+    List<Map<String, Object>> issuers = store.list(tenant.get()).stream()
         .map(GuardFactIssuerResource::view)
         .toList();
     return Response.ok(Map.of("issuers", issuers)).build();
   }
 
-  /** 登记或覆盖；同键覆盖保留首次的创建时间与创建人。 */
+  /**
+   * 登记签发方；同键同公钥为幂等更新（enabled / notAfter，保留首次的创建时间与创建人）。
+   * 同键异公钥 409 {@code issuer_key_conflict}；已吊销的再启用 409 {@code issuer_revoked}。
+   */
   @PUT
   @Path("/{issuer}/{kid}")
   public Response put(@PathParam("issuer") String issuer, @PathParam("kid") String kid, InputStream body) {
     if (!InternalCallerFilter.isHmacVerified(requestContext)) {
       return internalOnly();
+    }
+    Optional<String> tenant = signedTenant();
+    if (tenant.isEmpty()) {
+      return tenantRequired();
     }
     FactIssuerRequest req;
     try {
@@ -107,9 +120,11 @@ public class GuardFactIssuerResource {
       Instant notAfter = parseNotAfter(req.notAfter());
       boolean enabled = req.enabled() == null || req.enabled();
       Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
-      GuardFactIssuerEntity row = store.upsert(identityResolver.tenantId(), issuer, kid, publicKey, enabled, notAfter,
-          identityResolver.performedBy(), now);
-      return Response.ok(view(row)).build();
+      return switch (store.upsert(tenant.get(), issuer, kid, publicKey, enabled, notAfter,
+          identityResolver.performedBy(), now)) {
+        case UpsertResult.Saved saved -> Response.ok(view(saved.row())).build();
+        case UpsertResult.Conflict conflict -> error(Response.Status.CONFLICT, conflict.code(), conflictMessage(conflict));
+      };
     } catch (InvalidIssuerException bad) {
       return error(Response.Status.BAD_REQUEST, INVALID_ISSUER, bad.getMessage());
     }
@@ -122,7 +137,11 @@ public class GuardFactIssuerResource {
     if (!InternalCallerFilter.isHmacVerified(requestContext)) {
       return internalOnly();
     }
-    return store.disable(identityResolver.tenantId(), issuer, kid)
+    Optional<String> tenant = signedTenant();
+    if (tenant.isEmpty()) {
+      return tenantRequired();
+    }
+    return store.disable(tenant.get(), issuer, kid)
         ? Response.noContent().build()
         : Response.status(Response.Status.NOT_FOUND).build();
   }
@@ -180,6 +199,26 @@ public class GuardFactIssuerResource {
     }
     v.put("publicKey", row.publicKey);
     return v;
+  }
+
+  /**
+   * 签名内的租户：签发方是租户级事实，HMAC 调用缺 {@code X-Tenant-Id}（按空串签名）时不得回退到默认租户，
+   * 否则会把签发方登记到 {@code default} 租户名下。现有 {@code TenantFilter} 已先以 400 拒绝缺租户头的请求，
+   * 这里是不依赖过滤器配置的兜底；同 from-evidence 对缺签名用户的处理（400）。
+   */
+  private Optional<String> signedTenant() {
+    String header = requestContext.getHeaderString("X-Tenant-Id");
+    return header == null || header.isBlank() ? Optional.empty() : Optional.of(identityResolver.tenantId());
+  }
+
+  private static Response tenantRequired() {
+    return error(Response.Status.BAD_REQUEST, INVALID_ISSUER, "签发方管理需要签名内的租户（X-Tenant-Id）");
+  }
+
+  private static String conflictMessage(UpsertResult.Conflict conflict) {
+    return FactIssuerStore.REVOKED.equals(conflict.code())
+        ? "签发方已吊销，不可重新启用；请轮换到新的 kid"
+        : "该 kid 已登记不同的公钥；换钥请使用新的 kid";
   }
 
   private static Response internalOnly() {
