@@ -9,6 +9,9 @@ ALTER TABLE guard_decisions ADD COLUMN fact_expires_at TIMESTAMPTZ;
 
 -- 审批转 EXPIRED 的原因：自然过期为 NULL，签发方吊销为 fact_issuer_revoked。
 ALTER TABLE guard_approvals ADD COLUMN expired_reason VARCHAR(32);
+-- 吊销事件按库列出受影响决策（tenant_id + status='EXPIRED' + expired_reason = ?）：部分索引只收非自然过期的行，
+-- 不随本租户自然过期的历史 EXPIRED 累积；该查询在持有租户链锁与签发方行锁时执行。
+CREATE INDEX guard_approvals_expired_reason_ix ON guard_approvals (tenant_id, expired_reason) WHERE expired_reason IS NOT NULL;
 
 -- 租户级签名事实签发方公钥。吊销 = enabled=false，不删行（保留审计）；轮换 = 同一 issuer 多个 kid 同时 enabled。
 -- 验签按 (tenant_id, issuer, kid) 主键直查，不缓存。public_key 为 base64url（无填充）的 32 字节 Ed25519 原始公钥。

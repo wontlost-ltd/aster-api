@@ -460,10 +460,27 @@ class FactVerifierTest {
   @Test
   void stringClaimOnTypedStringFieldIsAccepted() {
     String userAction = "{\"principal\":{\"id\":\"u-1\",\"type\":\"user\",\"roles\":[\"ops\"]},\"action\":{\"name\":\"refund\"},"
-        + "\"agent\":{\"provider\":\"anthropic\",\"model\":\"m\"}}";
-    ObjectNode fact = signedClaim("{\"principal.id\":\"u-1\",\"principal.roles\":[\"ops\"],\"agent.model\":\"m\"}",
-        "{\"principal.id\":\"idp.sub\",\"principal.roles\":\"idp.roles\",\"agent.model\":\"gw.model\"}");
+        + "\"resource\":{\"type\":\"order\"}}";
+    ObjectNode fact = signedClaim("{\"principal.id\":\"u-1\",\"principal.roles\":[\"ops\"],\"resource.type\":\"order\"}",
+        "{\"principal.id\":\"idp.sub\",\"principal.roles\":\"idp.roles\",\"resource.type\":\"erp.type\"}");
 
-    assertThat(verify(action(userAction, fact)).paths()).containsExactly("agent.model", "principal.id", "principal.roles");
+    assertThat(verify(action(userAction, fact)).paths()).containsExactly("principal.id", "principal.roles", "resource.type");
+  }
+
+  /**
+   * ADR 0040 §11 D3「不做」：agent.* 不接受签名事实（模型身份的可证来源留 ADR 0041 §10）。
+   * agent 整体、agent 下任一叶子都拒绝；仅以 agent 为前缀的其它顶层键（agentX）不受影响（此处因不存在而报 claim_path_absent）。
+   */
+  @Test
+  void claimOnAgentSubtreeIsRejected() {
+    String withAgent = "{\"principal\":{\"id\":\"u-1\"},\"action\":{\"name\":\"refund\"},"
+        + "\"agent\":{\"provider\":\"anthropic\",\"model\":\"m\"}}";
+
+    assertRejected(action(withAgent, signedClaim("{\"agent.model\":\"m\"}", "{\"agent.model\":\"gw.model\"}")),
+        GuardInvalidFactException.CLAIM_PATH_NOT_ALLOWED);
+    assertRejected(action(withAgent, signedClaim("{\"agent\":{\"provider\":\"anthropic\",\"model\":\"m\"}}",
+        "{\"agent\":\"gw.agent\"}")), GuardInvalidFactException.CLAIM_PATH_NOT_ALLOWED);
+    assertRejected(action(withAgent, signedClaim("{\"agentX\":1}", "{\"agentX\":\"x\"}")),
+        GuardInvalidFactException.CLAIM_PATH_ABSENT);
   }
 }

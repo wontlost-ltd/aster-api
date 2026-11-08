@@ -48,10 +48,12 @@ public class GuardInvalidFactException extends GuardInvalidActionException {
    */
   public static final String AMBIGUOUS_PATH = "ambiguous_path";
   /**
-   * claim 落在类型化字符串字段（{@code principal.id / type}、{@code action.name}、{@code resource.*}、{@code agent.*}）上
+   * claim 落在类型化字符串字段（{@code principal.id / type}、{@code action.name}、{@code resource.*}）上
    * 却不是 JSON 字符串，或 {@code principal.roles} 不是字符串数组：请求解析会把数字强转为字符串，规则看到的值与签发方签的不是同一个。
    */
   public static final String CLAIM_TYPE_MISMATCH = "claim_type_mismatch";
+  /** claim 路径落在不接受事实的子树（{@code agent} 或 {@code agent.*}，ADR 0040 §11 D3「不做」）。 */
+  public static final String CLAIM_PATH_NOT_ALLOWED = "claim_path_not_allowed";
 
   private final String issuer;
   private final String kid;

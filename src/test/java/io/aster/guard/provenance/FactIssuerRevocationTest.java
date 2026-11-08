@@ -36,6 +36,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -271,25 +272,31 @@ class FactIssuerRevocationTest {
   }
 
   /**
-   * 只让 {@code GUARD_FACT_ISSUER_REVOKED} 追加失败的审计追加器（{@link #fail} 可随时关闭），其余事件委托给真实 bean；
-   * 经 {@link QuarkusMock} 安装，只作用于当前用例。
+   * 只让某一类事件（缺省 {@code GUARD_FACT_ISSUER_REVOKED}）追加失败的审计追加器（{@link #fail} 可随时关闭），
+   * 其余事件委托给真实 bean；经 {@link QuarkusMock} 安装，只作用于当前用例。
    */
   static final class FailingRevokedAppender extends AuditChainAppender {
     volatile boolean fail = true;
     private final AuditChainAppender delegate;
+    private final EventType failing;
 
-    private FailingRevokedAppender(AuditChainAppender delegate) {
+    private FailingRevokedAppender(AuditChainAppender delegate, EventType failing) {
       this.delegate = delegate;
+      this.failing = failing;
     }
 
     static FailingRevokedAppender install(AuditChainAppender proxy) {
-      FailingRevokedAppender failing = new FailingRevokedAppender(ClientProxy.unwrap(proxy));
+      return install(proxy, EventType.GUARD_FACT_ISSUER_REVOKED);
+    }
+
+    static FailingRevokedAppender install(AuditChainAppender proxy, EventType type) {
+      FailingRevokedAppender failing = new FailingRevokedAppender(ClientProxy.unwrap(proxy), type);
       QuarkusMock.installMockForType(failing, AuditChainAppender.class);
       return failing;
     }
 
     private void check(AuditEvent event) {
-      if (fail && event.eventType() == EventType.GUARD_FACT_ISSUER_REVOKED) {
+      if (fail && event.eventType() == failing) {
         throw new IllegalStateException("模拟审计链不可用");
       }
     }
@@ -623,6 +630,135 @@ class FactIssuerRevocationTest {
     JsonNode m = metadata(revoked.get(0));
     assertThat(m.path("performedBy").asText()).isEqualTo("u-ops");
     assertThat(texts(m.path("affectedDecisionIds"))).containsExactly(dependent.jsonPath().getString("decisionId"));
+  }
+
+  /** 模拟「验签在禁用之前、落库晚于联动扫描」：扫描时把决策行的 fact_issuers 暂时置空，扫描后恢复，等同于该行此刻才落库。 */
+  private static void hideFactIssuers(String decisionId, Runnable whileHidden) {
+    String original = QuarkusTransaction.requiringNew().call(() -> {
+      GuardDecisionEntity d = GuardDecisionEntity.findById(UUID.fromString(decisionId));
+      String saved = d.factIssuers;
+      d.factIssuers = "[]";
+      return saved;
+    });
+    whileHidden.run();
+    QuarkusTransaction.requiringNew().run(() -> {
+      GuardDecisionEntity d = GuardDecisionEntity.findById(UUID.fromString(decisionId));
+      d.factIssuers = original;
+    });
+  }
+
+  /**
+   * 联动中一条审批迁移失败（其审批事件追加失败）：DELETE 照常 204，吊销事件照常写一条（不列该决策）；
+   * 下一轮调度对近期吊销的签发方重跑联动，把它转 EXPIRED（fact_issuer_revoked，自带审批事件），吊销事件不重写、不补列。
+   */
+  @Test
+  void cascadeTransitionFailureExpiredByNextSchedulerRound() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(tenantA, signer, TestFactSigner.KID);
+    Response dependent = pendingWithFact(tenantA, signer, TestFactSigner.KID);
+    FailingRevokedAppender failing = FailingRevokedAppender.install(appender, EventType.ACTION_GUARD_APPROVAL);
+
+    Response deleted = deleteIssuer(tenantA, TestFactSigner.KID);
+
+    assertThat(deleted.statusCode()).as(deleted.asString()).isEqualTo(204);
+    assertThat(approvalRow(approvalId(dependent)).status).isEqualTo(GuardApprovalStatus.PENDING);
+    List<AuditLog> revoked = events(tenantA, REVOKED_EVENT);
+    assertThat(revoked).hasSize(1);
+    assertThat(texts(metadata(revoked.get(0)).path("affectedDecisionIds"))).isEmpty();
+
+    failing.fail = false;
+    revocations.revokeLapsed();
+    revocations.revokeLapsed();
+
+    GuardApprovalEntity row = approvalRow(approvalId(dependent));
+    assertThat(row.status).isEqualTo(GuardApprovalStatus.EXPIRED);
+    assertThat(row.expiredReason).isEqualTo(REASON);
+    List<JsonNode> approvalEvents = approvalEvents(approvalId(dependent));
+    assertThat(approvalEvents).hasSize(1);
+    assertThat(approvalEvents.get(0).path("outcome").asText()).isEqualTo("EXPIRED");
+    assertThat(approvalEvents.get(0).path("expiredReason").asText()).isEqualTo(REASON);
+    assertThat(events(tenantA, REVOKED_EVENT)).hasSize(1);
+  }
+
+  /**
+   * 决策在禁用之前通过验签、在联动扫描之后才落库：首次联动看不到它；下一轮调度重扫把它转 EXPIRED，
+   * 吊销事件仍只有一条（写事件时尚无此审批，不补列）。
+   */
+  @Test
+  void decisionPersistedAfterCascadeScanExpiredByNextRound() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(tenantA, signer, TestFactSigner.KID);
+    Response late = pendingWithFact(tenantA, signer, TestFactSigner.KID);
+    String decisionId = late.jsonPath().getString("decisionId");
+
+    hideFactIssuers(decisionId,
+        () -> assertThat(deleteIssuer(tenantA, TestFactSigner.KID).statusCode()).isEqualTo(204));
+    assertThat(approvalRow(approvalId(late)).status).isEqualTo(GuardApprovalStatus.PENDING);
+
+    revocations.revokeLapsed();
+
+    GuardApprovalEntity row = approvalRow(approvalId(late));
+    assertThat(row.status).isEqualTo(GuardApprovalStatus.EXPIRED);
+    assertThat(row.expiredReason).isEqualTo(REASON);
+    assertThat(approvalEvents(approvalId(late))).singleElement()
+        .satisfies(m -> assertThat(m.path("expiredReason").asText()).isEqualTo(REASON));
+    List<AuditLog> revoked = events(tenantA, REVOKED_EVENT);
+    assertThat(revoked).hasSize(1);
+    assertThat(texts(metadata(revoked.get(0)).path("affectedDecisionIds"))).doesNotContain(decisionId);
+  }
+
+  /**
+   * 重扫窗口 = 审批 TTL（默认 PT24H）：revoked_at 早于 now − TTL 的签发方不再重扫（依赖它的审批早已自然过期）；
+   * 窗口内的仍会重扫。
+   */
+  @Test
+  void issuersRevokedBeyondApprovalTtlAreNotRescanned() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(tenantA, signer, TestFactSigner.KID);
+    Response late = pendingWithFact(tenantA, signer, TestFactSigner.KID);
+    hideFactIssuers(late.jsonPath().getString("decisionId"),
+        () -> assertThat(deleteIssuer(tenantA, TestFactSigner.KID).statusCode()).isEqualTo(204));
+    Instant revokedAt = issuerRow(TestFactSigner.KID).revokedAt;
+    MutableClock clock = new MutableClock(revokedAt.plus(Duration.ofHours(24)));
+    QuarkusMock.installMockForType(clock, Clock.class);
+
+    revocations.revokeLapsed();
+
+    assertThat(approvalRow(approvalId(late)).status).as("窗口外不重扫").isEqualTo(GuardApprovalStatus.PENDING);
+    assertThat(approvalEvents(approvalId(late))).isEmpty();
+
+    clock.set(revokedAt.plus(Duration.ofHours(24)).minusSeconds(1));
+    revocations.revokeLapsed();
+
+    GuardApprovalEntity row = approvalRow(approvalId(late));
+    assertThat(row.status).isEqualTo(GuardApprovalStatus.EXPIRED);
+    assertThat(row.expiredReason).isEqualTo(REASON);
+  }
+
+  /**
+   * 已过 notAfter、调度尚未处理的签发方收到 PUT {publicKey, enabled:false}（省略 notAfter）：不得先提交 notAfter=null
+   * 再吊销（两步之间签发方会重新可用于验签）。结果为禁用、notAfter 保持原值、吊销事件一条。
+   */
+  @Test
+  void putDisableOnLapsedIssuerKeepsNotAfter() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    Instant t0 = Instant.now();
+    Response put = putIssuer(tenantA, TestFactSigner.KID, "{\"publicKey\":\"" + signer.publicKey()
+        + "\",\"notAfter\":\"" + t0.plusSeconds(60) + "\"}");
+    assertThat(put.statusCode()).as(put.asString()).isEqualTo(200);
+    Instant notAfter = issuerRow(TestFactSigner.KID).notAfter;
+    QuarkusMock.installMockForType(new MutableClock(t0.plusSeconds(120)), Clock.class);
+
+    Response disabled = putIssuer(tenantA, TestFactSigner.KID,
+        "{\"publicKey\":\"" + signer.publicKey() + "\",\"enabled\":false}");
+
+    assertThat(disabled.statusCode()).as(disabled.asString()).isEqualTo(200);
+    assertThat(disabled.jsonPath().getBoolean("enabled")).isFalse();
+    GuardFactIssuerEntity row = issuerRow(TestFactSigner.KID);
+    assertThat(row.enabled).isFalse();
+    assertThat(row.notAfter).isEqualTo(notAfter);
+    assertThat(row.revokedAt).isNotNull();
+    assertThat(events(tenantA, REVOKED_EVENT)).hasSize(1);
   }
 
   /**

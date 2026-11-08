@@ -35,7 +35,8 @@ import java.util.TreeSet;
  *
  * <p>规则（任一条不满足 → 整个请求 400 {@code invalid_fact}，不降级为 declared）：
  * <ul>
- *   <li>≤ {@value #MAX_FACTS} 条；全部事实的 claims 合计 ≤ {@value #MAX_CLAIMS}；路径 ≤ {@value #MAX_PATH_LENGTH} 字符；</li>
+ *   <li>≤ {@value #MAX_FACTS} 条；全部事实的 claims 合计 ≤ {@value #MAX_CLAIMS}；路径 ≤ {@value #MAX_PATH_LENGTH} 字符；
+ *       路径不得为 {@code agent} 或以 {@code agent.} 开头 → {@code claim_path_not_allowed}；</li>
  *   <li>成员恰为 {@code alg, audience, claims, expiresAt, issuedAt, issuer, kid, signature, sources}：
  *       不受签名覆盖的额外成员一律拒绝；</li>
  *   <li>{@code alg} 只接受 {@code Ed25519}；签发方 {@code (tenant, issuer, kid)} 存在、{@code enabled}、
@@ -72,7 +73,12 @@ public class FactVerifier {
    * 规则读到的不是原文值，所以这些路径上只认 JSON 字符串。
    */
   static final Set<String> TYPED_STRING_PATHS = Set.of("principal.id", "principal.type", "action.name",
-      "resource.type", "resource.id", "agent.provider", "agent.model", "agent.version", "agent.session");
+      "resource.type", "resource.id");
+  /**
+   * 不接受事实的子树（ADR 0040 §11 D3「不做」）：模型身份的可证来源留给 ADR 0041 §10 的 key-bound 方案，
+   * 租户签发方为 {@code agent.*} 背书会让收据把自报的模型身份记成 verified。
+   */
+  static final String AGENT_ROOT = "agent";
   /** 按 {@code List<String>} 绑定的字段：只认字符串数组。 */
   static final String TYPED_STRING_ARRAY_PATH = "principal.roles";
   /** Ed25519 SubjectPublicKeyInfo 前缀（RFC 8410）：其后接 32 字节原始公钥即为 X.509 编码。 */
@@ -208,6 +214,10 @@ public class FactVerifier {
     if (path.length() > MAX_PATH_LENGTH) {
       throw new GuardInvalidFactException(issuer, kid, GuardInvalidFactException.PATH_TOO_LONG,
           "claim 路径超过 " + MAX_PATH_LENGTH + " 字符");
+    }
+    if (path.equals(AGENT_ROOT) || path.startsWith(AGENT_ROOT + ".")) {
+      throw new GuardInvalidFactException(issuer, kid, GuardInvalidFactException.CLAIM_PATH_NOT_ALLOWED,
+          "agent.* 不接受签名事实: " + path);
     }
   }
 

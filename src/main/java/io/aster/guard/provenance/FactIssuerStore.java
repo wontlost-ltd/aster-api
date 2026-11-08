@@ -59,7 +59,9 @@ public class FactIssuerStore {
    * <p>首次写入用 {@code INSERT … ON CONFLICT DO NOTHING}：并发首次写入同一主键时后到者不报主键冲突，
    * 而是读回先到者的行，再按与已有行相同的规则裁决（同钥 200，异钥 409）。规则：
    * 公钥不同 → {@link #KEY_CONFLICT}；行已禁用或已过 {@code notAfter}（{@code now >= notAfter}，过期即终态，
-   * 延期须轮换 kid）而请求启用 → {@link #REVOKED}；其余只更新 notAfter。
+   * 延期须轮换 kid）而请求启用 → {@link #REVOKED}；请求启用时只更新 notAfter。请求 {@code enabled=false} 时已有行
+   * 一律不改：否则本事务先提交的 {@code notAfter}（如省略即 null）会让一个已过期、调度尚未处理的签发方在随后的
+   * {@link #markRevoked} 之前重新可用于验签，进程恰在两步之间崩溃则永久复活。
    * 已有行的 {@code enabled} 不在这里改：启用 → 禁用是吊销，须经 {@link #markRevoked} 由吊销服务联动处置
    * 依赖它的待审批（{@code FactIssuerRevocationService}），调用方在请求 {@code enabled=false} 时随后调用之。
    */
@@ -86,7 +88,9 @@ public class FactIssuerStore {
     if (enabled && (!existing.enabled || lapsed)) {
       return new UpsertResult.Conflict(REVOKED);
     }
-    existing.notAfter = notAfter;
+    if (enabled) {
+      existing.notAfter = notAfter;
+    }
     return new UpsertResult.Saved(existing);
   }
 
@@ -113,6 +117,16 @@ public class FactIssuerStore {
     return GuardFactIssuerEntity.<GuardFactIssuerEntity>find(
             "enabled = false and revokedAt is not null and revocationAuditId is null order by revokedAt")
         .page(0, limit).list();
+  }
+
+  /**
+   * 跨租户取 {@code revoked_at > since} 且吊销事件已入链的签发方，供调度重跑联动（补齐迁移失败或晚于首次扫描落库的待审批）。
+   * {@code since} 为 {@code now − 审批 TTL}，集合由时间窗限定，不分页。
+   */
+  @Transactional
+  public List<GuardFactIssuerEntity> findRevokedSince(Instant since) {
+    return GuardFactIssuerEntity.<GuardFactIssuerEntity>list(
+        "enabled = false and revokedAt > ?1 and revocationAuditId is not null order by revokedAt", since);
   }
 
   /** 跨租户取仍启用但 {@code now >= notAfter} 的签发方（已不可用于验签、尚未吊销），至多 limit 条。 */
