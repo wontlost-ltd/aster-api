@@ -444,7 +444,7 @@ Bearer 一律 403 { "error": "internal_only" }；publicKey 解码非 32 字节 �
 "inputSources": { "factIssuers": ["idp.example.com#2026-11"], "factsStale": true?, "verified": ["context.amount", "principal.id"] }
 ```
 
-`verified` 为空时整个对象不写；`factsStale` 只在重放 / GET 且 `now > fact_expires_at` 或任一记录的 `issuer#kid` 现已禁用 / 过 `not_after` 时追加，不改写 `response_json`、不写事件。收据键 `verifiedFields / factIssuers / factSources / principalIdentityMatched / factExpiresAt / inputSourcesTruncated`，缩短顺序按 ADR 0041 §11 D1（`factSources` 紧随 `verifiedFields`）。
+`verified` 为空时整个对象不写；`factsStale` 只在重放 / GET 且 `now >= fact_expires_at`（排他）或任一记录的 `issuer#kid` 现已禁用 / 过 `not_after` 时追加，不改写 `response_json`、不写事件。收据键 `verifiedFields / factIssuers / factSources / principalIdentityMatched / factExpiresAt / inputSourcesTruncated`，缩短顺序按 ADR 0041 §11 D1（`factSources` 紧随 `verifiedFields`）。
 
 - [ ] **Step 1: 写失败测试**：`userPrincipalEqualToPerformedByIsVerified`、`otherIdOrAgentTypeIsDeclared`、`rolesVerifiedOnlyIfSubsetOfBusinessRoles`（一项不在 → 整叶 declared）、`factsAndServerResolutionUnion`、`principalIdentityMatchedRecordedEvenWhenFactCovers`、`noFactsResponseByteIdenticalToToday`（与既有 golden 响应逐字节相等）、`receiptTruncationOrderAndFlag`（64 条 128 字符路径）、`replayAfterFactExpiryMarksStaleWithoutNewEvent`、`sameKeyDifferentFactsIsNot422`、`evaluateEventsCarryInputSourceDeclared`。
 - [ ] **Step 2:** FAIL。 **Step 3:** 实现。 **Step 4:** PASS。
