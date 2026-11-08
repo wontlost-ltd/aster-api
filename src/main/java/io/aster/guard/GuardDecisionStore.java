@@ -55,6 +55,13 @@ public interface GuardDecisionStore {
   List<GuardApprovalEntity> findPendingByFactIssuer(String tenantId, String issuerKid);
 
   /**
+   * 本租户因签发方吊销转 EXPIRED（{@code expired_reason = fact_issuer_revoked}）、且关联决策 {@code fact_issuers} 含
+   * {@code issuerKid} 的审批所属决策 id，按迁移时刻升序。吊销事件在写入时以此计算 {@code affectedDecisionIds}，
+   * 因此包含审批时就地过期的项，也不受上一轮联动中途失败的影响。查询同样由 {@code guard_approvals (tenant_id, status)} 驱动。
+   */
+  List<UUID> findRevokedDecisionIds(String tenantId, String issuerKid);
+
+  /**
    * 在<b>一个事务</b>内完成审批状态迁移：以 {@code PESSIMISTIC_WRITE} 锁住审批行，确认它仍是 PENDING，
    * 且（目标不是 EXPIRED 时）在<b>加锁后的当前时刻</b> {@code now} 尚未过期；随后以同一个 {@code now} 调用
    * {@code writeAt} 得到要写入的内容，写入 {@code decided} 的 status / decidedBy / decidedAt / comment / receiptAuditId，

@@ -3,11 +3,13 @@ package io.aster.guard.provenance;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.aster.audit.chain.AuditChainAppender;
+import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.guard.GuardApprovalEntity;
-import io.aster.guard.GuardApprovalExpiryScheduler;
 import io.aster.guard.GuardApprovalStatus;
 import io.aster.guard.GuardDecisionEntity;
+import io.aster.guard.GuardDecisionStore;
 import io.aster.guard.api.GuardFromEvidenceResourceTest;
 import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.cache.CompiledPolicyCache;
@@ -16,12 +18,16 @@ import io.aster.policy.entity.AuditLog;
 import io.aster.policy.entity.PolicyArtifact;
 import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
+import io.aster.policy.event.AuditEvent;
+import io.aster.policy.event.EventType;
 import io.aster.security.apikey.ApiKeyVerifierService;
 import io.aster.security.apikey.ApiKeyVerifyResult;
 import io.aster.security.apikey.InternalCallerSigning;
 import io.aster.test.PostgresTestResource;
+import io.quarkus.arc.ClientProxy;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.QuarkusTestResource;
+import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.response.Response;
@@ -29,7 +35,10 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -71,7 +80,9 @@ class FactIssuerRevocationTest {
   @Inject ApiKeyVerifierService verifier;
   @Inject CompiledPolicyCache compiledPolicyCache;
   @Inject PolicyVersionResolutionCache versionResolutionCache;
-  @Inject GuardApprovalExpiryScheduler scheduler;
+  @Inject FactIssuerRevocationService revocations;
+  @Inject GuardDecisionStore decisionStore;
+  @Inject AuditChainAppender appender;
   @Inject FactIssuerStore issuerStore;
 
   @BeforeEach
@@ -221,6 +232,86 @@ class FactIssuerRevocationTest {
         .filter(m -> approvalId.equals(m.path("approvalId").asText())).toList();
   }
 
+  private static long receiptRows(String decisionId) {
+    return QuarkusTransaction.requiringNew().call(
+        () -> GuardReceiptEntity.count("decisionId", UUID.fromString(decisionId)));
+  }
+
+  private static GuardFactIssuerEntity issuerRow(String kid) {
+    return QuarkusTransaction.requiringNew().call(() -> GuardFactIssuerEntity.<GuardFactIssuerEntity>findById(
+        new GuardFactIssuerEntity.Key(tenantA, TestFactSigner.ISSUER, kid)));
+  }
+
+  /** 可变时钟：经 {@link QuarkusMock} 替换注入的 {@link Clock}，只作用于当前用例。 */
+  static final class MutableClock extends Clock {
+    private volatile Instant now;
+
+    MutableClock(Instant now) {
+      this.now = now;
+    }
+
+    void set(Instant instant) {
+      this.now = instant;
+    }
+
+    @Override
+    public ZoneId getZone() {
+      return ZoneOffset.UTC;
+    }
+
+    @Override
+    public Clock withZone(ZoneId zone) {
+      return this;
+    }
+
+    @Override
+    public Instant instant() {
+      return now;
+    }
+  }
+
+  /**
+   * 只让 {@code GUARD_FACT_ISSUER_REVOKED} 追加失败的审计追加器（{@link #fail} 可随时关闭），其余事件委托给真实 bean；
+   * 经 {@link QuarkusMock} 安装，只作用于当前用例。
+   */
+  static final class FailingRevokedAppender extends AuditChainAppender {
+    volatile boolean fail = true;
+    private final AuditChainAppender delegate;
+
+    private FailingRevokedAppender(AuditChainAppender delegate) {
+      this.delegate = delegate;
+    }
+
+    static FailingRevokedAppender install(AuditChainAppender proxy) {
+      FailingRevokedAppender failing = new FailingRevokedAppender(ClientProxy.unwrap(proxy));
+      QuarkusMock.installMockForType(failing, AuditChainAppender.class);
+      return failing;
+    }
+
+    private void check(AuditEvent event) {
+      if (fail && event.eventType() == EventType.GUARD_FACT_ISSUER_REVOKED) {
+        throw new IllegalStateException("模拟审计链不可用");
+      }
+    }
+
+    @Override
+    public AppendedRecord appendSync(AuditEvent event) {
+      check(event);
+      return delegate.appendSync(event);
+    }
+
+    @Override
+    public AppendedRecord appendInCurrentTransaction(AuditEvent event) {
+      check(event);
+      return delegate.appendInCurrentTransaction(event);
+    }
+
+    @Override
+    public AuditLog toAuditLog(AuditEvent event) {
+      return delegate.toAuditLog(event);
+    }
+  }
+
   private static String approvalId(Response decision) {
     return decision.jsonPath().getString("approval.id");
   }
@@ -355,19 +446,23 @@ class FactIssuerRevocationTest {
     assertThat(issuerStore.find(tenantB, TestFactSigner.ISSUER, TestFactSigner.KID).orElseThrow().enabled).isTrue();
   }
 
-  /** 过 notAfter 由过期调度同一轮处理：performedBy=SYSTEM，签发方行转为禁用，第二轮不再写事件。 */
+  /** 过 notAfter 由过期调度同一轮处理（revokeLapsed，注入可变时钟）：performedBy=SYSTEM，签发方行转为禁用，第二轮不再写事件。 */
   @Test
   void notAfterExpiryHandledByScheduler() {
     TestFactSigner signer = TestFactSigner.newKey();
-    register(tenantA, signer, TestFactSigner.KID);
+    Instant t0 = Instant.now();
+    Response put = putIssuer(tenantA, TestFactSigner.KID, "{\"publicKey\":\"" + signer.publicKey()
+        + "\",\"notAfter\":\"" + t0.plusSeconds(60) + "\"}");
+    assertThat(put.statusCode()).as(put.asString()).isEqualTo(200);
     Response dependent = pendingWithFact(tenantA, signer, TestFactSigner.KID);
-    String lapsed = "{\"publicKey\":\"" + signer.publicKey() + "\",\"notAfter\":\""
-        + Instant.now().minusSeconds(5) + "\"}";
-    assertThat(putIssuer(tenantA, TestFactSigner.KID, lapsed).statusCode()).isEqualTo(200);
-    assertThat(events(tenantA, REVOKED_EVENT)).isEmpty();
+    MutableClock clock = new MutableClock(t0.plusSeconds(30));
+    QuarkusMock.installMockForType(clock, Clock.class);
+    revocations.revokeLapsed();
+    assertThat(events(tenantA, REVOKED_EVENT)).as("notAfter 未到不吊销").isEmpty();
 
-    scheduler.expire();
-    scheduler.expire();
+    clock.set(t0.plusSeconds(60));
+    revocations.revokeLapsed();
+    revocations.revokeLapsed();
 
     GuardApprovalEntity row = approvalRow(approvalId(dependent));
     assertThat(row.status).isEqualTo(GuardApprovalStatus.EXPIRED);
@@ -416,7 +511,8 @@ class FactIssuerRevocationTest {
     TestFactSigner signer = TestFactSigner.newKey();
     register(tenantA, signer, TestFactSigner.KID);
     Response dependent = pendingWithFact(tenantA, signer, TestFactSigner.KID);
-    assertThat(issuerStore.markRevoked(tenantA, TestFactSigner.ISSUER, TestFactSigner.KID)).isTrue();
+    assertThat(issuerStore.markRevoked(tenantA, TestFactSigner.ISSUER, TestFactSigner.KID, "u-admin", Instant.now()))
+        .isTrue();
 
     Response r = approve(approvalId(dependent));
 
@@ -426,6 +522,107 @@ class FactIssuerRevocationTest {
     GuardApprovalEntity row = approvalRow(approvalId(dependent));
     assertThat(row.status).isEqualTo(GuardApprovalStatus.EXPIRED);
     assertThat(row.expiredReason).isEqualTo(REASON);
+    assertThat(receiptRows(dependent.jsonPath().getString("decisionId"))).isZero();
+  }
+
+  /**
+   * 锁内复核：吊销恰在服务层校验之后、加锁之前提交时，APPROVED 迁移读签发方行（FOR SHARE）发现已禁用而拒绝，
+   * 不调用写入回调、不签收据，审批保持 PENDING（随后由服务层按吊销路径就地转 EXPIRED）。
+   */
+  @Test
+  void lockedApprovalRefusesRevokedIssuer() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(tenantA, signer, TestFactSigner.KID);
+    Response dependent = pendingWithFact(tenantA, signer, TestFactSigner.KID);
+    GuardApprovalEntity decided = approvalRow(approvalId(dependent));
+    decided.status = GuardApprovalStatus.APPROVED;
+    decided.decidedBy = "u-dpo";
+    decided.decidedAt = Instant.now();
+    assertThat(issuerStore.markRevoked(tenantA, TestFactSigner.ISSUER, TestFactSigner.KID, "u-admin", Instant.now()))
+        .isTrue();
+
+    boolean completed = decisionStore.completeApproval(decided, now -> {
+      throw new AssertionError("签发方已吊销时不得求写入内容（含执行收据）");
+    });
+
+    assertThat(completed).isFalse();
+    assertThat(approvalRow(approvalId(dependent)).status).isEqualTo(GuardApprovalStatus.PENDING);
+    assertThat(receiptRows(dependent.jsonPath().getString("decisionId"))).isZero();
+  }
+
+  /** 吊销事件追加失败：503，审批已转 EXPIRED，无事件、无标记；恢复后重试同一 DELETE 恰好写一条，列出这些决策。 */
+  @Test
+  void eventAppendFailureThenRetryWritesExactlyOneEvent() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(tenantA, signer, TestFactSigner.KID);
+    Response dependent = pendingWithFact(tenantA, signer, TestFactSigner.KID);
+    FailingRevokedAppender failing = FailingRevokedAppender.install(appender);
+
+    Response failed = deleteIssuer(tenantA, TestFactSigner.KID);
+
+    assertThat(failed.statusCode()).as(failed.asString()).isEqualTo(503);
+    assertThat(failed.jsonPath().getString("error")).isEqualTo("receipt_unavailable");
+    assertThat(approvalRow(approvalId(dependent)).status).isEqualTo(GuardApprovalStatus.EXPIRED);
+    assertThat(events(tenantA, REVOKED_EVENT)).isEmpty();
+    assertThat(issuerRow(TestFactSigner.KID).revocationAuditId).isNull();
+
+    failing.fail = false;
+    Response retried = deleteIssuer(tenantA, TestFactSigner.KID);
+    Response again = deleteIssuer(tenantA, TestFactSigner.KID);
+
+    assertThat(retried.statusCode()).as(retried.asString()).isEqualTo(204);
+    assertThat(again.statusCode()).isEqualTo(204);
+    List<AuditLog> revoked = events(tenantA, REVOKED_EVENT);
+    assertThat(revoked).hasSize(1);
+    JsonNode m = metadata(revoked.get(0));
+    assertThat(texts(m.path("affectedDecisionIds"))).containsExactly(dependent.jsonPath().getString("decisionId"));
+    assertThat(m.path("performedBy").asText()).isEqualTo("u-admin");
+    assertThat(issuerRow(TestFactSigner.KID).revocationAuditId).isEqualTo(revoked.get(0).id);
+  }
+
+  /** 失败的一轮之后由调度补写：事件沿用存储的 revoked_by（不是 SYSTEM），只写一条。 */
+  @Test
+  void schedulerRedrivesAfterFailedRound() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(tenantA, signer, TestFactSigner.KID);
+    Response dependent = pendingWithFact(tenantA, signer, TestFactSigner.KID);
+    FailingRevokedAppender failing = FailingRevokedAppender.install(appender);
+    assertThat(deleteIssuer(tenantA, TestFactSigner.KID).statusCode()).isEqualTo(503);
+    revocations.revokeLapsed();
+    assertThat(events(tenantA, REVOKED_EVENT)).as("调度轮同样失败").isEmpty();
+
+    failing.fail = false;
+    revocations.revokeLapsed();
+    revocations.revokeLapsed();
+
+    List<AuditLog> revoked = events(tenantA, REVOKED_EVENT);
+    assertThat(revoked).hasSize(1);
+    JsonNode m = metadata(revoked.get(0));
+    assertThat(m.path("performedBy").asText()).isEqualTo("u-admin");
+    assertThat(revoked.get(0).performedBy).isEqualTo("u-admin");
+    assertThat(texts(m.path("affectedDecisionIds"))).containsExactly(dependent.jsonPath().getString("decisionId"));
+  }
+
+  /** 进程在禁用提交后、联动前崩溃（只剩 markRevoked）：重复 DELETE 补齐审批与事件；调度随后不再写。 */
+  @Test
+  void crashAfterMarkRevokedIsRedriven() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(tenantA, signer, TestFactSigner.KID);
+    Response dependent = pendingWithFact(tenantA, signer, TestFactSigner.KID);
+    assertThat(issuerStore.markRevoked(tenantA, TestFactSigner.ISSUER, TestFactSigner.KID, "u-ops", Instant.now()))
+        .isTrue();
+    Response redrive = deleteIssuer(tenantA, TestFactSigner.KID);
+    revocations.revokeLapsed();
+
+    assertThat(redrive.statusCode()).as(redrive.asString()).isEqualTo(204);
+    GuardApprovalEntity row = approvalRow(approvalId(dependent));
+    assertThat(row.status).isEqualTo(GuardApprovalStatus.EXPIRED);
+    assertThat(row.expiredReason).isEqualTo(REASON);
+    List<AuditLog> revoked = events(tenantA, REVOKED_EVENT);
+    assertThat(revoked).hasSize(1);
+    JsonNode m = metadata(revoked.get(0));
+    assertThat(m.path("performedBy").asText()).isEqualTo("u-ops");
+    assertThat(texts(m.path("affectedDecisionIds"))).containsExactly(dependent.jsonPath().getString("decisionId"));
   }
 
   /**
@@ -453,8 +650,11 @@ class FactIssuerRevocationTest {
           start.await();
           return send("POST", "/api/v1/guard/approvals/" + id + "/approve", "{}", approveHeaders);
         });
+        // 吊销一方按轮次错开 0–100 ms：既覆盖同时到达，也让批准有机会先拿到锁，两种终态都会出现
+        long delayMillis = round * 20L;
         Future<Response> revoking = pool.submit(() -> {
           start.await();
+          Thread.sleep(delayMillis);
           return send("DELETE", issuerPath(kid), "", deleteHeaders);
         });
         start.countDown();
@@ -475,6 +675,7 @@ class FactIssuerRevocationTest {
           assertThat(row.expiredReason).isNull();
           assertThat(affected).doesNotContain(decisionId);
           assertThat(stored.path("effectiveOutcome").asText()).isEqualTo("ALLOW");
+          assertThat(receiptRows(decisionId)).isEqualTo(1);
         } else {
           assertThat(row.status).isEqualTo(GuardApprovalStatus.EXPIRED);
           assertThat(row.expiredReason).isEqualTo(REASON);
@@ -483,6 +684,8 @@ class FactIssuerRevocationTest {
           assertThat(approved.jsonPath().getString("expiredReason")).isEqualTo(REASON);
           // 吊销已先生效时，审批请求可能自己按同一路径把它转 EXPIRED（就地兜底），此时吊销事件不列该决策
           assertThat(stored.path("effectiveOutcome").asText()).isEqualTo("DENY");
+          assertThat(stored.has("executionReceipt")).isFalse();
+          assertThat(receiptRows(decisionId)).as("吊销提交后不得签出执行收据").isZero();
         }
       }
     } finally {

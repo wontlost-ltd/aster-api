@@ -1,5 +1,7 @@
 package io.aster.guard;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.aster.guard.provenance.GuardFactIssuerEntity;
 import io.aster.guard.receipt.GuardReceiptEntity;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -29,6 +31,13 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
   /** 审批迁移「加锁后的 now」的来源：过期复核与审批转 ALLOW 的收据 issuedAt 取同一时刻。 */
   @Inject
   Clock clock;
+
+  private GuardJson json;
+
+  @Inject
+  void setObjectMapper(ObjectMapper objectMapper) {
+    this.json = new GuardJson(objectMapper);
+  }
 
   @Override
   public Optional<GuardDecisionEntity> findByIdempotencyKey(String tenantId, String idempotencyKey) {
@@ -110,6 +119,22 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
         .getResultList());
   }
 
+  static final String REVOKED_DECISION_IDS = "SELECT a.decision_id FROM guard_approvals a "
+      + "JOIN guard_decisions d ON d.id = a.decision_id AND d.tenant_id = a.tenant_id "
+      + "WHERE a.tenant_id = ?1 AND a.status = 'EXPIRED' AND a.expired_reason = ?3 "
+      + "AND d.fact_issuers @> jsonb_build_array(CAST(?2 AS text)) "
+      + "ORDER BY a.decided_at, a.created_at";
+
+  @Override
+  public List<UUID> findRevokedDecisionIds(String tenantId, String issuerKid) {
+    List<?> rows = QuarkusTransaction.requiringNew().call(() -> GuardApprovalEntity.getEntityManager()
+        .createNativeQuery(REVOKED_DECISION_IDS)
+        .setParameter(1, tenantId).setParameter(2, issuerKid)
+        .setParameter(3, GuardApprovalEntity.EXPIRED_FACT_ISSUER_REVOKED)
+        .getResultList());
+    return rows.stream().map(o -> o instanceof UUID u ? u : UUID.fromString(o.toString())).toList();
+  }
+
   @Override
   public boolean completeApproval(GuardApprovalEntity decided, Function<Instant, ApprovalWrite> writeAt) {
     return QuarkusTransaction.requiringNew().call(() -> transition(decided, writeAt));
@@ -124,19 +149,40 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
     if (locked.isEmpty() || !transitionable(locked.get(), decided, now)) {
       return false;
     }
-    ApprovalWrite write = writeAt.apply(now);
     GuardApprovalEntity row = locked.get();
+    GuardDecisionEntity decision = GuardDecisionEntity.findByIdAndTenant(row.decisionId, row.tenantId).orElseThrow(
+        () -> new IllegalStateException("审批 " + row.id + " 关联的决策不存在: " + row.decisionId));
+    if (decided.status == GuardApprovalStatus.APPROVED && !factIssuersUsable(decision, now)) {
+      return false;
+    }
+    ApprovalWrite write = writeAt.apply(now);
     row.status = decided.status;
     row.decidedBy = decided.decidedBy;
     row.decidedAt = decided.decidedAt;
     row.comment = decided.comment;
     row.receiptAuditId = decided.receiptAuditId;
     row.expiredReason = decided.expiredReason;
-    GuardDecisionEntity decision = GuardDecisionEntity.findByIdAndTenant(row.decisionId, row.tenantId).orElseThrow(
-        () -> new IllegalStateException("审批 " + row.id + " 关联的决策不存在: " + row.decisionId));
     decision.responseJson = write.responseJson();
     if (write.receiptOrNull() != null) {
       write.receiptOrNull().persist();
+    }
+    return true;
+  }
+
+  /**
+   * 决策引用的签发方此刻全部可用：逐个以 {@code PESSIMISTIC_READ}（PostgreSQL {@code FOR SHARE}）按主键读取，
+   * 行不存在、已禁用或 {@code now >= notAfter} 即不可用。并发吊销的 UPDATE 要么先提交（这里读到禁用），
+   * 要么等本事务提交后才执行（批准先于吊销，吊销扫描时它已不是 PENDING）。无事实的决策不查表。
+   */
+  private boolean factIssuersUsable(GuardDecisionEntity decision, Instant now) {
+    for (String ref : json.readFactIssuers(decision)) {
+      int hash = ref.indexOf('#');
+      GuardFactIssuerEntity issuer = hash < 0 ? null : GuardFactIssuerEntity.findById(
+          new GuardFactIssuerEntity.Key(decision.tenantId, ref.substring(0, hash), ref.substring(hash + 1)),
+          LockModeType.PESSIMISTIC_READ);
+      if (issuer == null || !issuer.enabled || issuer.notAfter != null && !now.isBefore(issuer.notAfter)) {
+        return false;
+      }
     }
     return true;
   }

@@ -33,6 +33,12 @@ public class GuardFactIssuerEntity extends PanacheEntityBase {
   @Column(name = "not_after") public Instant notAfter;
   @Column(name = "created_at", nullable = false) public Instant createdAt;
   @Column(name = "created_by", nullable = false) public String createdBy;
+  /** 吊销（启用 → 禁用）时刻；新建即禁用的行为 null。 */
+  @Column(name = "revoked_at") public Instant revokedAt;
+  /** 吊销操作者（{@code not_after} 到期为 {@code SYSTEM}），补写吊销事件时沿用。 */
+  @Column(name = "revoked_by") public String revokedBy;
+  /** 该次吊销的 {@code GUARD_FACT_ISSUER_REVOKED} 事件 id；{@code revokedAt} 非空而本字段为 null 表示事件尚未入链。 */
+  @Column(name = "revocation_audit_id") public Long revocationAuditId;
 
   /** 复合主键。 */
   public record Key(String tenantId, String issuer, String kid) implements Serializable {

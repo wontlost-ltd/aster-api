@@ -22,6 +22,11 @@ CREATE TABLE guard_fact_issuers (
     not_after TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL,
     created_by VARCHAR(255) NOT NULL,
+    -- 吊销（启用 → 禁用，ADR 0040 §11 D4）的时刻与操作者（not_after 到期为 SYSTEM）；新建即禁用的行两列为 NULL。
+    revoked_at TIMESTAMPTZ,
+    revoked_by VARCHAR(255),
+    -- 该次吊销的 GUARD_FACT_ISSUER_REVOKED 事件 audit_logs.id；revoked_at 非空而本列为 NULL = 联动事件尚未入链，由调度与重复请求补写。
+    revocation_audit_id BIGINT,
     CONSTRAINT guard_fact_issuers_pk PRIMARY KEY (tenant_id, issuer, kid),
     CONSTRAINT guard_fact_issuers_alg_ck CHECK (alg = 'Ed25519')
 );

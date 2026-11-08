@@ -48,8 +48,9 @@ public class FactIssuerStore {
   @Inject
   EntityManager em;
 
-  /** 启用 → 禁用的条件更新：只有把行从 {@code enabled=true} 改为 false 的那一次调用影响 1 行。 */
-  private static final String REVOKE_IF_ENABLED = "UPDATE guard_fact_issuers SET enabled = false "
+  /** 启用 → 禁用的条件更新：只有把行从 {@code enabled=true} 改为 false 的那一次调用影响 1 行，同时记下时刻与操作者。 */
+  private static final String REVOKE_IF_ENABLED = "UPDATE guard_fact_issuers "
+      + "SET enabled = false, revoked_at = ?4, revoked_by = ?5 "
       + "WHERE tenant_id = ?1 AND issuer = ?2 AND kid = ?3 AND enabled = true";
 
   /**
@@ -57,7 +58,8 @@ public class FactIssuerStore {
    *
    * <p>首次写入用 {@code INSERT … ON CONFLICT DO NOTHING}：并发首次写入同一主键时后到者不报主键冲突，
    * 而是读回先到者的行，再按与已有行相同的规则裁决（同钥 200，异钥 409）。规则：
-   * 公钥不同 → {@link #KEY_CONFLICT}；行已禁用而请求启用 → {@link #REVOKED}；其余只更新 notAfter。
+   * 公钥不同 → {@link #KEY_CONFLICT}；行已禁用或已过 {@code notAfter}（{@code now >= notAfter}，过期即终态，
+   * 延期须轮换 kid）而请求启用 → {@link #REVOKED}；其余只更新 notAfter。
    * 已有行的 {@code enabled} 不在这里改：启用 → 禁用是吊销，须经 {@link #markRevoked} 由吊销服务联动处置
    * 依赖它的待审批（{@code FactIssuerRevocationService}），调用方在请求 {@code enabled=false} 时随后调用之。
    */
@@ -80,7 +82,8 @@ public class FactIssuerStore {
     if (!existing.publicKey.equals(publicKey)) {
       return new UpsertResult.Conflict(KEY_CONFLICT);
     }
-    if (!existing.enabled && enabled) {
+    boolean lapsed = existing.notAfter != null && !now.isBefore(existing.notAfter);
+    if (enabled && (!existing.enabled || lapsed)) {
       return new UpsertResult.Conflict(REVOKED);
     }
     existing.notAfter = notAfter;
@@ -92,14 +95,24 @@ public class FactIssuerStore {
   }
 
   /**
-   * 吊销：把 {@code enabled=true} 的行原子地改为 false，返回本次调用是否完成了这一迁移。
+   * 吊销：把 {@code enabled=true} 的行原子地改为 false 并记下 {@code revoked_at / revoked_by}，返回本次调用是否完成了这一迁移。
    * 行不存在或已禁用返回 false（并发吊销同一签发方只有一个调用得到 true），行永久保留供审计。
+   * 本 UPDATE 与审批转 APPROVED 时对签发方行的 {@code FOR SHARE} 读互斥：吊销提交之后不会再有依赖它的审批被批准。
    */
   @Transactional
-  public boolean markRevoked(String tenantId, String issuer, String kid) {
+  public boolean markRevoked(String tenantId, String issuer, String kid, String performedBy, Instant now) {
     return em.createNativeQuery(REVOKE_IF_ENABLED)
         .setParameter(1, tenantId).setParameter(2, issuer).setParameter(3, kid)
+        .setParameter(4, now).setParameter(5, performedBy)
         .executeUpdate() == 1;
+  }
+
+  /** 跨租户取已吊销但吊销事件尚未入链（{@code revocation_audit_id IS NULL}）的签发方，至多 limit 条，供调度补写。 */
+  @Transactional
+  public List<GuardFactIssuerEntity> findRevocationEventPending(int limit) {
+    return GuardFactIssuerEntity.<GuardFactIssuerEntity>find(
+            "enabled = false and revokedAt is not null and revocationAuditId is null order by revokedAt")
+        .page(0, limit).list();
   }
 
   /** 跨租户取仍启用但 {@code now >= notAfter} 的签发方（已不可用于验签、尚未吊销），至多 limit 条。 */

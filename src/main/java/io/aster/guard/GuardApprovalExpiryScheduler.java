@@ -11,7 +11,7 @@ import java.time.Instant;
 
 /**
  * 待审批过期调度（ADR 0040 §4.3）：默认每分钟把已到期的 PENDING 标为 EXPIRED 并写审批事件；
- * 同一轮再把已过 {@code not_after} 的签发方转为吊销，联动处置依赖它的待审批（ADR 0040 §11 D4，{@code performedBy=SYSTEM}）。
+ * 同一轮再把已过 {@code not_after} 的签发方转为吊销（{@code performedBy=SYSTEM}），并补写已吊销而事件未入链的签发方（ADR 0040 §11 D4）。
  *
  * <p>读取路径已自行判定过期（{@link GuardDecisionService#get}），本调度只负责把事实落库、入链。
  * 不加 {@code @Transactional}：{@link GuardApprovalService#expireDue} 与吊销联动内部每步自开事务，
@@ -31,7 +31,7 @@ public class GuardApprovalExpiryScheduler {
       identity = "guard-approval-expiry",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = BackgroundSchedulerSkipPredicate.class)
-  public void expire() {
+  void expire() {
     int n = service.expireDue(Instant.now());
     if (n > 0) {
       Log.infof("Action Guard 待审批过期 %d 条", n);

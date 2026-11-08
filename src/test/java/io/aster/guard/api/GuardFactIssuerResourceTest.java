@@ -16,6 +16,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
@@ -194,6 +195,30 @@ class GuardFactIssuerResourceTest {
 
     // 轮换到新 kid 正常登记
     assertThat(put("idp.example.com", "2027-01", putBody(PUBLIC_KEY), TENANT).statusCode()).isEqualTo(200);
+  }
+
+  /** 过 notAfter 即终态（ADR 0040 §11 D4）：已过期的行不能再以同钥 PUT 延期或启用（409 issuer_revoked，须轮换 kid）；未过期时可延期。 */
+  @Test
+  void lapsedIssuerCannotBeExtended() {
+    String past = Instant.now().minusSeconds(5).toString();
+    String future = Instant.now().plusSeconds(3600).toString();
+    String soon = "{\"publicKey\":\"" + PUBLIC_KEY + "\",\"notAfter\":\"" + future + "\"}";
+    assertThat(put("idp.example.com", "live", soon, TENANT).statusCode()).isEqualTo(200);
+    String later = "{\"publicKey\":\"" + PUBLIC_KEY + "\",\"notAfter\":\"2099-01-01T00:00:00Z\"}";
+    Response extended = put("idp.example.com", "live", later, TENANT);
+    assertThat(extended.statusCode()).as("未过期可延期").isEqualTo(200);
+    assertThat(extended.jsonPath().getString("notAfter")).isEqualTo("2099-01-01T00:00:00Z");
+
+    String lapsedBody = "{\"publicKey\":\"" + PUBLIC_KEY + "\",\"notAfter\":\"" + past + "\"}";
+    assertThat(put("idp.example.com", "lapsed", lapsedBody, TENANT).statusCode()).isEqualTo(200);
+    Response extend = put("idp.example.com", "lapsed", later, TENANT);
+    assertThat(extend.statusCode()).as(extend.asString()).isEqualTo(409);
+    assertThat(extend.jsonPath().getString("error")).isEqualTo("issuer_revoked");
+    // 以 enabled=false 提交仍为 200（即吊销）
+    Response disable = put("idp.example.com", "lapsed",
+        "{\"publicKey\":\"" + PUBLIC_KEY + "\",\"enabled\":false}", TENANT);
+    assertThat(disable.statusCode()).as(disable.asString()).isEqualTo(200);
+    assertThat(disable.jsonPath().getBoolean("enabled")).isFalse();
   }
 
   /** 并发首次写入同一主键：不出现 500；同钥两边 200，异钥恰一边 409 issuer_key_conflict。 */

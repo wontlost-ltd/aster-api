@@ -107,7 +107,13 @@ public class GuardApprovalService {
     approval.decidedBy = decidedBy;
     approval.decidedAt = now;
     approval.comment = isBlank(comment) ? null : comment;
-    return complete(approval, decision).orElseThrow(() -> notPendingNow(tenantId, approvalId));
+    Optional<GuardDecisionResponse> done = complete(approval, decision);
+    if (done.isPresent()) {
+      return done.get();
+    }
+    // 加锁后不可迁移：可能是签发方恰在校验与加锁之间被吊销（批准在锁内被拒），此时按吊销路径就地转 EXPIRED
+    expireIfIssuerRevoked(approval, decision, now);
+    throw notPendingNow(tenantId, approvalId);
   }
 
   /**
