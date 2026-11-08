@@ -4,10 +4,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.aster.audit.chain.AuditChainAppender;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import io.aster.audit.chain.AuditChainAppender;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

@@ -18,6 +18,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 import static io.aster.guard.GuardText.clip;
@@ -38,6 +39,8 @@ import static io.aster.guard.GuardText.clip;
 @ApplicationScoped
 public class GuardReceiptBuilder {
   static final int MAX_TEXT = 255;
+  /** 免脱敏的摘要键按 SHA-256 hex 长度截断，防止调用方把长文本借豁免原样写入链。 */
+  static final int DIGEST_LENGTH = 64;
   static final int MAX_CONTROLS = 16;
   static final int MAX_CONTROL_LENGTH = 64;
   static final int MAX_COMMENT = 1000;
@@ -137,26 +140,17 @@ public class GuardReceiptBuilder {
     Map<String, Object> m = new LinkedHashMap<>();
     m.put("kind", "attempt");
     put(m, "decisionId", r.decisionId);
-    put(m, "actionHash", actionHash);
+    put(m, "actionHash", clip(actionHash, DIGEST_LENGTH));
     put(m, "attemptId", clip(attemptId, MAX_TEXT));
     put(m, "executorId", clip(executorId, MAX_TEXT));
     put(m, "kid", clip(r.kid, MAX_TEXT));
     put(m, "receiptIssuedAt", r.issuedAt == null ? null : r.issuedAt.toString());
     put(m, "receiptExpiresAt", r.expiresAt == null ? null : r.expiresAt.toString());
-    put(m, "decisionReceiptHash", decisionReceiptHash);
+    put(m, "decisionReceiptHash", clip(decisionReceiptHash, DIGEST_LENGTH));
     return receiptEvent(EventType.ACTION_GUARD_CONSUME_ATTEMPT, r.tenantId, performedBy, true, m, List.of());
   }
 
   /** 消耗判定事件：outcome 为 {@code consumed} 或 {@code rejected:<code>}；attemptReceiptHash 指回尝试事件。 */
-  public AuditEvent consumeOutcomeEvent(UUID decisionId, String attemptId, String executorId, String outcome,
-                                        String attemptReceiptHash, String performedBy) {
-    return consumeOutcomeEvent(null, decisionId, attemptId, executorId, outcome, attemptReceiptHash, performedBy);
-  }
-
-  /**
-   * 同上并指定租户：追加器按 tenantId 分链，缺省会落入 {@code system} 链，
-   * 真实调用方应使用本重载，使判定事件与尝试事件在同一租户链上。
-   */
   public AuditEvent consumeOutcomeEvent(String tenantId, UUID decisionId, String attemptId, String executorId,
                                         String outcome, String attemptReceiptHash, String performedBy) {
     Map<String, Object> m = new LinkedHashMap<>();
@@ -165,17 +159,12 @@ public class GuardReceiptBuilder {
     put(m, "attemptId", clip(attemptId, MAX_TEXT));
     put(m, "executorId", clip(executorId, MAX_TEXT));
     put(m, "outcome", clip(outcome, MAX_TEXT));
-    put(m, "attemptReceiptHash", attemptReceiptHash);
+    put(m, "attemptReceiptHash", clip(attemptReceiptHash, DIGEST_LENGTH));
     return receiptEvent(EventType.ACTION_GUARD_CONSUME_OUTCOME, tenantId, performedBy, "consumed".equals(outcome), m,
         List.of());
   }
 
   /** 执行结果事件：success 仅在 status 为 executed 时为 true；唯一可缩短的键是调用方自填的 errorCode。 */
-  public AuditEvent resultEvent(UUID decisionId, ResultRequest req, String consumeReceiptHash, String performedBy) {
-    return resultEvent(null, decisionId, req, consumeReceiptHash, performedBy);
-  }
-
-  /** 同上并指定租户，理由同 {@link #consumeOutcomeEvent(String, UUID, String, String, String, String, String)}。 */
   public AuditEvent resultEvent(String tenantId, UUID decisionId, ResultRequest req, String consumeReceiptHash,
                                 String performedBy) {
     Map<String, Object> m = new LinkedHashMap<>();
@@ -184,15 +173,16 @@ public class GuardReceiptBuilder {
     put(m, "executorId", clip(req.executorId(), MAX_TEXT));
     put(m, "status", clip(req.status(), MAX_TEXT));
     put(m, "finishedAt", clip(req.finishedAt(), MAX_TEXT));
-    put(m, "resultHash", req.resultHash());
+    put(m, "resultHash", clip(req.resultHash(), DIGEST_LENGTH));
     put(m, "errorCode", clip(req.errorCode(), MAX_TEXT));
-    put(m, "consumeReceiptHash", consumeReceiptHash);
+    put(m, "consumeReceiptHash", clip(consumeReceiptHash, DIGEST_LENGTH));
     return receiptEvent(EventType.ACTION_GUARD_RESULT, tenantId, performedBy, "executed".equals(req.status()), m,
         RESULT_SHRINK_ORDER);
   }
 
   private AuditEvent receiptEvent(EventType type, String tenantId, String performedBy, boolean success,
                                   Map<String, Object> m, List<String> shrinkOrder) {
+    Objects.requireNonNull(tenantId, "tenantId");
     return new AuditEvent(type, Instant.now(), tenantId, null, null, null, null, null,
         clip(performedBy, MAX_PERFORMED_BY), success, null, null,
         Collections.unmodifiableMap(fitBudget(m, shrinkOrder)), null, null, null, null);
