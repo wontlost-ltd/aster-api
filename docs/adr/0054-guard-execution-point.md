@@ -142,7 +142,7 @@ const outcome = await guard.run(
 
 - `network`：e2e 读取部署仓（aster-deploy / k3s）中该上游工具的 `NetworkPolicy`（`podSelector` 指向工具 Pod，`ingress.from` 仅含代理 Pod 的标签选择器），并在模型所在命名空间启动一个一次性 Pod 对工具 Service 发起连接，期望超时 / 拒绝；策略对象缺失即判失败。
 - `auth`：工具侧要求 **consume 票据**——代理在 consume 200 后把 `{ decisionId, attemptId }` 以 `X-Aster-Guard-Consume` 头附在上游请求上，工具侧按下列规则核对，任一不满足 → 401 且**不执行**（fail-closed）；e2e 从模型所在网络不带头直连，期望 401。该方式要求工具可改；不可改的第三方工具只能用 `network`。
-  1. **认证**：工具用**自己的** API key（不是代理的）调 `GET /api/v1/guard/decisions/{decisionId}`；该 key 所属租户必须与决策租户一致（跨租户 404，与 ADR 0040 §3.4 同口径），所以工具只能核对本租户的决策。R63 响应增 `consumedBy: { attemptId, executorId, consumedAt }` 与 `actionHash`（仅 ALLOW 且已消耗时写）。
+  1. **认证**：工具用**自己的** API key（不是代理的）调 `GET /api/v1/guard/decisions/{decisionId}`；该 key 所属租户必须与决策租户一致（跨租户 404，与 ADR 0040 §3.4 同口径），所以工具只能核对本租户的决策。R63 响应增 `consumedBy: { attemptId, executorId, consumedAt }` 与 `actionHash`（仅 ALLOW 且已消耗时写），已结果回写时另增 `result: { status, resultAt }`（未回写则缺省）；这些字段只出现在 `GET /decisions/{id}`，不进入 `response_json`，幂等重放不含。
   2. **绑定到当前请求**：工具对收到的参数按代理的同一映射（§3.2：工具知道自己的 `digestArgs` 配置，或由代理在头中附 `actionHash` 供工具**比对而非信任**）重算 `actionHash`，与响应 `actionHash` 相等；`consumedBy.attemptId` 等于票据 `attemptId`；`consumedAt` 在 `now − ttl` 之后（`ttl` = 工具侧配置，缺省同收据 TTL `PT5M`）；`effectiveOutcome == ALLOW`；未写 result（响应 `result` 缺省）。
   3. **fail-closed**：Guard 不可达、超时、非 200、字段缺失或不符 → 401 不执行，不做「查不到就放行」。工具侧不缓存核对结果（每请求一次 GET；成本可接受——它只对有副作用的调用发生）。
 
@@ -150,7 +150,7 @@ const outcome = await guard.run(
 
 ## 4. 决策三：`hashAction` 与 golden 向量
 
-`jcs-sha256/v1` 的 TS 实现（ADR 0040 §12 D2 的字节级定义，RFC 8785 JCS）：对象成员按键的 UTF-16 码元序排序、无空白；字符串先解码转义再按 RFC 8785 输出，不做 Unicode 正规化；数字直接用 `Number#toString`（即 RFC 8785 §3.2.2.3 的 ECMAScript 形态），整数绝对值超过 2^53−1 或非有限数在发送前即拒绝（须以字符串发送）。向量文件 `test/fixtures/jcs-sha256-v1-vectors.json` 与 aster-api `src/test/resources/guard/jcs-sha256-v1-vectors.json` 逐字节相同；两仓各自跑 `vectors.every(v => hashAction(v.input) === v.sha256)`。任何一方改配方必须同时改两份向量并升版 `/v2`（ADR 0040 §12 D2 的 fail-closed 保证：不一致只会得到 409，不会放行）。
+`jcs-sha256/v1` 的 TS 实现（ADR 0040 §12 D2 的字节级定义，RFC 8785 JCS）：对象成员按键的 UTF-16 码元序排序、无空白；字符串先解码转义再按 RFC 8785 输出，不做 Unicode 正规化；数字直接用 `Number#toString`（即 RFC 8785 §3.2.2.3 的 ECMAScript 形态），按 double 解释后绝对值超过 2^53−1（含 `9007199254740991.5` 这类小数写法）或非有限数、含孤立代理项的字符串在发送前即拒绝（大数须以字符串发送）。向量文件 `test/fixtures/jcs-sha256-v1-vectors.json` 与 aster-api `src/test/resources/guard/jcs-sha256-v1-vectors.json` 逐字节相同；两仓各自跑 `vectors.every(v => hashAction(v.input) === v.sha256)`。任何一方改配方必须同时改两份向量并升版 `/v2`（ADR 0040 §12 D2 的 fail-closed 保证：不一致只会得到 409，不会放行）。
 
 ---
 

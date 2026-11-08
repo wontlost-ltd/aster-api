@@ -248,7 +248,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 
 - 只对 `outcome ∈ {REQUIRE_APPROVAL, ESCALATE}` 的决策写入：ALLOW / DENY 没有人要看，ADR 0040 §3.3「决策行不存明文 context」对这两类结论维持原状。
 - 与决策行、审批行写在**同一个** `requiringNew` 事务里（ADR 0040 §3.3 行 214 的原则）：不会出现「有待审批却没有输入」的半写状态。`from-evidence` 决策同样写入（`action` 来自 cloud 以 HMAC v3 签过的请求体，§3.1）。
-- **不进审计链**：链上仍只有 `contextHash`（4 KB 预算，ADR 0040 §5.2）。输入行的真实性由 `context_hash` 复核：读取时重算 `sha256-sorted-json/v1` 与决策行比对，不等 → 视图状态 `integrity_failed`，不展示。
+- **不进审计链**：链上仍只有 `contextHash`（4 KB 预算，ADR 0040 §5.2）。输入行的真实性由 `context_hash` 复核：读取时重算 `sha256-sorted-json/v1`（`context_hash` 保持该配方，**不**随 ADR 0040 §12 D2 改用 `jcs-sha256/v1`：后者只用于 `actionHash` 与签名载荷，改旧哈希会让既有决策行全部判为不一致）与决策行比对，不等 → 视图状态 `integrity_failed`，不展示。
 - 保留期：审批到达终态（APPROVED / REJECTED / EXPIRED）后 `aster.guard.input-retention=${ASTER_GUARD_INPUT_RETENTION:P90D}` 到期由与 `GuardApprovalExpiryScheduler` 同构的调度器删除输入行（`guard_decisions` 不动）；删除后视图状态 `purged`。PENDING 期间不删。
 
 **D2 字段级脱敏规则（默认打码，按已验证业务角色解除）。**
@@ -289,7 +289,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 
 **D3 审批记录「提交时所对应的视图」快照哈希。**
 
-`inputSnapshotHash = sha256-sorted-json/v1`（ADR 0040 §5.2 的同一配方）作用于服务端**实际返回**的视图体 `{ decisionId, contextHash, input, piiMarks, maskRules: "v1", revealed }`；视图自带该哈希。审批时：
+`inputSnapshotHash = sha256-sorted-json/v1`（ADR 0040 §5.2 的同一配方；与 `context_hash` 一样保持该配方，不随 ADR 0040 §12 D2 改用 `jcs-sha256/v1`——它是服务端自算自比的视图哈希，不跨语言复算）作用于服务端**实际返回**的视图体 `{ decisionId, contextHash, input, piiMarks, maskRules: "v1", revealed }`；视图自带该哈希。审批时：
 
 1. approve / reject 请求体增加可选 `inputSnapshotHash`。服务端按「审批人角色 + `input_revealed_at` 是否已置」重算当前视图哈希：相等 → `input_snapshot_matched = true`；不等 → 409 `input_snapshot_mismatch`（输入不可变，只会在脱敏规则版本变化或解除状态变化时出现，UI 提示刷新）；未提供（旧 SDK）→ 记服务端算出的哈希，`matched = false`。
 2. `guard_approvals` 新列（同 `V6.37.0`）：`input_snapshot_hash VARCHAR(64)`、`input_snapshot_matched BOOLEAN`、`input_revealed_at`。
