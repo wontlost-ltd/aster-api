@@ -7,12 +7,12 @@ import io.aster.guard.GuardEvidenceDecisionService;
 import io.aster.guard.GuardIdempotencyMismatchException;
 import io.aster.guard.GuardInvalidActionException;
 import io.aster.guard.GuardPolicyNotFoundException;
+import io.aster.guard.GuardRequestBodyReader;
 import io.aster.policy.rest.RequestIdentityResolver;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
 import io.aster.security.apikey.InternalCallerFilter;
 import jakarta.inject.Inject;
-import jakarta.validation.Valid;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.HeaderParam;
@@ -25,6 +25,8 @@ import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -64,6 +66,9 @@ public class GuardDecisionResource {
   @Inject
   ApiQuotaGuard apiQuotaGuard;
 
+  @Inject
+  GuardRequestBodyReader bodyReader;
+
   @Context
   ContainerRequestContext requestContext;
 
@@ -71,10 +76,21 @@ public class GuardDecisionResource {
    * 对提议动作作出决策；{@code Idempotency-Key} 可选，同租户同键重放同一决策（审批状态取当前值），
    * 同键不同动作返回 422 {@code idempotency_mismatch}。
    * 返回决策（200）时按 {@link #PATH} 计量一次调用，与 {@code /evaluate} 同一计费口径；400 / 404 / 422 不计量。
+   *
+   * <p>请求体以原始字节读取（{@link GuardRequestBodyReader}）：{@code actionHash} 作用于收到的 {@code action} 原文，
+   * 重复键拒绝；其余非法请求的响应与框架解析时逐字节相同。解析放在配额判定之前，与框架在进入方法前解析同序。
+   *
+   * @throws IOException 类型不符（{@code MismatchedInputException}）原样交给 Quarkus 内置映射器，或读取请求体失败
    */
   @POST
-  public Response decide(@Valid GuardActionRequest req, @HeaderParam("Idempotency-Key") String idempotencyKey) {
+  public Response decide(InputStream body, @HeaderParam("Idempotency-Key") String idempotencyKey) throws IOException {
     long startTime = System.currentTimeMillis();
+    GuardRequestBodyReader.Parsed<GuardActionRequest> req;
+    try {
+      req = bodyReader.read(body, GuardActionRequest.class);
+    } catch (GuardInvalidActionException bad) {
+      return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_action", bad.getMessage());
+    }
     // 身份在请求线程上一次取齐：限流桶键与计费归属都依赖已验证的 apiKeyId。
     String tenantId = identityResolver.tenantId();
     String performedBy = identityResolver.performedBy();
@@ -91,7 +107,8 @@ public class GuardDecisionResource {
       return quotaRejection.get();
     }
     try {
-      GuardDecisionResponse decision = service.decide(tenantId, performedBy, apiKeyId, req, idempotencyKey);
+      GuardDecisionResponse decision = service.decide(tenantId, performedBy, apiKeyId, req.value(), req.actionHash(),
+          idempotencyKey);
       if (apiCall) {
         apiQuotaGuard.recordAsync(quotaOwnerId, performedBy, tenantId, apiKeyId, PATH, "success",
             System.currentTimeMillis() - startTime);
@@ -112,13 +129,16 @@ public class GuardDecisionResource {
    */
   @POST
   @Path("/from-evidence")
-  public Response fromEvidence(GuardFromEvidenceRequest req) {
+  public Response fromEvidence(InputStream body) throws IOException {
     if (!InternalCallerFilter.isHmacVerified(requestContext)) {
       return error(Response.Status.FORBIDDEN.getStatusCode(), "internal_only", "仅限内部 HMAC 调用者");
     }
     try {
+      GuardRequestBodyReader.Parsed<GuardFromEvidenceRequest> req = bodyReader.read(body, GuardFromEvidenceRequest.class);
       return Response.ok(evidenceService.createFromEvidence(identityResolver.tenantId(),
-          identityResolver.performedBy(), req)).build();
+          identityResolver.performedBy(), req.value(), req.actionHash())).build();
+    } catch (GuardInvalidActionException bad) {
+      return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_action", bad.getMessage());
     } catch (GuardApprovalConflictException e) {
       return error(evidenceStatusOf(e.code()), e.code(), e.getMessage(), e.details());
     }

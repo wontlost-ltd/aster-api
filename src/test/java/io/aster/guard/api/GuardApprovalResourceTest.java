@@ -7,21 +7,28 @@ import io.aster.guard.GuardApprovalService;
 import io.aster.guard.GuardApprovalStatus;
 import io.aster.guard.GuardDecisionEntity;
 import io.aster.guard.GuardDecisionStore;
+import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.cache.CompiledPolicyCache;
 import io.aster.policy.cache.PolicyVersionResolutionCache;
 import io.aster.policy.entity.PolicyArtifact;
 import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
 import io.quarkus.narayana.jta.QuarkusTransaction;
+import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,11 +61,41 @@ class GuardApprovalResourceTest {
   @Inject AuditChainAnchorService anchorService;
   @Inject GuardApprovalService approvalService;
   @Inject GuardDecisionStore store;
+  @ConfigProperty(name = "aster.guard.receipt.signing-keys") String signingKeys;
+
+  /** 可变时钟：经 {@link QuarkusMock} 替换注入的 {@link Clock}，只作用于当前测试方法。 */
+  static final class MutableClock extends Clock {
+    private volatile Instant now;
+
+    MutableClock(Instant now) {
+      this.now = now;
+    }
+
+    void set(Instant instant) {
+      this.now = instant;
+    }
+
+    @Override
+    public ZoneId getZone() {
+      return ZoneOffset.UTC;
+    }
+
+    @Override
+    public Clock withZone(ZoneId zone) {
+      return this;
+    }
+
+    @Override
+    public Instant instant() {
+      return now;
+    }
+  }
 
   @BeforeEach
   void setUp() {
     QuarkusTransaction.requiringNew().run(() -> {
       GuardApprovalEntity.delete("tenantId = ?1", TENANT);
+      GuardReceiptEntity.delete("tenantId = ?1", TENANT);
       GuardDecisionEntity.delete("tenantId = ?1", TENANT);
       PolicyCatalog.update("defaultVersionId = null where tenantId = ?1", TENANT);
       PolicyArtifact.delete("policyVersionId in (select id from PolicyVersion where tenantId = ?1)", TENANT);
@@ -183,6 +220,63 @@ class GuardApprovalResourceTest {
     Response again = decide(ids[1], "approve", "dpo-2", DPO, null);
     assertThat(again.statusCode()).isEqualTo(409);
     assertThat(again.jsonPath().getString("error")).isEqualTo("approval_not_pending");
+  }
+
+  /**
+   * Review Focus 3：审批转 ALLOW 的收据以审批加锁时刻签发（不是决策时刻）；GET 与重放返回同一份，
+   * 过期后 GET 仍是原收据（不续签），收据行只有一行。
+   */
+  @Test
+  void approvedReceiptIssuedAtApprovalAndNeverResigned() {
+    Instant t0 = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+    MutableClock clock = new MutableClock(t0);
+    QuarkusMock.installMockForType(clock, Clock.class);
+    String key = "idem-approved-receipt-" + UUID.randomUUID();
+    Response opened = postDecision(null, key);
+    assertThat(opened.asString()).doesNotContain("executionReceipt");
+    String decisionId = opened.jsonPath().getString("decisionId");
+
+    clock.set(t0.plus(Duration.ofMinutes(10)));
+    Response approved = decide(opened.jsonPath().getString("approval.id"), "approve", "dpo-1", DPO, null);
+
+    assertThat(approved.statusCode()).as(approved.asString()).isEqualTo(200);
+    var receipt = ExecutionReceiptAssert.assertVerifiable(approved.asString(), signingKeys);
+    var payload = receipt.get("payload");
+    assertThat(payload.get("issuedAt").asText()).isEqualTo(t0.plus(Duration.ofMinutes(10)).toString());
+    assertThat(payload.get("expiresAt").asText()).isEqualTo(t0.plus(Duration.ofMinutes(15)).toString());
+    assertThat(payload.get("decisionId").asText()).isEqualTo(decisionId);
+    assertThat(payload.get("actionHash").asText()).isEqualTo(QuarkusTransaction.requiringNew().call(
+        () -> GuardDecisionEntity.<GuardDecisionEntity>findById(UUID.fromString(decisionId)).actionHash));
+    assertThat(ExecutionReceiptAssert.tree(getDecision(decisionId).asString()).get("executionReceipt")).isEqualTo(receipt);
+    assertThat(ExecutionReceiptAssert.tree(getDecision(decisionId).asString()).get("executionReceipt")).isEqualTo(receipt);
+
+    clock.set(t0.plus(Duration.ofMinutes(20)));
+    assertThat(ExecutionReceiptAssert.tree(getDecision(decisionId).asString()).get("executionReceipt")).isEqualTo(receipt);
+    assertThat(ExecutionReceiptAssert.tree(postDecision(null, key).asString()).get("executionReceipt")).isEqualTo(receipt);
+    UUID id = UUID.fromString(decisionId);
+    GuardReceiptEntity row = QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.<GuardReceiptEntity>findById(id));
+    assertThat(row.issuedAt).isEqualTo(t0.plus(Duration.ofMinutes(10)));
+    assertThat(row.createdAt).isEqualTo(t0.plus(Duration.ofMinutes(10)));
+    assertThat(row.signature).isEqualTo(receipt.get("signature").asText());
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id))).isEqualTo(1);
+  }
+
+  @Test
+  void rejectedAndExpiredApprovalsIssueNothing() {
+    String[] rejected = createPending();
+    String[] expired = createPending();
+    assertThat(decide(rejected[1], "reject", "dpo-1", DPO, "no").statusCode()).isEqualTo(200);
+    QuarkusTransaction.requiringNew().run(() -> GuardApprovalEntity.update(
+        "expiresAt = ?1 where id = ?2", Instant.now().minusSeconds(1), UUID.fromString(expired[1])));
+    assertThat(approvalService.expireDue(Instant.now())).isGreaterThanOrEqualTo(1);
+
+    for (String[] ids : List.of(rejected, expired)) {
+      Response read = getDecision(ids[0]);
+      assertThat(read.jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
+      assertThat(read.asString()).doesNotContain("executionReceipt");
+      UUID id = UUID.fromString(ids[0]);
+      assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id))).isZero();
+    }
   }
 
   @Test
@@ -345,7 +439,9 @@ class GuardApprovalResourceTest {
     String responseJson = store.findDecision(TENANT, decided.decisionId).orElseThrow().responseJson;
     Thread.sleep(400);
 
-    assertThat(store.completeApproval(decided, responseJson)).isFalse();
+    assertThat(store.completeApproval(decided, now -> {
+      throw new AssertionError("不可迁移时不得求写入内容");
+    })).isFalse();
 
     assertThat(approvalRow(ids[1]).status).isEqualTo(GuardApprovalStatus.PENDING);
     assertThat(getDecision(ids[0]).jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");

@@ -34,7 +34,7 @@ class GuardReceiptBuilderTest {
     Action a = new Action(new Principal(id, "agent", List.of("ops-bot")), new ActionName("delete_customer_record"),
         new Resource("customer", id), Map.of("amount", 250000), AGENT);
     Map<String, Object> flat = mapper.flatten(a);
-    return new GuardDecisionDraft("t1", "guard.customer", "decide", idemKey, flat, mapper.contextHash(Map.of("amount", 250000)),
+    return new GuardDecisionDraft("t1", "guard.customer", "decide", idemKey, flat, mapper.contextHash(Map.of("amount", 250000)), null,
         new PolicyVersionView(1730890123456L, HASH, 3L), outcome, "Data Protection Officer", reason,
         "CUST-DEL-001", controls, null, AGENT);
   }
@@ -116,7 +116,7 @@ class GuardReceiptBuilderTest {
         Map.of("amount", 250000), new AgentIdentity(text, text, text, text));
     List<String> controls = IntStream.range(0, 16).mapToObj(i -> "\"\\".repeat(32)).toList();
     String contextHash = mapper.contextHash(Map.of("amount", 250000));
-    GuardDecisionDraft d = new GuardDecisionDraft("t1", "guard.customer", "decide", text, mapper.flatten(a), contextHash,
+    GuardDecisionDraft d = new GuardDecisionDraft("t1", "guard.customer", "decide", text, mapper.flatten(a), contextHash, null,
         new PolicyVersionView(Long.MAX_VALUE, HASH, Long.MAX_VALUE), "REQUIRE_APPROVAL", text, text, text, controls,
         null, new AgentIdentity(text, text, text, text));
     UUID decisionId = UUID.randomUUID();
@@ -216,7 +216,7 @@ class GuardReceiptBuilderTest {
   void 无agent时收据保留空agentModel且不含其余agent键() {
     GuardDecisionDraft d = draft("ALLOW", "ok", List.of(), "agent-42", null);
     GuardDecisionDraft noAgent = new GuardDecisionDraft(d.tenantId(), d.policyModule(), d.policyFunction(),
-        d.idempotencyKey(), d.action(), d.contextHash(), d.policyVersion(), d.outcome(), d.role(), d.reason(),
+        d.idempotencyKey(), d.action(), d.contextHash(), d.actionHash(), d.policyVersion(), d.outcome(), d.role(), d.reason(),
         d.ruleId(), d.controls(), null, null);
 
     Map<String, Object> m = builder.decisionEvent(noAgent, UUID.randomUUID(), null, "user-1").metadata();
@@ -299,7 +299,7 @@ class GuardReceiptBuilderTest {
   void 规则侧超长文本在收据中被截断() throws Exception {
     List<String> controls = IntStream.range(0, 40).mapToObj(i -> "x".repeat(300)).toList();
     GuardDecisionDraft d = new GuardDecisionDraft("t1", "guard.customer", "decide", "k".repeat(255),
-        draft("DENY", null, List.of(), "p".repeat(255), null).action(), HASH,
+        draft("DENY", null, List.of(), "p".repeat(255), null).action(), HASH, null,
         new PolicyVersionView(Long.MAX_VALUE, HASH, Long.MAX_VALUE), "DENY", "o".repeat(5000), "r".repeat(5000),
         "i".repeat(5000), controls, null, AGENT);
 

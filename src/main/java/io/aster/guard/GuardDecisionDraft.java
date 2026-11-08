@@ -16,6 +16,7 @@ import java.util.Set;
  * <p>收据事件、决策行、待审批行与响应体都只从这里取值，保证四者一致。
  *
  * @param action     {@link GuardActionMapper#flatten} 产出的扁平 Action（键固定）
+ * @param actionHash 请求体 {@code action} 原文的 {@code jcs-sha256/v1}（ADR 0040 §12 D2），写入决策行供签发与对账
  * @param outcome    {@code ALLOW | DENY | REQUIRE_APPROVAL | ESCALATE}
  * @param role       Verdict 的 role（REQUIRE_APPROVAL 时即所需审批角色）
  * @param reasonCode fail-closed 原因；Verdict 正常返回时为 null
@@ -28,6 +29,7 @@ public record GuardDecisionDraft(
     String idempotencyKey,
     Map<String, Object> action,
     String contextHash,
+    String actionHash,
     PolicyVersionView policyVersion,
     String outcome,
     String role,
@@ -52,25 +54,25 @@ public record GuardDecisionDraft(
 
   /** 补上评估前解析到的活跃策略版本（幂等查重在版本解析之前完成）。 */
   public GuardDecisionDraft withPolicyVersion(PolicyVersionView version) {
-    return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash,
+    return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
         version, outcome, role, reason, ruleId, controls, reasonCode, agent);
   }
 
   /** 记录被执行规则的身份（{@code @id} / {@code @control}），与结论无关。 */
   public GuardDecisionDraft withRule(String newRuleId, List<String> newControls) {
-    return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash,
+    return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
         policyVersion, outcome, role, reason, newRuleId, newControls, reasonCode, agent);
   }
 
   /** 采纳规则返回的 Verdict 结论。 */
   public GuardDecisionDraft withVerdict(VerdictView verdict) {
-    return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash,
+    return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
         policyVersion, verdict.outcome(), verdict.role(), verdict.reason(), ruleId, controls, null, agent);
   }
 
   /** fail-closed：改判 DENY 并记录原因；保留 ruleId / controls 以便追溯被评估的规则，清掉不再成立的 role / reason。 */
   public GuardDecisionDraft deny(GuardReasonCode code) {
-    return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash,
+    return new GuardDecisionDraft(tenantId, policyModule, policyFunction, idempotencyKey, action, contextHash, actionHash,
         policyVersion, DENY, null, null, ruleId, controls, code, agent);
   }
 

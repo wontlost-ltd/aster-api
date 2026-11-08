@@ -32,10 +32,10 @@ class GuardDecisionStoreEvidenceTest {
 
   @Test void 按证据相关键查回决策_跨租户不可见_重复键抛竞争异常() {
     GuardDecisionEntity e = minimal(TENANT, "cid-1");
-    store.saveDecision(e, null);
+    store.saveDecision(e, null, null);
     assertThat(store.findByEvidenceCorrelationId(TENANT, "cid-1")).map(d -> d.id).contains(e.id);
     assertThat(store.findByEvidenceCorrelationId("other-" + TENANT, "cid-1")).isEmpty();
-    assertThatThrownBy(() -> store.saveDecision(minimal(TENANT, "cid-1"), null))
+    assertThatThrownBy(() -> store.saveDecision(minimal(TENANT, "cid-1"), null, null))
         .isInstanceOf(GuardIdempotencyRaceException.class);
   }
 
@@ -43,9 +43,9 @@ class GuardDecisionStoreEvidenceTest {
     GuardDecisionEntity a = minimal(TENANT, null);
     GuardDecisionEntity b = minimal(TENANT, null);
     GuardDecisionEntity foreign = minimal(OTHER, null);
-    store.saveDecision(a, null);
-    store.saveDecision(b, null);
-    store.saveDecision(foreign, null);
+    store.saveDecision(a, null, null);
+    store.saveDecision(b, null, null);
+    store.saveDecision(foreign, null, null);
 
     List<GuardDecisionEntity> found = store.findDecisions(TENANT, Set.of(a.id, b.id, foreign.id, UUID.randomUUID()));
 

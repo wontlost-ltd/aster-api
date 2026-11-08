@@ -3,6 +3,7 @@ package io.aster.guard.api;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.GuardDecisionEntity;
+import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import io.aster.security.apikey.ApiKeyVerifierService;
@@ -16,6 +17,7 @@ import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.response.Response;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -61,6 +63,7 @@ class GuardFromEvidenceResourceTest {
 
   @Inject AuditChainAppender appender;
   @Inject ApiKeyVerifierService verifier;
+  @ConfigProperty(name = "aster.guard.receipt.signing-keys") String signingKeys;
 
   @BeforeEach
   void setUp() {
@@ -159,6 +162,47 @@ class GuardFromEvidenceResourceTest {
     assertThat(after.jsonPath().getString("approvals[0].decisionReceiptHash"))
         .isEqualTo(opened.jsonPath().getString("receipt.hash"));
     assertThat(after.jsonPath().getList("missing")).isNull();
+  }
+
+  /** ADR 0040 §12 D9：from-evidence 开出的决策经审批转 ALLOW 同样签发执行收据，actionHash 为请求体 action 原文的哈希。 */
+  @Test
+  void fromEvidenceAllowIssuesReceipt() {
+    String cid = newCid();
+    Map<String, Object> metadata = new HashMap<>(Map.of("correlationId", cid, "outcome", "REQUIRE_APPROVAL",
+        "role", DPO, "ruleId", "CUST-DEL-001", "policyVersionId", 1730890123456L));
+    append(TENANT, metadata);
+    String body = "{\"correlationId\":\"" + cid + "\",\"action\":{\"principal\":{\"id\":\"agent-42\",\"type\":null},"
+        + "\"action\":{\"name\":\"delete_customer_record\"},\"context\":{\"amount\":250000.0,\"memo\":null}}}";
+    Response opened = signedPost(FROM_EVIDENCE, body, TENANT, "u-req", List.of());
+    assertThat(opened.statusCode()).as(opened.asString()).isEqualTo(200);
+    assertThat(opened.asString()).doesNotContain("executionReceipt");
+    String decisionId = opened.jsonPath().getString("decisionId");
+
+    Response ok = signedPost("/api/v1/guard/approvals/" + opened.jsonPath().getString("approval.id") + "/approve",
+        "{}", TENANT, "u-dpo", List.of(DPO));
+
+    assertThat(ok.statusCode()).as(ok.asString()).isEqualTo(200);
+    assertThat(ok.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+    var receipt = ExecutionReceiptAssert.assertVerifiable(ok.asString(), signingKeys);
+    assertThat(receipt.get("payload").get("actionHash").asText()).isEqualTo(ExecutionReceiptAssert.actionHashOf(body));
+    assertThat(receipt.get("payload").get("policyVersionId").asLong()).isEqualTo(1730890123456L);
+    Response read = signedGet("/api/v1/guard/decisions/" + decisionId, "", TENANT, "u-req");
+    assertThat(ExecutionReceiptAssert.tree(read.asString()).get("executionReceipt")).isEqualTo(receipt);
+    UUID id = UUID.fromString(decisionId);
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id))).isEqualTo(1);
+  }
+
+  @Test
+  void fromEvidenceDuplicateKeyIs400InvalidAction() {
+    String cid = newCid();
+    appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+    String body = "{\"correlationId\":\"" + cid + "\",\"action\":{\"principal\":{\"id\":\"a\",\"id\":\"b\"},"
+        + "\"action\":{\"name\":\"delete_customer_record\"}}}";
+
+    Response r = signedPost(FROM_EVIDENCE, body, TENANT, "u-req", List.of());
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(400);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("invalid_action");
   }
 
   @Test

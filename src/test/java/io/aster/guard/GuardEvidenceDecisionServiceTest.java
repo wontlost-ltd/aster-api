@@ -40,7 +40,7 @@ class GuardEvidenceDecisionServiceTest {
   }
 
   private static GuardDecisionResponse response(String effectiveOutcome) {
-    return new GuardDecisionResponse(null, List.of("GDPR:ART17"), UUID.randomUUID().toString(), effectiveOutcome,
+    return new GuardDecisionResponse(null, List.of("GDPR:ART17"), UUID.randomUUID().toString(), effectiveOutcome, null,
         "REQUIRE_APPROVAL", null, null, null, new ReceiptView(11L, "h", "p"), "Data Protection Officer", "R-1");
   }
 
@@ -52,8 +52,8 @@ class GuardEvidenceDecisionServiceTest {
     when(store.findByEvidenceCorrelationId(TENANT, CID)).thenReturn(Optional.of(row));
     when(decisionService.get(TENANT, row.id)).thenReturn(Optional.of(current));
 
-    assertThat(service.createFromEvidence(TENANT, "u-req", new GuardFromEvidenceRequest(CID, null))).isEqualTo(current);
-    verify(store, never()).saveDecision(any(), any());
+    assertThat(service.createFromEvidence(TENANT, "u-req", new GuardFromEvidenceRequest(CID, null), null)).isEqualTo(current);
+    verify(store, never()).saveDecision(any(), any(), any());
   }
 
   @Test
@@ -63,7 +63,7 @@ class GuardEvidenceDecisionServiceTest {
     when(store.findByEvidenceCorrelationId(TENANT, CID)).thenReturn(Optional.of(row));
     when(decisionService.get(TENANT, row.id)).thenReturn(Optional.empty());
 
-    assertThat(service.createFromEvidence(TENANT, "u-req", new GuardFromEvidenceRequest(CID, null))).isEqualTo(stored);
-    verify(store, never()).saveDecision(any(), any());
+    assertThat(service.createFromEvidence(TENANT, "u-req", new GuardFromEvidenceRequest(CID, null), null)).isEqualTo(stored);
+    verify(store, never()).saveDecision(any(), any(), any());
   }
 }

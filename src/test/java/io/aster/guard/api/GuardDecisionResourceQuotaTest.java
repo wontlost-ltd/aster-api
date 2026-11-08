@@ -4,6 +4,7 @@ import io.aster.billing.ApiQuotaGuard;
 import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardDecisionEntity;
+import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.cache.CompiledPolicyCache;
 import io.aster.policy.cache.PolicyVersionResolutionCache;
 import io.aster.policy.entity.PolicyArtifact;
@@ -64,6 +65,7 @@ class GuardDecisionResourceQuotaTest {
   void setUp() {
     QuarkusTransaction.requiringNew().run(() -> {
       GuardApprovalEntity.delete("tenantId = ?1", TENANT);
+      GuardReceiptEntity.delete("tenantId = ?1", TENANT);
       GuardDecisionEntity.delete("tenantId = ?1", TENANT);
       PolicyCatalog.update("defaultVersionId = null where tenantId = ?1", TENANT);
       PolicyArtifact.delete("policyVersionId in (select id from PolicyVersion where tenantId = ?1)", TENANT);

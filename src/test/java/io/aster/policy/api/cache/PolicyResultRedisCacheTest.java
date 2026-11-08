@@ -2,6 +2,7 @@ package io.aster.policy.api.cache;
 
 import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.guard.GuardDecisionEntity;
+import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.api.model.PolicyEvaluationResult;
 import io.aster.policy.cache.CompiledPolicyCache;
@@ -60,6 +61,7 @@ class PolicyResultRedisCacheTest {
     void clean() {
         String t = tenant;
         QuarkusTransaction.requiringNew().run(() -> {
+            GuardReceiptEntity.delete("tenantId = ?1", t);
             GuardDecisionEntity.delete("tenantId = ?1", t);
             PolicyCatalog.update("defaultVersionId = null where tenantId = ?1", t);
             PolicyArtifact.delete("policyVersionId in (select id from PolicyVersion where tenantId = ?1)", t);

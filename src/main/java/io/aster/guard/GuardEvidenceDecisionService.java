@@ -81,10 +81,12 @@ public class GuardEvidenceDecisionService {
    * 以评估事件为锚开决策、写决策收据并建待审批；收据写不进链时决策改判 DENY 且不建审批。
    *
    * @param performedBy 签名内的用户（{@code RequestIdentityResolver.performedBy}），记为请求方供四眼校验
+   * @param actionHash  请求体 {@code action} 原文的 {@code jcs-sha256/v1}，写入决策行；审批转 ALLOW 时据此签发执行收据
    * @throws GuardApprovalConflictException {@code user_required} / {@code invalid_action}(400)、
    *                                        {@code evidence_not_found}(404)、{@code evidence_not_approvable}(409)
    */
-  public GuardDecisionResponse createFromEvidence(String tenantId, String performedBy, GuardFromEvidenceRequest req) {
+  public GuardDecisionResponse createFromEvidence(String tenantId, String performedBy, GuardFromEvidenceRequest req,
+                                                  String actionHash) {
     if (isAnonymous(performedBy)) {
       throw new GuardApprovalConflictException("user_required", "from-evidence 需要签名内的用户身份");
     }
@@ -101,7 +103,7 @@ public class GuardEvidenceDecisionService {
       throw new GuardApprovalConflictException("evidence_not_approvable", "评估结论不需要审批",
           Map.of("outcome", String.valueOf(outcome)));
     }
-    GuardDecisionDraft draft = draftOf(tenantId, event, req, metadata, outcome);
+    GuardDecisionDraft draft = draftOf(tenantId, event, req, actionHash, metadata, outcome);
 
     UUID decisionId = UUID.randomUUID();
     UUID approvalId = UUID.randomUUID();
@@ -111,14 +113,15 @@ public class GuardEvidenceDecisionService {
       approvalId = null;
     }
     Instant expiresAt = Instant.now().plus(approvalTtl);
-    GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt);
+    // 证据只开可审批的决策，不存在直接 ALLOW：执行收据只会在审批转 ALLOW 时签发
+    GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt, null);
     GuardApprovalEntity approval = approvalId == null ? null : toApproval(approvalId, decisionId, draft, expiresAt);
     GuardDecisionEntity entity = assembler.toEntity(decisionId, draft, receipt, response, performedBy, null);
     entity.evidenceCorrelationId = correlationId;
     // 版本列取事件 metadata（ADR 0041 有值时才写）；响应体的 policyVersion 按裁定保持 null
     entity.policyVersionId = metadata.get("policyVersionId") instanceof Number n ? n.longValue() : null;
     try {
-      store.saveDecision(entity, approval);
+      store.saveDecision(entity, approval, null);
     } catch (GuardIdempotencyRaceException race) {
       // 并发同一证据：唯一索引让后写者失败，回读先到者的决策
       return existing(tenantId, correlationId).orElseThrow(() -> race);
@@ -182,12 +185,12 @@ public class GuardEvidenceDecisionService {
   }
 
   /** 策略地址取事件列，结论取事件 metadata；ADR 0041 未写策略版本，版本为 null。 */
-  private GuardDecisionDraft draftOf(String tenantId, AuditLog event, GuardFromEvidenceRequest req,
+  private GuardDecisionDraft draftOf(String tenantId, AuditLog event, GuardFromEvidenceRequest req, String actionHash,
                                      Map<String, Object> m, String outcome) {
     try {
       return new GuardDecisionDraft(tenantId, Objects.requireNonNullElse(event.policyModule, ""),
           Objects.requireNonNullElse(event.policyFunction, ""), null, mapper.flatten(req.action()),
-          mapper.contextHash(req.action().context()), null, outcome, text(m, "role"), text(m, "reason"),
+          mapper.contextHash(req.action().context()), actionHash, null, outcome, text(m, "role"), text(m, "reason"),
           text(m, "ruleId"), controls(m), null, declaredAgent(req.action().agent()));
     } catch (GuardInvalidActionException bad) {
       throw new GuardApprovalConflictException("invalid_action", bad.getMessage());

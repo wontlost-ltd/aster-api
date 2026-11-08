@@ -6,6 +6,8 @@ import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.api.GuardActionRequest;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
+import io.aster.guard.receipt.ExecutionReceiptIssuer;
+import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.api.model.PolicyEvaluationResult;
 import io.aster.policy.entity.PolicyVersion;
@@ -36,8 +38,9 @@ import static io.aster.guard.GuardText.isBlank;
  * Action Guard 决策编排（ADR 0040 §2–§5）：扁平化 → 幂等查重（指纹比对）→ 解析活跃版本 → 评估 → 同步收据 →
  * 决策行与待审批行同一事务落库。
  *
- * <p>fail-closed：非 Verdict、评估异常 / 超时、收据写入失败一律判 DENY 并给出 reasonCode；
+ * <p>fail-closed：非 Verdict、评估异常 / 超时、收据写入失败、执行收据签发失败一律判 DENY 并给出 reasonCode；
  * 收据写入失败时不创建待审批，保证「没有入链的决策不会被人批准放行」。
+ * ALLOW 在写链收据之前签发执行收据（ADR 0040 §12 D1 (1)），签发失败时入链的就已是 DENY，链与决策行一致。
  * 只有策略不存在与请求非法以异常形式外抛（404 / 400）。
  *
  * <p>阻塞方法：须在非事务的 worker 线程调用——收据追加与各次持久化各自开独立事务，
@@ -66,6 +69,7 @@ public class GuardDecisionService {
   private GuardReceiptBuilder receiptBuilder;
   private GuardJson json;
   private GuardDecisionAssembler assembler;
+  private ExecutionReceiptIssuer receiptIssuer;
   private Duration approvalTtl;
   private VersionLookupTx versionLookupTx;
 
@@ -77,15 +81,16 @@ public class GuardDecisionService {
   public GuardDecisionService(PolicyEvaluationService evaluationService, PolicySourceRepository policySourceRepository,
                               AuditChainAppender appender, GuardDecisionStore store, GuardActionMapper mapper,
                               GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
+                              ExecutionReceiptIssuer receiptIssuer,
                               @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl) {
-    this(evaluationService, policySourceRepository, appender, store, mapper, receiptBuilder, objectMapper, approvalTtl,
-        lookup -> QuarkusTransaction.requiringNew().call(lookup::get));
+    this(evaluationService, policySourceRepository, appender, store, mapper, receiptBuilder, objectMapper, receiptIssuer,
+        approvalTtl, lookup -> QuarkusTransaction.requiringNew().call(lookup::get));
   }
 
   GuardDecisionService(PolicyEvaluationService evaluationService, PolicySourceRepository policySourceRepository,
                        AuditChainAppender appender, GuardDecisionStore store, GuardActionMapper mapper,
-                       GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper, Duration approvalTtl,
-                       VersionLookupTx versionLookupTx) {
+                       GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
+                       ExecutionReceiptIssuer receiptIssuer, Duration approvalTtl, VersionLookupTx versionLookupTx) {
     this.evaluationService = evaluationService;
     this.policySourceRepository = policySourceRepository;
     this.appender = appender;
@@ -94,6 +99,7 @@ public class GuardDecisionService {
     this.receiptBuilder = receiptBuilder;
     this.json = new GuardJson(objectMapper);
     this.assembler = new GuardDecisionAssembler(json);
+    this.receiptIssuer = receiptIssuer;
     this.approvalTtl = approvalTtl;
     this.versionLookupTx = versionLookupTx;
   }
@@ -105,24 +111,26 @@ public class GuardDecisionService {
    *
    * @param performedBy 请求方用户，与 {@code apiKeyId} 一起记入决策行，供审批四眼校验
    * @param apiKeyId    已验证的 API key（未经 API key 鉴权时为 null）
+   * @param actionHash  请求体 {@code action} 原文的 {@code jcs-sha256/v1}（{@link GuardRequestBodyReader}）；
+   *                    不参与幂等指纹（ADR 0040 §3.1 七项不变）
    * @throws GuardInvalidActionException        请求体或幂等键校验失败
    * @throws GuardIdempotencyMismatchException  幂等键已绑定另一个提议动作
    * @throws GuardPolicyNotFoundException       策略不存在或无活跃版本
    */
   public GuardDecisionResponse decide(String tenantId, String performedBy, String apiKeyId, GuardActionRequest req,
-                                      String rawIdempotencyKey) {
-    GuardDecisionResponse response = decideOnce(tenantId, performedBy, apiKeyId, req, rawIdempotencyKey);
+                                      String actionHash, String rawIdempotencyKey) {
+    GuardDecisionResponse response = decideOnce(tenantId, performedBy, apiKeyId, req, actionHash, rawIdempotencyKey);
     return awaitApproval(tenantId, response, clampWaitSeconds(req == null ? null : req.waitSeconds()));
   }
 
   private GuardDecisionResponse decideOnce(String tenantId, String performedBy, String apiKeyId, GuardActionRequest req,
-                                           String rawIdempotencyKey) {
+                                           String actionHash, String rawIdempotencyKey) {
     String idempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
     validateAddress(req);
     Map<String, Object> flat = mapper.flatten(req.action());
     GuardDecisionDraft base = new GuardDecisionDraft(tenantId, req.policyModule(), req.policyFunction(),
-        idempotencyKey, flat, mapper.contextHash(req.action().context()), null, null, null, null, null, null, null,
-        declaredAgent(req.action().agent()));
+        idempotencyKey, flat, mapper.contextHash(req.action().context()), actionHash, null, null, null, null, null, null,
+        null, declaredAgent(req.action().agent()));
     IdempotencyFingerprint fingerprint = IdempotencyFingerprint.of(base);
     Optional<GuardDecisionResponse> replay = findByIdempotencyKey(tenantId, idempotencyKey, fingerprint);
     if (replay.isPresent()) {
@@ -132,17 +140,24 @@ public class GuardDecisionService {
     GuardDecisionDraft draft = evaluate(base.withPolicyVersion(version));
 
     UUID decisionId = UUID.randomUUID();
+    ExecutionReceiptIssuer.Issued issued = draft.allowed() ? issueReceipt(draft, decisionId) : null;
+    if (draft.allowed() && issued == null) {
+      draft = draft.deny(GuardReasonCode.RECEIPT_UNAVAILABLE);
+    }
     UUID approvalId = draft.needsApproval() ? UUID.randomUUID() : null;
     AppendedRecord receipt = appendReceipt(draft, decisionId, approvalId, performedBy);
     if (receipt == null) {
       draft = draft.deny(GuardReasonCode.RECEIPT_UNAVAILABLE);
       approvalId = null;
+      issued = null;
     }
     Instant expiresAt = Instant.now().plus(approvalTtl);
-    GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt);
+    GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt,
+        issued == null ? null : issued.receipt());
     GuardApprovalEntity approval = approvalId == null ? null : toApproval(approvalId, decisionId, draft, expiresAt);
     try {
-      store.saveDecision(assembler.toEntity(decisionId, draft, receipt, response, performedBy, apiKeyId), approval);
+      store.saveDecision(assembler.toEntity(decisionId, draft, receipt, response, performedBy, apiKeyId), approval,
+          issued == null ? null : issued.row());
     } catch (GuardIdempotencyRaceException race) {
       return findByIdempotencyKey(tenantId, idempotencyKey, fingerprint).orElseThrow(() -> race);
     }
@@ -288,6 +303,16 @@ public class GuardDecisionService {
 
   private static boolean fits(String s) {
     return s == null || s.length() <= MAX_COLUMN_TEXT;
+  }
+
+  /** 签发执行收据；签名失败返回 null，由调用方改判 DENY receipt_unavailable（与链收据失败同一路径）。 */
+  private ExecutionReceiptIssuer.Issued issueReceipt(GuardDecisionDraft draft, UUID decisionId) {
+    try {
+      return receiptIssuer.issueNow(decisionId, draft.tenantId(), draft.actionHash(), draft.policyVersion().id());
+    } catch (ExecutionReceiptUnavailableException e) {
+      LOG.errorf(e, "Action Guard 执行收据签发失败，按 DENY 处理: decision=%s", decisionId);
+      return null;
+    }
   }
 
   /** 同步写决策收据；失败返回 null，由调用方改判 DENY receipt_unavailable。 */

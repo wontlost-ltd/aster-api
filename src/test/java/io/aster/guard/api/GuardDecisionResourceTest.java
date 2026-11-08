@@ -1,9 +1,11 @@
 package io.aster.guard.api;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import io.aster.audit.chain.AuditChainAnchorService;
 import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardDecisionEntity;
+import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.cache.CompiledPolicyCache;
 import io.aster.policy.cache.PolicyVersionResolutionCache;
 import io.aster.policy.entity.AuditLog;
@@ -15,9 +17,11 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -64,6 +68,7 @@ class GuardDecisionResourceTest {
   @Inject CompiledPolicyCache compiledPolicyCache;
   @Inject PolicyVersionResolutionCache versionResolutionCache;
   @Inject AuditChainAnchorService anchorService;
+  @ConfigProperty(name = "aster.guard.receipt.signing-keys") String signingKeys;
 
   @BeforeEach
   void setUp() {
@@ -79,6 +84,7 @@ class GuardDecisionResourceTest {
   private void clean() {
     QuarkusTransaction.requiringNew().run(() -> List.of(TENANT, OTHER_TENANT).forEach(tenant -> {
       GuardApprovalEntity.delete("tenantId = ?1", tenant);
+      GuardReceiptEntity.delete("tenantId = ?1", tenant);
       GuardDecisionEntity.delete("tenantId = ?1", tenant);
       PolicyCatalog.update("defaultVersionId = null where tenantId = ?1", tenant);
       PolicyArtifact.delete("policyVersionId in (select id from PolicyVersion where tenantId = ?1)", tenant);
@@ -190,12 +196,174 @@ class GuardDecisionResourceTest {
   }
 
   private static Response postRaw(String json) {
-    return given()
+    return postRaw(json, null);
+  }
+
+  private static Response postRaw(String json, String idempotencyKey) {
+    var spec = given()
         .header("X-Tenant-Id", TENANT)
         .header("X-User-Id", "user-guard-rest")
         .contentType(ContentType.JSON)
-        .body(json)
-        .when().post("/api/v1/guard/decisions");
+        .body(json.getBytes(StandardCharsets.UTF_8));
+    if (idempotencyKey != null) {
+      spec = spec.header("Idempotency-Key", idempotencyKey);
+    }
+    return spec.when().post("/api/v1/guard/decisions");
+  }
+
+  /** 原文请求体：principal 原样写入（用于显式 null 与缺键的对比）。 */
+  private static String rawBody(String module, String principalJson, String contextJson) {
+    return "{\"policyModule\":\"" + module + "\",\"policyFunction\":\"" + FUNCTION + "\","
+        + "\"action\":{\"principal\":" + principalJson + ",\"action\":{\"name\":\"read_customer_record\"},"
+        + "\"resource\":{\"type\":\"customer\",\"id\":\"C-1001\"},\"context\":" + contextJson + "}}";
+  }
+
+  private static long receiptRows(String decisionId) {
+    UUID id = UUID.fromString(decisionId);
+    return QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id));
+  }
+
+  private static String actionHashColumn(String decisionId) {
+    UUID id = UUID.fromString(decisionId);
+    return QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.<GuardDecisionEntity>findById(id).actionHash);
+  }
+
+  /** 重复键（顶层与 context 内各一例）→ 400 invalid_action，不评估、不落库。 */
+  @Test
+  void duplicateKeyInBodyIs400InvalidAction() {
+    String top = "{\"policyModule\":\"" + ALLOW_MODULE + "\",\"policyModule\":\"" + ALLOW_MODULE + "\","
+        + "\"policyFunction\":\"" + FUNCTION + "\",\"action\":{\"principal\":{\"id\":\"a\"},"
+        + "\"action\":{\"name\":\"refund\"}}}";
+    String inContext = rawBody(ALLOW_MODULE, "{\"id\":\"a\"}", "{\"amount\":1,\"amount\":2}");
+
+    for (String body : List.of(top, inContext)) {
+      Response resp = postRaw(body);
+      assertThat(resp.statusCode()).as(body).isEqualTo(400);
+      assertThat(resp.jsonPath().getString("error")).isEqualTo("invalid_action");
+      assertThat(resp.jsonPath().getString("message")).contains("重复键");
+    }
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.count("tenantId", TENANT))).isZero();
+  }
+
+  /** I-JSON 拒绝作用于整个 action 子树，不止 context：未知键与 agent 内的不安全整数同样 400。 */
+  @Test
+  void unsafeIntegerAnywhereInActionIs400() {
+    String inPrincipal = rawBody(ALLOW_MODULE, "{\"id\":\"a\",\"n\":9007199254740992}", "{}");
+    String inAgent = "{\"policyModule\":\"" + ALLOW_MODULE + "\",\"policyFunction\":\"" + FUNCTION + "\","
+        + "\"action\":{\"principal\":{\"id\":\"a\"},\"action\":{\"name\":\"refund\"},"
+        + "\"agent\":{\"model\":\"m\",\"seq\":-9007199254740992}}}";
+
+    for (String body : List.of(inPrincipal, inAgent)) {
+      Response resp = postRaw(body);
+      assertThat(resp.statusCode()).as(body).isEqualTo(400);
+      assertThat(resp.jsonPath().getString("error")).isEqualTo("invalid_action");
+    }
+  }
+
+  /** 收据可由执行方复验：签名用配置中的测试公钥验证，actionHash 等于对请求体 action 原文自算。 */
+  @Test
+  void allowCarriesVerifiableExecutionReceipt() {
+    String body = rawBody(ALLOW_MODULE, "{\"id\":\"agent-42\",\"type\":\"agent\"}",
+        "{\"amount\":2.5E5,\"note\":\"\\u00e9\",\"flag\":null}");
+
+    Response resp = postRaw(body);
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    JsonNode receipt = ExecutionReceiptAssert.assertVerifiable(resp.asString(), signingKeys);
+    JsonNode payload = receipt.get("payload");
+    String decisionId = resp.jsonPath().getString("decisionId");
+    assertThat(payload.get("actionHash").asText()).isEqualTo(ExecutionReceiptAssert.actionHashOf(body));
+    assertThat(payload.get("decisionId").asText()).isEqualTo(decisionId);
+    assertThat(payload.get("tenantId").asText()).isEqualTo(TENANT);
+    assertThat(payload.get("outcome").asText()).isEqualTo("ALLOW");
+    assertThat(payload.get("v").asInt()).isEqualTo(1);
+    assertThat(payload.get("policyVersionId").asLong()).isEqualTo(resp.jsonPath().getLong("policyVersion.id"));
+    assertThat(Duration.between(Instant.parse(payload.get("issuedAt").asText()),
+        Instant.parse(payload.get("expiresAt").asText()))).isEqualTo(Duration.ofMinutes(5));
+    assertThat(receipt.get("kid").asText()).isEqualTo("test-a");
+    // 字段顺序：executionReceipt 紧随 effectiveOutcome
+    assertThat(resp.asString()).contains("\"effectiveOutcome\":\"ALLOW\",\"executionReceipt\":{\"kid\":\"test-a\",\"payload\":");
+    assertThat(actionHashColumn(decisionId)).isEqualTo(payload.get("actionHash").asText());
+    assertThat(receiptRows(decisionId)).isEqualTo(1);
+  }
+
+  @Test
+  void denyAndPendingHaveNoExecutionReceipt() {
+    Response deny = post(TENANT, body(BOOL_MODULE, FUNCTION, "read_customer_record", "agent-42"), null);
+    Response pending = post(TENANT, body(DeployedMapParamProbeTest.MODULE, DeployedMapParamProbeTest.FUNCTION,
+        "delete_customer_record", "agent-42"), null);
+
+    assertThat(deny.jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
+    assertThat(pending.jsonPath().getString("effectiveOutcome")).isEqualTo("PENDING");
+    for (Response r : List.of(deny, pending)) {
+      String id = r.jsonPath().getString("decisionId");
+      assertThat(r.asString()).doesNotContain("executionReceipt");
+      assertThat(receiptRows(id)).isZero();
+      assertThat(actionHashColumn(id)).matches("[0-9a-f]{64}");
+    }
+  }
+
+  /** Review Focus 1：显式 null 与缺键是不同文档，actionHash 不同，且各等于对自己发出的原文自算。 */
+  @Test
+  void actionHashBindsRawJsonNotRecord() {
+    String missing = rawBody(ALLOW_MODULE, "{\"id\":\"a\"}", "{}");
+    String explicitNull = rawBody(ALLOW_MODULE, "{\"id\":\"a\",\"type\":null}", "{}");
+
+    Response r1 = postRaw(missing, "idem-raw-1-" + UUID.randomUUID());
+    Response r2 = postRaw(explicitNull, "idem-raw-2-" + UUID.randomUUID());
+
+    String h1 = r1.jsonPath().getString("executionReceipt.payload.actionHash");
+    String h2 = r2.jsonPath().getString("executionReceipt.payload.actionHash");
+    assertThat(h1).isEqualTo(ExecutionReceiptAssert.actionHashOf(missing));
+    assertThat(h2).isEqualTo(ExecutionReceiptAssert.actionHashOf(explicitNull));
+    assertThat(h1).isNotEqualTo(h2);
+  }
+
+  /** M5：同键第二次只在指纹外（principal.type 显式 null）不同 → 重放首次决策与收据，actionHash 是首次原文的哈希。 */
+  @Test
+  void replaySameKeyNullVsMissingPrincipalTypeReturnsFirstReceipt() {
+    String key = "idem-m5-" + UUID.randomUUID();
+    String first = rawBody(ALLOW_MODULE, "{\"id\":\"a\"}", "{}");
+    String second = rawBody(ALLOW_MODULE, "{\"id\":\"a\",\"type\":null}", "{}");
+
+    Response r1 = postRaw(first, key);
+    Response r2 = postRaw(second, key);
+
+    assertThat(r2.statusCode()).isEqualTo(200);
+    assertThat(r2.jsonPath().getString("decisionId")).isEqualTo(r1.jsonPath().getString("decisionId"));
+    assertThat(ExecutionReceiptAssert.tree(r2.asString()).get("executionReceipt"))
+        .isEqualTo(ExecutionReceiptAssert.tree(r1.asString()).get("executionReceipt"));
+    String hash = r2.jsonPath().getString("executionReceipt.payload.actionHash");
+    assertThat(hash).isEqualTo(ExecutionReceiptAssert.actionHashOf(first))
+        .isNotEqualTo(ExecutionReceiptAssert.actionHashOf(second));
+  }
+
+  /** context 内 null 与缺键改变 contextHash，属指纹差异 → 422。 */
+  @Test
+  void replaySameKeyNullVsMissingInContextIs422() {
+    String key = "idem-ctx-" + UUID.randomUUID();
+
+    Response r1 = postRaw(rawBody(ALLOW_MODULE, "{\"id\":\"a\"}", "{\"cc\":null}"), key);
+    Response r2 = postRaw(rawBody(ALLOW_MODULE, "{\"id\":\"a\"}", "{}"), key);
+
+    assertThat(r1.statusCode()).isEqualTo(200);
+    assertThat(r2.statusCode()).isEqualTo(422);
+    assertThat(r2.jsonPath().getString("error")).isEqualTo("idempotency_mismatch");
+  }
+
+  /** 同键重放与 GET 返回已存的同一份收据（不重签），收据行仍只有一行。 */
+  @Test
+  void replayReturnsSameStoredReceipt() {
+    String key = "idem-receipt-" + UUID.randomUUID();
+
+    Response first = post(TENANT, allowBody(), key);
+    Response replay = post(TENANT, allowBody(), key);
+    String id = first.jsonPath().getString("decisionId");
+
+    JsonNode original = ExecutionReceiptAssert.assertVerifiable(first.asString(), signingKeys);
+    assertThat(ExecutionReceiptAssert.tree(replay.asString()).get("executionReceipt")).isEqualTo(original);
+    assertThat(ExecutionReceiptAssert.tree(get(TENANT, id).asString()).get("executionReceipt")).isEqualTo(original);
+    assertThat(receiptRows(id)).isEqualTo(1);
   }
 
   @Test
