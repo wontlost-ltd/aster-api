@@ -17,26 +17,28 @@
 
 ## Global Constraints
 
-- **ADR 状态门**：R60–R64 与 ADR 0054 当前均为 `PROPOSED`。Task 1 把它们改为 `ACCEPTED`（用户已确认设计）；该提交并入阶段 1 第一个实现 PR，**状态未改前任何实现 PR 不得合并**。
-- **迁移编号（本计划裁定，覆盖 ADR 文本）**：按合并顺序，阶段 1 用 `V6.35.0__guard_execution_receipts.sql`，阶段 2 用 `V6.36.0__guard_input_provenance.sql`；#460（R59 审批输入快照）不在本计划，取下一个空闲号。ADR 中 `V6.35.0/36.0/37.0` 的映射在 Task 1 同步改写。每条迁移在 `src/test/resources/db/migration-checksums.golden` 追加 `文件名=sha256`（`shasum -a 256`，LF）。
-- **规范化配方 `sha256-sorted-json/v1`**：Jackson `ORDER_MAP_ENTRIES_BY_KEYS` 序列化（键按 `String` 自然序 = UTF-16 码元序）、无空白、非 ASCII 原样、整数十进制、非整数为 `Double.toString` 形态、`null` 字面量保留；输入为 **JSON 树转成的 `Map/List/标量`**，不是 DTO record。实现只有一份：`GuardActionMapper` 现有 `SORTED` mapper。
+- **ADR 状态门（硬门）**：用户已批准设计方向，但 R59–R64 与 ADR 0054 文本仍为 `PROPOSED`。Task 1 的状态翻转是单独的文档 PR，**由用户审阅并合并**；该 PR 合并前任何实现 PR 不得合并。
+- **迁移编号（本计划裁定，覆盖 ADR 文本）**：按合并顺序，阶段 1 用 `V6.35.0__guard_execution_receipts.sql`，阶段 2 用 `V6.36.0__guard_input_provenance.sql`；#460（ADR 0042 §11 R59 审批输入快照）顺延为 `V6.37.0`。三份 ADR（0040 / 0042 / 0054 引用处）在 Task 1 同步改写。每条迁移在 `src/test/resources/db/migration-checksums.golden` 追加 `文件名=sha256`（`shasum -a 256`，LF）。
+- **规范化配方 `jcs-sha256/v1`（取代 ADR 中 actionHash / 签名载荷用的 `sha256-sorted-json/v1`）**：SHA-256 hex（小写）作用于 **RFC 8785（JCS）** 规范化后的 UTF-8 字节串。字节级定义与语言无关：对象成员按键的 **UTF-16 码元序**排序；无空白；字符串先**解码全部转义**（`"\u00e9"` 与 `"é"` 是同一值），再按 RFC 8785 §3.2.2.2 输出（只转义 `"`、`\`、U+0000–U+001F，其中 `\b \t \n \f \r` 用短形式、其余 `\u00xx` 小写 hex；其余字符原样 UTF-8）；**不做 Unicode 正规化**（NFC 与 NFD 是不同值）；数字一律按 IEEE 754 double 解释，按 RFC 8785 §3.2.2.3（ECMAScript `Number.prototype.toString`）输出：`1`、`1.0`、`1e0` 同为 `1`，`-0.0` 为 `0`，`1e21` 为 `1e+21`，超出 double 精度的整数按舍入后的 double 输出，NaN/Infinity 不可出现；`true/false/null` 字面量保留，`null` 叶子与缺键是不同文档。依赖检查：运行期 classpath 无任何 JCS 实现（`./gradlew -q :dependencies --configuration runtimeClasspath | grep -i "jcs\|canonical\|erdtman\|webpki"` 无输出），因此按 RFC 8785 §3.2.2.3 自行实现 `JcsCanonicalizer`，以共享向量锁定。`contextHash` 仍用既有 `sha256-sorted-json/v1`（不改旧收据语义）。
+- **重复键**：guard 请求体（`/decisions`、`/decisions/from-evidence`、`/receipts/*`、`/fact-issuers/*`）的解析器开启 `JsonParser.Feature.STRICT_DUPLICATE_DETECTION`；任一层出现重复键 → 400 `invalid_action`（`/receipts/*` 为 `invalid_consume` / `invalid_result`），不进入哈希。
 - **`actionHash` 输入**：请求体中 `action` 子树**按服务端收到的 JSON**（含调用方写出的显式 `null`、未知键、阶段 2 的 `facts`），不是 `GuardActionRequest.Action` 再序列化（record 会补出 `"type":null` 等键，导致与执行方不一致）。
-- **执行收据载荷**字母序：`{ actionHash, decisionId, expiresAt, issuedAt, kid, outcome:"ALLOW", policyVersionId, tenantId, v:1 }`；签名 = Ed25519 作用于载荷规范化 UTF-8 字节串（不二次哈希），base64url 无填充、64 字节。
+- **执行收据载荷**字母序：`{ actionHash, decisionId, expiresAt, issuedAt, kid, outcome:"ALLOW", policyVersionId, tenantId, v:1 }`；签名 = Ed25519 作用于载荷 JCS 字节串（不二次哈希），base64url 无填充、64 字节。阶段 2 事实签名载荷与 claim 比对同样用 JCS 字节。
+- **时间窗语义**：收据有效当且仅当 `now < expiresAt`（`expiresAt` **排他**），consume 在 `now >= expiresAt` 时 409 `receipt_expired`；执行方本地验签窗口为 `issuedAt − 60s <= now < expiresAt`。密钥 `notAfter` 只约束**签发与发布**：`now >= notAfter` 的 key 不再被选为 active（启动失败）且不再出现在 `/keys`；已签发收据的验签只看该 `kid` 是否仍在 JWKS 中（退役 = 从列表删除，之后验签失败）。**退役（retired，正常到期删除）**与**撤销（revoked: true，紧急）**区分：前者服务端 consume 照常（收据仍在 TTL 内即可），后者 consume 409 `kid_revoked`。
 - **配置键**：`aster.guard.receipt.ttl=${ASTER_GUARD_RECEIPT_TTL:PT5M}`；`aster.guard.receipt.signing-keys=${ASTER_GUARD_RECEIPT_SIGNING_KEYS}`（JSON `{ "revision": <int>, "keys": [{ "kid", "privateKey": "<base64url 32 字节种子>", "notAfter"?: "<ISO-8601>", "revoked"?: true }] }`）；`aster.guard.receipt.active-kid=${ASTER_GUARD_RECEIPT_ACTIVE_KID}`；`aster.guard.result-grace=${ASTER_GUARD_RESULT_GRACE:PT15M}`（只供 #465 读取，本计划只登记键）。缺密钥 / `active-kid` 不在列表 / 种子非 32 字节 / `active-kid` 已 `revoked` → **启动失败**。
 - **错误体**沿用 guard 现有形状 `{ "error": "<code>", ... }`；跨租户与非法 UUID 一律 404 空体（ADR 0040 §3.4）。
 - **事件类型名**（≤ 50 字符，无需迁移）：`ACTION_GUARD_CONSUME_ATTEMPT`、`ACTION_GUARD_CONSUME_OUTCOME`、`ACTION_GUARD_RESULT`、`GUARD_FACT_ISSUER_REVOKED`。新身份键（免脱敏）：`actionHash, attemptId, executorId, resultHash, consumeReceiptHash, attemptReceiptHash`。
-- **时间**：新服务一律注入 `java.time.Clock`（生产 `Clock.systemUTC()`，CDI producer 放 `io.aster.guard.receipt.GuardClockProducer`），测试用 `Clock.fixed` / 可变时钟；`NonDeterminismSourceTest` 白名单登记 `Clock`、`SecureRandom` 的新使用点并写理由。
+- **时间**：新服务一律注入 `java.time.Clock`（生产 `Clock.systemUTC()`，CDI producer 放 `io.aster.guard.receipt.GuardClockProducer`），测试用 `Clock.fixed` / 可变时钟；`NonDeterminismSourceTest` 白名单登记 `Clock` 的新使用点并写理由。
 - 新路径加入 `public-api-contract.golden`（`PublicApiContractTest`）；`/api/v1/guard/*` 已在 `ApiKeyAuthFilter.shouldProtect`（`:249`），新增路径只需在 `ApiKeyAuthFilterShouldProtectTest` 加断言；HMAC 双通道路径加入 `InternalCallerFilter.isGuardDualChannel` 与 `ApiKeyAuthFilter.HMAC_BYPASS_*`。
 - 代码注释、提交信息简体中文，不写「修改说明」式注释；提交信息末尾空行后加 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`；PR 描述末尾 `🤖 Generated with [Claude Code](https://claude.com/claude-code)`，`Refs #463` / `Refs #461`。
 - 不新增依赖。不读取 k8s Secret、不连生产库；k3s 改动只写进 PR 描述由用户执行（见「部署与 k3s」）。
-- 本地测试：podman `sweep-pg`（:558xx）/`sweep-redis`（:65xx），`DB_JDBC_URL=jdbc:postgresql://localhost:<port>/aster_policy DB_USERNAME=postgres DB_PASSWORD=postgres QUARKUS_REDIS_HOSTS=redis://localhost:<port> ./gradlew --offline :test --tests '<类>'`；只跑定向测试，全量交 CI；**不要**执行 `./gradlew --stop`；`@QuarkusTest` 顺序运行；确认 `@QuarkusTest` 用例实际执行而非静默跳过。
+- 本地测试：podman `sweep-pg`（:558xx）/`sweep-redis`（:65xx），环境变量 `DB_JDBC_URL=jdbc:postgresql://localhost:<port>/aster_policy DB_USERNAME=postgres DB_PASSWORD=postgres QUARKUS_REDIS_HOSTS=redis://localhost:<port>`。每个任务的 Step 4 跑本任务测试类后，**再跑完整 guard 套件**：`./gradlew --offline :test --tests 'io.aster.guard.*' --tests 'io.aster.audit.*' --tests 'io.aster.security.apikey.*' --tests 'io.aster.api.PublicApiContractTest' --tests 'io.aster.db.MigrationGovernanceTest' --tests 'io.aster.api.workflow.NonDeterminismSourceTest' --tests 'io.aster.policy.common.AuditIdentifierRedactionTest'`；**每个阶段开 PR 前**跑全量 `./gradlew --offline :replay:cleanTest :cleanTest :replay:test :test --continue`，已知基线失败（`PolicyGraphQLResourceTest.testBatchEvaluateLargeVolume`、`PrismaDatabaseE2ETest`）在 PR 中注明。**不要**执行 `./gradlew --stop`；`@QuarkusTest` 顺序运行；确认 `@QuarkusTest` 用例实际执行而非静默跳过。
 
 ## Review Focus
 
 1. **显式 `null` / 缺键 / `""` 与 record 默认值**：调用方发 `{"principal":{"id":"a"}}`（无 `type`）与 `{"principal":{"id":"a","type":null}}` 必须得到不同 `actionHash`，且服务端存的哈希与执行方对**自己发出的 JSON** 自算的哈希逐字节相等。测试在 Task 5（`actionHashBindsRawJsonNotRecord`）。
 2. **两个执行方并发 consume 同一收据**：恰一个 200，另一个 409 `receipt_consumed`，两条尝试事件只有一条被 `consume_audit_id` 引用。测试在 Task 8（`concurrentConsumeExactlyOneWins`）。
 3. **审批后转 ALLOW 的收据时间窗与重放**：`issuedAt` 为审批加锁时刻；幂等重放与 `GET /decisions/{id}` 返回同一份已存收据（不续签），过期后 GET 仍返回原收据而 consume 409 `receipt_expired`。测试在 Task 5（`approvedReceiptIssuedAtApprovalAndNeverResigned`）。
-4. **多副本密钥配置回退**：某副本以更小的 `revision` 启动必须失败；两副本同时以同一新 `revision` 启动不能因唯一键冲突崩溃。测试在 Task 4（`revisionRegressionFailsStartup`、`concurrentSameRevisionStartupIsIdempotent`）。
+4. **多副本密钥配置回退**：某副本以更小的 `revision` 启动必须失败；两副本同时以 N 与 N+1 启动（任一先后顺序）最终表中最大值为 N+1，且以 N 启动的副本**只有在 N+1 已提交后才**失败；同一 `revision` 并发启动不崩溃。测试在 Task 4（`revisionRegressionFailsStartup`、`concurrentNAndNPlus1BothOrders`、`concurrentSameRevisionStartupIsIdempotent`）。
 5. **事实 claim 的数值形态**：事实 claims `250000` 而 `action.context.amount` 为 `250000.0`（或 `2.5E5`）——两边经同一配方规范化后不等即 400 `invalid_fact`，不得因 `equals` 宽松比较而放行；字符串 `"250000"` 同样不等。测试在 Task 12（`claimNumericFormMustMatchCanonicalBytes`）。
 
 ---
@@ -45,7 +47,9 @@
 
 | 文件 | 职责 |
 |---|---|
-| `src/main/java/io/aster/guard/receipt/ActionHasher.java` | JSON 树 → `sha256-sorted-json/v1` hex（复用 `GuardActionMapper` 序列化） |
+| `src/main/java/io/aster/guard/receipt/JcsCanonicalizer.java` | RFC 8785 规范化（含 ECMAScript 数字格式化） |
+| `src/main/java/io/aster/guard/receipt/ActionHasher.java` | JSON 树 → `jcs-sha256/v1` hex |
+| `src/main/java/io/aster/guard/GuardRequestBodyReader.java` | guard 请求体解析：重复键检测 + `treeToValue` + Bean Validation，错误形状与现状一致 |
 | `src/main/java/io/aster/guard/receipt/ReceiptSigningKeys.java` | 解析 / 校验密钥配置；种子 → `KeyPair`；`active()`、`find(kid)`、`revision()`、`isRevoked(kid)` |
 | `src/main/java/io/aster/guard/receipt/ExecutionReceiptSigner.java` | 组载荷、签名、验签（测试与自检用） |
 | `src/main/java/io/aster/guard/receipt/ExecutionReceipt.java` | 响应中的 `executionReceipt` 视图（record，字母序，可往返） |
@@ -56,7 +60,7 @@
 | `src/main/java/io/aster/guard/api/GuardKeysResource.java` / `GuardReceiptResource.java` | `GET /keys`；`POST /receipts/{id}/consume|result` |
 | `src/main/java/io/aster/guard/provenance/*` | 阶段 2：`GuardFactIssuerEntity`、`FactIssuerStore`、`FactVerifier`、`InputSourceResolver`、`InputSources`、`VerifiedInputsGate`、`GuardFactIssuerResource`、`FactIssuerRevocationService` |
 | `src/main/resources/db/migration/V6.35.0__guard_execution_receipts.sql` / `V6.36.0__guard_input_provenance.sql` | 两条迁移 |
-| `src/test/resources/guard/action-hash-vectors.json` | 与 aster-guard `test/fixtures/action-hash-vectors.json` 逐字节相同的 golden 向量 |
+| `src/test/resources/guard/jcs-sha256-v1-vectors.json` | 共享向量；#464 执行方 SDK（aster-guard `test/fixtures/jcs-sha256-v1-vectors.json`）必须逐字节复制并全部通过 |
 | `docs/runbooks/guard-receipt-signing-keys.md` | 生成 / 轮换 / 紧急撤销操作手册 |
 
 ---
@@ -66,40 +70,52 @@
 ### Task 1: ADR 定稿与迁移编号回写
 
 **Files:**
-- Modify: `docs/adr/0040-action-guard.md`（§11、§12 状态行；§11 D3/D4 与 §12 D4、D6 中的迁移号）、`docs/adr/0041-evidence-chain-enrichment.md`（§11、§12 状态行）、`docs/adr/0046-governance-profile.md`（§11 状态行）、`docs/adr/0054-guard-execution-point.md`（状态行）
+- Modify: `docs/adr/0040-action-guard.md`（§11、§12 状态行；§11 D3/D4 与 §12 D2/D4/D6 的迁移号与配方名）、`docs/adr/0041-evidence-chain-enrichment.md`（§11、§12 状态行）、`docs/adr/0042-approval-closure.md`（§11 R59 状态行；`:247`、`:295`、`:334` 的 `V6.35.0` → `V6.37.0`）、`docs/adr/0046-governance-profile.md`（§11 状态行）、`docs/adr/0054-guard-execution-point.md`（状态行；§4 配方名与向量文件名）
+
+**交付方式：** 单独的文档 PR，由用户审阅合并（硬门）；Task 2 起的实现 PR 在其合并后才可合并。
 
 **Interfaces:**
 - Produces: 后续任务引用的迁移号 `V6.35.0`（收据）/ `V6.36.0`（来源）。
 
-- [ ] **Step 1:** 五处 `状态：**PROPOSED**…` 改为 `状态：**ACCEPTED**（2026-11-08 用户确认；实施计划 docs/superpowers/plans/2026-11-08-guard-receipts-and-input-provenance.md）`。
-- [ ] **Step 2:** §12 D4 的 `V6.37.0` → `V6.35.0`，§11 的 `V6.36.0` 保持（来源仍为 36），并在 §12 D4 括注改为「编号按合并顺序：R63 先于 R60 落地；R59 取其后空闲号」。§12 D6 删除 `aster.guard.receipt.revoked-kids` 写法，只保留列表项 `"revoked": true`（本计划裁定：单一撤销机制）。
-- [ ] **Step 3:** `git grep -n "V6.37.0\|revoked-kids" docs/adr` 无输出。
+- [ ] **Step 1:** 六处 `状态：**PROPOSED**…` 改为 `状态：**ACCEPTED**（2026-11-08 用户确认；实施计划 docs/superpowers/plans/2026-11-08-guard-receipts-and-input-provenance.md）`。
+- [ ] **Step 2:** 迁移号：ADR 0040 §12 D4 `V6.37.0` → `V6.35.0`；§11 保持 `V6.36.0`；ADR 0042 §11 三处 `V6.35.0` → `V6.37.0`；§12 D4 括注改为「编号按合并顺序：R63（V6.35.0）→ R60（V6.36.0）→ R59（V6.37.0）」。§12 D6 删除 `aster.guard.receipt.revoked-kids`，只保留列表项 `"revoked": true`，并写入 Global Constraints 的「时间窗语义」（`expiresAt` 排他、`notAfter` 只约束签发与发布、退役 vs 撤销）。
+- [ ] **Step 2b:** 配方：ADR 0040 §12 D1/D2/D6、§11 D3 与 ADR 0054 §4 中凡用于 `actionHash`、执行收据签名、事实签名 / claim 比对的 `sha256-sorted-json/v1` 改为 `jcs-sha256/v1`，并把 Global Constraints 中的字节级定义（RFC 8785、转义解码、无 Unicode 正规化、数字按 ECMAScript、重复键 400）替换 §12 D2「跨语言一致性」段；`contextHash` 处保持原名。ADR 0054 §4 的 Java `Double.toString` / `javaDoubleToString` 描述删除（JCS 下 TS 直接用 `Number#toString`），向量文件名改为 `jcs-sha256-v1-vectors.json`。ADR 0040 §12 D9 补一句：同键重放返回首次决策的收据，其 `actionHash` 是首次请求的哈希（指纹不含 `actionHash`）。
+- [ ] **Step 3:** 校验：
+  - `git grep -n "V6.3[5-7].0" docs/adr` 只命中：0040 §12（`V6.35.0`）、0040 §11 与 0041/0046 引用（`V6.36.0`）、0042 §11（`V6.37.0`）——逐行核对无错配；
+  - `git grep -n "revoked-kids\|javaDoubleToString" docs/adr` 无输出；
+  - `git grep -n "sha256-sorted-json" docs/adr/0040-action-guard.md docs/adr/0054-guard-execution-point.md` 只剩 `contextHash` 语境。
 - [ ] **Step 4: 提交** `docs(adr): R60–R64 与 ADR 0054 定稿，迁移号按落地顺序回写`
 
-### Task 2: `actionHash` 规范化与 golden 向量；`context` 放开 null 叶子
+### Task 2: `jcs-sha256/v1` 规范化、共享向量、重复键拒绝；`context` 放开 null 叶子
 
 **Files:**
-- Create: `src/main/java/io/aster/guard/receipt/ActionHasher.java`、`src/test/resources/guard/action-hash-vectors.json`、`src/test/java/io/aster/guard/receipt/GuardActionHashVectorsTest.java`
-- Modify: `src/main/java/io/aster/guard/GuardActionMapper.java`（`:26` 注释、`:104-130` `freezeMap` 的 null 校验、`serialize` 改为接受 `Object`）、`src/main/java/io/aster/guard/GuardDecisionService.java`（`evaluate` 中 `Map.copyOf(base.action())` 不能接受 null 值，改为 `Collections.unmodifiableMap(new LinkedHashMap<>(…))`）
-- Test: `src/test/java/io/aster/guard/GuardActionMapperTest.java`
+- Create: `src/main/java/io/aster/guard/receipt/JcsCanonicalizer.java`、`ActionHasher.java`、`src/test/resources/guard/jcs-sha256-v1-vectors.json`、`src/test/java/io/aster/guard/receipt/JcsCanonicalizerTest.java`、`GuardActionHashVectorsTest.java`
+- Modify: `src/main/java/io/aster/guard/GuardActionMapper.java`（`:26` 注释、`:104-130` `freezeMap` 的 null 校验）、`src/main/java/io/aster/guard/GuardDecisionService.java`（`evaluate` 中 `Map.copyOf(base.action())` 遇 null 值抛 NPE，改为递归不可变的 `Collections.unmodifiableMap(new LinkedHashMap<>(…))`）
+- Test: `src/test/java/io/aster/guard/GuardActionMapperTest.java`、`GuardDecisionServiceTest.java`
 
 **Interfaces:**
-- Produces: `public final class ActionHasher { public ActionHasher(ObjectMapper mapper); public String hash(JsonNode action); }`——`action` 为 null 或 `MissingNode` 时抛 `GuardInvalidActionException`；`GuardActionMapper.canonicalBytes(Object tree): byte[]`（包内可见，`contextHash` 与 `ActionHasher` 共用）。
+- Produces: `public final class JcsCanonicalizer { public static byte[] canonicalize(JsonNode node); static String formatNumber(double d); }`——遇 NaN/Infinity 抛 `IllegalArgumentException`；`public final class ActionHasher { public String hash(JsonNode action); }`（`action` 为 null / `MissingNode` / 非对象 → `GuardInvalidActionException`）。阶段 2 的事实签名与 claim 比对也调用 `JcsCanonicalizer.canonicalize`。
 
-- [ ] **Step 1: 写向量文件**（JSON 数组 `[{ "name", "input", "sha256" }]`，`sha256` 先留空，Step 4 由测试打印后人工确认填入）。至少覆盖：键序（`{"b":1,"a":2}`）、UTF-16 码元序（`{"é":1,"z":2,"Z":3}`）、显式 null vs 缺键 vs `""`（ADR 0054 §3.2 的 `cc` 三例）、嵌套数组、非 ASCII 字符串、整数 `9007199254740991`、小数 `1.5`、`0.1`、`1e21`、`-0.0`、`true/false`、`{"$sha256":"…"}` 摘要代入。
+- [ ] **Step 1: 写共享向量文件**（JSON 数组 `[{ "name", "input"（字符串，原文 JSON，保留转义与数字写法）, "canonical"（期望 JCS 文本）, "sha256" | "error": "duplicate_key" }]`）。必含：`1` / `1.0` / `1e0` 同哈希；`-0.0` → `0`；`1e21` → `1e+21`；`1e-7` → `1e-7`；`0.1`、`123456789012345680000`、`9007199254740993`（舍入为 `9007199254740992`）；`"\u00e9"` 与 `"é"` 同哈希；NFC `"é"` 与 NFD `"e\u0301"` 不同哈希；`"\u001f"` → `"\u001f"`、`"\t"` → `"\t"`、`"\/"` → `"/"`；键序 `{"b":1,"a":2}`、UTF-16 码元序 `{"\ud83d\ude00":1,"\uffff":2}`（emoji 代理对排在 U+FFFF 之前）；重复键 `{"a":1,"a":2}` 与嵌套重复键 → `error`；嵌套 null `{"a":{"b":null}}` vs `{"a":{}}` vs `{"a":{"b":""}}` 两两不同；ADR 0054 §3.2 `cc` 三例；`{"$sha256":"…"}` 摘要代入。文件头不能写注释（JSON），说明写进 `GuardActionHashVectorsTest` 的类 Javadoc：「#464 执行方 SDK 必须逐字节复制本文件并全部通过」。
 - [ ] **Step 2: 写失败测试**
 
 ```java
-@Test void vectorsMatch() // 对每个向量：hasher.hash(mapper.readTree(input)) == sha256
-@Test void nullMissingAndEmptyStringHashDifferently() // 三个 cc 变体两两不等
-@Test void contextHashUnchangedForExistingInputs() // 既有 GuardActionMapperTest 中 contextHash 的期望值不变
+// JcsCanonicalizerTest
+@Test void rfc8785Appendix_B_numberSamples()  // RFC 8785 附录 B 表中全部 IEEE 值 → 期望字符串
+@Test void nanAndInfinityRejected()
+// GuardActionHashVectorsTest
+@Test void everyVectorMatches()               // 用开启 STRICT_DUPLICATE_DETECTION 的 mapper 读 input；有 error 的向量断言抛 JsonParseException，其余 canonical 与 sha256 均相等
+// GuardActionMapperTest
+@Test void nullLeafInContextIsAccepted()       // 删除 / 改写原「context 不允许 null 值」断言
+@Test void contextHashUnchangedForExistingInputs()
+// GuardDecisionServiceTest
+@Test void nestedNullReachesRuleThroughEvaluation() // M6：context {a:{b:null}} → evaluate 不抛 NPE，规则收到的 Map 中 context.a.b 为 null 且 containsKey 为 true；规则可据此返回 Verdict
 ```
 
-`GuardActionMapperTest` 增 `nullLeafInContextIsAccepted`（`context: {cc: null}` → flatten 成功且 Map 中 `cc` 为 null）；删除 / 改写原「context 不允许 null 值」断言。
-- [ ] **Step 3:** `./gradlew --offline :test --tests 'io.aster.guard.receipt.GuardActionHashVectorsTest' --tests 'io.aster.guard.GuardActionMapperTest'` → FAIL（类不存在 / null 被拒）。
-- [ ] **Step 4: 实现。** `ActionHasher.hash` = `mapper.convertValue(node, Object.class)` → `canonicalBytes` → `DigestUtils.sha256Hex`。数值走 Jackson 默认（整数 → `Integer/Long/BigInteger`，小数 → `Double`），不开 `USE_BIG_DECIMAL_FOR_FLOATS`。`freezeMap` 允许 null 叶子，深度 / 65536 字节上限不变。向量 `sha256` 由首次运行打印后核对 `printf '%s' '<canonical>' | shasum -a 256` 填入。
-- [ ] **Step 5:** 同 Step 3 命令 → PASS；`--tests 'io.aster.guard.*'` 全绿。
-- [ ] **Step 6: 提交** `feat(guard): actionHash 规范化与 golden 向量，context 允许 null 叶子（ADR 0040 §12 D2）`
+- [ ] **Step 3:** 跑本任务测试类 → FAIL。
+- [ ] **Step 4: 实现。** `formatNumber` 按 RFC 8785 §3.2.2.3 / ECMA-262 `Number::toString`：先取最短往返十进制位串（`Double.toString` 的有效数字在 JDK 19+ 已是最短往返，取其数字与指数重新排版；不可用时用 `BigDecimal` 逐位缩短），再按 ECMAScript 规则选择定点或 `e±` 形式（指数 `-7 < n <= 21` 用定点）；在方法 Javadoc 中写明算法来源与为何不依赖库（classpath 无 JCS 实现）。数字节点一律取 `node.doubleValue()`。字符串经 Jackson 解码后按 §3.2.2.2 重新输出。排序用 `String.compareTo`（即 UTF-16 码元序）。
+- [ ] **Step 5:** 本任务测试类 → PASS；完整 guard 套件（Global Constraints）→ PASS。
+- [ ] **Step 6: 提交** `feat(guard): jcs-sha256/v1 规范化与共享向量，context 允许 null 叶子（ADR 0040 §12 D2）`
 
 ### Task 3: 签名密钥配置与 Ed25519 签名器
 
@@ -126,15 +142,18 @@
 @Test void activeKidRevokedFailsFast()
 @Test void duplicateKidFailsFast()
 @Test void errorMessageNeverContainsSeed()
+@Test void activeKidPastNotAfterFailsFast()     // M8：notAfter 约束签发
+@Test void startupSelfCheckSignsAndVerifies()   // 每把 key 启动时签一段固定字节并用推导公钥验签，失败即启动失败
 // ExecutionReceiptSignerTest
 @Test void signedPayloadVerifiesWithJdkSignature() // Signature.getInstance("Ed25519") 用公钥复验规范化字节
 @Test void anyPayloadByteChangeFailsVerify()       // 改 actionHash 末字符 / 换 signature → verify false
 @Test void payloadSerializesAlphabeticallyWithV1AndOutcomeAllow()
 @Test void expiresAtIsIssuedAtPlusTtl()            // ttl PT5M
+@Test void verifyWindowBoundaries()                // 本地窗口：issuedAt−60s 有效、issuedAt−61s 无效、expiresAt−1ms 有效、expiresAt 恰好无效（排他）
 ```
 
 - [ ] **Step 2:** 跑两测试类 → FAIL。
-- [ ] **Step 3: 实现。** 种子 → 私钥：`KeyFactory.getInstance("Ed25519").generatePrivate(new PKCS8EncodedKeySpec(HexFormat.of().parseHex("302e020100300506032b657004220420") ++ seed))`；公钥：`KeyPairGenerator.getInstance("Ed25519")` 以 `NamedParameterSpec.ED25519` + 只返回该种子的 `SecureRandom` 子类初始化后 `generateKeyPair()`，并断言其私钥编码与上式相等（不等即启动失败）。JWKS `x` = `EdECPublicKey` 编码的末 32 字节（X.509 前缀 `302a300506032b6570032100` 之后）。签名字节 = `GuardActionMapper.canonicalBytes(mapper.convertValue(payload, Map.class))`。`GuardClockProducer` `@Produces @ApplicationScoped Clock`（`@DefaultBean`）。
+- [ ] **Step 3: 实现。** 私钥：`KeyFactory.getInstance("Ed25519").generatePrivate(new EdECPrivateKeySpec(NamedParameterSpec.ED25519, seed))`——JDK 15+ 的公开 API，直接以 RFC 8032 的 32 字节种子为私钥，无需手拼 PKCS8 前缀或伪造 `SecureRandom`（后者依赖 provider 内部读随机数的次数，不是契约）。公钥：JDK 无「由私钥推导公钥」的公开 API，因此按 RFC 8032 §5.1.5 在启动时推导一次：`SHA-512(seed)` 前 32 字节按 §5.1.5 第 2 步裁剪得标量 `s`，计算 `[s]B` 并按 §5.1.2 编码为 32 字节，再 `KeyFactory.generatePublic(new EdECPublicKeySpec(NamedParameterSpec.ED25519, EdECPoint))`；点乘用 `BigInteger` 实现扩展坐标加倍-加法（只在启动时每 key 一次，性能无关）。在类 Javadoc 中写明上述理由。正确性由 RFC 8032 向量 1 与启动自检（每把 key 签固定字节后用推导公钥验签，失败即启动失败）双重锁定。JWKS `x` = 该 32 字节编码。签名字节 = `JcsCanonicalizer.canonicalize(mapper.valueToTree(payload))`。`GuardClockProducer` `@Produces @ApplicationScoped Clock`（`@DefaultBean`）。
 - [ ] **Step 4:** 跑两测试类 → PASS。
 - [ ] **Step 5: 提交** `feat(guard): 执行收据签名密钥配置与 Ed25519 签名器（ADR 0040 §12 D1/D6）`
 
@@ -147,7 +166,7 @@
 
 **Interfaces:**
 - Produces: 表 `guard_receipts`（列见 ADR 0040 §12 D4，`decision_id UUID PRIMARY KEY REFERENCES guard_decisions(id)`，`signature VARCHAR(128) NOT NULL`，`consumed_at/executor_id/attempt_id/consume_audit_id/result_status/result_at/result_audit_id` 可空，`CHECK (result_status IN ('executed','failed','aborted'))`，索引 `guard_receipts_tenant_consumed_ix (tenant_id, consumed_at)`）；`guard_decisions.action_hash VARCHAR(64)`；表 `guard_signing_key_revisions(revision BIGINT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL, kids JSONB NOT NULL)`。
-  - `SigningKeyRevisionStartup.check(long revision, List<String> kids)`：`revision < max` → 抛 `IllegalStateException("签名密钥配置 revision 回退")`；`== max` → 不写；`> max` → `INSERT … ON CONFLICT (revision) DO NOTHING`。以 `@Observes StartupEvent` 调用，在 Flyway 之后。
+  - `SigningKeyRevisionStartup.check(long revision, List<String> kids)`：`revision < max` → 抛 `IllegalStateException("签名密钥配置 revision 回退")`；`== max` → 不写；`> max` → `INSERT`。整个「读 max → 比较 → 插入」在一个 `requiringNew` 事务内、先执行 `SELECT pg_advisory_xact_lock(<常量键，hashtext('guard_signing_key_revisions')>)` 串行化，所以并发启动看到的 `max` 一定包含已提交的更大值；插入仍用 `ON CONFLICT (revision) DO NOTHING` 兜底。以 `@Observes StartupEvent` 调用，在 Flyway 之后。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -158,6 +177,7 @@
 @Test void revisionRegressionFailsStartup()           // 先写 5，再 check(4, …) 抛
 @Test void sameRevisionIsNoop()                       // check(5) 两次，表仍一行
 @Test void concurrentSameRevisionStartupIsIdempotent() // 两线程 CountDownLatch 同时 check(6)，均不抛、表一行
+@Test void concurrentNAndNPlus1BothOrders()   // 表中 max=5；用两个连接 + 显式持锁钩子分别构造「6 先拿锁」与「7 先拿锁」：6 先 → 两者都成功、max=7；7 先 → check(6) 抛回退、max=7。各重复 20 次无偶发
 ```
 
 - [ ] **Step 2:** `--tests 'io.aster.guard.receipt.GuardReceiptPersistenceTest' --tests '*SigningKeyRevisionStartupTest' --tests 'io.aster.db.MigrationGovernanceTest'` → FAIL。
@@ -168,8 +188,9 @@
 ### Task 5: 签发——直接 ALLOW、from-evidence、审批 APPROVED
 
 **Files:**
-- Modify: `src/main/java/io/aster/guard/api/GuardDecisionResource.java:75-76`（`decide` 改收原始 `JsonNode body`：先 `ActionHasher.hash(body.get("action"))`，再 `treeToValue(body, GuardActionRequest.class)`；`from-evidence` 同法取 `body.get("action")`）、`GuardDecisionService.java`（`decide` 增参数 `String actionHash`，草稿携带；ALLOW 时在 `store.saveDecision` 同一事务插收据行）、`GuardEvidenceDecisionService.java:87-121`（同上）、`GuardApprovalService.java:205-215`（APPROVED 时在 `completeApproval` 的同一事务内签发并插行）、`GuardDecisionStore.java` / `GuardDecisionJpaStore.java`（`saveDecision(entity, approval, receiptOrNull)`；`completeApproval(decided, newResponseJson, receiptFactory)`，`receiptFactory: Function<Instant, GuardReceiptEntity>` 以加锁后的 `now` 调用，仅目标为 APPROVED 时非 null）、`GuardDecisionDraft.java`（`actionHash` 组件）、`GuardDecisionAssembler.java`（`toEntity` 写 `action_hash`）、`api/GuardDecisionResponse.java`（新组件 `ExecutionReceipt executionReceipt`，字母序位于 `effectiveOutcome` 之后；`withApprovalStatus` 保留它）
-- Test: `src/test/java/io/aster/guard/api/GuardDecisionResourceTest.java`、`GuardApprovalResourceTest.java`、`GuardFromEvidenceResourceTest.java`、`GuardDecisionServiceTest.java`
+- Modify: `src/main/java/io/aster/guard/api/GuardDecisionResource.java:75-76`（`decide` / `fromEvidence` 改收原始请求体，经新建 `GuardRequestBodyReader.read(InputStream, Class<T>)`：用开启 `STRICT_DUPLICATE_DETECTION` 的 `ObjectReader` 读成 `JsonNode`（重复键 / 非法 JSON → 抛 `GuardInvalidActionException`）→ `ActionHasher.hash(body.get("action"))` → `treeToValue` → 注入的 `jakarta.validation.Validator.validate(...)`，违规映射为与今天 `@Valid` 失败**相同的状态码与响应体**；`treeToValue` 的类型错误映射为与今天 Jackson 反序列化失败相同的响应。实现前先用 Step 1 的回归测试录下现状响应作为 golden）、`GuardDecisionService.java`（`decide` 增参数 `String actionHash`，草稿携带；ALLOW 时在 `store.saveDecision` 同一事务插收据行）、`GuardEvidenceDecisionService.java:87-121`（同上）、`GuardApprovalService.java:205-215`（APPROVED 时在 `completeApproval` 的同一事务内签发并插行）、`GuardDecisionStore.java` / `GuardDecisionJpaStore.java`（`saveDecision(entity, approval, receiptOrNull)`；`completeApproval(decided, newResponseJson, receiptFactory)`，`receiptFactory: Function<Instant, GuardReceiptEntity>` 以加锁后的 `now` 调用，仅目标为 APPROVED 时非 null）、`GuardDecisionDraft.java`（`actionHash` 组件）、`GuardDecisionAssembler.java`（`toEntity` 写 `action_hash`）、`api/GuardDecisionResponse.java`（新组件 `ExecutionReceipt executionReceipt`，字母序位于 `effectiveOutcome` 之后；`withApprovalStatus` 保留它）
+- Create: `src/main/java/io/aster/guard/GuardRequestBodyReader.java`、`src/test/resources/guard/invalid-request-responses.golden.json`
+- Test: `src/test/java/io/aster/guard/api/GuardDecisionResourceTest.java`、`GuardApprovalResourceTest.java`、`GuardFromEvidenceResourceTest.java`、`GuardDecisionServiceTest.java`、`GuardInvalidRequestRegressionTest.java`
 
 **Interfaces:**
 - Consumes: `ActionHasher.hash`（Task 2）、`ExecutionReceiptSigner.sign`（Task 3）、`GuardReceiptEntity`（Task 4）。
@@ -191,9 +212,16 @@
 }
 ```
 
+**幂等重放与 `actionHash`（M5，按 ADR 不改指纹）：** 指纹仍是 ADR 0040 §3.1 的七项，`actionHash` 不在其中。因此同一 `Idempotency-Key` 下，若第二次请求只在指纹之外的字段（`principal.type`、`principal.roles`、`agent.*`、显式 null vs 缺键的非 context 字段、阶段 2 的 `facts`）与首次不同，返回的是**首次决策及其收据**，收据 `actionHash` 是首次请求的哈希；执行方若对第二次请求体自算哈希，consume 会 409 `action_mismatch`（fail-closed）。这一点写进 REST_API.md Guard 节与 ADR 0040 §12 D9 的一句补充（Task 1 Step 2b 同一提交）。`context` 内的 null vs 缺键会改变 `contextHash`，所以属于指纹差异 → 422。
+
+- [ ] **Step 0: 录现状 golden（先于任何改动）**：`GuardInvalidRequestRegressionTest` 对当前代码发送：非法 JSON、`action` 缺失、`principal.id` 为数字、`waitSeconds` 为字符串、空体、`policyModule` 缺失、超长幂等键、`context` 深度 9；把状态码 + 响应体（逐字节）写入 `invalid-request-responses.golden.json` 并提交。该测试此后断言逐字节相等。
+
 - [ ] **Step 1: 写失败测试**
 
 ```java
+@Test void duplicateKeyInBodyIs400InvalidAction()      // 顶层与 context 内重复键各一例
+@Test void replaySameKeyNullVsMissingPrincipalTypeReturnsFirstReceipt() // M5：首次 {"principal":{"id":"a"}}，同键第二次 {"principal":{"id":"a","type":null}} → 200 同 decisionId、同 executionReceipt；其 actionHash 等于首次原文哈希、不等于第二次原文哈希
+@Test void replaySameKeyNullVsMissingInContextIs422()  // context {cc:null} vs {} → 指纹不同 → 422
 @Test void allowCarriesVerifiableExecutionReceipt()        // 用 /keys 之外的测试公钥复验；payload.actionHash == 对请求体 action 子树自算
 @Test void denyAndPendingHaveNoExecutionReceipt()          // 且无 guard_receipts 行；action_hash 列仍写入
 @Test void actionHashBindsRawJsonNotRecord()               // Review Focus 1：{"principal":{"id":"a"}} 与 {"principal":{"id":"a","type":null}} 两次决策（不同幂等键）actionHash 不等，且各等于对原文 action 自算
@@ -206,7 +234,7 @@
 
 - [ ] **Step 2:** 跑上述测试类 → FAIL。
 - [ ] **Step 3: 实现**（见 Files）。签发失败（签名异常）按 fail-closed：改判 DENY `receipt_unavailable`，与链收据失败同一路径（`GuardReasonCode.RECEIPT_UNAVAILABLE`）。幂等指纹**不**加 `actionHash`（ADR 0040 §3.1 指纹不变，阶段 2 的 facts 不应触发 422）。
-- [ ] **Step 4:** 跑上述测试类 + `--tests 'io.aster.guard.*'` → PASS。
+- [ ] **Step 4:** 跑上述测试类（含 `GuardInvalidRequestRegressionTest` 仍逐字节相等）+ 完整 guard 套件 → PASS。
 - [ ] **Step 5: 提交** `feat(guard): ALLOW 与审批通过时签发执行收据（ADR 0040 §12 D1–D3）`
 
 ### Task 6: `GET /api/v1/guard/keys`、契约 golden 与密钥运维手册
@@ -227,9 +255,9 @@ GET /api/v1/guard/keys          Authorization: Bearer <key>    @RequireRole(MEMB
   "revision": 7 }
 ```
 
-列出全部 `notAfter` 未过且未 `revoked` 的 key；`exp` 仅在有 `notAfter` 时写（epoch 秒）；键字母序。
+列出全部 `now < notAfter`（无 `notAfter` 视为不过期）且未 `revoked` 的 key；`exp` 仅在有 `notAfter` 时写（epoch 秒）；键字母序。
 
-- [ ] **Step 1: 写失败测试**：`listsAllUnexpiredUnrevokedKidsWithRevision`、`omitsRevokedAndPastNotAfter`、`cacheControlMaxAge300`、`requiresBearer`（无头 401）、`jwkXDecodesToPublicKeyThatVerifiesIssuedReceipt`。
+- [ ] **Step 1: 写失败测试**：`listsAllUnexpiredUnrevokedKidsWithRevision`、`omitsRevokedAndPastNotAfter`、`notAfterBoundaryIsExclusive`（`now == notAfter` 已不发布）、`retiredKidRemovedFromConfigStillConsumable`（M8：旧 kid 删除后其签发的未过期收据 consume 仍 200，`/keys` 不再列出）、`cacheControlMaxAge300`、`requiresBearer`（无头 401）、`jwkXDecodesToPublicKeyThatVerifiesIssuedReceipt`。
 - [ ] **Step 2:** 跑 `GuardKeysResourceTest` 与 `PublicApiContractTest` → FAIL。
 - [ ] **Step 3: 实现** 资源；golden 加 `GET /api/v1/guard/keys`；runbook 写：用 `openssl genpkey -algorithm ed25519` 生成后取 32 字节种子 base64url 的命令、Vault 路径 `apps/aster-api-guard-receipt` 属性 `signing-keys` / `active-kid`、计划轮换（加新 key → `revision+1` → 切 `active-kid` → `revision+1` → ≥24h 后删旧 → `revision+1`）、紧急撤销（`"revoked": true` + `revision+1` → `kubectl rollout restart` → `rollout status` 完成才算撤销完成；离线验签最多滞后 300 s）。
 - [ ] **Step 4:** 同 Step 2 → PASS。
@@ -290,7 +318,7 @@ POST /api/v1/guard/receipts/{decisionId}/consume     Bearer 或 HMAC   @RequireR
 @Test void firstConsume200WritesRowAndTwoEvents()      // consume_audit_id 指向 attempt 事件；outcome 事件 outcome=consumed
 @Test void changedParameterIs409ActionMismatch()       // 改 context.amount 自算 → 409；行未消耗；outcome=rejected:action_mismatch；consume_audit_id 空
 @Test void secondConsumeSameOrNewAttemptIs409Consumed() // 响应体回显首次 executorId/attemptId
-@Test void expiredIs409()                              // 可变 Clock 推进 PT5M+1s
+@Test void expiredIs409()                              // 可变 Clock：now == expiresAt → 409（排他）；expiresAt − 1ms → 200（另一决策）
 @Test void denyPendingRejectedAre409NotAllowed()
 @Test void legacyAllowWithoutRowIs409NotAllowedLegacy() // 直接插一条无收据行的 ALLOW 决策
 @Test void revokedKidIs409WithRevision()               // 测试 profile 切换：签发后把 kid 标 revoked 重建 ReceiptSigningKeys
@@ -390,10 +418,10 @@ Bearer 一律 403 { "error": "internal_only" }；publicKey 解码非 32 字节 �
 - Test: `src/test/java/io/aster/guard/provenance/FactVerifierTest.java`
 
 **Interfaces:**
-- Consumes: `FactIssuerStore.find`（Task 11）、`GuardActionMapper.canonicalBytes`（Task 2）、`Clock`。
+- Consumes: `FactIssuerStore.find`（Task 11）、`JcsCanonicalizer.canonicalize`（Task 2）、`Clock`。
 - Produces: `FactVerifier.verify(String tenantId, JsonNode rawAction): VerifiedFacts`；`record VerifiedFacts(SortedSet<String> paths, SortedMap<String, SortedSet<String>> issuersByPath, SortedSet<String> issuerKids /* issuer#kid */, SortedMap<String,String> sourcesByPath, Instant earliestExpiresAt)`；无 `facts` 时返回 `VerifiedFacts.EMPTY`。
 
-规则逐字取 ADR 0040 §11 D3：≤ 8 条、`claims` 总数 ≤ 64、路径 ≤ 128；签名载荷 `{ alg, audience, claims, expiresAt, issuedAt, issuer, kid, sources }` 规范化字节；`alg` 仅 `Ed25519`；签发方存在且 `enabled` 且未过 `not_after`；`audience == tenantId`；`now ∈ [issuedAt − 60s, expiresAt]`、`expiresAt − issuedAt ≤ 24h`；每个 claim 路径在 `rawAction` 中存在且两边**规范化字节相等**；`sources` 键集 == `claims` 键集、值 ≤ 64 字符。任一失败整个请求 400，不降级。
+规则逐字取 ADR 0040 §11 D3（配方改为 JCS，见 Global Constraints）：≤ 8 条、`claims` 总数 ≤ 64、路径 ≤ 128；签名载荷 `{ alg, audience, claims, expiresAt, issuedAt, issuer, kid, sources }` 规范化字节；`alg` 仅 `Ed25519`；签发方存在且 `enabled` 且未过 `not_after`；`audience == tenantId`；`now ∈ [issuedAt − 60s, expiresAt]`、`expiresAt − issuedAt ≤ 24h`；每个 claim 路径在 `rawAction` 中存在且两边**规范化字节相等**；`sources` 键集 == `claims` 键集、值 ≤ 64 字符。任一失败整个请求 400，不降级。
 
 - [ ] **Step 1: 写失败测试**：`validFactVerifiesPaths`；以下各 → `invalid_fact` 且 `reason` 区分：`tamperedClaim`、`tamperedSources`、`expired`、`notYetValidBeyondSkew`、`windowOver24h`、`audienceMismatch`、`unknownKid`、`disabledIssuer`、`pastNotAfter`、`nonEd25519Alg`、`claimPathAbsentInAction`、`sourcesKeySetMismatch`、`moreThan8Facts`、`moreThan64Claims`；`claimNumericFormMustMatchCanonicalBytes`（Review Focus 5：claims `250000` vs action `250000.0` / `"250000"` → 400）；`twoIssuersSamePathRecordsBoth`。
 - [ ] **Step 2:** FAIL。 **Step 3:** 实现；`GuardDecisionService.decideOnce` 中在 `flatten` 之后、`findByIdempotencyKey` 之前调用（ADR 0040 §11 D4 顺序）。 **Step 4:** PASS + `GuardDecisionResourceTest` 新增 `invalidFactIs400AndWritesNoReceipt`、`invalidFactRejectedBeforeIdempotencyReplay`。
@@ -454,7 +482,7 @@ Bearer 一律 403 { "error": "internal_only" }；publicKey 解码非 32 字节 �
 
 ### Task 16: 接线引擎 `inputRefs` / `verifiedInputs` 与 E708 诊断（引擎发版后）
 
-**前置：** 跨仓 Task X2 发版、aster-api 引擎 pin 升级（发版列车会自动部署 aster-api）。
+**前置（硬门）：** aster-api 的引擎 pin（`gradle.properties` 中 aster-lang-core 版本）**≥ 跨仓 Task X2 的发布版本**，且 locales pin ≥ registry 1.2.0。未满足时本任务不开工；Step 1 先加 `EnginePinGateTest`，断言 `CoreModel.Func` 存在 `inputRefs` 字段、`ControlRegistry.Profile` 存在 `verifiedInputs`（反射），在旧 pin 上该测试即失败，作为门的可执行形式。registry 1.3.0 翻转（`eu-ai-act-high-risk.verifiedInputs=true`）**不在本计划**。
 
 **Files:**
 - Modify: `RuleMetadata.of`（读 `CoreModel.Func.inputRefs`、按 `module.profile` 查 `ControlRegistry` 档案的 `verifiedInputs`）、`src/main/java/io/aster/policy/compiler/GovernanceDiagnostics.java:66-79`（`isProfileCode` 含 `E708` → error 级）、`src/main/java/io/aster/policy/rest/model/CompileResponse.java`（每个 Verdict 规则带 `inputRefs`，供 cloud 编辑器展示）
@@ -502,7 +530,7 @@ Bearer 一律 403 { "error": "internal_only" }；publicKey 解码非 32 字节 �
 | 接口 | 形状 | 消费方 |
 |---|---|---|
 | `GuardDecisionResponse.executionReceipt` | Task 5 示例；仅 ALLOW；重放 / GET 返回同一份 | #464 `verifyReceipt`、cloud from-evidence 执行路径 |
-| `sha256-sorted-json/v1` + `action-hash-vectors.json` | Global Constraints；向量文件与 aster-guard `test/fixtures/action-hash-vectors.json` 逐字节相同 | #464 `hashAction` |
+| `jcs-sha256/v1`（RFC 8785）+ `jcs-sha256-v1-vectors.json` | Global Constraints；#464 SDK 必须逐字节复制向量文件并全部通过（含重复键须拒绝） | #464 `hashAction` |
 | `GET /api/v1/guard/keys` | Task 6；`revision` 单调；`max-age=300` | #464 JWKS 缓存与强制刷新（验签失败 / `kid_revoked` / 更大 `revision`，每 60 s 至多一次） |
 | `POST /receipts/{id}/consume` | Task 8 全部状态码 | #464 `consume`；#466 场景 3/4 |
 | `POST /receipts/{id}/result` | Task 9 | #464 `reportResult`；#465 「执行侧丢失」= 已消耗且超过 `aster.guard.result-grace` 无结果 |
@@ -511,12 +539,19 @@ Bearer 一律 403 { "error": "internal_only" }；publicKey 解码非 32 字节 �
 
 执行方顺序（写入 REST_API.md 的 Guard 节，Task 6 完成）：本地验签（`kid` → 签名 → `tenantId/decisionId/outcome` → `now ∈ [issuedAt−60s, expiresAt]` → `actionHash` 自算相等）→ consume 200 → 执行 → result；任一步失败不执行，重试须换新 `Idempotency-Key` 重新申请决策。
 
-## 部署与 k3s（本计划不改 k3s；写入阶段 1 PR 描述由用户执行）
+## 部署与 k3s（本计划不改 k3s；清单逐字写入阶段 1 PR 描述，由用户执行）
 
-- 现有模式：`k3s/apps/aster-lang/cloud/deployment.yaml` 中 `aster-api` 容器以 `env[].valueFrom.secretKeyRef` 注入，Secret 由 `external-secrets.yaml` 的 `ExternalSecret`（`secretStoreRef: vault-backend`）从 Vault 同步（如 `aster-api-llm-credentials` ← `apps/aster-api-llm`）。
-- 需要的 k3s 改动：新增 `ExternalSecret aster-api-guard-receipt-keys`（Vault `apps/aster-api-guard-receipt`，属性 `signing-keys`、`active-kid`）；`aster-api` 容器加 `ASTER_GUARD_RECEIPT_SIGNING_KEYS`、`ASTER_GUARD_RECEIPT_ACTIVE_KID` 两个 `secretKeyRef`。env 在启动时快照，所以任何密钥变更都需要 `kubectl rollout restart deployment/aster-api`（与撤销语义一致）。
-- 顺序：用户按 runbook 生成密钥写入 Vault → 合并 k3s 改动 → 再部署含 Task 3 的 aster-api（否则启动失败，fail-fast 是有意的）。
-- 阶段 2 无新密钥（签发方公钥在库表中，由 cloud 经 HMAC 端点维护）。
+现有模式：`k3s/apps/aster-lang/cloud/deployment.yaml` 中 `aster-api` 容器以 `env[].valueFrom.secretKeyRef` 注入，Secret 由同目录 `external-secrets.yaml` 的 `ExternalSecret`（`secretStoreRef: vault-backend`）从 Vault 同步（先例：`aster-api-llm-credentials` ← `apps/aster-api-llm`）。env 在容器启动时快照，任何密钥变更都要 `kubectl rollout restart`。
+
+**部署清单（顺序不可颠倒；任一步未通过即停）：**
+
+1. **Vault**：按 `docs/runbooks/guard-receipt-signing-keys.md` 生成种子，写入 `apps/aster-api-guard-receipt`，属性 `signing-keys`（`{"revision":1,"keys":[{"kid":"2026-11a","privateKey":"…"}]}`）与 `active-kid`（`2026-11a`）。
+2. **k3s**：新增 `ExternalSecret aster-api-guard-receipt-keys`（目标 Secret 同名，`data` 两项 → `remoteRef.key: apps/aster-api-guard-receipt`）；`aster-api` 容器加 `ASTER_GUARD_RECEIPT_SIGNING_KEYS`、`ASTER_GUARD_RECEIPT_ACTIVE_KID` 两个 `secretKeyRef`。合并后确认同步（用户执行）：
+   `kubectl -n aster-lang get externalsecret aster-api-guard-receipt-keys -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'` 输出 `True`，且 `kubectl -n aster-lang get secret aster-api-guard-receipt-keys -o jsonpath='{.data}' | jq 'keys'` 列出两个键（只看键名，不解码值）。
+3. **镜像**：上一步通过后再发布含 Task 3 的 aster-api 镜像（发版列车 / image pin PR）。新 Pod 启动日志应含 `签名密钥已加载 revision=1 kids=[2026-11a]`；缺密钥时 Pod 启动失败（CrashLoopBackOff）而旧 ReplicaSet 保持服务——这是有意的 fail-fast。
+4. **验收**：`curl -H "Authorization: Bearer <key>" https://<api>/api/v1/guard/keys` 返回 `revision: 1` 与一个 `kid`。
+
+**回滚：** 镜像回退到上一版本即可（新表 / 新列 / 新事件类型对旧代码无害，ADR 0040 §12 D10）；Secret 与 ExternalSecret 可留存，旧代码不读。若在第 3 步因密钥问题失败，修正 Vault 后 `kubectl rollout restart deployment/aster-api`，不需要回滚 k3s。阶段 2 无新密钥（签发方公钥在库表中，由 cloud 经 HMAC 端点维护）。
 
 ## 自审记录
 
