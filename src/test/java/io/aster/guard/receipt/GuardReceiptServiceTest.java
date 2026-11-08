@@ -5,6 +5,7 @@ import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.GuardDecisionService;
 import io.aster.guard.GuardReceiptBuilder;
 import io.aster.guard.api.ConsumeRequest;
+import io.aster.guard.api.GuardDecisionReadResponse;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.ResultRequest;
 import io.aster.guard.receipt.GuardReceiptStore.ConsumeVerdict;
@@ -279,6 +280,66 @@ class GuardReceiptServiceTest {
     assertThatThrownBy(() -> service.recordResult(TENANT, "u", DECISION, resultReq("executed")))
         .isInstanceOf(ExecutionReceiptUnavailableException.class);
     verifyNoInteractions(appender);
+  }
+
+  /** 已消耗却缺权威指针（不应出现的状态）：503 而不是拆箱 NPE，不入链。 */
+  @Test
+  void nullConsumeAuditIdIs503WithoutEvent() {
+    GuardReceiptEntity r = consumedRow();
+    r.consumeAuditId = null;
+    when(store.findReceipt(TENANT, DECISION)).thenReturn(Optional.of(r));
+
+    assertThatThrownBy(() -> service.recordResult(TENANT, "u", DECISION, resultReq("executed")))
+        .isInstanceOf(ExecutionReceiptUnavailableException.class);
+    verifyNoInteractions(appender);
+    verify(store, never()).auditCurrentHash(any(), anyLong());
+  }
+
+  // ---- 决策回读的执行状态（ADR 0054 §3.3）----
+
+  @Test
+  void decisionViewWithoutConsumeHasNoExecutionFields() {
+    GuardDecisionReadResponse view = service.decisionView(TENANT, DECISION).orElseThrow();
+
+    assertThat(view.decision()).isEqualTo(response("ALLOW"));
+    assertThat(view.actionHash()).isNull();
+    assertThat(view.consumedBy()).isNull();
+    assertThat(view.result()).isNull();
+  }
+
+  @Test
+  void decisionViewWithoutReceiptRowHasNoExecutionFields() {
+    when(store.findReceipt(TENANT, DECISION)).thenReturn(Optional.empty());
+
+    GuardDecisionReadResponse view = service.decisionView(TENANT, DECISION).orElseThrow();
+
+    assertThat(view).isEqualTo(GuardDecisionReadResponse.of(response("ALLOW")));
+  }
+
+  @Test
+  void decisionViewConsumedCarriesActionHashConsumedByAndResult() {
+    GuardReceiptEntity r = consumedRow();
+    when(store.findReceipt(TENANT, DECISION)).thenReturn(Optional.of(r));
+
+    GuardDecisionReadResponse consumed = service.decisionView(TENANT, DECISION).orElseThrow();
+    assertThat(consumed.actionHash()).isEqualTo(HASH);
+    assertThat(consumed.consumedBy()).isEqualTo(
+        new GuardDecisionReadResponse.ConsumedBy(ATTEMPT, "2026-11-08T10:01:00Z", "exec-1"));
+    assertThat(consumed.result()).isNull();
+
+    r.resultStatus = "aborted";
+    r.resultAt = Instant.parse("2026-11-08T10:03:00.250Z");
+    GuardDecisionReadResponse withResult = service.decisionView(TENANT, DECISION).orElseThrow();
+    assertThat(withResult.result()).isEqualTo(
+        new GuardDecisionReadResponse.ResultView("2026-11-08T10:03:00.250Z", "aborted"));
+  }
+
+  @Test
+  void decisionViewUnknownDecisionIsEmptyWithoutReceiptRead() {
+    when(decisions.get(TENANT, DECISION)).thenReturn(Optional.empty());
+
+    assertThat(service.decisionView(TENANT, DECISION)).isEmpty();
+    verify(store, never()).findReceipt(any(), any());
   }
 
   /** 加锁复核失败（并发回写抢先）：同码 409，事件已入链但行不引用。 */

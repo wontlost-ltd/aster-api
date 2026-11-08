@@ -155,6 +155,20 @@ class ReceiptSigningKeysTest {
         .hasMessageContaining("revoked");
   }
 
+  /** M2：kid 与 guard_receipts.kid VARCHAR(64) 同宽；64 字符可启动，65 字符启动失败（而不是每次 ALLOW 落库 500）。 */
+  @Test
+  void kidLongerThan64FailsFast() {
+    String ok = "k".repeat(64);
+    assertThat(ReceiptSigningKeys.parse(config(1, key(ok, SEED_A, "")), ok, CLOCK).active().kid()).isEqualTo(ok);
+    String tooLong = "k".repeat(65);
+    assertThatThrownBy(() -> ReceiptSigningKeys.parse(config(1, key(tooLong, SEED_A, "")), tooLong, CLOCK))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("64");
+    // 非 active 的超长 kid 同样拒绝：它仍会出现在 /keys 与 consume 判定中
+    assertThatThrownBy(() -> ReceiptSigningKeys.parse(config(1, key("a", SEED_A, ""), key(tooLong, SEED_B, "")), "a",
+        CLOCK)).isInstanceOf(IllegalStateException.class).hasMessageContaining("64");
+  }
+
   @Test
   void duplicateKidFailsFast() {
     String json = config(1, key("a", SEED_A, ""), key("a", SEED_B, ""));

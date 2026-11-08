@@ -107,6 +107,21 @@
     "error": "unsafe_integer"
   },
   {
+    "name": "unsafe_fraction_above_max_safe",
+    "input": "{\"n\":9007199254740991.5}",
+    "error": "unsafe_integer"
+  },
+  {
+    "name": "string_lone_high_surrogate",
+    "input": "{\"s\":\"\\ud800\"}",
+    "error": "invalid_string"
+  },
+  {
+    "name": "string_lone_low_surrogate",
+    "input": "{\"s\":\"a\\udc00b\"}",
+    "error": "invalid_string"
+  },
+  {
     "name": "string_escaped_e_acute",
     "input": "{\"s\":\"\\u00e9\"}",
     "canonical": "{\"s\":\"\u00e9\"}",

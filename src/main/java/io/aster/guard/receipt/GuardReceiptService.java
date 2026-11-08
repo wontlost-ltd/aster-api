@@ -5,6 +5,7 @@ import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.GuardDecisionService;
 import io.aster.guard.GuardReceiptBuilder;
 import io.aster.guard.api.ConsumeRequest;
+import io.aster.guard.api.GuardDecisionReadResponse;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.ResultRequest;
 import io.aster.guard.receipt.GuardReceiptStore.ConsumeVerdict;
@@ -51,7 +52,7 @@ public class GuardReceiptService {
   static final int MAX_ERROR_CODE = 64;
   private static final Set<String> RESULT_STATUSES = Set.of("executed", "failed", "aborted");
   /** actionHash 与 resultHash 共用：jcs-sha256/v1 摘要，64 位小写 hex。 */
-  private static final Pattern ACTION_HASH = Pattern.compile("[0-9a-f]{64}");
+  private static final Pattern DIGEST_HEX = Pattern.compile("[0-9a-f]{64}");
   /** UUID 形态（8-4-4-4-12 hex）；不用 {@link UUID#fromString}，它接受各段位数不足的写法。 */
   private static final Pattern UUID_SHAPE =
       Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
@@ -118,7 +119,7 @@ public class GuardReceiptService {
       return Optional.empty();
     }
     GuardReceiptEntity snapshot = store.findReceipt(tenantId, decisionId).orElse(null);
-    Optional<String> rejected = GuardReceiptJpaStore.checkResult(snapshot, req);
+    Optional<String> rejected = GuardReceiptRules.checkResult(snapshot, req);
     if (rejected.isPresent()) {
       return Optional.of(new ResultVerdict.Rejected(rejected.get()));
     }
@@ -126,9 +127,29 @@ public class GuardReceiptService {
     return Optional.of(store.recordResult(tenantId, decisionId, req, event.auditId()));
   }
 
+  /**
+   * 决策回读附执行状态（ADR 0054 §3.3）：按租户取决策，再按租户读收据行。行已消耗时附 {@code actionHash} 与
+   * {@code consumedBy}，已回写结果时附 {@code result}；否则与存储的响应相同。
+   *
+   * @return empty 表示决策不存在或属于其他租户（404）
+   */
+  public Optional<GuardDecisionReadResponse> decisionView(String tenantId, UUID decisionId) {
+    return decisions.get(tenantId, decisionId).map(decision -> store.findReceipt(tenantId, decisionId)
+        .filter(row -> row.consumedAt != null)
+        .map(row -> withExecution(decision, row))
+        .orElseGet(() -> GuardDecisionReadResponse.of(decision)));
+  }
+
+  private static GuardDecisionReadResponse withExecution(GuardDecisionResponse decision, GuardReceiptEntity row) {
+    var consumedBy = new GuardDecisionReadResponse.ConsumedBy(row.attemptId, row.consumedAt.toString(), row.executorId);
+    var result = row.resultStatus == null ? null
+        : new GuardDecisionReadResponse.ResultView(row.resultAt == null ? null : row.resultAt.toString(), row.resultStatus);
+    return new GuardDecisionReadResponse(row.actionHash, consumedBy, decision, result);
+  }
+
   /** 按 actionHash → attemptId → executorId 的顺序报首个不合法字段；空请求体按 actionHash 缺失处理。 */
   static void validate(ConsumeRequest req) {
-    if (req == null || req.actionHash() == null || !ACTION_HASH.matcher(req.actionHash()).matches()) {
+    if (req == null || req.actionHash() == null || !DIGEST_HEX.matcher(req.actionHash()).matches()) {
       throw new InvalidConsumeException("actionHash", "actionHash 须为 64 位小写 hex");
     }
     if (req.attemptId() == null || !UUID_SHAPE.matcher(req.attemptId()).matches()) {
@@ -156,7 +177,7 @@ public class GuardReceiptService {
     if (req.finishedAt() != null && !isOffsetDateTime(req.finishedAt())) {
       throw new InvalidResultException("finishedAt", "finishedAt 须为带偏移的 ISO-8601 时刻");
     }
-    if (req.resultHash() != null && !ACTION_HASH.matcher(req.resultHash()).matches()) {
+    if (req.resultHash() != null && !DIGEST_HEX.matcher(req.resultHash()).matches()) {
       throw new InvalidResultException("resultHash", "resultHash 须为 64 位小写 hex");
     }
     if (req.errorCode() != null && !isText(req.errorCode(), MAX_ERROR_CODE)) {
@@ -199,9 +220,15 @@ public class GuardReceiptService {
     }
   }
 
-  /** 结果事件以权威尝试事件的 current_hash 为 consumeReceiptHash；查不到即状态不一致，不写无链接的事件。 */
-  private AppendedRecord appendResult(String tenantId, UUID decisionId, ResultRequest req, long consumeAuditId,
+  /**
+   * 结果事件以权威尝试事件的 current_hash 为 consumeReceiptHash；指针为空或查不到即状态不一致（已消耗的行
+   * 必有指针），按 503 处理，不写无链接的事件。
+   */
+  private AppendedRecord appendResult(String tenantId, UUID decisionId, ResultRequest req, Long consumeAuditId,
                                       String performedBy) {
+    if (consumeAuditId == null) {
+      throw new ExecutionReceiptUnavailableException("已消耗的收据行缺权威尝试指针: decision=" + decisionId, null);
+    }
     String consumeReceiptHash = store.auditCurrentHash(tenantId, consumeAuditId).orElseThrow(() ->
         new ExecutionReceiptUnavailableException("权威尝试事件不存在: auditId=" + consumeAuditId, null));
     try {
@@ -223,13 +250,13 @@ public class GuardReceiptService {
     }
     Map<String, Object> extra = new LinkedHashMap<>(rejected.extra());
     switch (rejected.code()) {
-      case GuardReceiptJpaStore.NOT_ALLOWED -> {
+      case GuardReceiptRules.NOT_ALLOWED -> {
         extra.put("effectiveOutcome", decision.effectiveOutcome());
         if (ALLOW.equals(decision.effectiveOutcome())) {
           extra.put("legacy", true);
         }
       }
-      case GuardReceiptJpaStore.KID_REVOKED -> extra.put("revision", keys.revision());
+      case GuardReceiptRules.KID_REVOKED -> extra.put("revision", keys.revision());
       default -> {
         return verdict;
       }

@@ -6,8 +6,8 @@ import io.aster.audit.dto.ReceiptLookupResponse.Approval;
 import io.aster.audit.dto.ReceiptLookupResponse.Consume;
 import io.aster.audit.dto.ReceiptLookupResponse.Receipt;
 import io.aster.audit.dto.ReceiptLookupResponse.Result;
-import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.common.JacksonMappers;
+import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.entity.AuditLog;
 import io.aster.policy.event.EventType;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -17,6 +17,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -63,7 +64,7 @@ public class AuditReceiptService {
 
     /** 命中决策的收据行指针，键为小写 UUID 字符串；非法 UUID 的 id 不可能有收据行，直接跳过。 */
     private static Map<String, GuardReceiptEntity> pointers(String tenantId, List<String> ids) {
-        List<UUID> uuids = ids.stream().map(AuditReceiptService::parseUuid).filter(java.util.Objects::nonNull).toList();
+        List<UUID> uuids = ids.stream().map(AuditReceiptService::parseUuid).filter(Objects::nonNull).toList();
         Map<String, GuardReceiptEntity> byId = new HashMap<>();
         if (uuids.isEmpty()) {
             return byId;

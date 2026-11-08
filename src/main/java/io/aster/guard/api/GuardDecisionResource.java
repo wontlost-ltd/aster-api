@@ -8,6 +8,7 @@ import io.aster.guard.GuardIdempotencyMismatchException;
 import io.aster.guard.GuardInvalidActionException;
 import io.aster.guard.GuardPolicyNotFoundException;
 import io.aster.guard.GuardRequestBodyReader;
+import io.aster.guard.receipt.GuardReceiptService;
 import io.aster.policy.rest.RequestIdentityResolver;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
@@ -68,6 +69,9 @@ public class GuardDecisionResource {
 
   @Inject
   GuardRequestBodyReader bodyReader;
+
+  @Inject
+  GuardReceiptService receiptService;
 
   @Context
   ContainerRequestContext requestContext;
@@ -144,7 +148,10 @@ public class GuardDecisionResource {
     }
   }
 
-  /** 回读决策；非法 UUID 与跨租户一律 404，不泄露决策是否存在。 */
+  /**
+   * 回读决策；非法 UUID 与跨租户一律 404，不泄露决策是否存在。响应在存储的决策之外附执行状态
+   * （{@code actionHash / consumedBy / result}，ADR 0054 §3.3），见 {@link GuardDecisionReadResponse}。
+   */
   @GET
   @Path("/{id}")
   public Response get(@PathParam("id") String id) {
@@ -154,7 +161,7 @@ public class GuardDecisionResource {
     } catch (IllegalArgumentException e) {
       return Response.status(Response.Status.NOT_FOUND).build();
     }
-    return service.get(identityResolver.tenantId(), decisionId)
+    return receiptService.decisionView(identityResolver.tenantId(), decisionId)
         .map(r -> Response.ok(r).build())
         .orElse(Response.status(Response.Status.NOT_FOUND).build());
   }

@@ -81,26 +81,26 @@ class ExecutionReceiptSignerTest {
     String tamperedHash = HASH.substring(0, 63) + "b";
     ExecutionReceipt.Payload changedHash = new ExecutionReceipt.Payload(tamperedHash, p.decisionId(), p.expiresAt(),
         p.issuedAt(), p.kid(), p.outcome(), p.policyVersionId(), p.tenantId(), p.v());
-    assertThat(signer.verify(new ExecutionReceipt(r.kid(), changedHash, r.signature()))).isFalse();
+    assertThat(signer.verify(new ExecutionReceipt(r.kid(), changedHash, r.revision(), r.signature()))).isFalse();
 
     ExecutionReceipt.Payload changedTenant = new ExecutionReceipt.Payload(p.actionHash(), p.decisionId(), p.expiresAt(),
         p.issuedAt(), p.kid(), p.outcome(), p.policyVersionId(), "tenant-2", p.v());
-    assertThat(signer.verify(new ExecutionReceipt(r.kid(), changedTenant, r.signature()))).isFalse();
+    assertThat(signer.verify(new ExecutionReceipt(r.kid(), changedTenant, r.revision(), r.signature()))).isFalse();
 
     ExecutionReceipt other = signer.sign("dec-2", "tenant-1", HASH, 42L, T0);
-    assertThat(signer.verify(new ExecutionReceipt(r.kid(), p, other.signature()))).isFalse();
+    assertThat(signer.verify(new ExecutionReceipt(r.kid(), p, r.revision(), other.signature()))).isFalse();
 
     byte[] sig = Base64.getUrlDecoder().decode(r.signature());
     sig[0] ^= 1;
     String flipped = Base64.getUrlEncoder().withoutPadding().encodeToString(sig);
-    assertThat(signer.verify(new ExecutionReceipt(r.kid(), p, flipped))).isFalse();
-    assertThat(signer.verify(new ExecutionReceipt(r.kid(), p, "not-base64!"))).isFalse();
+    assertThat(signer.verify(new ExecutionReceipt(r.kid(), p, r.revision(), flipped))).isFalse();
+    assertThat(signer.verify(new ExecutionReceipt(r.kid(), p, r.revision(), "not-base64!"))).isFalse();
 
     ExecutionReceipt.Payload otherKid = new ExecutionReceipt.Payload(p.actionHash(), p.decisionId(), p.expiresAt(),
         p.issuedAt(), "k2", p.outcome(), p.policyVersionId(), p.tenantId(), p.v());
-    assertThat(signer.verify(new ExecutionReceipt("k2", otherKid, r.signature()))).isFalse();
-    assertThat(signer.verify(new ExecutionReceipt("k2", p, r.signature()))).isFalse();
-    assertThat(signer.verify(new ExecutionReceipt("unknown", p, r.signature()))).isFalse();
+    assertThat(signer.verify(new ExecutionReceipt("k2", otherKid, r.revision(), r.signature()))).isFalse();
+    assertThat(signer.verify(new ExecutionReceipt("k2", p, r.revision(), r.signature()))).isFalse();
+    assertThat(signer.verify(new ExecutionReceipt("unknown", p, r.revision(), r.signature()))).isFalse();
   }
 
   @Test
@@ -114,7 +114,45 @@ class ExecutionReceiptSignerTest {
     assertThat(new String(JcsCanonicalizer.canonicalize(JSON.valueToTree(r.payload())), StandardCharsets.UTF_8))
         .isEqualTo(JSON.writeValueAsString(r.payload()));
     String receiptJson = JSON.writeValueAsString(r);
-    assertThat(receiptJson).startsWith("{\"kid\":\"k1\",\"payload\":{").contains("\"signature\":\"");
+    assertThat(receiptJson).startsWith("{\"kid\":\"k1\",\"payload\":{").contains("},\"revision\":1,\"signature\":\"");
+  }
+
+  /** ADR 0040 §12 D6：外层带签发时的配置 revision，且它不在签名覆盖范围内（改它不影响验签）。 */
+  @Test
+  void receiptCarriesUnsignedRevision() {
+    ExecutionReceipt r = sign();
+    assertThat(r.revision()).isEqualTo(1L);
+    assertThat(signer.verify(new ExecutionReceipt(r.kid(), r.payload(), 99L, r.signature()))).isTrue();
+  }
+
+  /** 无已保存策略版本（evaluateSource 锚定的决策）：载荷省略 policyVersionId，签名与验签照常。 */
+  @Test
+  void nullPolicyVersionIsOmittedFromSignedPayload() throws Exception {
+    ExecutionReceipt r = signer.sign("dec-1", "tenant-1", HASH, null, T0);
+    assertThat(r.payload().policyVersionId()).isNull();
+    String canonical = new String(ExecutionReceiptSigner.payloadBytes(r.payload()), StandardCharsets.UTF_8);
+    assertThat(canonical).doesNotContain("policyVersionId").isEqualTo(JSON.writeValueAsString(r.payload()));
+    assertThat(signer.verify(r)).isTrue();
+  }
+
+  /** M1：active key 在运行中越过 notAfter → 拒绝签名（不签出 /keys 已不发布的 kid 的收据），可用性预判同步为 false。 */
+  @Test
+  void activeKeyReachingNotAfterAtRuntimeRefusesSigning() {
+    Instant notAfter = T0.plus(Duration.ofHours(1));
+    String config = "{\"revision\":3,\"keys\":[{\"kid\":\"k1\","
+        + "\"privateKey\":\"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE\",\"notAfter\":\"" + notAfter + "\"}]}";
+    MutableClock running = new MutableClock(T0);
+    ExecutionReceiptSigner expiring = new ExecutionReceiptSigner(ReceiptSigningKeys.parse(config, "k1", running),
+        Duration.ofMinutes(5), running);
+    assertThat(expiring.canSignNow()).isTrue();
+    assertThat(expiring.sign("d", "t", HASH, 1L, notAfter.minusMillis(1))).isNotNull();
+
+    running.set(notAfter);
+    assertThat(expiring.canSignNow()).isFalse();
+    assertThatThrownBy(() -> expiring.sign("d", "t", HASH, 1L, notAfter))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("notAfter");
+    assertThatThrownBy(() -> expiring.sign("d", "t", HASH, 1L, notAfter.plusSeconds(60)))
+        .isInstanceOf(IllegalStateException.class);
   }
 
   @Test

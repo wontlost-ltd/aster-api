@@ -6,6 +6,7 @@ import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardDecisionEntity;
 import io.aster.guard.receipt.GuardReceiptEntity;
+import io.aster.guard.receipt.ReceiptSigningKeys;
 import io.aster.policy.cache.CompiledPolicyCache;
 import io.aster.policy.cache.PolicyVersionResolutionCache;
 import io.aster.policy.entity.AuditLog;
@@ -22,6 +23,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -281,6 +283,9 @@ class GuardDecisionResourceTest {
     assertThat(Duration.between(Instant.parse(payload.get("issuedAt").asText()),
         Instant.parse(payload.get("expiresAt").asText()))).isEqualTo(Duration.ofMinutes(5));
     assertThat(receipt.get("kid").asText()).isEqualTo("test-a");
+    // ADR 0040 §12 D6：外层带签发时的密钥配置 revision（不受签名覆盖）
+    assertThat(receipt.get("revision").asLong()).isEqualTo(
+        ReceiptSigningKeys.parse(signingKeys, "test-a", Clock.systemUTC()).revision());
     // 字段顺序：executionReceipt 紧随 effectiveOutcome
     assertThat(resp.asString()).contains("\"effectiveOutcome\":\"ALLOW\",\"executionReceipt\":{\"kid\":\"test-a\",\"payload\":");
     assertThat(actionHashColumn(decisionId)).isEqualTo(payload.get("actionHash").asText());

@@ -6,11 +6,11 @@ import io.aster.guard.GuardDecisionEntity;
 import io.aster.guard.GuardReceiptBuilder;
 import io.aster.guard.api.ResultRequest;
 import io.aster.guard.receipt.GuardReceiptEntity;
-import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import io.aster.test.BlockingDbTestHelper;
 import io.aster.test.PostgresTestResource;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.path.json.JsonPath;
@@ -20,9 +20,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.util.UUID;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 

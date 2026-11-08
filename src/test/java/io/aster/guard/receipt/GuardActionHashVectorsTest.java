@@ -31,7 +31,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 任何一方改配方必须同时改两份向量并升版 {@code /v2}（ADR 0054 §4）。
  *
  * <p>向量格式：{@code [{ name, input（原文 JSON，保留转义与数字写法）, canonical, sha256 }]}，
- * 或以 {@code error} 代替后两者：{@code duplicate_key}（解析阶段拒绝）、{@code unsafe_integer}（规范化阶段拒绝）。
+ * 或以 {@code error} 代替后两者：{@code duplicate_key}（解析阶段拒绝）、{@code unsafe_integer}（规范化阶段拒绝：
+ * 按 double 解释后 |x| &gt; 2^53−1，含 {@code 9007199254740991.5} 这类小数写法）、{@code invalid_string}（规范化阶段拒绝：
+ * 字符串含孤立代理项，无法编码为 UTF-8）。
  * 所有 input 都是 JSON 对象，因此 SDK 可直接以 {@code hashAction(input)} 逐条比对。
  */
 class GuardActionHashVectorsTest {
@@ -66,7 +68,7 @@ class GuardActionHashVectorsTest {
         continue;
       }
       JsonNode input = STRICT.readTree(v.get("input"));
-      if ("unsafe_integer".equals(error)) {
+      if ("unsafe_integer".equals(error) || "invalid_string".equals(error)) {
         assertThatThrownBy(() -> JcsCanonicalizer.canonicalize(input)).as(name).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> hasher.hash(input)).as(name).isInstanceOf(GuardInvalidActionException.class);
         continue;
@@ -93,9 +95,14 @@ class GuardActionHashVectorsTest {
     assertThat(sha.get("adr0054_digest_of_null_value")).isNotEqualTo(sha.get("adr0054_digest_key_missing"));
 
     Map<String, String> errors = byName(vectors(), "error");
-    assertThat(errors.values().stream().collect(Collectors.toSet())).containsExactlyInAnyOrder("duplicate_key", "unsafe_integer");
+    assertThat(errors.values().stream().collect(Collectors.toSet())).containsExactlyInAnyOrder("duplicate_key", "unsafe_integer",
+        "invalid_string");
     assertThat(errors).containsKeys("unsafe_1e20", "unsafe_1e21", "unsafe_2_pow_53", "unsafe_2_pow_53_plus_1",
-        "unsafe_large_integer", "unsafe_negative_2_pow_53", "duplicate_key_top_level", "duplicate_key_nested");
+        "unsafe_large_integer", "unsafe_negative_2_pow_53", "duplicate_key_top_level", "duplicate_key_nested",
+        "unsafe_fraction_above_max_safe", "string_lone_high_surrogate", "string_lone_low_surrogate");
+    assertThat(errors).containsEntry("unsafe_fraction_above_max_safe", "unsafe_integer")
+        .containsEntry("string_lone_high_surrogate", "invalid_string")
+        .containsEntry("string_lone_low_surrogate", "invalid_string");
   }
 
   /** ADR 0054 §3.2：{@code $sha256} 摘要输入是被摘要值的 JCS 字节串（null 为 4 字节 {@code null}）。 */

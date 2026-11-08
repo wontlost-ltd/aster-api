@@ -209,13 +209,19 @@ public class GuardApprovalService {
 
   /**
    * 第 2、3 步：先入链，再加锁迁移。approval 已带目标状态；返回 empty 表示加锁后发现已不可迁移。
+   * 批准且需签发时，先预判签发器可用再写审批事件：不可签发（active key 已到期）时直接 {@code receipt_unavailable}，
+   * 不在链上为每次点击留下一条注定失败的审批事件。
    *
    * @throws GuardApprovalConflictException {@code receipt_unavailable}：审批事件未入链或执行收据签发失败，状态不变
    */
   private Optional<GuardDecisionResponse> complete(GuardApprovalEntity approval, GuardDecisionEntity decision) {
+    boolean issues = approval.status == GuardApprovalStatus.APPROVED && canIssue(decision);
+    if (issues && !receiptIssuer.available()) {
+      LOG.errorf("Action Guard 审批转 ALLOW 时执行收据不可签发，审批状态不变且不写审批事件: approval=%s", approval.id);
+      throw conflict("receipt_unavailable", "执行收据暂不可签发，请稍后重试");
+    }
     approval.receiptAuditId = appendEvent(approval, decision.receiptHash).auditId();
     GuardDecisionResponse base = json.readResponse(decision).withApprovalStatus(approval.status);
-    boolean issues = approval.status == GuardApprovalStatus.APPROVED && canIssue(decision);
     AtomicReference<GuardDecisionResponse> written = new AtomicReference<>(base);
     boolean completed;
     try {
@@ -237,9 +243,9 @@ public class GuardApprovalService {
 
   /**
    * 能否为审批转 ALLOW 签发执行收据。只有 V6.35.0 之前开出、没有 {@code action_hash} 的旧决策不签发
-   * （ALLOW 但无收据，consume 时 {@code not_allowed}，ADR 0040 §12 D10 不回填）。有 action_hash 却缺策略版本的
-   * 决策照常进入签发，由 {@link ExecutionReceiptIssuer} 判为 {@code receipt_unavailable}：拒绝迁移、不落任何状态，
-   * 而不是放出一个无法 consume 的 ALLOW（D9：from-evidence 的 ALLOW 同样必须有收据）。
+   * （ALLOW 但无收据，consume 时 {@code not_allowed}，ADR 0040 §12 D10 不回填）。策略版本不是前提：
+   * aster-cloud {@code evaluateSource} 锚定的 from-evidence 决策没有已保存版本，收据载荷省略 {@code policyVersionId}
+   * 照常签发（ADR 0040 §12 D1 / D9）。
    */
   private static boolean canIssue(GuardDecisionEntity decision) {
     if (decision.actionHash != null) {

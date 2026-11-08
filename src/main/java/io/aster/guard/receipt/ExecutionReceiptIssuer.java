@@ -39,16 +39,25 @@ public class ExecutionReceiptIssuer {
   }
 
   /**
-   * 以给定时刻签发（审批转 ALLOW 时为加锁后的 now）。
+   * 当前能否签发（active key 未到 notAfter）。只是预判：签发时仍会按签发时刻复核，预判通过不保证签发成功。
+   */
+  public boolean available() {
+    return signer.canSignNow();
+  }
+
+  /**
+   * 以给定时刻签发（审批转 ALLOW 时为加锁后的 now）。{@code policyVersionId} 可为 null（决策没有已保存的策略版本，
+   * 如 aster-cloud {@code evaluateSource} 锚定的 from-evidence 决策）：载荷省略该键，收据照常签发。
    *
-   * @throws ExecutionReceiptUnavailableException actionHash 或策略版本缺失、签名失败；调用方按 fail-closed 处理，不得放行
+   * @throws ExecutionReceiptUnavailableException actionHash 缺失、active key 已到期或签名失败；调用方按 fail-closed
+   *                                              处理，不得放行
    */
   public Issued issue(UUID decisionId, String tenantId, String actionHash, Long policyVersionId, Instant at) {
     Instant issuedAt = at.truncatedTo(ChronoUnit.MILLIS);
     ExecutionReceipt receipt;
     try {
-      if (actionHash == null || policyVersionId == null) {
-        throw new IllegalArgumentException("actionHash 或 policyVersionId 缺失");
+      if (actionHash == null) {
+        throw new IllegalArgumentException("actionHash 缺失");
       }
       receipt = signer.sign(decisionId.toString(), tenantId, actionHash, policyVersionId, issuedAt);
     } catch (RuntimeException e) {

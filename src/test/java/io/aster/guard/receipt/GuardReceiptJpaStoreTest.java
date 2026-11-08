@@ -191,17 +191,17 @@ class GuardReceiptJpaStoreTest {
     ConsumeRequest right = new ConsumeRequest("a".repeat(64), UUID.randomUUID().toString(), "e");
     Instant before = r.expiresAt.minusMillis(1);
 
-    assertThat(GuardReceiptJpaStore.check(r, wrong, r.expiresAt, kid -> true)).get()
+    assertThat(GuardReceiptRules.check(r, wrong, r.expiresAt, kid -> true)).get()
         .extracting(ConsumeVerdict.Rejected::code).isEqualTo("kid_revoked");
-    assertThat(GuardReceiptJpaStore.check(r, wrong, r.expiresAt, kid -> false)).get()
+    assertThat(GuardReceiptRules.check(r, wrong, r.expiresAt, kid -> false)).get()
         .extracting(ConsumeVerdict.Rejected::code).isEqualTo("receipt_expired");
-    assertThat(GuardReceiptJpaStore.check(r, wrong, before, kid -> false)).get()
+    assertThat(GuardReceiptRules.check(r, wrong, before, kid -> false)).get()
         .extracting(ConsumeVerdict.Rejected::code).isEqualTo("action_mismatch");
-    assertThat(GuardReceiptJpaStore.check(r, right, before, kid -> false)).isEmpty();
+    assertThat(GuardReceiptRules.check(r, right, before, kid -> false)).isEmpty();
     r.consumedAt = before;
     r.executorId = "first";
     r.attemptId = "a-1";
-    assertThat(GuardReceiptJpaStore.check(r, wrong, r.expiresAt, kid -> false)).get()
+    assertThat(GuardReceiptRules.check(r, wrong, r.expiresAt, kid -> false)).get()
         .satisfies(v -> {
           assertThat(v.code()).isEqualTo("receipt_consumed");
           assertThat(v.extra()).containsExactly(Map.entry("consumedAt", before.toString()),
@@ -256,18 +256,18 @@ class GuardReceiptJpaStoreTest {
     ResultRequest req = new ResultRequest("a-1", "first", "executed", null, null, null);
     GuardReceiptEntity r = new GuardReceiptEntity();
 
-    assertThat(GuardReceiptJpaStore.checkResult(null, req)).contains("not_consumed");
-    assertThat(GuardReceiptJpaStore.checkResult(r, req)).contains("not_consumed");
+    assertThat(GuardReceiptRules.checkResult(null, req)).contains("not_consumed");
+    assertThat(GuardReceiptRules.checkResult(r, req)).contains("not_consumed");
     r.consumedAt = Instant.parse("2026-11-08T10:01:00Z");
     r.attemptId = "a-1";
     r.executorId = "first";
     r.resultStatus = "aborted";
-    assertThat(GuardReceiptJpaStore.checkResult(r, new ResultRequest("a-2", "first", "executed", null, null, null)))
+    assertThat(GuardReceiptRules.checkResult(r, new ResultRequest("a-2", "first", "executed", null, null, null)))
         .contains("attempt_mismatch");
-    assertThat(GuardReceiptJpaStore.checkResult(r, new ResultRequest("a-1", "other", "executed", null, null, null)))
+    assertThat(GuardReceiptRules.checkResult(r, new ResultRequest("a-1", "other", "executed", null, null, null)))
         .contains("attempt_mismatch");
-    assertThat(GuardReceiptJpaStore.checkResult(r, req)).contains("result_recorded");
+    assertThat(GuardReceiptRules.checkResult(r, req)).contains("result_recorded");
     r.resultStatus = null;
-    assertThat(GuardReceiptJpaStore.checkResult(r, req)).isEmpty();
+    assertThat(GuardReceiptRules.checkResult(r, req)).isEmpty();
   }
 }

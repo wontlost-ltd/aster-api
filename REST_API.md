@@ -71,6 +71,7 @@ trace 响应包含: `{"decisionTrace":{"moduleName":"...","functionName":"...","
 
 ## 5 Action Guard `/api/v1/guard`（MEMBER）
 
+**GET /decisions/{id}** -- 回读决策（Bearer 或内部 HMAC；非法 UUID 与跨租户 404 空体）。响应为存储的决策响应（与 `POST /decisions` 同字段：`effectiveOutcome`、`approval`、`executionReceipt`（含签发时的 `revision`）等），另附执行状态（ADR 0054 §3.3，仅回读端点有，幂等重放不含）：收据已 consume 时附 `actionHash` 与 `consumedBy: { attemptId, consumedAt, executorId }`，已结果回写时附 `result: { resultAt, status }`；未发生的不写出。`executionReceipt.payload.policyVersionId` 可缺省（决策无已保存策略版本，如 evaluate-source 锚定的 from-evidence 决策）。
 **GET /keys** -- 执行收据验签公钥（JWKS：`alg=EdDSA`、`crv=Ed25519`、`kty=OKP`、`use=sig`、`kid`、`x`=base64url 32 字节公钥，有 `notAfter` 时附 `exp` 秒）与配置 `revision`；仅列出未过期且未撤销的 key，响应头 `Cache-Control: max-age=300`。密钥运维见 `docs/runbooks/guard-receipt-signing-keys.md`。
 
 ## 6 错误处理

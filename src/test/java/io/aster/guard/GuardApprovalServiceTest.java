@@ -20,6 +20,7 @@ import org.mockito.InOrder;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
@@ -439,15 +440,81 @@ class GuardApprovalServiceTest {
     assertThat(writes.get(0).receiptOrNull()).isNull();
   }
 
-  /** 有 action_hash 却缺策略版本：不放出无收据的 ALLOW，按签发失败拒绝迁移。 */
+  /**
+   * 有 action_hash 却无策略版本（aster-cloud evaluateSource 锚定的 from-evidence 决策）：照常签发，
+   * 载荷省略 policyVersionId（ADR 0040 §12 D1 / D9）。
+   */
   @Test
-  void 有action_hash但缺策略版本_receipt_unavailable且不写入() throws Exception {
+  void 有action_hash但无策略版本_照常签发且载荷省略版本() throws Exception {
     GuardApprovalEntity a = pending(DPO);
     GuardDecisionEntity noVersion = decisionOf(a);
     noVersion.policyVersionId = null;
     when(store.findDecision(TENANT, a.decisionId)).thenReturn(Optional.of(noVersion));
 
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
+    var receipt = r.executionReceipt();
+    assertThat(receipt).isNotNull();
+    assertThat(receipt.payload().policyVersionId()).isNull();
+    assertThat(receipt.payload().actionHash()).isEqualTo(ACTION_HASH);
+    assertThat(receipt.revision()).isEqualTo(1L);
+    assertThat(signer.verify(receipt)).isTrue();
+    assertThat(writes.get(0).receiptOrNull()).isNotNull();
+    assertThat(writes.get(0).responseJson()).doesNotContain("policyVersionId");
+  }
+
+  /** 签发器不可用（active key 已到期）时在写审批事件之前拒绝：重复点击不在链上留事件，状态不变。 */
+  @Test
+  void 签发器不可用_先于审批事件拒绝_不写链() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    ExecutionReceiptIssuer unavailable = mock(ExecutionReceiptIssuer.class);
+    when(unavailable.available()).thenReturn(false);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable);
+
     assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
+    // 模拟重试时重新读到的审批行（mock 返回同一实例，服务在校验后已就地写入目标状态）
+    a.status = GuardApprovalStatus.PENDING;
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
+    verify(appender, never()).appendSync(any());
+    verify(store, never()).completeApproval(any(), any());
+  }
+
+  /** 签发器不可用不影响拒绝：拒绝不签发，照常写事件并迁移。 */
+  @Test
+  void 签发器不可用时拒绝照常() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    ExecutionReceiptIssuer unavailable = mock(ExecutionReceiptIssuer.class);
+    when(unavailable.available()).thenReturn(false);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable);
+
+    GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), false, "no");
+
+    assertThat(r.effectiveOutcome()).isEqualTo("DENY");
+    verify(appender).appendSync(any());
+  }
+
+  /** M1：active key 在运行中到期（可变时钟越过 notAfter）→ 审批 receipt_unavailable，不写链、不迁移。 */
+  @Test
+  void active_key运行中到期_审批receipt_unavailable且不写链() throws Exception {
+    Instant notAfter = LOCKED_NOW.plus(Duration.ofHours(1));
+    String config = "{\"revision\":2,\"keys\":[{\"kid\":\"k1\","
+        + "\"privateKey\":\"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE\",\"notAfter\":\"" + notAfter + "\"}]}";
+    Instant[] now = {LOCKED_NOW};
+    Clock running = new Clock() {
+      @Override public ZoneId getZone() { return ZoneOffset.UTC; }
+      @Override public Clock withZone(ZoneId zone) { return this; }
+      @Override public Instant instant() { return now[0]; }
+    };
+    ExecutionReceiptSigner expiring = new ExecutionReceiptSigner(ReceiptSigningKeys.parse(config, "k1", running),
+        Duration.ofMinutes(5), running);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json,
+        new ExecutionReceiptIssuer(expiring, running));
+    GuardApprovalEntity a = pending(DPO);
+    now[0] = notAfter;
+
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
+    verify(appender, never()).appendSync(any());
     assertThat(writes).isEmpty();
   }
 
@@ -455,6 +522,7 @@ class GuardApprovalServiceTest {
   void 签发失败_receipt_unavailable且存储事务回滚() throws Exception {
     GuardApprovalEntity a = pending(DPO);
     ExecutionReceiptIssuer broken = mock(ExecutionReceiptIssuer.class);
+    when(broken.available()).thenReturn(true);
     when(broken.issue(any(), any(), any(), anyLong(), any())).thenThrow(
         new io.aster.guard.receipt.ExecutionReceiptUnavailableException("down", null));
     service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, broken);

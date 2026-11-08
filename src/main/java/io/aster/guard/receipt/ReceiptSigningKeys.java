@@ -44,7 +44,7 @@ import java.util.Set;
  * "notAfter"?: "<ISO-8601>", "revoked"?: true }] }}。未知字段与重复键一律拒绝，避免拼错的
  * {@code "revoked"} 被静默忽略。
  *
- * <p>启动失败条件：缺配置 / keys 为空、kid 重复、种子非 32 字节、{@code active-kid} 不在列表、
+ * <p>启动失败条件：缺配置 / keys 为空、kid 重复或超过 64 字符、种子非 32 字节、{@code active-kid} 不在列表、
  * {@code active-kid} 已 revoked、{@code now >= active.notAfter}（notAfter 只约束签发与发布，
  * 非 active 的过期 key 仍保留在列表中，由发布侧过滤）。
  *
@@ -74,6 +74,8 @@ public class ReceiptSigningKeys {
       .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
   private static final Set<String> TOP_FIELDS = Set.of("revision", "keys");
   private static final Set<String> KEY_FIELDS = Set.of("kid", "privateKey", "notAfter", "revoked");
+  /** 与 {@code guard_receipts.kid VARCHAR(64)} 一致：超长 kid 在启动时拒绝，而不是等到每次 ALLOW 落库失败。 */
+  static final int MAX_KID_LENGTH = 64;
 
   /**
    * 一把签名密钥。{@code notAfter} 为 null 表示不过期。
@@ -230,6 +232,9 @@ public class ReceiptSigningKeys {
       throw invalid(where + ".kid 必须是非空字符串");
     }
     String kid = kidNode.textValue();
+    if (kid.length() > MAX_KID_LENGTH) {
+      throw invalid(where + ".kid 超过 " + MAX_KID_LENGTH + " 字符（guard_receipts.kid 列宽）");
+    }
     where = "kid " + kid;
     byte[] seed = readSeed(node.get("privateKey"), where);
     Instant notAfter = readNotAfter(node.get("notAfter"), where);
