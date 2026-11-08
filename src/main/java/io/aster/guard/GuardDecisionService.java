@@ -19,6 +19,8 @@ import org.jboss.logging.Logger;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -247,12 +249,15 @@ public class GuardDecisionService {
     return new PolicyVersionView(v.id, v.sourceHash, v.version);
   }
 
-  /** 评估并把结果映射到草稿；传给规则的是不可变 Map（规则运行时可经 interop 写入可变集合）。 */
+  /**
+   * 评估并把结果映射到草稿；传给规则的是不可变 Map（规则运行时可经 interop 写入可变集合）。
+   * 不用 {@code Map.copyOf}：它拒绝 null 值且打乱键序，而 context 允许 null 叶子（已由 mapper 递归冻结）。
+   */
   private GuardDecisionDraft evaluate(GuardDecisionDraft base) {
     PolicyEvaluationResult result;
     try {
       result = evaluationService.evaluatePolicy(base.tenantId(), base.policyModule(), base.policyFunction(),
-          new Object[]{Map.copyOf(base.action())}).await().atMost(EVALUATION_TIMEOUT);
+          new Object[]{Collections.unmodifiableMap(new LinkedHashMap<>(base.action()))}).await().atMost(EVALUATION_TIMEOUT);
     } catch (RuntimeException e) {
       // 调用方可随意触发（如规则不接受的 context 类型）：WARN 只记一行，堆栈留给 DEBUG，避免日志被逐请求放大。
       LOG.warnf("Action Guard 评估失败，按 DENY 处理: %s.%s: %s: %s", base.policyModule(), base.policyFunction(),

@@ -189,6 +189,32 @@ class GuardDecisionServiceTest {
     assertThatThrownBy(() -> flat.put("action", "x")).isInstanceOf(UnsupportedOperationException.class);
   }
 
+  /** M6：context 的嵌套 null 叶子经评估原样到达规则（不抛 NPE、键仍存在），规则可据此返回 Verdict。 */
+  @Test
+  void nestedNullReachesRuleThroughEvaluation() {
+    verdict("ALLOW", null, null);
+    java.util.HashMap<String, Object> inner = new java.util.HashMap<>();
+    inner.put("b", null);
+    Action a = new Action(new Principal("agent-42", null, null), new ActionName("send_email"), null, Map.of("a", inner), null);
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", new GuardActionRequest(MODULE, FUNCTION, a, null), null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
+    ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+    verify(evaluationService).evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), args.capture());
+    @SuppressWarnings("unchecked")
+    Map<String, Object> flat = (Map<String, Object>) args.getValue()[0];
+    @SuppressWarnings("unchecked")
+    Map<String, Object> ctxA = (Map<String, Object>) ((Map<String, Object>) flat.get("context")).get("a");
+    assertThat(ctxA).containsKey("b");
+    assertThat(ctxA.get("b")).isNull();
+    assertThat(new java.util.ArrayList<>(flat.keySet())).containsExactly(
+        "principal_id", "principal_type", "principal_roles", "action",
+        "resource_type", "resource_id", "context", "agent_model");
+    assertThatThrownBy(() -> flat.put("action", "x")).isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> ctxA.put("b", "x")).isInstanceOf(UnsupportedOperationException.class);
+  }
+
   @Test
   void Verdict_require_approval_PENDING且创建待审批() {
     verdict("REQUIRE_APPROVAL", "Data Protection Officer", "customer record deletion");

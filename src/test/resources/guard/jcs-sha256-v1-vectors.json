@@ -1,0 +1,262 @@
+[
+  {
+    "name": "number_int_1",
+    "input": "{\"n\":1}",
+    "canonical": "{\"n\":1}",
+    "sha256": "2bfd14f43d17fc7cea24e0917a8879b4b2f880b8baeec1b9d90fbaad655e71bd"
+  },
+  {
+    "name": "number_1_point_0",
+    "input": "{\"n\":1.0}",
+    "canonical": "{\"n\":1}",
+    "sha256": "2bfd14f43d17fc7cea24e0917a8879b4b2f880b8baeec1b9d90fbaad655e71bd"
+  },
+  {
+    "name": "number_1e0",
+    "input": "{\"n\":1e0}",
+    "canonical": "{\"n\":1}",
+    "sha256": "2bfd14f43d17fc7cea24e0917a8879b4b2f880b8baeec1b9d90fbaad655e71bd"
+  },
+  {
+    "name": "number_negative_zero",
+    "input": "{\"n\":-0.0}",
+    "canonical": "{\"n\":0}",
+    "sha256": "f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0"
+  },
+  {
+    "name": "number_0_1",
+    "input": "{\"n\":0.1}",
+    "canonical": "{\"n\":0.1}",
+    "sha256": "c20c34ed16c837e86b4dcdb33f98c274c9f7da1231f64302082d2cd50743f951"
+  },
+  {
+    "name": "number_1e_minus_6_fixed",
+    "input": "{\"n\":1e-6}",
+    "canonical": "{\"n\":0.000001}",
+    "sha256": "28343867a0be00aee19f81aa90cfd6c646878b9303fa15410d16bfd3f8894578"
+  },
+  {
+    "name": "number_1e_minus_7_exponent",
+    "input": "{\"n\":1e-7}",
+    "canonical": "{\"n\":1e-7}",
+    "sha256": "747d6d23b64d1b2d579adb832b44de31c91c875bbef7a8e397f5d183a746b54b"
+  },
+  {
+    "name": "number_1_5e_minus_7",
+    "input": "{\"n\":1.5e-7}",
+    "canonical": "{\"n\":1.5e-7}",
+    "sha256": "ca0289a96d48abcb7088cf5581aadc70f1caed9e151f42cda002d48e68277dd4"
+  },
+  {
+    "name": "number_123e_minus_20",
+    "input": "{\"n\":123e-20}",
+    "canonical": "{\"n\":1.23e-18}",
+    "sha256": "bd378100a003df3ecb73d100be0f5899a8e7e2857571fec3310a52adc9266224"
+  },
+  {
+    "name": "number_negative_fraction",
+    "input": "{\"n\":-2.50}",
+    "canonical": "{\"n\":-2.5}",
+    "sha256": "b6b1cd6a7f132b26bcd3640456cddb76878740b34c1d4d11aa69784596676abf"
+  },
+  {
+    "name": "number_max_safe_integer",
+    "input": "{\"n\":9007199254740991}",
+    "canonical": "{\"n\":9007199254740991}",
+    "sha256": "e1da48c6a6089f06ecb4e0a2259e658e3786b2420f52baccdf929ec6460d7b41"
+  },
+  {
+    "name": "number_min_safe_integer",
+    "input": "{\"n\":-9007199254740991}",
+    "canonical": "{\"n\":-9007199254740991}",
+    "sha256": "d49d713821fc149f81ef6ca8054beeba696f5da052f0ab3e2d773808c5a9d625"
+  },
+  {
+    "name": "unsafe_1e20",
+    "input": "{\"n\":1e20}",
+    "error": "unsafe_integer"
+  },
+  {
+    "name": "unsafe_1e21",
+    "input": "{\"n\":1e21}",
+    "error": "unsafe_integer"
+  },
+  {
+    "name": "unsafe_2_pow_53",
+    "input": "{\"n\":9007199254740992}",
+    "error": "unsafe_integer"
+  },
+  {
+    "name": "unsafe_2_pow_53_plus_1",
+    "input": "{\"n\":9007199254740993}",
+    "error": "unsafe_integer"
+  },
+  {
+    "name": "unsafe_large_integer",
+    "input": "{\"n\":123456789012345680000}",
+    "error": "unsafe_integer"
+  },
+  {
+    "name": "unsafe_negative_2_pow_53",
+    "input": "{\"n\":-9007199254740992}",
+    "error": "unsafe_integer"
+  },
+  {
+    "name": "unsafe_nested_in_array",
+    "input": "{\"a\":[1,{\"n\":9007199254740992}]}",
+    "error": "unsafe_integer"
+  },
+  {
+    "name": "string_escaped_e_acute",
+    "input": "{\"s\":\"\\u00e9\"}",
+    "canonical": "{\"s\":\"\u00e9\"}",
+    "sha256": "86028b41ba792eaf82aa26a45b218f6734f7f1096a86f1746c8296e088a0ccb4"
+  },
+  {
+    "name": "string_literal_e_acute",
+    "input": "{\"s\":\"\u00e9\"}",
+    "canonical": "{\"s\":\"\u00e9\"}",
+    "sha256": "86028b41ba792eaf82aa26a45b218f6734f7f1096a86f1746c8296e088a0ccb4"
+  },
+  {
+    "name": "string_nfd_e_acute",
+    "input": "{\"s\":\"e\\u0301\"}",
+    "canonical": "{\"s\":\"e\u0301\"}",
+    "sha256": "1fc0bd7cc93fca8092a2041d7d01842876422aa7e2838acf42c14578e9f2be05"
+  },
+  {
+    "name": "string_control_u001f",
+    "input": "{\"s\":\"\\u001f\"}",
+    "canonical": "{\"s\":\"\\u001f\"}",
+    "sha256": "385598e12456e8ad3281ab1a11d7bec68794da8b2e3637c5d705741948a0dfdd"
+  },
+  {
+    "name": "string_control_u001F_uppercase_hex",
+    "input": "{\"s\":\"\\u001F\"}",
+    "canonical": "{\"s\":\"\\u001f\"}",
+    "sha256": "385598e12456e8ad3281ab1a11d7bec68794da8b2e3637c5d705741948a0dfdd"
+  },
+  {
+    "name": "string_tab_short_escape",
+    "input": "{\"s\":\"\\t\"}",
+    "canonical": "{\"s\":\"\\t\"}",
+    "sha256": "53c9fd2a34402b50a23224494255968e1a95eb8c5913d0b39febf9d3b1f3b960"
+  },
+  {
+    "name": "string_tab_unicode_escape",
+    "input": "{\"s\":\"\\u0009\"}",
+    "canonical": "{\"s\":\"\\t\"}",
+    "sha256": "53c9fd2a34402b50a23224494255968e1a95eb8c5913d0b39febf9d3b1f3b960"
+  },
+  {
+    "name": "string_short_escapes",
+    "input": "{\"s\":\"\\b\\f\\n\\r\\\"\\\\\"}",
+    "canonical": "{\"s\":\"\\b\\f\\n\\r\\\"\\\\\"}",
+    "sha256": "d4b3c60c117405b64d8abcb7e501141eeec862653a9ea538c9c418947cfe3e0a"
+  },
+  {
+    "name": "string_solidus_unescaped",
+    "input": "{\"s\":\"\\/\"}",
+    "canonical": "{\"s\":\"/\"}",
+    "sha256": "3a21357b943ab7956f071b0904981aac17577986281af33468108795e079946d"
+  },
+  {
+    "name": "string_u007f_literal",
+    "input": "{\"s\":\"\\u007f\"}",
+    "canonical": "{\"s\":\"\u007f\"}",
+    "sha256": "487ec760fe5ebe05d21893f0f63b6271963dc1ba0a133585a0fb03b663f7cfe1"
+  },
+  {
+    "name": "key_order",
+    "input": "{\"b\":1,\"a\":2}",
+    "canonical": "{\"a\":2,\"b\":1}",
+    "sha256": "d3626ac30a87e6f7a6428233b3c68299976865fa5508e4267c5415c76af7a772"
+  },
+  {
+    "name": "key_order_utf16_code_units",
+    "input": "{\"\\ud83d\\ude00\":1,\"\\uffff\":2}",
+    "canonical": "{\"\ud83d\ude00\":1,\"\uffff\":2}",
+    "sha256": "c6b1b96b618d8be475f379fe69c6646b44d7a5d3c01630c43509562f09d1024b"
+  },
+  {
+    "name": "key_order_utf16_code_units_reversed_input",
+    "input": "{\"\\uffff\":2,\"\\ud83d\\ude00\":1}",
+    "canonical": "{\"\ud83d\ude00\":1,\"\uffff\":2}",
+    "sha256": "c6b1b96b618d8be475f379fe69c6646b44d7a5d3c01630c43509562f09d1024b"
+  },
+  {
+    "name": "whitespace_removed",
+    "input": " { \"a\" : [ 1 , true , false , null ] , \"b\" : { } , \"c\" : [ ] } ",
+    "canonical": "{\"a\":[1,true,false,null],\"b\":{},\"c\":[]}",
+    "sha256": "153dc0e104ad7a08fa509b77433ebddf6f734a02413acd85456c01986da27794"
+  },
+  {
+    "name": "duplicate_key_top_level",
+    "input": "{\"a\":1,\"a\":2}",
+    "error": "duplicate_key"
+  },
+  {
+    "name": "duplicate_key_nested",
+    "input": "{\"x\":{\"a\":1,\"a\":1}}",
+    "error": "duplicate_key"
+  },
+  {
+    "name": "duplicate_key_in_array_element",
+    "input": "{\"x\":[{\"a\":1,\"b\":2,\"a\":3}]}",
+    "error": "duplicate_key"
+  },
+  {
+    "name": "nested_null_leaf",
+    "input": "{\"a\":{\"b\":null}}",
+    "canonical": "{\"a\":{\"b\":null}}",
+    "sha256": "b2e8c312ce194e9b20a5bac56945c35240d4ed9e05f4d9915d345b257d32263a"
+  },
+  {
+    "name": "nested_missing_key",
+    "input": "{\"a\":{}}",
+    "canonical": "{\"a\":{}}",
+    "sha256": "5d8171b9fc362e385a79ccd9d7992c96bcb4afca51d6278068bd1df49863b3a7"
+  },
+  {
+    "name": "nested_empty_string",
+    "input": "{\"a\":{\"b\":\"\"}}",
+    "canonical": "{\"a\":{\"b\":\"\"}}",
+    "sha256": "141597928524881e2d4bed428320b95843d546f1b60062db67d23f2f40c969e5"
+  },
+  {
+    "name": "adr0054_cc_null",
+    "input": "{\"principal\":{\"id\":\"agent-1\"},\"action\":{\"name\":\"send_email\"},\"resource\":{\"type\":\"arg\",\"id\":\"a@x\"},\"context\":{\"to\":\"a@x\",\"body\":{\"$sha256\":\"b49177e05868b7af8e82a644c1ce20e521af46497adeaffe861d294d9b4bb75e\"},\"cc\":null}}",
+    "canonical": "{\"action\":{\"name\":\"send_email\"},\"context\":{\"body\":{\"$sha256\":\"b49177e05868b7af8e82a644c1ce20e521af46497adeaffe861d294d9b4bb75e\"},\"cc\":null,\"to\":\"a@x\"},\"principal\":{\"id\":\"agent-1\"},\"resource\":{\"id\":\"a@x\",\"type\":\"arg\"}}",
+    "sha256": "93364a8c68a335a5bd81f103d7e8ff5b48cc9e14f4d2ddff7d6655c2871dfafb"
+  },
+  {
+    "name": "adr0054_cc_missing",
+    "input": "{\"principal\":{\"id\":\"agent-1\"},\"action\":{\"name\":\"send_email\"},\"resource\":{\"type\":\"arg\",\"id\":\"a@x\"},\"context\":{\"to\":\"a@x\",\"body\":{\"$sha256\":\"b49177e05868b7af8e82a644c1ce20e521af46497adeaffe861d294d9b4bb75e\"}}}",
+    "canonical": "{\"action\":{\"name\":\"send_email\"},\"context\":{\"body\":{\"$sha256\":\"b49177e05868b7af8e82a644c1ce20e521af46497adeaffe861d294d9b4bb75e\"},\"to\":\"a@x\"},\"principal\":{\"id\":\"agent-1\"},\"resource\":{\"id\":\"a@x\",\"type\":\"arg\"}}",
+    "sha256": "16e9ba598aa00cc98381f6c36d702f32a4ca4069b9fd8669853bd25b3cfeb763"
+  },
+  {
+    "name": "adr0054_cc_empty_string",
+    "input": "{\"principal\":{\"id\":\"agent-1\"},\"action\":{\"name\":\"send_email\"},\"resource\":{\"type\":\"arg\",\"id\":\"a@x\"},\"context\":{\"to\":\"a@x\",\"body\":{\"$sha256\":\"b49177e05868b7af8e82a644c1ce20e521af46497adeaffe861d294d9b4bb75e\"},\"cc\":\"\"}}",
+    "canonical": "{\"action\":{\"name\":\"send_email\"},\"context\":{\"body\":{\"$sha256\":\"b49177e05868b7af8e82a644c1ce20e521af46497adeaffe861d294d9b4bb75e\"},\"cc\":\"\",\"to\":\"a@x\"},\"principal\":{\"id\":\"agent-1\"},\"resource\":{\"id\":\"a@x\",\"type\":\"arg\"}}",
+    "sha256": "f0494b2e0f1c80ca96c62cdc9a277284fe07971d8d35ba2f89719edccc533365"
+  },
+  {
+    "name": "adr0054_digest_binds_body",
+    "input": "{\"principal\":{\"id\":\"agent-1\"},\"action\":{\"name\":\"send_email\"},\"resource\":{\"type\":\"arg\",\"id\":\"a@x\"},\"context\":{\"to\":\"a@x\",\"body\":{\"$sha256\":\"f30d7d79b6224a6870c3812fb826cf93510a9981deea4d3c0ae6091c44d4d6a2\"},\"cc\":null}}",
+    "canonical": "{\"action\":{\"name\":\"send_email\"},\"context\":{\"body\":{\"$sha256\":\"f30d7d79b6224a6870c3812fb826cf93510a9981deea4d3c0ae6091c44d4d6a2\"},\"cc\":null,\"to\":\"a@x\"},\"principal\":{\"id\":\"agent-1\"},\"resource\":{\"id\":\"a@x\",\"type\":\"arg\"}}",
+    "sha256": "3fe8c21f875d0ce6f118d0a82fe9ec4160730d1ee97e8e8cfadde1bb26de7a0b"
+  },
+  {
+    "name": "adr0054_digest_of_null_value",
+    "input": "{\"principal\":{\"id\":\"agent-1\"},\"action\":{\"name\":\"send_email\"},\"resource\":{\"type\":\"arg\",\"id\":\"a@x\"},\"context\":{\"to\":\"a@x\",\"body\":{\"$sha256\":\"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b\"}}}",
+    "canonical": "{\"action\":{\"name\":\"send_email\"},\"context\":{\"body\":{\"$sha256\":\"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b\"},\"to\":\"a@x\"},\"principal\":{\"id\":\"agent-1\"},\"resource\":{\"id\":\"a@x\",\"type\":\"arg\"}}",
+    "sha256": "895eac694739018eeec816c4aa29a4e8632fb12351c8ee4b337227b3332dde70"
+  },
+  {
+    "name": "adr0054_digest_key_missing",
+    "input": "{\"principal\":{\"id\":\"agent-1\"},\"action\":{\"name\":\"send_email\"},\"resource\":{\"type\":\"arg\",\"id\":\"a@x\"},\"context\":{\"to\":\"a@x\"}}",
+    "canonical": "{\"action\":{\"name\":\"send_email\"},\"context\":{\"to\":\"a@x\"},\"principal\":{\"id\":\"agent-1\"},\"resource\":{\"id\":\"a@x\",\"type\":\"arg\"}}",
+    "sha256": "ebeb6c944a34b98373186c387b1619a77d5e9a3ef70b66d655a45867d6d34267"
+  }
+]

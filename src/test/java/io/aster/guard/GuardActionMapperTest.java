@@ -142,12 +142,61 @@ class GuardActionMapperTest {
     assertThatThrownBy(() -> mapper.flatten(big)).isInstanceOf(GuardInvalidActionException.class);
   }
 
+  /** ADR 0054 §3.2 不变式 1：context 的 null 叶子原样保留（null、缺键、空串是三个不同文档）。 */
   @Test
-  void context含null值报invalid_action() {
+  void nullLeafInContextIsAccepted() {
+    Map<String, Object> inner = new HashMap<>();
+    inner.put("b", null);
     Map<String, Object> ctx = new HashMap<>();
     ctx.put("k", null);
+    ctx.put("a", inner);
+    ctx.put("l", Arrays.asList(1, null));
     Action a = new Action(new Principal("agent-42", null, null), new ActionName("x"), null, ctx, null);
-    assertThatThrownBy(() -> mapper.flatten(a)).isInstanceOf(GuardInvalidActionException.class);
+
+    @SuppressWarnings("unchecked")
+    Map<String, Object> frozen = (Map<String, Object>) mapper.flatten(a).get("context");
+
+    assertThat(frozen).containsEntry("k", null).containsKey("k");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> frozenInner = (Map<String, Object>) frozen.get("a");
+    assertThat(frozenInner).containsKey("b").containsEntry("b", null);
+    @SuppressWarnings("unchecked")
+    List<Object> frozenList = (List<Object>) frozen.get("l");
+    assertThat(frozenList).containsExactly(1, null);
+    assertThatThrownBy(() -> frozenInner.put("c", 1)).isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> frozenList.add(2)).isInstanceOf(UnsupportedOperationException.class);
+    assertThat(mapper.contextHash(ctx)).isNotEqualTo(mapper.contextHash(Map.of("a", Map.of(), "l", List.of(1))));
+  }
+
+  /** contextHash 仍是 sha256-sorted-json/v1：既有输入的摘要逐字节不变（旧收据语义不变）。 */
+  @Test
+  void contextHashUnchangedForExistingInputs() {
+    Map<String, Object> ctx = new LinkedHashMap<>();
+    ctx.put("tags", List.of("a", "b"));
+    ctx.put("amount", 250000);
+    ctx.put("n", Map.of("y", 1.5, "x", true));
+    String sorted = "{\"amount\":250000,\"n\":{\"x\":true,\"y\":1.5},\"tags\":[\"a\",\"b\"]}";
+
+    assertThat(mapper.contextHash(ctx)).isEqualTo(DigestUtils.sha256Hex(sorted))
+        .isEqualTo("3af251d856251db3143ce31d4d29eb488e847999176a0d830f78c834273c5d8b");
+    assertThat(mapper.contextHash(Map.of("amount", 250000))).isEqualTo(DigestUtils.sha256Hex("{\"amount\":250000}"));
+    Map<String, Object> withNull = new HashMap<>();
+    withNull.put("cc", null);
+    assertThat(mapper.contextHash(withNull)).isEqualTo(DigestUtils.sha256Hex("{\"cc\":null}"));
+  }
+
+  /** I-JSON：context 中整数值超过 2^53−1 或非有限数 → invalid_action；同值以字符串发送可通过。 */
+  @Test
+  void unsafeNumberInContextIsInvalidAction() {
+    for (Object bad : List.<Object>of(9_007_199_254_740_992L, -9_007_199_254_740_992L, new java.math.BigInteger("123456789012345680000"),
+        1e20, new java.math.BigDecimal("9007199254740992"), Double.NaN, Double.POSITIVE_INFINITY)) {
+      Action a = new Action(new Principal("agent-42", null, null), new ActionName("x"), null,
+          Map.of("n", Map.of("amount", List.of(bad))), null);
+      assertThatThrownBy(() -> mapper.flatten(a)).as(String.valueOf(bad)).isInstanceOf(GuardInvalidActionException.class);
+    }
+    Action safe = new Action(new Principal("agent-42", null, null), new ActionName("x"), null,
+        Map.of("max", 9_007_199_254_740_991L, "big", "9007199254740992", "f", 0.5), null);
+    assertThat(mapper.flatten(safe)).containsKey("context");
   }
 
   @Test

@@ -171,6 +171,33 @@ class GuardDecisionResourceTest {
     assertThat(resp.jsonPath().getString("error")).isEqualTo("policy_not_found");
   }
 
+  /** I-JSON（jcs-sha256/v1）：context 中整数值超过 2^53−1 → 400 invalid_action，不做舍入；同值以字符串发送 → 200。 */
+  @Test
+  void unsafeIntegerIs400InvalidAction() {
+    String template = "{\"policyModule\":\"" + ALLOW_MODULE + "\",\"policyFunction\":\"" + FUNCTION + "\","
+        + "\"action\":{\"principal\":{\"id\":\"agent-42\"},\"action\":{\"name\":\"refund\"},"
+        + "\"context\":{\"amount\":%s,\"note\":null}}}";
+
+    for (String unsafe : List.of("9007199254740992", "-9007199254740992", "1e20", "123456789012345680000")) {
+      Response resp = postRaw(String.format(template, unsafe));
+      assertThat(resp.statusCode()).as(unsafe).isEqualTo(400);
+      assertThat(resp.jsonPath().getString("error")).as(unsafe).isEqualTo("invalid_action");
+    }
+    Response asString = postRaw(String.format(template, "\"9007199254740992\""));
+    assertThat(asString.statusCode()).isEqualTo(200);
+    assertThat(asString.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+    assertThat(postRaw(String.format(template, "9007199254740991")).statusCode()).isEqualTo(200);
+  }
+
+  private static Response postRaw(String json) {
+    return given()
+        .header("X-Tenant-Id", TENANT)
+        .header("X-User-Id", "user-guard-rest")
+        .contentType(ContentType.JSON)
+        .body(json)
+        .when().post("/api/v1/guard/decisions");
+  }
+
   @Test
   void 缺principal_id返回400_invalid_action() {
     Response resp = post(TENANT, body(ALLOW_MODULE, FUNCTION, "read_customer_record", null), null);
