@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @QuarkusTest
 @QuarkusTestResource(PostgresTestResource.class)
 @TestProfile(GuardFromEvidenceResourceTest.AuthProfile.class)
-class GuardFromEvidenceResourceTest {
+public class GuardFromEvidenceResourceTest {
   /** 与 AuditReceiptHmacAuthTest 同款：apikey 鉴权与 HMAC 密钥同时打开，signature 关闭以贴近生产。 */
   public static class AuthProfile implements QuarkusTestProfile {
     @Override

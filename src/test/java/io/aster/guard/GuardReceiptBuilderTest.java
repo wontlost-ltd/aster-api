@@ -27,6 +27,7 @@ import java.util.UUID;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /** ADR 0040 §5.2：决策 / 审批收据事件的字段映射与 metadata 4 KB 上限。 */
 class GuardReceiptBuilderTest {
@@ -411,7 +412,26 @@ class GuardReceiptBuilderTest {
     assertThat(event.performedBy()).isEqualTo("SYSTEM");
     assertThat(event.success()).isFalse();
     assertThat(event.metadata()).containsEntry("outcome", "EXPIRED")
-        .doesNotContainKeys("requiredRole", "decidedBy", "comment", "decisionReceiptHash");
+        .doesNotContainKeys("requiredRole", "decidedBy", "comment", "decisionReceiptHash", "expiredReason");
+  }
+
+  @Test
+  void 签发方吊销导致的过期审批事件带expiredReason() {
+    GuardApprovalEntity a = new GuardApprovalEntity();
+    a.id = UUID.randomUUID();
+    a.tenantId = "t1";
+    a.decisionId = UUID.randomUUID();
+    a.outcome = "REQUIRE_APPROVAL";
+    a.principalId = "agent-42";
+    a.status = GuardApprovalStatus.EXPIRED;
+    a.expiredReason = GuardApprovalEntity.EXPIRED_FACT_ISSUER_REVOKED;
+    a.expiresAt = Instant.now();
+
+    AuditEvent event = builder.approvalEvent(a, HASH);
+
+    assertThat(event.performedBy()).isEqualTo("SYSTEM");
+    assertThat(event.metadata()).containsEntry("outcome", "EXPIRED")
+        .containsEntry("expiredReason", "fact_issuer_revoked");
   }
 
   private GuardReceiptEntity receipt() {
@@ -633,5 +653,48 @@ class GuardReceiptBuilderTest {
 
     assertThat((List<?>) m.get("verifiedFields")).hasSize(64);
     assertThat(m).containsEntry("inputSourcesTruncated", true);
+  }
+
+  @Test
+  void 吊销事件键集合_租户链_不投影decisionId() {
+    List<UUID> ids = List.of(UUID.randomUUID(), UUID.randomUUID());
+
+    AuditEvent event = builder.issuerRevokedEvent("t1", "idp.example.com", "2026-11", "u-admin", ids);
+
+    assertThat(event.eventType()).isEqualTo(EventType.GUARD_FACT_ISSUER_REVOKED);
+    assertThat(EventType.GUARD_FACT_ISSUER_REVOKED.name().length()).isLessThanOrEqualTo(50);
+    assertThat(event.tenantId()).isEqualTo("t1");
+    assertThat(event.performedBy()).isEqualTo("u-admin");
+    assertThat(event.metadata()).containsOnlyKeys("issuer", "kid", "performedBy", "affectedDecisionIds")
+        .containsEntry("issuer", "idp.example.com")
+        .containsEntry("kid", "2026-11")
+        .containsEntry("performedBy", "u-admin")
+        .containsEntry("affectedDecisionIds", ids.stream().map(UUID::toString).toList());
+  }
+
+  @Test
+  void 吊销事件超过64项截断并写affectedCount() throws Exception {
+    List<UUID> ids = IntStream.range(0, 200).mapToObj(i -> UUID.randomUUID()).toList();
+
+    AuditEvent event = builder.issuerRevokedEvent("t1", "i".repeat(255), "k".repeat(64), "SYSTEM", ids);
+
+    assertThat((List<?>) event.metadata().get("affectedDecisionIds")).hasSize(64)
+        .isEqualTo(ids.subList(0, 64).stream().map(UUID::toString).toList());
+    assertThat(event.metadata()).containsEntry("affectedCount", 200).containsEntry("affectedTruncated", true);
+    assertThat(appenderLength(event)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+  }
+
+  @Test
+  void 吊销事件无受影响决策时写空列表() {
+    AuditEvent event = builder.issuerRevokedEvent("t1", "idp.example.com", "2026-11", "SYSTEM", List.of());
+
+    assertThat(event.metadata()).containsEntry("affectedDecisionIds", List.of()).doesNotContainKeys("affectedCount");
+    assertThat(event.success()).isTrue();
+  }
+
+  @Test
+  void 吊销事件必须带租户() {
+    assertThatNullPointerException()
+        .isThrownBy(() -> builder.issuerRevokedEvent(null, "i", "k", "SYSTEM", List.of()));
   }
 }

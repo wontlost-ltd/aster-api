@@ -91,6 +91,25 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
         .page(0, limit).list());
   }
 
+  /**
+   * 以 {@code guard_approvals_tenant_status_ix (tenant_id, status, created_at DESC)} 取本租户 PENDING，再按主键连接决策行
+   * 过滤 jsonb 包含；{@code jsonb_build_array(?2)} 由数据库构造数组，签发方引用不经字符串拼接。
+   */
+  static final String PENDING_BY_FACT_ISSUER = "SELECT a.* FROM guard_approvals a "
+      + "JOIN guard_decisions d ON d.id = a.decision_id AND d.tenant_id = a.tenant_id "
+      + "WHERE a.tenant_id = ?1 AND a.status = 'PENDING' "
+      + "AND d.fact_issuers @> jsonb_build_array(CAST(?2 AS text)) "
+      + "ORDER BY a.created_at";
+
+  @Override
+  @SuppressWarnings("unchecked")
+  public List<GuardApprovalEntity> findPendingByFactIssuer(String tenantId, String issuerKid) {
+    return QuarkusTransaction.requiringNew().call(() -> GuardApprovalEntity.getEntityManager()
+        .createNativeQuery(PENDING_BY_FACT_ISSUER, GuardApprovalEntity.class)
+        .setParameter(1, tenantId).setParameter(2, issuerKid)
+        .getResultList());
+  }
+
   @Override
   public boolean completeApproval(GuardApprovalEntity decided, Function<Instant, ApprovalWrite> writeAt) {
     return QuarkusTransaction.requiringNew().call(() -> transition(decided, writeAt));
@@ -112,6 +131,7 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
     row.decidedAt = decided.decidedAt;
     row.comment = decided.comment;
     row.receiptAuditId = decided.receiptAuditId;
+    row.expiredReason = decided.expiredReason;
     GuardDecisionEntity decision = GuardDecisionEntity.findByIdAndTenant(row.decisionId, row.tenantId).orElseThrow(
         () -> new IllegalStateException("审批 " + row.id + " 关联的决策不存在: " + row.decisionId));
     decision.responseJson = write.responseJson();

@@ -48,6 +48,13 @@ public interface GuardDecisionStore {
   List<GuardApprovalEntity> findExpiredPending(Instant now, int limit);
 
   /**
+   * 本租户中关联决策的 {@code fact_issuers} 含 {@code issuerKid}（{@code issuer#kid}）的 PENDING 审批，按创建时间升序
+   * （ADR 0040 §11 D4 签发方吊销）。查询由 {@code guard_approvals (tenant_id, status)} 索引驱动再连接决策行，
+   * 不按租户全扫 guard_decisions；含已到期而调度尚未落库的行。
+   */
+  List<GuardApprovalEntity> findPendingByFactIssuer(String tenantId, String issuerKid);
+
+  /**
    * 在<b>一个事务</b>内完成审批状态迁移：以 {@code PESSIMISTIC_WRITE} 锁住审批行，确认它仍是 PENDING，
    * 且（目标不是 EXPIRED 时）在<b>加锁后的当前时刻</b> {@code now} 尚未过期；随后以同一个 {@code now} 调用
    * {@code writeAt} 得到要写入的内容，写入 {@code decided} 的 status / decidedBy / decidedAt / comment / receiptAuditId，

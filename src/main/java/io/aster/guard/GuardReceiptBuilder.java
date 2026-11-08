@@ -48,7 +48,11 @@ public class GuardReceiptBuilder {
   static final int MAX_COMMENT = 1000;
   /** 与 audit_logs.performed_by 列宽一致，超长会让整条收据写入失败。 */
   static final int MAX_PERFORMED_BY = 100;
-  static final String SYSTEM_ACTOR = "SYSTEM";
+  public static final String SYSTEM_ACTOR = "SYSTEM";
+  /** 与 guard_fact_issuers.kid 列宽一致。 */
+  static final int MAX_KID = 64;
+  /** 吊销事件逐条列出的受影响决策上限（ADR 0040 §11 D4）。 */
+  static final int MAX_AFFECTED_DECISIONS = 64;
   /** metadata 序列化长度预算：低于追加器的 4096 上限，留出余量。 */
   static final int METADATA_BUDGET = 3800;
   /** 输入来源键（ADR 0041 §11 D1）：verified 路径、签发方、签发端来源、未验证路径（Task 15 写入）。 */
@@ -142,6 +146,7 @@ public class GuardReceiptBuilder {
     put(m, "requiredRole", clip(a.requiredRole, MAX_TEXT));
     put(m, "comment", clip(a.comment, MAX_COMMENT));
     put(m, "decisionReceiptHash", decisionReceiptHash);
+    put(m, "expiredReason", a.expiredReason);
     String actor = a.decidedBy == null ? SYSTEM_ACTOR : clip(a.decidedBy, MAX_PERFORMED_BY);
     return new AuditEvent(EventType.ACTION_GUARD_APPROVAL, Instant.now(), a.tenantId,
         null, null, null, null, null, actor, a.status == GuardApprovalStatus.APPROVED, null, null,
@@ -195,6 +200,28 @@ public class GuardReceiptBuilder {
     put(m, "consumeReceiptHash", clip(consumeReceiptHash, DIGEST_LENGTH));
     return receiptEvent(EventType.ACTION_GUARD_RESULT, tenantId, performedBy, "executed".equals(req.status()), m,
         RESULT_SHRINK_ORDER);
+  }
+
+  /**
+   * 签发方吊销事件（ADR 0040 §11 D4，ADR 0041 §11）：写在租户链上，一条吊销对应多条决策，因此不写 decisionId
+   * （decision_id 列不投影）。{@code affectedDecisionIds} 为本次实际转 EXPIRED 的审批所属决策，至多
+   * {@link #MAX_AFFECTED_DECISIONS} 项；超出时另写总数 {@code affectedCount} 与 {@code affectedTruncated: true}。
+   * issuer / kid 按列宽截断（255 / 64），64 个 UUID 加上限长的 issuer 仍在预算内，不需要缩短顺序。
+   *
+   * @param performedBy 操作者；{@code not_after} 到期由调度发起时为 {@code SYSTEM}
+   */
+  public AuditEvent issuerRevokedEvent(String tenantId, String issuer, String kid, String performedBy,
+                                       List<UUID> affectedDecisionIds) {
+    Map<String, Object> m = new LinkedHashMap<>();
+    put(m, "issuer", clip(issuer, MAX_TEXT));
+    put(m, "kid", clip(kid, MAX_KID));
+    put(m, "performedBy", clip(performedBy, MAX_PERFORMED_BY));
+    m.put("affectedDecisionIds", affectedDecisionIds.stream().limit(MAX_AFFECTED_DECISIONS).map(UUID::toString).toList());
+    if (affectedDecisionIds.size() > MAX_AFFECTED_DECISIONS) {
+      m.put("affectedCount", affectedDecisionIds.size());
+      m.put("affectedTruncated", Boolean.TRUE);
+    }
+    return receiptEvent(EventType.GUARD_FACT_ISSUER_REVOKED, tenantId, performedBy, true, m, List.of());
   }
 
   private AuditEvent receiptEvent(EventType type, String tenantId, String performedBy, boolean success,

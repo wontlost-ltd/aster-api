@@ -48,12 +48,18 @@ public class FactIssuerStore {
   @Inject
   EntityManager em;
 
+  /** 启用 → 禁用的条件更新：只有把行从 {@code enabled=true} 改为 false 的那一次调用影响 1 行。 */
+  private static final String REVOKE_IF_ENABLED = "UPDATE guard_fact_issuers SET enabled = false "
+      + "WHERE tenant_id = ?1 AND issuer = ?2 AND kid = ?3 AND enabled = true";
+
   /**
-   * 登记签发方，或更新同一公钥的启用状态与 {@code notAfter}（创建时间与创建人保留首次写入值）。
+   * 登记签发方，或更新同一公钥的 {@code notAfter}（创建时间与创建人保留首次写入值）。
    *
    * <p>首次写入用 {@code INSERT … ON CONFLICT DO NOTHING}：并发首次写入同一主键时后到者不报主键冲突，
    * 而是读回先到者的行，再按与已有行相同的规则裁决（同钥 200，异钥 409）。规则：
-   * 公钥不同 → {@link #KEY_CONFLICT}；行已禁用而请求启用 → {@link #REVOKED}；其余更新 enabled / notAfter。
+   * 公钥不同 → {@link #KEY_CONFLICT}；行已禁用而请求启用 → {@link #REVOKED}；其余只更新 notAfter。
+   * 已有行的 {@code enabled} 不在这里改：启用 → 禁用是吊销，须经 {@link #markRevoked} 由吊销服务联动处置
+   * 依赖它的待审批（{@code FactIssuerRevocationService}），调用方在请求 {@code enabled=false} 时随后调用之。
    */
   @Transactional
   public UpsertResult upsert(String tenantId, String issuer, String kid, String publicKey, boolean enabled,
@@ -77,7 +83,6 @@ public class FactIssuerStore {
     if (!existing.enabled && enabled) {
       return new UpsertResult.Conflict(REVOKED);
     }
-    existing.enabled = enabled;
     existing.notAfter = notAfter;
     return new UpsertResult.Saved(existing);
   }
@@ -86,14 +91,22 @@ public class FactIssuerStore {
     return GuardFactIssuerEntity.findById(new GuardFactIssuerEntity.Key(tenantId, issuer, kid));
   }
 
-  /** 软删：置 {@code enabled=false}，行保留。返回是否存在该签发方（已禁用的再次禁用同样返回 true）。 */
+  /**
+   * 吊销：把 {@code enabled=true} 的行原子地改为 false，返回本次调用是否完成了这一迁移。
+   * 行不存在或已禁用返回 false（并发吊销同一签发方只有一个调用得到 true），行永久保留供审计。
+   */
   @Transactional
-  public boolean disable(String tenantId, String issuer, String kid) {
-    GuardFactIssuerEntity row = findRow(tenantId, issuer, kid);
-    if (row == null) {
-      return false;
-    }
-    row.enabled = false;
-    return true;
+  public boolean markRevoked(String tenantId, String issuer, String kid) {
+    return em.createNativeQuery(REVOKE_IF_ENABLED)
+        .setParameter(1, tenantId).setParameter(2, issuer).setParameter(3, kid)
+        .executeUpdate() == 1;
+  }
+
+  /** 跨租户取仍启用但 {@code now >= notAfter} 的签发方（已不可用于验签、尚未吊销），至多 limit 条。 */
+  @Transactional
+  public List<GuardFactIssuerEntity> findLapsedEnabled(Instant now, int limit) {
+    return GuardFactIssuerEntity.<GuardFactIssuerEntity>find(
+            "enabled = true and notAfter <= ?1 order by notAfter", now)
+        .page(0, limit).list();
   }
 }

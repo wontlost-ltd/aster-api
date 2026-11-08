@@ -25,6 +25,7 @@ public enum EventType {
     ACTION_GUARD_CONSUME_ATTEMPT, // 执行收据消耗尝试（先于判定入链，是权威消耗点）
     ACTION_GUARD_CONSUME_OUTCOME, // 消耗尝试的判定结果（consumed / rejected:<code>）
     ACTION_GUARD_RESULT,        // 执行方回写的执行结果（executed / failed / aborted）
+    GUARD_FACT_ISSUER_REVOKED,  // 签名事实签发方吊销，依赖它的待审批已转 EXPIRED（ADR 0040 §11 D4）
 
     // Cedar 导出（ADR 0047 §6）：成功导出同步入链后才返回
     POLICY_EXPORTED,            // 策略导出为 Cedar（源码、策略文本与 schema 各自哈希）

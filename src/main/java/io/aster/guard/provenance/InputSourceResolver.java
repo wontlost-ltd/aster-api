@@ -74,6 +74,19 @@ public class InputSourceResolver {
     if (factExpiresAt != null && !now.isBefore(factExpiresAt)) {
       return true;
     }
+    return anyIssuerRevoked(tenantId, issuerKids, now);
+  }
+
+  /**
+   * 记录的签发方中是否有已吊销的：行不存在、{@code enabled=false} 或 {@code now >= notAfter}（ADR 0040 §11 D4）。
+   * 与 {@link #factsStale} 不同，这里不看事实自身的 {@code expiresAt}：事实过期只约束新决策，
+   * 签发方吊销才使依赖它的待审批不可再处理。空集合不查表。
+   */
+  public boolean issuersRevoked(String tenantId, Collection<String> issuerKids) {
+    return !issuerKids.isEmpty() && anyIssuerRevoked(tenantId, issuerKids, clock.instant());
+  }
+
+  private boolean anyIssuerRevoked(String tenantId, Collection<String> issuerKids, Instant now) {
     return issuerKids.stream().anyMatch(issuerKid -> !issuerUsable(tenantId, issuerKid, now));
   }
 

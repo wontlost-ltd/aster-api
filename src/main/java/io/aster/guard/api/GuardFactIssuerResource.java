@@ -2,6 +2,8 @@ package io.aster.guard.api;
 
 import io.aster.guard.GuardInvalidActionException;
 import io.aster.guard.GuardRequestBodyReader;
+import io.aster.guard.provenance.FactIssuerRevocationService;
+import io.aster.guard.provenance.FactIssuerRevocationService.FactIssuerRevocationIncompleteException;
 import io.aster.guard.provenance.FactIssuerStore;
 import io.aster.guard.provenance.FactIssuerStore.UpsertResult;
 import io.aster.guard.provenance.GuardFactIssuerEntity;
@@ -35,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.util.function.Supplier;
 
 /**
  * 签名事实签发方管理（ADR 0040 §11 D3）：cloud 团队设置页经内部 HMAC 通道维护本租户的签发方公钥。
@@ -42,6 +45,8 @@ import java.util.TreeMap;
  * <p>只接受 HMAC：路径已由 {@code InternalCallerFilter} 恒要求验签（Bearer 在过滤器处 403 {@code internal_only}），
  * 这里再按验签章兜底，同 {@code from-evidence}。租户取自签名内的 {@code X-Tenant-Id}，跨租户不可见、不可改。
  * 写入即生效：验签按主键直查，不经缓存。{@code DELETE} 为软删（{@code enabled=false}，行保留供审计）。
+ * DELETE 与 PUT {@code enabled=false} 都是吊销，同步联动处置本租户依赖该签发方的待审批（ADR 0040 §11 D4）；
+ * 联动未完成（审计链不可用）时 503 {@code receipt_unavailable}，签发方已禁用，重试同一请求可补齐。
  * 响应键按字母序，{@code notAfter} 为空时不写。
  */
 @Path("/api/v1/guard/fact-issuers")
@@ -60,6 +65,9 @@ public class GuardFactIssuerResource {
 
   @Inject
   FactIssuerStore store;
+
+  @Inject
+  FactIssuerRevocationService revocations;
 
   @Inject
   GuardRequestBodyReader bodyReader;
@@ -88,6 +96,7 @@ public class GuardFactIssuerResource {
   /**
    * 登记签发方；同键同公钥为幂等更新（enabled / notAfter，保留首次的创建时间与创建人）。
    * 同键异公钥 409 {@code issuer_key_conflict}；已吊销的再启用 409 {@code issuer_revoked}。
+   * {@code enabled=false} 即吊销，与 DELETE 同一联动；对已禁用（或新建即禁用）的签发方不再写吊销事件。
    */
   @PUT
   @Path("/{issuer}/{kid}")
@@ -122,7 +131,9 @@ public class GuardFactIssuerResource {
       Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
       return switch (store.upsert(tenant.get(), issuer, kid, publicKey, enabled, notAfter,
           identityResolver.performedBy(), now)) {
-        case UpsertResult.Saved saved -> Response.ok(view(saved.row())).build();
+        case UpsertResult.Saved saved when enabled -> Response.ok(view(saved.row())).build();
+        case UpsertResult.Saved saved -> revoke(tenant.get(), issuer, kid,
+            () -> Response.ok(view(store.find(tenant.get(), issuer, kid).orElseThrow())).build());
         case UpsertResult.Conflict conflict -> error(Response.Status.CONFLICT, conflict.code(), conflictMessage(conflict));
       };
     } catch (InvalidIssuerException bad) {
@@ -130,7 +141,7 @@ public class GuardFactIssuerResource {
     }
   }
 
-  /** 软删：置 {@code enabled=false}；已禁用的重复删除同样 204，本租户不存在 404 空体。 */
+  /** 软删即吊销：置 {@code enabled=false} 并联动；已禁用的重复删除同样 204（不再写事件），本租户不存在 404 空体。 */
   @DELETE
   @Path("/{issuer}/{kid}")
   public Response delete(@PathParam("issuer") String issuer, @PathParam("kid") String kid) {
@@ -141,9 +152,20 @@ public class GuardFactIssuerResource {
     if (tenant.isEmpty()) {
       return tenantRequired();
     }
-    return store.disable(tenant.get(), issuer, kid)
-        ? Response.noContent().build()
-        : Response.status(Response.Status.NOT_FOUND).build();
+    if (store.find(tenant.get(), issuer, kid).isEmpty()) {
+      return Response.status(Response.Status.NOT_FOUND).build();
+    }
+    return revoke(tenant.get(), issuer, kid, () -> Response.noContent().build());
+  }
+
+  /** 吊销并联动；完成后返回 {@code onDone} 的响应，联动未完成时 503 {@code receipt_unavailable}。 */
+  private Response revoke(String tenantId, String issuer, String kid, Supplier<Response> onDone) {
+    try {
+      revocations.revoke(tenantId, issuer, kid, identityResolver.performedBy());
+      return onDone.get();
+    } catch (FactIssuerRevocationIncompleteException e) {
+      return error(Response.Status.SERVICE_UNAVAILABLE, "receipt_unavailable", e.getMessage());
+    }
   }
 
   /**

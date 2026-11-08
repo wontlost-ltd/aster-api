@@ -7,6 +7,7 @@ import io.aster.guard.api.GuardApprovalView;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardDecisionResponse.ApprovalView;
 import io.aster.guard.api.GuardDecisionResponse.ReceiptView;
+import io.aster.guard.provenance.InputSourceResolver;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptSigner;
 import io.aster.guard.receipt.ReceiptSigningKeys;
@@ -60,6 +61,10 @@ class GuardApprovalServiceTest {
   /** 模拟加锁后的 now：审批转 ALLOW 的收据 issuedAt 必须取它。 */
   private static final Instant LOCKED_NOW = Instant.parse("2026-11-08T10:10:00.123456Z");
 
+  /** 这里的决策都不带签名事实：签发方吊销检查对空集合不查表，因此不需要签发方存储。 */
+  private static final InputSourceResolver NO_FACT_ISSUERS =
+      new InputSourceResolver(null, Clock.fixed(LOCKED_NOW, ZoneOffset.UTC));
+
   private GuardDecisionStore store;
   private AuditChainAppender appender;
   private final ObjectMapper json = new ObjectMapper();
@@ -75,7 +80,7 @@ class GuardApprovalServiceTest {
     Clock clock = Clock.fixed(LOCKED_NOW, ZoneOffset.UTC);
     signer = new ExecutionReceiptSigner(ReceiptSigningKeys.parse(KEYS, "k1", clock), Duration.ofMinutes(5), clock);
     service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json,
-        new ExecutionReceiptIssuer(signer, clock));
+        new ExecutionReceiptIssuer(signer, clock), NO_FACT_ISSUERS);
     when(appender.appendSync(any())).thenReturn(new AppendedRecord(9001L, APPROVAL_HASH, DECISION_HASH));
     when(store.completeApproval(any(), any())).thenAnswer(inv -> applyWrite(inv.getArgument(1)));
   }
@@ -470,7 +475,7 @@ class GuardApprovalServiceTest {
     GuardApprovalEntity a = pending(DPO);
     ExecutionReceiptIssuer unavailable = mock(ExecutionReceiptIssuer.class);
     when(unavailable.available()).thenReturn(false);
-    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable, NO_FACT_ISSUERS);
 
     assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
     // 模拟重试时重新读到的审批行（mock 返回同一实例，服务在校验后已就地写入目标状态）
@@ -486,7 +491,7 @@ class GuardApprovalServiceTest {
     GuardApprovalEntity a = pending(DPO);
     ExecutionReceiptIssuer unavailable = mock(ExecutionReceiptIssuer.class);
     when(unavailable.available()).thenReturn(false);
-    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable, NO_FACT_ISSUERS);
 
     GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), false, "no");
 
@@ -509,7 +514,7 @@ class GuardApprovalServiceTest {
     ExecutionReceiptSigner expiring = new ExecutionReceiptSigner(ReceiptSigningKeys.parse(config, "k1", running),
         Duration.ofMinutes(5), running);
     service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json,
-        new ExecutionReceiptIssuer(expiring, running));
+        new ExecutionReceiptIssuer(expiring, running), NO_FACT_ISSUERS);
     GuardApprovalEntity a = pending(DPO);
     now[0] = notAfter;
 
@@ -525,7 +530,7 @@ class GuardApprovalServiceTest {
     when(broken.available()).thenReturn(true);
     when(broken.issue(any(), any(), any(), anyLong(), any())).thenThrow(
         new io.aster.guard.receipt.ExecutionReceiptUnavailableException("down", null));
-    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, broken);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, broken, NO_FACT_ISSUERS);
 
     assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
     assertThat(writes).isEmpty();

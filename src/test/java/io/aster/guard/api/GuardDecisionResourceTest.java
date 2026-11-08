@@ -781,7 +781,7 @@ class GuardDecisionResourceTest {
     Response first = postRaw(withFacts(amountFact(signer).sign()), key);
     String decisionId = first.jsonPath().getString("decisionId");
     String storedJson = decisionRow(decisionId).responseJson;
-    assertThat(factIssuerStore.disable(TENANT, TestFactSigner.ISSUER, TestFactSigner.KID)).isTrue();
+    assertThat(factIssuerStore.markRevoked(TENANT, TestFactSigner.ISSUER, TestFactSigner.KID)).isTrue();
     long auditBefore = auditRows();
 
     Response replay = postRaw(withFacts(), key);
