@@ -1,5 +1,6 @@
 package io.aster.guard;
 
+import io.aster.guard.provenance.GuardFactIssuerEntity;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.persistence.PersistenceException;
@@ -25,6 +26,7 @@ class GuardEntitiesPersistenceTest {
     QuarkusTransaction.requiringNew().run(() -> {
       GuardApprovalEntity.delete("tenantId in (?1, ?2)", tenant, otherTenant);
       GuardDecisionEntity.delete("tenantId in (?1, ?2)", tenant, otherTenant);
+      GuardFactIssuerEntity.delete("tenantId in (?1, ?2)", tenant, otherTenant);
     });
   }
 
@@ -129,5 +131,78 @@ class GuardEntitiesPersistenceTest {
 
     past.status = GuardApprovalStatus.APPROVED;
     assertThat(past.isExpired(now)).isFalse();
+  }
+
+  /** V6.36.0（ADR 0040 §11 D4）：决策行来源列与审批行过期原因往返；旧行三列为 null。 */
+  @Test
+  void provenanceColumnsRoundTrip() {
+    Instant factExpiresAt = Instant.parse("2026-11-07T01:10:00Z");
+    GuardDecisionEntity d = decision(tenant, null);
+    d.verifiedFields = "[\"context.amount\",\"principal.id\"]";
+    d.factIssuers = "[\"idp.example.com#2026-11\"]";
+    d.factExpiresAt = factExpiresAt;
+    GuardDecisionEntity legacy = decision(tenant, null);
+    GuardApprovalEntity a = approval(d, Instant.now().plus(1, ChronoUnit.HOURS));
+    a.expiredReason = "fact_issuer_revoked";
+    QuarkusTransaction.requiringNew().run(() -> {
+      d.persistAndFlush();
+      legacy.persistAndFlush();
+      a.persistAndFlush();
+    });
+
+    QuarkusTransaction.requiringNew().run(() -> {
+      GuardDecisionEntity found = GuardDecisionEntity.findById(d.id);
+      assertThat(found.verifiedFields).isEqualTo("[\"context.amount\", \"principal.id\"]");
+      assertThat(found.factIssuers).isEqualTo("[\"idp.example.com#2026-11\"]");
+      assertThat(found.factExpiresAt).isEqualTo(factExpiresAt);
+      // Task 14 按 jsonb 包含查询定位依赖某签发方的决策
+      assertThat(GuardDecisionEntity.getEntityManager().createNativeQuery(
+              "select count(*) from guard_decisions where tenant_id = ?1 and fact_issuers @> cast(?2 as jsonb)")
+          .setParameter(1, tenant).setParameter(2, "[\"idp.example.com#2026-11\"]").getSingleResult())
+          .isEqualTo(1L);
+
+      GuardDecisionEntity old = GuardDecisionEntity.findById(legacy.id);
+      assertThat(old.verifiedFields).isNull();
+      assertThat(old.factIssuers).isNull();
+      assertThat(old.factExpiresAt).isNull();
+
+      assertThat(GuardApprovalEntity.findByDecision(d.id).orElseThrow().expiredReason).isEqualTo("fact_issuer_revoked");
+    });
+  }
+
+  /** guard_fact_issuers：(tenant_id, issuer, kid) 唯一，跨租户同名可并存。 */
+  @Test
+  void factIssuerKeyIsUniquePerTenant() {
+    QuarkusTransaction.requiringNew().run(() -> {
+      issuer(tenant).persistAndFlush();
+      issuer(otherTenant).persistAndFlush();
+    });
+
+    assertThatThrownBy(() -> QuarkusTransaction.requiringNew().run(() -> issuer(tenant).persistAndFlush()))
+        .isInstanceOf(PersistenceException.class);
+
+    QuarkusTransaction.requiringNew().run(() -> {
+      GuardFactIssuerEntity found = GuardFactIssuerEntity.findById(
+          new GuardFactIssuerEntity.Key(tenant, "idp.example.com", "2026-11"));
+      assertThat(found.alg).isEqualTo("Ed25519");
+      assertThat(found.publicKey).isEqualTo("A".repeat(43));
+      assertThat(found.enabled).isTrue();
+      assertThat(found.notAfter).isEqualTo(Instant.parse("2027-01-01T00:00:00Z"));
+      assertThat(found.createdBy).isEqualTo("u-admin");
+    });
+  }
+
+  private static GuardFactIssuerEntity issuer(String tenantId) {
+    GuardFactIssuerEntity e = new GuardFactIssuerEntity();
+    e.tenantId = tenantId;
+    e.issuer = "idp.example.com";
+    e.kid = "2026-11";
+    e.alg = "Ed25519";
+    e.publicKey = "A".repeat(43);
+    e.enabled = true;
+    e.notAfter = Instant.parse("2027-01-01T00:00:00Z");
+    e.createdAt = Instant.parse("2026-11-08T00:00:00Z");
+    e.createdBy = "u-admin";
+    return e;
   }
 }

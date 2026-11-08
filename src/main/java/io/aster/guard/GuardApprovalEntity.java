@@ -33,6 +33,8 @@ public class GuardApprovalEntity extends PanacheEntityBase {
   @Column(name = "comment") public String comment;
   @Column(name = "expires_at", nullable = false) public Instant expiresAt;
   @Column(name = "receipt_audit_id") public Long receiptAuditId;
+  /** 转 EXPIRED 的原因（ADR 0040 §11 D4）：自然过期为 null，签发方吊销为 {@code fact_issuer_revoked}。 */
+  @Column(name = "expired_reason", length = 32) public String expiredReason;
   @Column(name = "created_at", nullable = false) public Instant createdAt = Instant.now();
 
   public static Optional<GuardApprovalEntity> findByDecision(UUID decisionId) {
