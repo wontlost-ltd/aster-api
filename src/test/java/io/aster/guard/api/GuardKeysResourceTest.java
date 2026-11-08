@@ -1,9 +1,12 @@
 package io.aster.guard.api;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.guard.receipt.ReceiptSigningKeys;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
+import io.quarkus.arc.Arc;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.response.Response;
 import org.junit.jupiter.api.Test;
@@ -45,8 +48,8 @@ class GuardKeysResourceTest {
 
   private static String toJson(Object body) {
     try {
-      return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(body);
-    } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+      return new ObjectMapper().writeValueAsString(body);
+    } catch (JsonProcessingException e) {
       throw new IllegalStateException(e);
     }
   }
@@ -112,7 +115,7 @@ class GuardKeysResourceTest {
   }
 
   @Test
-  void requiresBearer() {
+  void resourceDeclaresMemberRole() {
     assertThat(GuardKeysResource.class.getAnnotation(RequireRole.class).value()).isEqualTo(Role.MEMBER);
     // 路径落在 ApiKeyAuthFilter.shouldProtect 的 /api/v1/guard/ 前缀内：见 ApiKeyAuthFilterShouldProtectTest
   }
@@ -136,7 +139,7 @@ class GuardKeysResourceTest {
         new EdECPublicKeySpec(NamedParameterSpec.ED25519, new EdECPoint(xOdd, new BigInteger(1, be))));
 
     byte[] message = "guard-keys-verify".getBytes(StandardCharsets.UTF_8);
-    ReceiptSigningKeys keys = io.quarkus.arc.Arc.container().instance(ReceiptSigningKeys.class).get();
+    ReceiptSigningKeys keys = Arc.container().instance(ReceiptSigningKeys.class).get();
     Signature signer = Signature.getInstance("Ed25519");
     signer.initSign(keys.find(jwk.get("kid").asText()).orElseThrow().keyPair().getPrivate());
     signer.update(message);

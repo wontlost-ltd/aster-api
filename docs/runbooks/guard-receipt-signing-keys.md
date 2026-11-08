@@ -27,13 +27,18 @@
 
 私钥种子只在本机终端和 Vault 中出现，不要写入仓库、工单或聊天记录。
 
+需要 **OpenSSL 3.x**。macOS 自带的是 LibreSSL，会报 `Algorithm ed25519 not found`；请先 `brew install openssl@3`，
+并用 `/opt/homebrew/opt/openssl@3/bin/openssl`（Intel Mac 为 `/usr/local/opt/openssl@3/bin/openssl`）替换下面命令里的 `openssl`。
+先用 `openssl version` 确认输出以 `OpenSSL 3` 开头。
+
 ```bash
 # 生成 Ed25519 私钥，取 DER 末尾 32 字节种子，转为 base64url（无填充）
-openssl genpkey -algorithm ed25519 -outform DER \
-  | tail -c 32 | openssl base64 -A | tr '+/' '-_' | tr -d '='
+SEED=$(openssl genpkey -algorithm ed25519 -outform DER \
+  | tail -c 32 | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+[ "${#SEED}" -eq 43 ] && echo ok   # 不是 ok 就重新生成；不要 echo "$SEED" 到共享终端
 ```
 
-输出应恰为 43 个字符。把它填入某个 key 的 `privateKey`。kid 建议用 `YYYY-MM` 加序号字母（如 `2026-11a`）。
+种子必须恰为 43 个字符（上面的自检输出 `ok`）。把 `$SEED` 填入某个 key 的 `privateKey`。kid 建议用 `YYYY-MM` 加序号字母（如 `2026-11a`）。
 
 ## 3. 首次部署（revision 1）
 
@@ -42,9 +47,9 @@ openssl genpkey -algorithm ed25519 -outform DER \
 1. **Vault**：写入 `apps/aster-api-guard-receipt`，属性 `signing-keys` 为 `{"revision":1,"keys":[{"kid":"2026-11a","privateKey":"<第 2 节生成的种子>"}]}`，属性 `active-kid` 为 `2026-11a`。
 2. **k3s**：`ExternalSecret aster-api-guard-receipt-keys`（`secretStoreRef: vault-backend`，两项 `data` 指向 `apps/aster-api-guard-receipt`）；`aster-api` 容器增加 `ASTER_GUARD_RECEIPT_SIGNING_KEYS`、`ASTER_GUARD_RECEIPT_ACTIVE_KID` 两个 `secretKeyRef`。同步确认（只看键名，不解码值）：
    ```bash
-   kubectl -n aster-lang get externalsecret aster-api-guard-receipt-keys \
+   kubectl -n aster-cloud get externalsecret aster-api-guard-receipt-keys \
      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'      # 期望 True
-   kubectl -n aster-lang get secret aster-api-guard-receipt-keys -o jsonpath='{.data}' | jq 'keys'
+   kubectl -n aster-cloud get secret aster-api-guard-receipt-keys -o jsonpath='{.data}' | jq 'keys'
    ```
 3. **镜像**：Secret 就绪后再发布含执行收据的 aster-api 镜像。新 Pod 日志应含 `签名密钥已加载 revision=1 kids=[2026-11a]`。缺密钥时 Pod 启动失败（CrashLoopBackOff）而旧 ReplicaSet 继续服务，这是有意的 fail-fast。
 4. **验收**：
@@ -55,7 +60,7 @@ openssl genpkey -algorithm ed25519 -outform DER \
 
 ## 4. 计划轮换与退役
 
-每一步都是一次配置变更：改 Vault → 等 ExternalSecret 同步 → `kubectl -n aster-lang rollout restart deployment/aster-api` → `kubectl -n aster-lang rollout status deployment/aster-api` → 用 `/keys` 核对 `revision` 与 kid 列表。
+每一步都是一次配置变更：改 Vault → 等 ExternalSecret 同步 → `kubectl -n aster-cloud rollout restart deployment/aster-api` → `kubectl -n aster-cloud rollout status deployment/aster-api` → 用 `/keys` 核对 `revision` 与 kid 列表。
 
 1. **加入新 key**：`keys` 追加新 kid，`revision` +1，`active-kid` 不变。目的：让所有验签方先从 `/keys` 拿到新公钥（等至少一个 `max-age=300` 周期）。
 2. **切换签发**：`active-kid` 改为新 kid，`revision` +1。此后新收据由新 key 签发，旧 key 仍发布，旧收据照常验签。
@@ -69,8 +74,8 @@ openssl genpkey -algorithm ed25519 -outform DER \
 2. 把泄露 key 标为 `"revoked": true`，**`revision` +1**。已撤销 key 不再出现在 `/keys`，其收据 consume 返回 409 `kid_revoked`。
 3. 更新 Vault，等 ExternalSecret 同步后执行：
    ```bash
-   kubectl -n aster-lang rollout restart deployment/aster-api
-   kubectl -n aster-lang rollout status deployment/aster-api
+   kubectl -n aster-cloud rollout restart deployment/aster-api
+   kubectl -n aster-cloud rollout status deployment/aster-api
    ```
 4. **`rollout status` 成功完成才算撤销完成**（所有 Pod 都已加载新配置）。随后用 `/keys` 确认 `revision` 已增加且该 kid 消失。
 5. 离线验签方依赖缓存的 `/keys`，对撤销的感知最多滞后 300 秒（`max-age=300`）；需要更短窗口时只能要求执行方强制刷新缓存。

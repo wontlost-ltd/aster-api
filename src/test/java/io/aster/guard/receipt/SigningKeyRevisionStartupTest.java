@@ -39,6 +39,14 @@ class SigningKeyRevisionStartupTest {
   }
 
   @Test
+  void loadedMessageListsRevisionAndKidsOnly() {
+    assertThat(SigningKeyRevisionStartup.loadedMessage(1, List.of("2026-11a")))
+        .isEqualTo("签名密钥已加载 revision=1 kids=[2026-11a]");
+    assertThat(SigningKeyRevisionStartup.loadedMessage(7, List.of("a", "b")))
+        .isEqualTo("签名密钥已加载 revision=7 kids=[a, b]");
+  }
+
+  @Test
   void startupRecordsConfiguredRevision() {
     assertThat(keys.revision()).isEqualTo(1L);
     GuardSigningKeyRevisionEntity row = QuarkusTransaction.requiringNew().call(() ->

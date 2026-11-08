@@ -8,6 +8,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import org.jboss.logging.Logger;
 
 import java.time.Clock;
 import java.util.List;
@@ -28,6 +29,7 @@ import java.util.List;
 public class SigningKeyRevisionStartup {
   static final String REGRESSION_MESSAGE = "签名密钥配置 revision 回退";
 
+  private static final Logger LOG = Logger.getLogger(SigningKeyRevisionStartup.class);
   private static final ObjectMapper JSON = new ObjectMapper();
   /** 常量锁键；与其他 advisory 锁（按租户 / 策略派生的键）键空间不会有意重叠。 */
   private static final String LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('guard_signing_key_revisions'))";
@@ -40,7 +42,14 @@ public class SigningKeyRevisionStartup {
   @Inject Clock clock;
 
   void onStart(@Observes StartupEvent event) {
-    check(keys.revision(), keys.all().stream().map(ReceiptSigningKeys.SigningKey::kid).toList());
+    List<String> kids = keys.all().stream().map(ReceiptSigningKeys.SigningKey::kid).toList();
+    check(keys.revision(), kids);
+    LOG.info(loadedMessage(keys.revision(), kids));
+  }
+
+  /** 启动成功日志，运维手册以此确认新配置已加载；只含 revision 与 kid，绝不含密钥材料。 */
+  static String loadedMessage(long revision, List<String> kids) {
+    return "签名密钥已加载 revision=" + revision + " kids=[" + String.join(", ", kids) + "]";
   }
 
   /**
