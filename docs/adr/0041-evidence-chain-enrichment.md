@@ -236,7 +236,7 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 
 ## 11. 2026-11 修订：决策事件与证据包的逐字段来源（R61）
 
-状态：**PROPOSED**（2026-11-07 起草，待用户评审）。本节定稿前不得据此合并实现；定稿后与正文冲突时以本节为准。
+状态：**ACCEPTED**（2026-11-08 用户确认；实施计划 docs/superpowers/plans/2026-11-08-guard-receipts-and-input-provenance.md）。定稿后与正文冲突时以本节为准。
 相关：wontlost-ltd/aster-api#461；ADR 0040 §11 R60（请求契约与验签）、ADR 0046 §11 R62（Profile 要求）、ADR 0042 §11 R59（审批快照键，同车次）。
 
 ### 11.1 现状
@@ -288,7 +288,7 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 
 ## 12. 2026-11 修订：执行收据的消耗与结果事件入链（R64）
 
-状态：**PROPOSED**（2026-11-07 起草，待用户评审）。本节定稿前不得据此合并实现；定稿后与正文冲突时以本节为准。
+状态：**ACCEPTED**（2026-11-08 用户确认；实施计划 docs/superpowers/plans/2026-11-08-guard-receipts-and-input-provenance.md）。定稿后与正文冲突时以本节为准。
 相关：wontlost-ltd/aster-api#463；ADR 0040 §12 R63（执行收据、consume / result 端点）、ADR 0054（执行点）、#465（对账消费本节事件）。
 
 ### 12.1 现状

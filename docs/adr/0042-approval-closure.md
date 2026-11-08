@@ -229,7 +229,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 
 ## 11. 2026-11 修订：审批视图携带脱敏后的决策输入与输入快照哈希（R59）
 
-状态：**PROPOSED**（2026-11-07 起草，待用户评审）。本节定稿前不得据此合并实现；定稿后与正文冲突时以本节为准。
+状态：**ACCEPTED**（2026-11-08 用户确认；实施计划 docs/superpowers/plans/2026-11-08-guard-receipts-and-input-provenance.md）。定稿后与正文冲突时以本节为准。
 相关：wontlost-ltd/aster-api#460（EU AI Act Art.14 人工监督：审批人须能理解输入）；ADR 0040 §3.3 / §5.2（不存明文 context）、ADR 0041 §5.2（`reviewers[]`）、ADR 0044 §3.1（14(4)(a)/(b) 判定）、aster-api ADR 0015「已锁决策」（租户隔离铁律、visibility-safe 不泄露存在性）、ADR 0040 §11 R60（字段来源，与本节同车次评审）。
 
 ### 11.1 现状（已核对 origin/main 772855f）
@@ -244,7 +244,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 
 ### 11.2 决策
 
-**D1 存输入（只存需要人看的）。** 新表 `guard_decision_inputs`（Flyway `V6.35.0`）：`decision_id UUID PK → guard_decisions.id`、`tenant_id`、`action_json JSONB`（请求的 `GuardActionRequest.Action` 原样：principal / action / resource / context / agent；上界与 ADR 0040 §2.2 一致，context ≤ 64 KB）、`context_hash`（与 `guard_decisions.context_hash` 同值，读取时复核）、`pii_marks JSONB`（决策时算出的字段标记快照，D2）、`created_at`。
+**D1 存输入（只存需要人看的）。** 新表 `guard_decision_inputs`（Flyway `V6.37.0`）：`decision_id UUID PK → guard_decisions.id`、`tenant_id`、`action_json JSONB`（请求的 `GuardActionRequest.Action` 原样：principal / action / resource / context / agent；上界与 ADR 0040 §2.2 一致，context ≤ 64 KB）、`context_hash`（与 `guard_decisions.context_hash` 同值，读取时复核）、`pii_marks JSONB`（决策时算出的字段标记快照，D2）、`created_at`。
 
 - 只对 `outcome ∈ {REQUIRE_APPROVAL, ESCALATE}` 的决策写入：ALLOW / DENY 没有人要看，ADR 0040 §3.3「决策行不存明文 context」对这两类结论维持原状。
 - 与决策行、审批行写在**同一个** `requiringNew` 事务里（ADR 0040 §3.3 行 214 的原则）：不会出现「有待审批却没有输入」的半写状态。`from-evidence` 决策同样写入（`action` 来自 cloud 以 HMAC v3 签过的请求体，§3.1）。
@@ -292,7 +292,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 `inputSnapshotHash = sha256-sorted-json/v1`（ADR 0040 §5.2 的同一配方）作用于服务端**实际返回**的视图体 `{ decisionId, contextHash, input, piiMarks, maskRules: "v1", revealed }`；视图自带该哈希。审批时：
 
 1. approve / reject 请求体增加可选 `inputSnapshotHash`。服务端按「审批人角色 + `input_revealed_at` 是否已置」重算当前视图哈希：相等 → `input_snapshot_matched = true`；不等 → 409 `input_snapshot_mismatch`（输入不可变，只会在脱敏规则版本变化或解除状态变化时出现，UI 提示刷新）；未提供（旧 SDK）→ 记服务端算出的哈希，`matched = false`。
-2. `guard_approvals` 新列（同 `V6.35.0`）：`input_snapshot_hash VARCHAR(64)`、`input_snapshot_matched BOOLEAN`、`input_revealed_at`。
+2. `guard_approvals` 新列（同 `V6.37.0`）：`input_snapshot_hash VARCHAR(64)`、`input_snapshot_matched BOOLEAN`、`input_revealed_at`。
 3. 审批事件 metadata 新键 `inputSnapshotHash`（身份键：加入 `AuditChainAppender.isRedactionExempt` 白名单，永不缩短）、`inputSnapshotMatched`、`inputRevealed`、`inputStatus`（`available | unavailable | purged | integrity_failed`）；`comment` 仍是唯一可缩短的键（ADR 0040 §5.2）。过期事件（SYSTEM）不写这些键。
 4. **证明边界（写清，不夸大）。** `inputSnapshotHash` 证明的是：服务端在审批提交时刻、按该审批人角色与解除状态算出的视图哈希是 H；`inputSnapshotMatched = true` 进一步证明：提交审批的客户端送来了同一个 H，即**客户端持有与当前视图一致的哈希**。它**不**证明审批人本人实际阅读过该视图，也不证明提交哈希的客户端就是渲染视图给审批人的那个客户端（同一会话的脚本可以先 GET 再 POST）。审计意义上它排除的是「审批时视图与审批人所能获得的视图不一致」与「旧 SDK 根本没取过视图」两类情形；「人确实看了」属于流程与 UI 层证据（如收件箱在未展开输入面板时禁用按钮），不由本哈希承担。更强的证明（如客户端对视图签名、浏览器端留痕）需另行立项。它也不是明文输入的哈希（明文由 `contextHash` 负责）；两者并列保存，审计方可核对：输入未变（contextHash）、审批所对应的是该输入的某个脱敏投影（inputSnapshotHash + maskRules + revealed）。
 
@@ -331,7 +331,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 
 ### 11.4 分阶段落地顺序
 
-① 本节定稿（与 ADR 0040 §11 R60 同车次评审，字段来源徽标与 PII 徽标在收件箱同一面板）→ ② **aster-api**（探针 → `V6.35.0` → 输入落库与标记计算 → 输入端点 → approve 快照 → 事件键与收据接口 → 契约 golden）；纯 aster-api 改动，**不需要引擎发版列车**（`PiiType` 已在 Core IR 里）→ ③ aster-guard SDK（可选字段与新方法，独立版本）→ ④ aster-cloud（client、路由、收件箱面板、证据包 v6、Article 14 判定）。② 与 ④ 反序不坏：旧 cloud 不读新字段；新 cloud 对旧 api 的输入端点 404 → 收件箱按「不可用」显示。
+① 本节定稿（与 ADR 0040 §11 R60 同车次评审，字段来源徽标与 PII 徽标在收件箱同一面板）→ ② **aster-api**（探针 → `V6.37.0` → 输入落库与标记计算 → 输入端点 → approve 快照 → 事件键与收据接口 → 契约 golden）；纯 aster-api 改动，**不需要引擎发版列车**（`PiiType` 已在 Core IR 里）→ ③ aster-guard SDK（可选字段与新方法，独立版本）→ ④ aster-cloud（client、路由、收件箱面板、证据包 v6、Article 14 判定）。② 与 ④ 反序不坏：旧 cloud 不读新字段；新 cloud 对旧 api 的输入端点 404 → 收件箱按「不可用」显示。
 
 ### 11.5 已选默认与可改项
 

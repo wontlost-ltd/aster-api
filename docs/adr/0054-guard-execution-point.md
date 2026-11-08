@@ -1,6 +1,6 @@
 # ADR 0054：aster-guard 执行点 —— 包裹式 MCP 代理与 GuardClient 的执行契约
 
-- 状态：**PROPOSED**（2026-11-07 起草，待用户评审；定稿前不得据此合并实现）
+- 状态：**ACCEPTED**（2026-11-08 用户确认；实施计划 docs/superpowers/plans/2026-11-08-guard-receipts-and-input-provenance.md）
 - 提出：2026-11-07；来源 wontlost-ltd/aster-api#464（「如何确认治理未被绕过」讨论第 2 项）
 - 相关：ADR 0040（Action Guard；§6 为 aster-guard 仓首版设计，本 ADR 细化并在冲突处取代之；§12 R63 执行收据与 consume）、ADR 0041 §12 R64（consume / result 事件）、ADR 0042 §3（from-evidence 执行路径）、#465（对账）、#466（绕过套件）
 - 实现仓：`aster-cloud/aster-guard`（本地 `/Users/rpang/IdeaProjects/aster-guard`，远程 `https://github.com/aster-cloud/aster-guard`，private，0.1.0 未发布）
@@ -79,7 +79,7 @@ const outcome = await guard.run(
 3. `decide`（现有，含 `waitFor` 到 `--approval-timeout`）。
 4. `verifyReceipt`；`consume`。
 5. `upstream.callTool({ name, arguments: args })`——`args` 为上游工具收到的参数，与 `action.context` 的关系由 §3.2 的不变式保证。
-6. `reportResult`：上游成功 → `executed`，`resultHash` 为对 `CallToolResult.content` 的 `sha256-sorted-json/v1`；上游 `isError` → `failed`；下游取消（`extra.signal.aborted`，现状 `proxy.ts:131`）发生在 consume 之后、转发之前 → 不转发，`aborted`。
+6. `reportResult`：上游成功 → `executed`，`resultHash` 为对 `CallToolResult.content` 的 `jcs-sha256/v1`；上游 `isError` → `failed`；下游取消（`extra.signal.aborted`，现状 `proxy.ts:131`）发生在 consume 之后、转发之前 → 不转发，`aborted`。
 
 **返回形态**（`CallToolResult`，同时给 `content[0].text` 与 `structuredContent`，后者是机器可读契约）：
 
@@ -116,7 +116,7 @@ const outcome = await guard.run(
 
 1. **规范化只排序、不改值。** 代理对下游 `arguments` 做一次 `canonicalize`：递归按键排序，**null 原样保留**，不删键、不改类型、不补缺省。送去 Guard 的 `action.context` 与转发给上游工具的 `arguments` 是**同一个规范化后的对象**（同一引用，序列化后逐字节相同）。0.1.0 的「check 之前剔除 null」（ADR 0040 §6）**废止**：aster-api 当前拒绝 `context` 中的 null 值（§2.2「值不得为 null」），本 ADR 要求 aster-api 在 R63 中放开 `context` 的 null 值（`GuardActionMapper` 只需允许 null 叶子；规则读到 null 与读到缺省键的行为由规则作者负责）。
 2. **缺失 ≠ null ≠ `""`。** 三者是三个不同的 JSON 文档，哈希各不相同；工具若把「缺省」与「显式 null」当作不同语义，两次调用也会得到两个不同的 `actionHash`，不会共用一份收据。
-3. **`digestArgs` 的摘要输入**：该键的值先经同一 `sha256-sorted-json/v1` 序列化，再 sha256，`context` 中以 `{ "$sha256": "<hex>" }` 代入；值为 null 时摘要输入是字面量 `null`（4 字节），键缺失时 `context` 中**没有**该键（不生成 `$sha256`）。转发给上游的仍是原值（摘要只替换 Guard 看到的副本——这是不变式 1 的唯一例外，且被摘要绑定）。
+3. **`digestArgs` 的摘要输入**：该键的值先经同一 `jcs-sha256/v1` 序列化，再 sha256，`context` 中以 `{ "$sha256": "<hex>" }` 代入；值为 null 时摘要输入是字面量 `null`（4 字节），键缺失时 `context` 中**没有**该键（不生成 `$sha256`）。转发给上游的仍是原值（摘要只替换 Guard 看到的副本——这是不变式 1 的唯一例外，且被摘要绑定）。
 4. `digestArgs` 之外的键原值进入 `context`；不存在「不进 context 也不进摘要」的参数。没有 `excludeArgs`——这正是 #464 第 3 条「哪些参数进 actionHash」的回答：全部，只是形式有原值与摘要两种。
 
 正反例（`actions.send_email = { resourceFrom: "to", digestArgs: ["body"] }`）：
@@ -150,7 +150,7 @@ const outcome = await guard.run(
 
 ## 4. 决策三：`hashAction` 与 golden 向量
 
-`sha256-sorted-json/v1` 的 TS 实现（ADR 0040 §12 D2 的字节级定义）：递归按键 UTF-16 码元序排序、`JSON.stringify` 无空白；整数（`Number.isSafeInteger`）十进制；非安全整数与非整数按 Java `Double.toString` 形态（实现一个 `javaDoubleToString`，向量覆盖 `1.5 / 1e21 / 0.1 / -0.0`）；字符串按 JSON 标准转义、非 ASCII 原样。向量文件 `test/fixtures/action-hash-vectors.json` 与 aster-api `src/test/resources/guard/action-hash-vectors.json` 逐字节相同；两仓各自跑 `vectors.every(v => hashAction(v.input) === v.sha256)`。任何一方改配方必须同时改两份向量并升版 `/v2`（ADR 0040 §12 D2 的 fail-closed 保证：不一致只会得到 409，不会放行）。
+`jcs-sha256/v1` 的 TS 实现（ADR 0040 §12 D2 的字节级定义，RFC 8785 JCS）：对象成员按键的 UTF-16 码元序排序、无空白；字符串先解码转义再按 RFC 8785 输出，不做 Unicode 正规化；数字直接用 `Number#toString`（即 RFC 8785 §3.2.2.3 的 ECMAScript 形态），整数绝对值超过 2^53−1 或非有限数在发送前即拒绝（须以字符串发送）。向量文件 `test/fixtures/jcs-sha256-v1-vectors.json` 与 aster-api `src/test/resources/guard/jcs-sha256-v1-vectors.json` 逐字节相同；两仓各自跑 `vectors.every(v => hashAction(v.input) === v.sha256)`。任何一方改配方必须同时改两份向量并升版 `/v2`（ADR 0040 §12 D2 的 fail-closed 保证：不一致只会得到 409，不会放行）。
 
 ---
 
