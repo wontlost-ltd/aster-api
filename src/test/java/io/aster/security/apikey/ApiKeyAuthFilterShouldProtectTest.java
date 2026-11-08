@@ -160,6 +160,7 @@ class ApiKeyAuthFilterShouldProtectTest {
         assertTrue(call("/api/v1/guard/decisions/abc"));
         assertTrue(call("/api/v1/guard/approvals"));
         assertTrue(call("/api/v1/guard/approvals/x/approve"));
+        assertTrue(call("/api/v1/guard/keys"));
     }
 
     @Test

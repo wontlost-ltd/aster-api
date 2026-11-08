@@ -69,7 +69,11 @@ trace 响应包含: `{"decisionTrace":{"moduleName":"...","functionName":"...","
 **GET /metrics** -- 聚合指标（READY/RUNNING/COMPLETED/FAILED/COMPENSATING/COMPENSATED/COMPENSATION_FAILED 计数）。
 **GET /by-status/{status}?limit=100** -- 按状态查询 workflow 列表。
 
-## 5 错误处理
+## 5 Action Guard `/api/v1/guard`（MEMBER）
+
+**GET /keys** -- 执行收据验签公钥（JWKS：`alg=EdDSA`、`crv=Ed25519`、`kty=OKP`、`use=sig`、`kid`、`x`=base64url 32 字节公钥，有 `notAfter` 时附 `exp` 秒）与配置 `revision`；仅列出未过期且未撤销的 key，响应头 `Cache-Control: max-age=300`。密钥运维见 `docs/runbooks/guard-receipt-signing-keys.md`。
+
+## 6 错误处理
 
 评估端点业务错误: `{"result":null,"executionTimeMs":0,"error":"CNL 解析失败: ..."}`
 
