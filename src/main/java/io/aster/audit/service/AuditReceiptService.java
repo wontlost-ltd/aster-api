@@ -3,17 +3,22 @@ package io.aster.audit.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import io.aster.audit.dto.ReceiptLookupResponse;
 import io.aster.audit.dto.ReceiptLookupResponse.Approval;
+import io.aster.audit.dto.ReceiptLookupResponse.Consume;
 import io.aster.audit.dto.ReceiptLookupResponse.Receipt;
+import io.aster.audit.dto.ReceiptLookupResponse.Result;
+import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.common.JacksonMappers;
 import io.aster.policy.entity.AuditLog;
 import io.aster.policy.event.EventType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Function;
 
 /**
@@ -31,7 +36,8 @@ public class AuditReceiptService {
     public ReceiptLookupResponse byCorrelationIds(String tenantId, List<String> ids) {
         List<AuditLog> rows = AuditLog.findByCorrelationIds(tenantId, ids);
         List<Receipt> receipts = rows.stream().map(this::toReceipt).toList();
-        return new ReceiptLookupResponse(List.of(), missing(ids, found(receipts, Receipt::correlationId)), receipts);
+        return new ReceiptLookupResponse(List.of(), List.of(), missing(ids, found(receipts, Receipt::correlationId)),
+            receipts, List.of());
     }
 
     /**
@@ -41,15 +47,78 @@ public class AuditReceiptService {
     @Transactional(Transactional.TxType.SUPPORTS)
     public ReceiptLookupResponse byDecisionIds(String tenantId, List<String> ids) {
         List<AuditLog> rows = AuditLog.findByDecisionIds(tenantId, ids);
+        Map<String, GuardReceiptEntity> pointers = pointers(tenantId, ids);
         List<Receipt> receipts = rows.stream()
             .filter(r -> EventType.ACTION_GUARD_DECISION.name().equals(r.eventType))
-            .map(this::toReceipt).toList();
+            .map(r -> toReceipt(r, pointers.get(r.decisionId))).toList();
         Set<String> found = found(receipts, Receipt::decisionId);
         List<Approval> approvals = rows.stream()
             .filter(r -> EventType.ACTION_GUARD_APPROVAL.name().equals(r.eventType))
             .filter(r -> found.contains(r.decisionId))
             .map(this::toApproval).toList();
-        return new ReceiptLookupResponse(approvals, missing(ids, found), receipts);
+        List<AuditLog> hits = rows.stream().filter(r -> found.contains(r.decisionId)).toList();
+        return new ReceiptLookupResponse(approvals, consumes(hits, pointers), missing(ids, found), receipts,
+            results(hits, pointers));
+    }
+
+    /** 命中决策的收据行指针，键为小写 UUID 字符串；非法 UUID 的 id 不可能有收据行，直接跳过。 */
+    private static Map<String, GuardReceiptEntity> pointers(String tenantId, List<String> ids) {
+        List<UUID> uuids = ids.stream().map(AuditReceiptService::parseUuid).filter(java.util.Objects::nonNull).toList();
+        Map<String, GuardReceiptEntity> byId = new HashMap<>();
+        if (uuids.isEmpty()) {
+            return byId;
+        }
+        GuardReceiptEntity.<GuardReceiptEntity>list("tenantId = ?1 and decisionId in ?2", tenantId, uuids)
+            .forEach(e -> byId.put(e.decisionId.toString(), e));
+        return byId;
+    }
+
+    private static UUID parseUuid(String s) {
+        try {
+            return UUID.fromString(s);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /** 每条尝试事件一项（按链顺序）；判定事件按 attemptReceiptHash 回指尝试事件配对。 */
+    private List<Consume> consumes(List<AuditLog> rows, Map<String, GuardReceiptEntity> pointers) {
+        Map<String, String> outcomeByAttemptHash = new HashMap<>();
+        for (AuditLog r : rows) {
+            if (EventType.ACTION_GUARD_CONSUME_OUTCOME.name().equals(r.eventType)) {
+                Map<String, Object> m = meta(r);
+                outcomeByAttemptHash.putIfAbsent(text(m, "attemptReceiptHash"), text(m, "outcome"));
+            }
+        }
+        return rows.stream()
+            .filter(r -> EventType.ACTION_GUARD_CONSUME_ATTEMPT.name().equals(r.eventType))
+            .map(r -> {
+                Map<String, Object> m = meta(r);
+                GuardReceiptEntity p = pointers.get(r.decisionId);
+                boolean authoritative = p != null && r.id.equals(p.consumeAuditId);
+                String outcome = outcomeByAttemptHash.getOrDefault(r.currentHash,
+                    authoritative ? "crashed-unknown" : "unknown");
+                return new Consume(text(m, "actionHash"), r.id, text(m, "attemptId"), authoritative,
+                    r.currentHash, r.decisionId, text(m, "executorId"), outcome, r.timestamp);
+            }).toList();
+    }
+
+    private List<Result> results(List<AuditLog> rows, Map<String, GuardReceiptEntity> pointers) {
+        return rows.stream()
+            .filter(r -> EventType.ACTION_GUARD_RESULT.name().equals(r.eventType))
+            .map(r -> {
+                Map<String, Object> m = meta(r);
+                GuardReceiptEntity p = pointers.get(r.decisionId);
+                boolean authoritative = p != null && r.id.equals(p.resultAuditId);
+                return new Result(r.id, text(m, "attemptId"), authoritative, text(m, "consumeReceiptHash"),
+                    r.currentHash, r.decisionId, text(m, "errorCode"), text(m, "executorId"),
+                    text(m, "finishedAt"), text(m, "resultHash"), text(m, "status"), r.timestamp);
+            }).toList();
+    }
+
+    private Map<String, Object> meta(AuditLog r) {
+        Map<String, Object> m = parseMetadata(r.metadata);
+        return m == null ? Map.of() : m;
     }
 
     private static Set<String> found(List<Receipt> receipts, Function<Receipt, String> key) {
@@ -64,13 +133,17 @@ public class AuditReceiptService {
     }
 
     private Receipt toReceipt(AuditLog r) {
-        return new Receipt(r.id, r.correlationId, r.currentHash, r.decisionId, r.eventType,
+        return toReceipt(r, null);
+    }
+
+    private Receipt toReceipt(AuditLog r, GuardReceiptEntity pointer) {
+        return new Receipt(r.id, pointer == null ? null : pointer.consumeAuditId,
+            pointer == null ? null : pointer.resultAuditId, r.correlationId, r.currentHash, r.decisionId, r.eventType,
             r.hashVersion, parseMetadata(r.metadata), r.prevHash, r.timestamp);
     }
 
     private Approval toApproval(AuditLog r) {
-        Map<String, Object> m = parseMetadata(r.metadata);
-        Map<String, Object> meta = m == null ? Map.of() : m;
+        Map<String, Object> meta = meta(r);
         return new Approval(r.id, text(meta, "comment"), r.currentHash, r.timestamp, text(meta, "decidedBy"),
             r.decisionId, text(meta, "decisionReceiptHash"), text(meta, "outcome"),
             text(meta, "requiredRole"));
