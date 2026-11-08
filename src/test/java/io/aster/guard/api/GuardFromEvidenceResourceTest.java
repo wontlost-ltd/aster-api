@@ -71,10 +71,14 @@ class GuardFromEvidenceResourceTest {
         ApiKeyVerifyResult.valid("ak-ge-1", "user-ge", TENANT, "pro", "active", "MEMBER"));
   }
 
-  /** 写一条 POLICY_EVALUATION 评估事件；role 为 null 时不写该键（ESCALATE 或旧事件）。 */
+  /**
+   * 写一条 POLICY_EVALUATION 评估事件（带 policyVersionId，同 aster-api#459 之后的评估事件）；
+   * role 为 null 时不写该键（ESCALATE 或旧事件）。
+   */
   private AppendedRecord appendEvaluation(String tenant, String cid, String outcome, String role) {
     Map<String, Object> metadata = new HashMap<>(Map.of("correlationId", cid, "outcome", outcome,
-        "ruleId", "CUST-DEL-001", "controls", List.of("GDPR:ART17"), "reason", "删除客户记录需 DPO 复核"));
+        "ruleId", "CUST-DEL-001", "controls", List.of("GDPR:ART17"), "reason", "删除客户记录需 DPO 复核",
+        "policyVersionId", 1730890123456L));
     if (role != null) {
       metadata.put("role", role);
     }
@@ -190,6 +194,28 @@ class GuardFromEvidenceResourceTest {
     assertThat(ExecutionReceiptAssert.tree(read.asString()).get("executionReceipt")).isEqualTo(receipt);
     UUID id = UUID.fromString(decisionId);
     assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id))).isEqualTo(1);
+  }
+
+  /** 有 action_hash 却无策略版本（评估事件未记版本）：拒绝批准 503 receipt_unavailable（审批端点对该码的既有映射），审批保持 PENDING、无收据行。 */
+  @Test
+  void approvalWithoutPolicyVersionIsRefusedReceiptUnavailable() {
+    String cid = newCid();
+    append(TENANT, new HashMap<>(Map.of("correlationId", cid, "outcome", "REQUIRE_APPROVAL", "role", DPO,
+        "ruleId", "CUST-DEL-001")));
+    Response opened = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(opened.statusCode()).as(opened.asString()).isEqualTo(200);
+    String decisionId = opened.jsonPath().getString("decisionId");
+
+    Response refused = signedPost("/api/v1/guard/approvals/" + opened.jsonPath().getString("approval.id") + "/approve",
+        "{}", TENANT, "u-dpo", List.of(DPO));
+
+    assertThat(refused.statusCode()).as(refused.asString()).isEqualTo(503);
+    assertThat(refused.jsonPath().getString("error")).isEqualTo("receipt_unavailable");
+    Response read = signedGet("/api/v1/guard/decisions/" + decisionId, "", TENANT, "u-req");
+    assertThat(read.jsonPath().getString("effectiveOutcome")).isEqualTo("PENDING");
+    assertThat(read.jsonPath().getString("approval.status")).isEqualTo("PENDING");
+    UUID id = UUID.fromString(decisionId);
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id))).isZero();
   }
 
   @Test

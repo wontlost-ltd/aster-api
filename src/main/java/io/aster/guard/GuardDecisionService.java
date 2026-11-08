@@ -308,7 +308,8 @@ public class GuardDecisionService {
   /** 签发执行收据；签名失败返回 null，由调用方改判 DENY receipt_unavailable（与链收据失败同一路径）。 */
   private ExecutionReceiptIssuer.Issued issueReceipt(GuardDecisionDraft draft, UUID decisionId) {
     try {
-      return receiptIssuer.issueNow(decisionId, draft.tenantId(), draft.actionHash(), draft.policyVersion().id());
+      Long policyVersionId = draft.policyVersion() == null ? null : draft.policyVersion().id();
+      return receiptIssuer.issueNow(decisionId, draft.tenantId(), draft.actionHash(), policyVersionId);
     } catch (ExecutionReceiptUnavailableException e) {
       LOG.errorf(e, "Action Guard 执行收据签发失败，按 DENY 处理: decision=%s", decisionId);
       return null;

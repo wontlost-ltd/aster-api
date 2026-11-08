@@ -1,7 +1,7 @@
 package io.aster.guard;
 
 import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.core.exc.StreamConstraintsException;
 import com.fasterxml.jackson.core.exc.StreamReadException;
 import com.fasterxml.jackson.databind.DatabindException;
@@ -21,7 +21,6 @@ import jakarta.ws.rs.core.Response;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UncheckedIOException;
 import java.util.Set;
 
 /**
@@ -94,16 +93,26 @@ public class GuardRequestBodyReader {
     }
   }
 
-  /** 类型化解析已成功，同一字节串在严格模式下再失败只可能是重复键。 */
-  private JsonNode readStrictTree(byte[] bytes) {
+  /**
+   * 严格模式（重复键检测）读树。只有重复键映射为 {@code invalid_action}；其余解析错误（类型化解析已成功时
+   * 不应出现）按框架同口径的 400 处理。
+   */
+  private JsonNode readStrictTree(byte[] bytes) throws IOException {
     ObjectReader strict = mapper.reader().with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
     try {
       return strict.readTree(bytes);
-    } catch (JsonProcessingException e) {
-      throw new GuardInvalidActionException("请求体含重复键: " + e.getOriginalMessage());
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
+    } catch (JsonParseException e) {
+      if (isDuplicateField(e)) {
+        throw new GuardInvalidActionException("请求体含重复键: " + e.getOriginalMessage());
+      }
+      throw new WebApplicationException(e, Response.Status.BAD_REQUEST);
     }
+  }
+
+  /** Jackson 的重复键错误没有专门的异常类型，只能按 {@code DupDetector} 的固定文案识别。 */
+  private static boolean isDuplicateField(JsonParseException e) {
+    String message = e.getOriginalMessage();
+    return message != null && message.startsWith("Duplicate field '");
   }
 
   private <T> void validate(T value) {

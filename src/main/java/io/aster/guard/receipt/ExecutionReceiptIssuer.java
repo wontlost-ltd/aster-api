@@ -34,21 +34,21 @@ public class ExecutionReceiptIssuer {
   }
 
   /** 以注入时钟的当前时刻签发（直接 ALLOW）。 */
-  public Issued issueNow(UUID decisionId, String tenantId, String actionHash, long policyVersionId) {
+  public Issued issueNow(UUID decisionId, String tenantId, String actionHash, Long policyVersionId) {
     return issue(decisionId, tenantId, actionHash, policyVersionId, clock.instant());
   }
 
   /**
    * 以给定时刻签发（审批转 ALLOW 时为加锁后的 now）。
    *
-   * @throws ExecutionReceiptUnavailableException 签名失败；调用方按 fail-closed 处理，不得放行
+   * @throws ExecutionReceiptUnavailableException actionHash 或策略版本缺失、签名失败；调用方按 fail-closed 处理，不得放行
    */
-  public Issued issue(UUID decisionId, String tenantId, String actionHash, long policyVersionId, Instant at) {
+  public Issued issue(UUID decisionId, String tenantId, String actionHash, Long policyVersionId, Instant at) {
     Instant issuedAt = at.truncatedTo(ChronoUnit.MILLIS);
     ExecutionReceipt receipt;
     try {
-      if (actionHash == null) {
-        throw new IllegalArgumentException("actionHash 缺失");
+      if (actionHash == null || policyVersionId == null) {
+        throw new IllegalArgumentException("actionHash 或 policyVersionId 缺失");
       }
       receipt = signer.sign(decisionId.toString(), tenantId, actionHash, policyVersionId, issuedAt);
     } catch (RuntimeException e) {

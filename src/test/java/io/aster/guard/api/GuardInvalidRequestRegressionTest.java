@@ -32,7 +32,6 @@ import static org.assertj.core.api.Assertions.fail;
 @QuarkusTest
 class GuardInvalidRequestRegressionTest {
   static final String GOLDEN = "guard/invalid-request-responses.golden.json";
-  private static final Path GOLDEN_SOURCE = Path.of("src/test/resources", GOLDEN);
   private static final ObjectMapper JSON = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
   private static final String TENANT = "tenant-guard-invalid-golden";
   private static final String ADDRESS = "\"policyModule\":\"guard.golden.missing\",\"policyFunction\":\"decide\"";
@@ -86,12 +85,17 @@ class GuardInvalidRequestRegressionTest {
   void invalidRequestResponsesAreByteIdentical() throws IOException {
     Map<String, Object> actual = new LinkedHashMap<>();
     cases().forEach((name, c) -> actual.put(name, observe(c[0], c[1])));
+    assertGolden(GOLDEN, actual);
+  }
 
-    Map<String, Map<String, Object>> golden = readGolden();
+  /** 与 golden 逐例比对；golden 不存在时写出并失败（录制只发生在改动前的代码上）。 */
+  static void assertGolden(String resource, Map<String, Object> actual) throws IOException {
+    Map<String, Map<String, Object>> golden = readGolden(resource);
     if (golden == null) {
-      Files.createDirectories(GOLDEN_SOURCE.getParent());
-      Files.writeString(GOLDEN_SOURCE, JSON.writeValueAsString(actual) + "\n", StandardCharsets.UTF_8);
-      fail("golden 不存在，已按当前实现写出 " + GOLDEN_SOURCE + "，审阅后提交再重跑");
+      Path source = Path.of("src/test/resources", resource);
+      Files.createDirectories(source.getParent());
+      Files.writeString(source, JSON.writeValueAsString(actual) + "\n", StandardCharsets.UTF_8);
+      fail("golden 不存在，已按当前实现写出 " + source + "，审阅后提交再重跑");
     }
     List<String> names = new ArrayList<>(actual.keySet());
     assertThat(golden.keySet()).containsExactlyElementsOf(names);
@@ -100,8 +104,8 @@ class GuardInvalidRequestRegressionTest {
     }
   }
 
-  private static Map<String, Map<String, Object>> readGolden() throws IOException {
-    try (InputStream in = GuardInvalidRequestRegressionTest.class.getClassLoader().getResourceAsStream(GOLDEN)) {
+  private static Map<String, Map<String, Object>> readGolden(String resource) throws IOException {
+    try (InputStream in = GuardInvalidRequestRegressionTest.class.getClassLoader().getResourceAsStream(resource)) {
       if (in == null) {
         return null;
       }

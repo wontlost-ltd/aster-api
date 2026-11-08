@@ -236,15 +236,16 @@ public class GuardApprovalService {
   }
 
   /**
-   * 能否为审批转 ALLOW 签发执行收据：需要决策行上的 {@code action_hash} 与策略版本。
-   * V6.35.0 之前开出的决策没有 action_hash；锚定的评估事件未记版本的 from-evidence 决策没有版本——
-   * 两者按旧决策处理（ALLOW 但无收据，consume 时 {@code not_allowed}），不补签。
+   * 能否为审批转 ALLOW 签发执行收据。只有 V6.35.0 之前开出、没有 {@code action_hash} 的旧决策不签发
+   * （ALLOW 但无收据，consume 时 {@code not_allowed}，ADR 0040 §12 D10 不回填）。有 action_hash 却缺策略版本的
+   * 决策照常进入签发，由 {@link ExecutionReceiptIssuer} 判为 {@code receipt_unavailable}：拒绝迁移、不落任何状态，
+   * 而不是放出一个无法 consume 的 ALLOW（D9：from-evidence 的 ALLOW 同样必须有收据）。
    */
   private static boolean canIssue(GuardDecisionEntity decision) {
-    if (decision.actionHash != null && decision.policyVersionId != null) {
+    if (decision.actionHash != null) {
       return true;
     }
-    LOG.warnf("Action Guard 审批转 ALLOW 但决策缺 action_hash 或策略版本，不签发执行收据: decision=%s", decision.id);
+    LOG.warnf("Action Guard 旧决策（无 action_hash）审批转 ALLOW，不签发执行收据: decision=%s", decision.id);
     return false;
   }
 

@@ -439,6 +439,18 @@ class GuardApprovalServiceTest {
     assertThat(writes.get(0).receiptOrNull()).isNull();
   }
 
+  /** 有 action_hash 却缺策略版本：不放出无收据的 ALLOW，按签发失败拒绝迁移。 */
+  @Test
+  void 有action_hash但缺策略版本_receipt_unavailable且不写入() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    GuardDecisionEntity noVersion = decisionOf(a);
+    noVersion.policyVersionId = null;
+    when(store.findDecision(TENANT, a.decisionId)).thenReturn(Optional.of(noVersion));
+
+    assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
+    assertThat(writes).isEmpty();
+  }
+
   @Test
   void 签发失败_receipt_unavailable且存储事务回滚() throws Exception {
     GuardApprovalEntity a = pending(DPO);
