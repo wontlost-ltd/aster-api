@@ -6,7 +6,9 @@ import io.aster.guard.GuardRequestBodyReader;
 import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
 import io.aster.guard.receipt.GuardReceiptService;
 import io.aster.guard.receipt.GuardReceiptStore.ConsumeVerdict;
+import io.aster.guard.receipt.GuardReceiptStore.ResultVerdict;
 import io.aster.guard.receipt.InvalidConsumeException;
+import io.aster.guard.receipt.InvalidResultException;
 import io.aster.policy.rest.RequestIdentityResolver;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
@@ -28,7 +30,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * 执行收据端点（ADR 0040 §12 D5）：执行方在落副作用前 consume 收据，同一决策至多一次成功。
+ * 执行收据端点：执行方在落副作用前 consume 收据，同一决策至多一次成功（ADR 0040 §12 D5）；
+ * 执行后由同一消耗者回写执行结果（D7）。
  *
  * <p>Bearer API key（SDK / 代理）与 HMAC 内部调用者（cloud 执行路径）双通道，租户取自
  * {@link RequestIdentityResolver}；跨租户、非法 UUID、决策不存在一律 404 空体（§3.4）。
@@ -46,6 +49,8 @@ public class GuardReceiptResource {
    */
   static final String CONSUME_METER_PATH = GuardDecisionResource.PATH;
   private static final String INVALID_CONSUME = "invalid_consume";
+  private static final String INVALID_RESULT = "invalid_result";
+  private static final String RECEIPT_UNAVAILABLE = "receipt_unavailable";
 
   @Inject
   RequestIdentityResolver identityResolver;
@@ -91,7 +96,36 @@ public class GuardReceiptResource {
       return error(Response.Status.BAD_REQUEST, INVALID_CONSUME,
           e.field() == null ? Map.of("message", e.getMessage()) : Map.of("field", e.field()));
     } catch (ExecutionReceiptUnavailableException e) {
-      return error(Response.Status.SERVICE_UNAVAILABLE, "receipt_unavailable", Map.of());
+      return error(Response.Status.SERVICE_UNAVAILABLE, RECEIPT_UNAVAILABLE, Map.of());
+    }
+  }
+
+  /**
+   * 执行结果回写（ADR 0040 §12 D7）。不计量：它是 consume 的附属记账，每个决策至多一次成功。
+   */
+  @POST
+  @Path("/{decisionId}/result")
+  public Response result(@PathParam("decisionId") String id, InputStream body) {
+    Optional<UUID> decisionId = parseUuid(id);
+    if (decisionId.isEmpty()) {
+      return notFound();
+    }
+    try {
+      Optional<ResultVerdict> verdict = service.recordResult(identityResolver.tenantId(),
+          identityResolver.performedBy(), decisionId.get(), readResultBody(body));
+      if (verdict.isEmpty()) {
+        return notFound();
+      }
+      return switch (verdict.get()) {
+        case ResultVerdict.Recorded r -> Response.ok(new ResultResponse(decisionId.get().toString(),
+            r.resultAt().toString(), r.status())).build();
+        case ResultVerdict.Rejected r -> error(Response.Status.CONFLICT, r.code(), Map.of());
+      };
+    } catch (InvalidResultException e) {
+      return error(Response.Status.BAD_REQUEST, INVALID_RESULT,
+          e.field() == null ? Map.of("message", e.getMessage()) : Map.of("field", e.field()));
+    } catch (ExecutionReceiptUnavailableException e) {
+      return error(Response.Status.SERVICE_UNAVAILABLE, RECEIPT_UNAVAILABLE, Map.of());
     }
   }
 
@@ -104,6 +138,15 @@ public class GuardReceiptResource {
       return bodyReader.read(body, ConsumeRequest.class).value();
     } catch (GuardInvalidActionException | IOException | WebApplicationException e) {
       throw new InvalidConsumeException(null, "请求体不是合法的 consume JSON 或含重复键");
+    }
+  }
+
+  /** 与 {@link #readBody} 同法：重复键、非法 JSON、类型不符一律 {@code invalid_result}。 */
+  private ResultRequest readResultBody(InputStream body) {
+    try {
+      return bodyReader.read(body, ResultRequest.class).value();
+    } catch (GuardInvalidActionException | IOException | WebApplicationException e) {
+      throw new InvalidResultException(null, "请求体不是合法的结果回写 JSON 或含重复键");
     }
   }
 

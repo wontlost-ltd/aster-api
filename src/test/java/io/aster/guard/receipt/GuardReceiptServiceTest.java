@@ -6,7 +6,9 @@ import io.aster.guard.GuardDecisionService;
 import io.aster.guard.GuardReceiptBuilder;
 import io.aster.guard.api.ConsumeRequest;
 import io.aster.guard.api.GuardDecisionResponse;
+import io.aster.guard.api.ResultRequest;
 import io.aster.guard.receipt.GuardReceiptStore.ConsumeVerdict;
+import io.aster.guard.receipt.GuardReceiptStore.ResultVerdict;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import org.junit.jupiter.api.BeforeEach;
@@ -192,5 +194,136 @@ class GuardReceiptServiceTest {
 
     assertThat(((ConsumeVerdict.Rejected) v).extra())
         .containsExactly(Map.entry("kid", "k0"), Map.entry("revision", 7L));
+  }
+
+  // ---- 结果回写（ADR 0040 §12 D7）----
+
+  private static final String CONSUME_ATTEMPT_HASH = "c".repeat(64);
+  private static final String RESULT_HASH = "f".repeat(64);
+
+  private static GuardReceiptEntity consumedRow() {
+    GuardReceiptEntity r = row();
+    r.consumedAt = Instant.parse("2026-11-08T10:01:00Z");
+    r.attemptId = ATTEMPT;
+    r.executorId = "exec-1";
+    r.consumeAuditId = 501L;
+    return r;
+  }
+
+  private static ResultRequest resultReq(String status) {
+    return new ResultRequest(ATTEMPT, "exec-1", status, "2026-11-08T10:02:00Z", RESULT_HASH, null);
+  }
+
+  @Test
+  void resultAppendsEventLinkedToAuthoritativeAttemptThenRecords() {
+    when(store.findReceipt(TENANT, DECISION)).thenReturn(Optional.of(consumedRow()));
+    when(store.auditCurrentHash(TENANT, 501L)).thenReturn(Optional.of(CONSUME_ATTEMPT_HASH));
+    when(appender.appendSync(any())).thenReturn(new AppendedRecord(900L, "9".repeat(64), CONSUME_ATTEMPT_HASH));
+    Instant at = Instant.parse("2026-11-08T10:02:01Z");
+    when(store.recordResult(eq(TENANT), eq(DECISION), any(), eq(900L)))
+        .thenReturn(new ResultVerdict.Recorded(at, "executed"));
+
+    ResultVerdict v = service.recordResult(TENANT, "user-1", DECISION, resultReq("executed")).orElseThrow();
+
+    assertThat(v).isEqualTo(new ResultVerdict.Recorded(at, "executed"));
+    AuditEvent event = appended(1).get(0);
+    assertThat(event.eventType()).isEqualTo(EventType.ACTION_GUARD_RESULT);
+    assertThat(event.tenantId()).isEqualTo(TENANT);
+    assertThat(event.performedBy()).isEqualTo("user-1");
+    assertThat(event.success()).isTrue();
+    assertThat(event.metadata()).containsEntry("consumeReceiptHash", CONSUME_ATTEMPT_HASH)
+        .containsEntry("resultHash", RESULT_HASH).containsEntry("attemptId", ATTEMPT)
+        .containsEntry("status", "executed");
+  }
+
+  /** 预判失败的三种情况都不入链、不进入加锁写。 */
+  @Test
+  void resultPrecheckRejectionsAppendNothing() {
+    GuardReceiptEntity unconsumed = row();
+    GuardReceiptEntity recorded = consumedRow();
+    recorded.resultStatus = "executed";
+    Map<Optional<GuardReceiptEntity>, String> cases = new java.util.LinkedHashMap<>();
+    cases.put(Optional.empty(), "not_consumed");
+    cases.put(Optional.of(unconsumed), "not_consumed");
+    cases.put(Optional.of(recorded), "result_recorded");
+    cases.forEach((snapshot, code) -> {
+      when(store.findReceipt(TENANT, DECISION)).thenReturn(snapshot);
+      assertThat(service.recordResult(TENANT, "u", DECISION, resultReq("executed")).orElseThrow())
+          .isEqualTo(new ResultVerdict.Rejected(code));
+    });
+    when(store.findReceipt(TENANT, DECISION)).thenReturn(Optional.of(consumedRow()));
+    ResultRequest otherExecutor = new ResultRequest(ATTEMPT, "exec-2", "executed", null, null, null);
+    assertThat(service.recordResult(TENANT, "u", DECISION, otherExecutor).orElseThrow())
+        .isEqualTo(new ResultVerdict.Rejected("attempt_mismatch"));
+    verifyNoInteractions(appender);
+    verify(store, never()).recordResult(any(), any(), any(), anyLong());
+  }
+
+  @Test
+  void resultAppendFailureIs503AndRowUntouched() {
+    when(store.findReceipt(TENANT, DECISION)).thenReturn(Optional.of(consumedRow()));
+    when(store.auditCurrentHash(TENANT, 501L)).thenReturn(Optional.of(CONSUME_ATTEMPT_HASH));
+    when(appender.appendSync(any())).thenThrow(new AuditChainAppender.AuditAppendException("down", null));
+
+    assertThatThrownBy(() -> service.recordResult(TENANT, "u", DECISION, resultReq("failed")))
+        .isInstanceOf(ExecutionReceiptUnavailableException.class);
+    verify(store, never()).recordResult(any(), any(), any(), anyLong());
+  }
+
+  /** 权威尝试事件查不到（状态不一致）：不入链，按 503 处理，避免写出没有链接的结果事件。 */
+  @Test
+  void missingAuthoritativeAttemptIs503WithoutEvent() {
+    when(store.findReceipt(TENANT, DECISION)).thenReturn(Optional.of(consumedRow()));
+    when(store.auditCurrentHash(TENANT, 501L)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> service.recordResult(TENANT, "u", DECISION, resultReq("executed")))
+        .isInstanceOf(ExecutionReceiptUnavailableException.class);
+    verifyNoInteractions(appender);
+  }
+
+  /** 加锁复核失败（并发回写抢先）：同码 409，事件已入链但行不引用。 */
+  @Test
+  void recheckFailureReturnsSameCodeAfterEvent() {
+    when(store.findReceipt(TENANT, DECISION)).thenReturn(Optional.of(consumedRow()));
+    when(store.auditCurrentHash(TENANT, 501L)).thenReturn(Optional.of(CONSUME_ATTEMPT_HASH));
+    when(store.recordResult(any(), any(), any(), anyLong())).thenReturn(new ResultVerdict.Rejected("result_recorded"));
+
+    assertThat(service.recordResult(TENANT, "u", DECISION, resultReq("executed")).orElseThrow())
+        .isEqualTo(new ResultVerdict.Rejected("result_recorded"));
+    assertThat(appended(1).get(0).eventType()).isEqualTo(EventType.ACTION_GUARD_RESULT);
+  }
+
+  @Test
+  void unknownDecisionResultIsEmptyWithoutEvents() {
+    when(decisions.get(TENANT, DECISION)).thenReturn(Optional.empty());
+
+    assertThat(service.recordResult(TENANT, "u", DECISION, resultReq("executed"))).isEmpty();
+    verifyNoInteractions(appender);
+    verify(store, never()).recordResult(any(), any(), any(), anyLong());
+  }
+
+  @Test
+  void invalidResultFieldsRejectedBeforeAnyEvent() {
+    Map<ResultRequest, String> cases = new java.util.LinkedHashMap<>();
+    cases.put(new ResultRequest(null, "e", "executed", null, null, null), "attemptId");
+    cases.put(new ResultRequest("x", "e", "executed", null, null, null), "attemptId");
+    cases.put(new ResultRequest(ATTEMPT, " ", "executed", null, null, null), "executorId");
+    cases.put(new ResultRequest(ATTEMPT, "e", null, null, null, null), "status");
+    cases.put(new ResultRequest(ATTEMPT, "e", "Aborted", null, null, null), "status");
+    cases.put(new ResultRequest(ATTEMPT, "e", "executed", "2026-11-08", null, null), "finishedAt");
+    cases.put(new ResultRequest(ATTEMPT, "e", "executed", null, "g".repeat(64), null), "resultHash");
+    cases.put(new ResultRequest(ATTEMPT, "e", "executed", null, "a".repeat(65), null), "resultHash");
+    cases.put(new ResultRequest(ATTEMPT, "e", "failed", null, null, "x".repeat(65)), "errorCode");
+    cases.put(new ResultRequest(ATTEMPT, "e", "failed", null, null, "tab\there"), "errorCode");
+    cases.put(new ResultRequest(ATTEMPT, "e", "failed", null, null, "  "), "errorCode");
+    cases.forEach((req, field) -> assertThatThrownBy(() -> service.recordResult(TENANT, "u", DECISION, req))
+        .as(req.toString())
+        .isInstanceOfSatisfying(InvalidResultException.class, e -> assertThat(e.field()).isEqualTo(field)));
+    assertThatThrownBy(() -> service.recordResult(TENANT, "u", DECISION, null))
+        .isInstanceOfSatisfying(InvalidResultException.class, e -> assertThat(e.field()).isEqualTo("attemptId"));
+    // 可选字段齐全且合法；finishedAt 接受带偏移的 ISO-8601
+    GuardReceiptService.validate(new ResultRequest(ATTEMPT, "e", "aborted", "2026-11-08T18:02:00+08:00",
+        "a".repeat(64), "x".repeat(64)));
+    verifyNoInteractions(appender);
   }
 }

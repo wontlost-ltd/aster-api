@@ -8,7 +8,9 @@ import io.aster.guard.GuardDecisionEntity;
 import io.aster.guard.GuardDecisionService;
 import io.aster.guard.GuardReceiptBuilder;
 import io.aster.guard.api.ConsumeRequest;
+import io.aster.guard.api.ResultRequest;
 import io.aster.guard.receipt.GuardReceiptStore.ConsumeVerdict;
+import io.aster.guard.receipt.GuardReceiptStore.ResultVerdict;
 import io.aster.policy.cache.CompiledPolicyCache;
 import io.aster.policy.cache.PolicyVersionResolutionCache;
 import io.aster.policy.entity.AuditLog;
@@ -205,5 +207,67 @@ class GuardReceiptJpaStoreTest {
           assertThat(v.extra()).containsExactly(Map.entry("consumedAt", before.toString()),
               Map.entry("executorId", "first"), Map.entry("attemptId", "a-1"));
         });
+  }
+
+  /**
+   * 结果回写的并发（ADR 0040 §12 D7）：同一消耗者 8 线程同时回写 → 恰 1 个 Recorded，其余 result_recorded；
+   * 每次通过预判的调用各留一条结果事件，只有 result_audit_id 引用的那条生效。
+   */
+  @Test
+  void concurrentResultExactlyOneRecorded() throws Exception {
+    UUID decisionId = allowDecision();
+    String attemptId = UUID.randomUUID().toString();
+    assertThat(service.consume(TENANT, "user-store", decisionId, new ConsumeRequest(actionHash(), attemptId, "exec"))
+        .orElseThrow().verdict()).isInstanceOf(ConsumeVerdict.Consumed.class);
+    int threads = 8;
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    CountDownLatch start = new CountDownLatch(1);
+    List<Future<ResultVerdict>> futures = new ArrayList<>();
+    try {
+      for (int i = 0; i < threads; i++) {
+        futures.add(pool.submit(() -> {
+          start.await();
+          return service.recordResult(TENANT, "user-store", decisionId,
+              new ResultRequest(attemptId, "exec", "executed", null, null, null)).orElseThrow();
+        }));
+      }
+      start.countDown();
+      List<ResultVerdict> verdicts = new ArrayList<>();
+      for (Future<ResultVerdict> f : futures) {
+        verdicts.add(f.get(60, TimeUnit.SECONDS));
+      }
+
+      assertThat(verdicts).filteredOn(ResultVerdict.Recorded.class::isInstance).hasSize(1);
+      assertThat(verdicts).filteredOn(ResultVerdict.Rejected.class::isInstance).hasSize(threads - 1)
+          .allSatisfy(v -> assertThat(((ResultVerdict.Rejected) v).code()).isEqualTo("result_recorded"));
+      GuardReceiptEntity committed = row(decisionId);
+      assertThat(committed.resultStatus).isEqualTo("executed");
+      List<AuditLog> results = events(decisionId, EventType.ACTION_GUARD_RESULT);
+      assertThat(results).isNotEmpty().hasSizeLessThanOrEqualTo(threads);
+      assertThat(results).extracting(e -> e.id).contains(committed.resultAuditId);
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  /** 结果判定顺序：not_consumed → attempt_mismatch → result_recorded（行为 null 即无收据行）。 */
+  @Test
+  void checkResultOrder() {
+    ResultRequest req = new ResultRequest("a-1", "first", "executed", null, null, null);
+    GuardReceiptEntity r = new GuardReceiptEntity();
+
+    assertThat(GuardReceiptJpaStore.checkResult(null, req)).contains("not_consumed");
+    assertThat(GuardReceiptJpaStore.checkResult(r, req)).contains("not_consumed");
+    r.consumedAt = Instant.parse("2026-11-08T10:01:00Z");
+    r.attemptId = "a-1";
+    r.executorId = "first";
+    r.resultStatus = "aborted";
+    assertThat(GuardReceiptJpaStore.checkResult(r, new ResultRequest("a-2", "first", "executed", null, null, null)))
+        .contains("attempt_mismatch");
+    assertThat(GuardReceiptJpaStore.checkResult(r, new ResultRequest("a-1", "other", "executed", null, null, null)))
+        .contains("attempt_mismatch");
+    assertThat(GuardReceiptJpaStore.checkResult(r, req)).contains("result_recorded");
+    r.resultStatus = null;
+    assertThat(GuardReceiptJpaStore.checkResult(r, req)).isEmpty();
   }
 }

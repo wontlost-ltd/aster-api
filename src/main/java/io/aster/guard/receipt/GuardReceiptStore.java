@@ -1,6 +1,7 @@
 package io.aster.guard.receipt;
 
 import io.aster.guard.api.ConsumeRequest;
+import io.aster.guard.api.ResultRequest;
 
 import java.time.Instant;
 import java.util.Map;
@@ -9,7 +10,7 @@ import java.util.UUID;
 import java.util.function.Predicate;
 
 /**
- * 执行收据行（{@code guard_receipts}）的 consume 持久化边界。抽成接口是为了让 consume 编排可以脱离数据库单测；
+ * 执行收据行（{@code guard_receipts}）的 consume 与结果回写持久化边界。抽成接口是为了让 consume 编排可以脱离数据库单测；
  * 每个方法自带独立事务，调用方不得在外层事务中调用（尝试事件追加同样要求非事务线程）。
  */
 public interface GuardReceiptStore {
@@ -32,6 +33,18 @@ public interface GuardReceiptStore {
   ConsumeVerdict consume(String tenantId, UUID decisionId, ConsumeRequest req, long attemptAuditId,
                          Predicate<String> kidRevoked);
 
+  /** 按 id 取本租户审计事件的 current_hash（结果事件以它链接权威尝试事件）；跨租户或不存在返回 empty。 */
+  Optional<String> auditCurrentHash(String tenantId, long auditId);
+
+  /**
+   * 结果回写的加锁复核与写入（ADR 0040 §12 D7）：在 {@code requiringNew} 事务内以 {@code PESSIMISTIC_WRITE}
+   * 锁住收据行，按 {@code not_consumed → attempt_mismatch → result_recorded} 复核；通过才写
+   * {@code result_status / result_at / result_audit_id}，result_at 取加锁后的当前时刻。
+   *
+   * @param resultAuditId 已入链的结果事件 id；复核失败时该事件不被行引用，按「未生效」读
+   */
+  ResultVerdict recordResult(String tenantId, UUID decisionId, ResultRequest req, long resultAuditId);
+
   /** 加锁判定的结果。 */
   sealed interface ConsumeVerdict {
 
@@ -42,5 +55,15 @@ public interface GuardReceiptStore {
      * 409 拒绝。{@code code} 即响应 {@code error}，{@code extra} 为响应体附加字段（按输出顺序）。
      */
     record Rejected(String code, Map<String, Object> extra) implements ConsumeVerdict {}
+  }
+
+  /** 结果回写判定。 */
+  sealed interface ResultVerdict {
+
+    /** 已记录；{@code resultAt} 与行的 result_at 相同。 */
+    record Recorded(Instant resultAt, String status) implements ResultVerdict {}
+
+    /** 409 拒绝；{@code code} 即响应 {@code error}，无附加字段。 */
+    record Rejected(String code) implements ResultVerdict {}
   }
 }

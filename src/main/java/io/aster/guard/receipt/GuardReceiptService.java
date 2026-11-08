@@ -6,15 +6,20 @@ import io.aster.guard.GuardDecisionService;
 import io.aster.guard.GuardReceiptBuilder;
 import io.aster.guard.api.ConsumeRequest;
 import io.aster.guard.api.GuardDecisionResponse;
+import io.aster.guard.api.ResultRequest;
 import io.aster.guard.receipt.GuardReceiptStore.ConsumeVerdict;
+import io.aster.guard.receipt.GuardReceiptStore.ResultVerdict;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -30,6 +35,10 @@ import java.util.regex.Pattern;
  * </ol>
  * 并发 consume 各留一条尝试事件，只有被行引用的那条生效（与审批「先入链再加锁」同法，§4.2）。
  *
+ * <p>结果回写（ADR 0040 §12 D7）同法：入参校验 → 短事务读行预判（不通过直接 409，不入链）→
+ * 追加 {@code ACTION_GUARD_RESULT}（{@code consumeReceiptHash} 指向权威尝试事件；失败 → 503）→
+ * 加锁复核同三条后写行。复核失败时事件已入链但行不引用，按「未生效」读。
+ *
  * <p>阻塞方法：须在非事务的 worker 线程调用。
  */
 @ApplicationScoped
@@ -38,6 +47,10 @@ public class GuardReceiptService {
   /** 与 guard_receipts.executor_id 列宽一致：超长直接拒绝，不静默截断。 */
   static final int MAX_EXECUTOR_ID = 255;
   private static final String ALLOW = "ALLOW";
+  /** 结果回写 errorCode 上限（ADR 0040 §12 D7）。 */
+  static final int MAX_ERROR_CODE = 64;
+  private static final Set<String> RESULT_STATUSES = Set.of("executed", "failed", "aborted");
+  /** actionHash 与 resultHash 共用：jcs-sha256/v1 摘要，64 位小写 hex。 */
   private static final Pattern ACTION_HASH = Pattern.compile("[0-9a-f]{64}");
   /** UUID 形态（8-4-4-4-12 hex）；不用 {@link UUID#fromString}，它接受各段位数不足的写法。 */
   private static final Pattern UUID_SHAPE =
@@ -90,6 +103,29 @@ public class GuardReceiptService {
     return Optional.of(new Result(verdict, decision.get().executionReceipt()));
   }
 
+  /**
+   * 结果回写（ADR 0040 §12 D7）。
+   *
+   * @param performedBy 请求身份，作为结果事件的 performed_by
+   * @return empty 表示决策不存在或属于其他租户（404，不入链）
+   * @throws InvalidResultException               入参不合法
+   * @throws ExecutionReceiptUnavailableException 权威尝试事件查不到或结果事件未能入链，行不变
+   */
+  public Optional<ResultVerdict> recordResult(String tenantId, String performedBy, UUID decisionId,
+                                              ResultRequest req) {
+    validate(req);
+    if (decisions.get(tenantId, decisionId).isEmpty()) {
+      return Optional.empty();
+    }
+    GuardReceiptEntity snapshot = store.findReceipt(tenantId, decisionId).orElse(null);
+    Optional<String> rejected = GuardReceiptJpaStore.checkResult(snapshot, req);
+    if (rejected.isPresent()) {
+      return Optional.of(new ResultVerdict.Rejected(rejected.get()));
+    }
+    AppendedRecord event = appendResult(tenantId, decisionId, req, snapshot.consumeAuditId, performedBy);
+    return Optional.of(store.recordResult(tenantId, decisionId, req, event.auditId()));
+  }
+
   /** 按 actionHash → attemptId → executorId 的顺序报首个不合法字段；空请求体按 actionHash 缺失处理。 */
   static void validate(ConsumeRequest req) {
     if (req == null || req.actionHash() == null || !ACTION_HASH.matcher(req.actionHash()).matches()) {
@@ -98,10 +134,48 @@ public class GuardReceiptService {
     if (req.attemptId() == null || !UUID_SHAPE.matcher(req.attemptId()).matches()) {
       throw new InvalidConsumeException("attemptId", "attemptId 须为 UUID 形态");
     }
-    String executorId = req.executorId();
-    if (executorId == null || executorId.isBlank() || executorId.length() > MAX_EXECUTOR_ID
-        || executorId.chars().anyMatch(Character::isISOControl)) {
+    if (!isText(req.executorId(), MAX_EXECUTOR_ID)) {
       throw new InvalidConsumeException("executorId", "executorId 须为 1–" + MAX_EXECUTOR_ID + " 字符且不含控制字符");
+    }
+  }
+
+  /**
+   * 结果回写入参校验，按 attemptId → executorId → status → finishedAt → resultHash → errorCode 报首个不合法字段；
+   * 空请求体按 attemptId 缺失处理。resultHash 是免脱敏键，非 64 位小写 hex 的任意文本必须在入链前拒绝。
+   */
+  static void validate(ResultRequest req) {
+    if (req == null || req.attemptId() == null || !UUID_SHAPE.matcher(req.attemptId()).matches()) {
+      throw new InvalidResultException("attemptId", "attemptId 须为 UUID 形态");
+    }
+    if (!isText(req.executorId(), MAX_EXECUTOR_ID)) {
+      throw new InvalidResultException("executorId", "executorId 须为 1–" + MAX_EXECUTOR_ID + " 字符且不含控制字符");
+    }
+    if (req.status() == null || !RESULT_STATUSES.contains(req.status())) {
+      throw new InvalidResultException("status", "status 须为 executed / failed / aborted");
+    }
+    if (req.finishedAt() != null && !isOffsetDateTime(req.finishedAt())) {
+      throw new InvalidResultException("finishedAt", "finishedAt 须为带偏移的 ISO-8601 时刻");
+    }
+    if (req.resultHash() != null && !ACTION_HASH.matcher(req.resultHash()).matches()) {
+      throw new InvalidResultException("resultHash", "resultHash 须为 64 位小写 hex");
+    }
+    if (req.errorCode() != null && !isText(req.errorCode(), MAX_ERROR_CODE)) {
+      throw new InvalidResultException("errorCode", "errorCode 须为 1–" + MAX_ERROR_CODE + " 字符且不含控制字符");
+    }
+  }
+
+  /** 非空白、不超过 max 字符、不含控制字符的自报文本。 */
+  private static boolean isText(String value, int max) {
+    return value != null && !value.isBlank() && value.length() <= max
+        && value.chars().noneMatch(Character::isISOControl);
+  }
+
+  private static boolean isOffsetDateTime(String value) {
+    try {
+      DateTimeFormatter.ISO_OFFSET_DATE_TIME.parse(value);
+      return true;
+    } catch (DateTimeParseException e) {
+      return false;
     }
   }
 
@@ -122,6 +196,20 @@ public class GuardReceiptService {
     } catch (AuditChainAppender.AuditAppendException e) {
       LOG.errorf(e, "Action Guard consume 尝试事件写入失败，收据状态不变: decision=%s", snapshot.decisionId);
       throw new ExecutionReceiptUnavailableException("consume 尝试事件写入审计链失败", e);
+    }
+  }
+
+  /** 结果事件以权威尝试事件的 current_hash 为 consumeReceiptHash；查不到即状态不一致，不写无链接的事件。 */
+  private AppendedRecord appendResult(String tenantId, UUID decisionId, ResultRequest req, long consumeAuditId,
+                                      String performedBy) {
+    String consumeReceiptHash = store.auditCurrentHash(tenantId, consumeAuditId).orElseThrow(() ->
+        new ExecutionReceiptUnavailableException("权威尝试事件不存在: auditId=" + consumeAuditId, null));
+    try {
+      return appender.appendSync(receiptBuilder.resultEvent(tenantId, decisionId, req, consumeReceiptHash,
+          performedBy));
+    } catch (AuditChainAppender.AuditAppendException e) {
+      LOG.errorf(e, "Action Guard 结果事件写入失败，收据行不变: decision=%s", decisionId);
+      throw new ExecutionReceiptUnavailableException("结果事件写入审计链失败", e);
     }
   }
 

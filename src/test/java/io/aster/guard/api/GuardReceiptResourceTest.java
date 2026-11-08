@@ -51,6 +51,7 @@ class GuardReceiptResourceTest {
   private static final String DPO = "Data Protection Officer";
   private static final String ATTEMPT = "ACTION_GUARD_CONSUME_ATTEMPT";
   private static final String OUTCOME = "ACTION_GUARD_CONSUME_OUTCOME";
+  private static final String RESULT = "ACTION_GUARD_RESULT";
 
   @Inject CompiledPolicyCache compiledPolicyCache;
   @Inject PolicyVersionResolutionCache versionResolutionCache;
@@ -403,5 +404,188 @@ class GuardReceiptResourceTest {
   @Test
   void consumeMeteredUnderDecisionsLabel() {
     assertThat(GuardReceiptResource.CONSUME_METER_PATH).isEqualTo("/api/v1/guard/decisions");
+  }
+
+  // ---- 结果回写（ADR 0040 §12 D7）----
+
+  static String resultBody(String attemptId, String executorId, String status) {
+    return "{\"attemptId\":\"" + attemptId + "\",\"executorId\":\"" + executorId + "\",\"status\":\"" + status
+        + "\"}";
+  }
+
+  private static Response result(String tenant, String decisionId, String body) {
+    return given().header("X-Tenant-Id", tenant).header("X-User-Id", "user-guard-executor")
+        .contentType(ContentType.JSON).body(body)
+        .when().post("/api/v1/guard/receipts/" + decisionId + "/result");
+  }
+
+  private static Response result(String decisionId, String attemptId, String executorId, String status) {
+    return result(TENANT, decisionId, resultBody(attemptId, executorId, status));
+  }
+
+  /** 开一条 ALLOW 决策并以给定 attemptId / executorId 消耗，返回 decisionId。 */
+  private static String consumedDecision(String attemptId, String executorId) {
+    String body = allowBody(250000);
+    String decisionId = allowDecision(body);
+    Response r = consume(decisionId, ExecutionReceiptAssert.actionHashOf(body), attemptId, executorId);
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    return decisionId;
+  }
+
+  /** 未消耗（有收据行）与无收据行（DENY）都 409 not_consumed，不入链、不写行。 */
+  @Test
+  void resultBeforeConsumeIs409NotConsumed() {
+    String unconsumed = allowDecision(allowBody(250000));
+    String deny = postDecision(TENANT, decisionBody(BOOL_MODULE, "read_customer_record", 1))
+        .jsonPath().getString("decisionId");
+
+    for (String decisionId : List.of(unconsumed, deny)) {
+      Response r = result(decisionId, UUID.randomUUID().toString(), "exec-1", "executed");
+      assertThat(r.statusCode()).as(r.asString()).isEqualTo(409);
+      assertThat(r.asString()).isEqualTo("{\"error\":\"not_consumed\"}");
+      assertThat(events(decisionId, RESULT)).isEmpty();
+    }
+    assertThat(receiptRow(unconsumed).resultStatus).isNull();
+  }
+
+  /** attemptId 或 executorId 与消耗者不符 → 409 attempt_mismatch，不入链、不写行。 */
+  @Test
+  void resultByOtherAttemptIs409() {
+    String attemptId = UUID.randomUUID().toString();
+    String decisionId = consumedDecision(attemptId, "exec-owner");
+
+    Response otherAttempt = result(decisionId, UUID.randomUUID().toString(), "exec-owner", "executed");
+    Response otherExecutor = result(decisionId, attemptId, "exec-intruder", "executed");
+
+    for (Response r : List.of(otherAttempt, otherExecutor)) {
+      assertThat(r.statusCode()).as(r.asString()).isEqualTo(409);
+      assertThat(r.asString()).isEqualTo("{\"error\":\"attempt_mismatch\"}");
+    }
+    assertThat(receiptRow(decisionId).resultStatus).isNull();
+    assertThat(events(decisionId, RESULT)).isEmpty();
+  }
+
+  /** 第二次回写（同 attempt）→ 409 result_recorded；行保留首次结果，链上只有一条结果事件。 */
+  @Test
+  void secondResultIs409Recorded() {
+    String attemptId = UUID.randomUUID().toString();
+    String decisionId = consumedDecision(attemptId, "exec-1");
+    Response first = result(decisionId, attemptId, "exec-1", "executed");
+    assertThat(first.statusCode()).as(first.asString()).isEqualTo(200);
+
+    Response second = result(decisionId, attemptId, "exec-1", "failed");
+
+    assertThat(second.statusCode()).as(second.asString()).isEqualTo(409);
+    assertThat(second.asString()).isEqualTo("{\"error\":\"result_recorded\"}");
+    GuardReceiptEntity row = receiptRow(decisionId);
+    assertThat(row.resultStatus).isEqualTo("executed");
+    assertThat(row.resultAt).isEqualTo(Instant.parse(first.jsonPath().getString("resultAt")));
+    assertThat(events(decisionId, RESULT)).hasSize(1);
+  }
+
+  /**
+   * consume 响应在网络上丢失的执行方（ADR 0040 §12 D5）：它不执行，用同一 attemptId 报 aborted → 200，
+   * 对账据此归为「已消耗、未执行」。
+   */
+  @Test
+  void abortedAfterLostConsumeResponseIsAccepted() {
+    String attemptId = UUID.randomUUID().toString();
+    String decisionId = consumedDecision(attemptId, "exec-lost-response");
+
+    Response r = result(decisionId, attemptId, "exec-lost-response", "aborted");
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    String resultAt = r.jsonPath().getString("resultAt");
+    assertThat(r.asString()).isEqualTo("{\"decisionId\":\"" + decisionId + "\",\"resultAt\":\"" + resultAt
+        + "\",\"status\":\"aborted\"}");
+    GuardReceiptEntity row = receiptRow(decisionId);
+    assertThat(row.resultStatus).isEqualTo("aborted");
+    assertThat(row.resultAt).isEqualTo(Instant.parse(resultAt));
+    assertThat(events(decisionId, RESULT)).singleElement().satisfies(e -> {
+      assertThat(e.success).isFalse();
+      assertThat(e.metadata).contains("\"status\":\"aborted\"");
+    });
+  }
+
+  /** 结果事件在权威尝试事件之后入链，consumeReceiptHash 指向它；行的 result_audit_id 指向结果事件。 */
+  @Test
+  void resultEventAuditIdGreaterThanAuthoritativeAttemptAndHashLinked() {
+    String attemptId = UUID.randomUUID().toString();
+    String decisionId = consumedDecision(attemptId, "exec-1");
+    String resultHash = "0123456789abcdef".repeat(4);
+    String body = "{\"attemptId\":\"" + attemptId + "\",\"executorId\":\"exec-1\",\"status\":\"executed\","
+        + "\"finishedAt\":\"2026-11-08T10:01:02.345Z\",\"resultHash\":\"" + resultHash + "\"}";
+
+    Response r = result(TENANT, decisionId, body);
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    assertThat(r.jsonPath().getString("status")).isEqualTo("executed");
+    GuardReceiptEntity row = receiptRow(decisionId);
+    AuditLog attempt = events(decisionId, ATTEMPT).stream().filter(e -> e.id.equals(row.consumeAuditId))
+        .findFirst().orElseThrow();
+    AuditLog resultEvent = events(decisionId, RESULT).stream().findFirst().orElseThrow();
+    assertThat(resultEvent.id).isGreaterThan(row.consumeAuditId);
+    assertThat(row.resultAuditId).isEqualTo(resultEvent.id);
+    assertThat(resultEvent.success).isTrue();
+    assertThat(resultEvent.performedBy).isEqualTo("user-guard-executor");
+    assertThat(resultEvent.metadata)
+        .contains("\"consumeReceiptHash\":\"" + attempt.currentHash + "\"")
+        .contains("\"resultHash\":\"" + resultHash + "\"")
+        .contains("\"finishedAt\":\"2026-11-08T10:01:02.345Z\"")
+        .contains("\"attemptId\":\"" + attemptId + "\"");
+  }
+
+  @Test
+  void crossTenantAndBadUuidResultAre404() {
+    String attemptId = UUID.randomUUID().toString();
+    String decisionId = consumedDecision(attemptId, "exec-1");
+    String good = resultBody(attemptId, "exec-1", "executed");
+
+    for (Response r : List.of(result(OTHER_TENANT, decisionId, good), result(TENANT, "not-a-uuid", good),
+        result(TENANT, UUID.randomUUID().toString(), good))) {
+      assertThat(r.statusCode()).isEqualTo(404);
+      assertThat(r.asString()).isEmpty();
+    }
+    assertThat(receiptRow(decisionId).resultStatus).isNull();
+    assertThat(events(decisionId, RESULT)).isEmpty();
+  }
+
+  /** 字段级 400 {error, field}；resultHash 是免脱敏键，非 64 位小写 hex 的任意文本必须在入链前拒绝。 */
+  @Test
+  void invalidResultBodyIs400() {
+    String attemptId = UUID.randomUUID().toString();
+    String decisionId = consumedDecision(attemptId, "exec-1");
+    String prefix = "{\"attemptId\":\"" + attemptId + "\",\"executorId\":\"exec-1\",\"status\":\"executed\"";
+    Map<String, String> cases = new java.util.LinkedHashMap<>();
+    cases.put("{\"executorId\":\"exec-1\",\"status\":\"executed\"}", "attemptId");
+    cases.put(resultBody("not-a-uuid", "exec-1", "executed"), "attemptId");
+    cases.put(resultBody(attemptId, "line\\nbreak", "executed"), "executorId");
+    cases.put(resultBody(attemptId, "x".repeat(256), "executed"), "executorId");
+    cases.put("{\"attemptId\":\"" + attemptId + "\",\"executorId\":\"exec-1\"}", "status");
+    cases.put(resultBody(attemptId, "exec-1", "done"), "status");
+    cases.put(resultBody(attemptId, "exec-1", "EXECUTED"), "status");
+    cases.put(prefix + ",\"finishedAt\":\"yesterday\"}", "finishedAt");
+    cases.put(prefix + ",\"finishedAt\":\"2026-11-08T10:01:02\"}", "finishedAt");
+    cases.put(prefix + ",\"resultHash\":\"" + "A".repeat(64) + "\"}", "resultHash");
+    cases.put(prefix + ",\"resultHash\":\"" + "a".repeat(63) + "\"}", "resultHash");
+    cases.put(prefix + ",\"resultHash\":\"4111-1111-1111-1111 alice@example.com\"}", "resultHash");
+    cases.put(prefix + ",\"errorCode\":\"" + "E".repeat(65) + "\"}", "errorCode");
+    cases.put(prefix + ",\"errorCode\":\"\"}", "errorCode");
+    cases.put(prefix + ",\"errorCode\":\"bad\\u0007code\"}", "errorCode");
+    cases.forEach((body, field) -> {
+      Response r = result(TENANT, decisionId, body);
+      assertThat(r.statusCode()).as(body).isEqualTo(400);
+      assertThat(r.asString()).as(body).isEqualTo("{\"error\":\"invalid_result\",\"field\":\"" + field + "\"}");
+    });
+    for (String body : List.of(prefix + ",\"status\":\"failed\"}", "{not json", "{\"attemptId\":{\"x\":1}}")) {
+      Response r = result(TENANT, decisionId, body);
+      assertThat(r.statusCode()).as(body).isEqualTo(400);
+      assertThat(r.jsonPath().getString("error")).as(body).isEqualTo("invalid_result");
+    }
+    assertThat(events(decisionId, RESULT)).isEmpty();
+    assertThat(receiptRow(decisionId).resultStatus).isNull();
+    // errorCode 64 字符恰好合法（边界）
+    Response ok = result(TENANT, decisionId, prefix + ",\"errorCode\":\"" + "E".repeat(64) + "\"}");
+    assertThat(ok.statusCode()).as(ok.asString()).isEqualTo(200);
   }
 }

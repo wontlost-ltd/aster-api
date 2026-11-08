@@ -121,6 +121,28 @@ class GuardReceiptResourceAuthTest {
         .singleElement().satisfies(e -> assertThat(e.performedBy).isEqualTo("u-cloud"));
   }
 
+  /** HMAC 双通道同样覆盖结果回写（cloud 执行路径 consume → 执行 → 回写）。 */
+  @Test
+  void hmacInternalCallerCanReportResult() {
+    String body = GuardReceiptResourceTest.allowBody(250000);
+    String decisionId = allowDecision(body);
+    String attemptId = UUID.randomUUID().toString();
+    assertThat(hmacConsume(decisionId, GuardReceiptResourceTest.consumeBody(ExecutionReceiptAssert.actionHashOf(body),
+        attemptId, "aster-cloud-exec")).statusCode()).isEqualTo(200);
+    String result = GuardReceiptResourceTest.resultBody(attemptId, "aster-cloud-exec", "executed");
+    String path = "/api/v1/guard/receipts/" + decisionId + "/result";
+
+    Response anonymous = given().contentType(ContentType.JSON).body(result).when().post(path);
+    assertThat(anonymous.statusCode()).isEqualTo(401);
+    Response r = given()
+        .headers(InternalCallerSigning.headers(HMAC_KEY, "POST", path, "", result, TENANT, "member", "u-cloud", List.of()))
+        .contentType("application/json").body(result).post(path);
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    assertThat(GuardReceiptResourceTest.events(decisionId, "ACTION_GUARD_RESULT"))
+        .singleElement().satisfies(e -> assertThat(e.performedBy).isEqualTo("u-cloud"));
+  }
+
   @Test
   void bearerCanConsumeAndUnauthenticatedIs401() {
     String body = GuardReceiptResourceTest.allowBody(250000);

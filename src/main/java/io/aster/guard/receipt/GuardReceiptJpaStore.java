@@ -1,6 +1,8 @@
 package io.aster.guard.receipt;
 
 import io.aster.guard.api.ConsumeRequest;
+import io.aster.guard.api.ResultRequest;
+import io.aster.policy.entity.AuditLog;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -25,8 +27,11 @@ public class GuardReceiptJpaStore implements GuardReceiptStore {
   static final String RECEIPT_CONSUMED = "receipt_consumed";
   static final String RECEIPT_EXPIRED = "receipt_expired";
   static final String ACTION_MISMATCH = "action_mismatch";
+  static final String NOT_CONSUMED = "not_consumed";
+  static final String ATTEMPT_MISMATCH = "attempt_mismatch";
+  static final String RESULT_RECORDED = "result_recorded";
 
-  /** 「加锁后的 now」的来源：过期判定与 consumed_at 取同一时刻。 */
+  /** 「加锁后的 now」的来源：过期判定与 consumed_at、result_at 都取加锁之后的时刻。 */
   @Inject
   Clock clock;
 
@@ -41,6 +46,53 @@ public class GuardReceiptJpaStore implements GuardReceiptStore {
                                 Predicate<String> kidRevoked) {
     return QuarkusTransaction.requiringNew().call(() -> lockAndDecide(tenantId, decisionId, req, attemptAuditId,
         kidRevoked));
+  }
+
+  @Override
+  public Optional<String> auditCurrentHash(String tenantId, long auditId) {
+    return QuarkusTransaction.requiringNew().call(() -> AuditLog
+        .<AuditLog>find("id = ?1 and tenantId = ?2", auditId, tenantId).firstResultOptional()
+        .map(log -> log.currentHash));
+  }
+
+  @Override
+  public ResultVerdict recordResult(String tenantId, UUID decisionId, ResultRequest req, long resultAuditId) {
+    return QuarkusTransaction.requiringNew().call(() -> lockAndRecord(tenantId, decisionId, req, resultAuditId));
+  }
+
+  /** 与 consume 同一把行锁：并发回写排队，后到者看到赢家已提交的 result_status。 */
+  private ResultVerdict lockAndRecord(String tenantId, UUID decisionId, ResultRequest req, long resultAuditId) {
+    GuardReceiptEntity row = GuardReceiptEntity
+        .<GuardReceiptEntity>find("decisionId = ?1 and tenantId = ?2", decisionId, tenantId)
+        .withLock(LockModeType.PESSIMISTIC_WRITE).firstResult();
+    Optional<String> rejected = checkResult(row, req);
+    if (rejected.isPresent()) {
+      return new ResultVerdict.Rejected(rejected.get());
+    }
+    Instant resultAt = clock.instant().truncatedTo(ChronoUnit.MILLIS);
+    row.resultStatus = req.status();
+    row.resultAt = resultAt;
+    row.resultAuditId = resultAuditId;
+    return new ResultVerdict.Recorded(resultAt, req.status());
+  }
+
+  /**
+   * 结果回写判定（ADR 0040 §12 D7），服务层预判与加锁复核共用：无行或未消耗 → {@code not_consumed}；
+   * attemptId / executorId 与消耗者不符 → {@code attempt_mismatch}；已有结果 → {@code result_recorded}。
+   *
+   * @param row 收据行，null 表示无行（决策从未签发收据）
+   */
+  static Optional<String> checkResult(GuardReceiptEntity row, ResultRequest req) {
+    if (row == null || row.consumedAt == null) {
+      return Optional.of(NOT_CONSUMED);
+    }
+    if (!row.attemptId.equals(req.attemptId()) || !row.executorId.equals(req.executorId())) {
+      return Optional.of(ATTEMPT_MISMATCH);
+    }
+    if (row.resultStatus != null) {
+      return Optional.of(RESULT_RECORDED);
+    }
+    return Optional.empty();
   }
 
   /** 行锁保证同一收据只有一次消耗生效：并发者在锁上排队，拿到锁时已能看到赢家提交的 consumed_at。 */
