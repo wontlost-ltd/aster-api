@@ -3,6 +3,7 @@ package io.aster.common.redis;
 import org.jboss.logging.Logger;
 
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -58,6 +59,9 @@ public final class ResilientRedisSubscriber {
     private final Backoff backoff;
     private final Runnable onUp;
 
+    /** 首次订阅尝试有了结果（成功 / 失败 / 已关闭）即释放，供启动路径有界等待。 */
+    private final CountDownLatch firstAttemptDone = new CountDownLatch(1);
+
     /** 每次尝试递增；断线回调携带所属代次，过期代次的回调直接忽略。 */
     private final AtomicLong generation = new AtomicLong();
 
@@ -98,6 +102,15 @@ public final class ResilientRedisSubscriber {
         return up;
     }
 
+    /**
+     * 有界等待首次订阅尝试出结果，返回此刻是否已 up。供需要「启动即就绪」语义的调用方使用：
+     * 首次尝试失败（如 Redis 不可达）会立即返回 false 而不是等满超时，后台照常退避重试。
+     */
+    public boolean awaitFirstAttempt(Duration timeout) throws InterruptedException {
+        firstAttemptDone.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        return up;
+    }
+
     public String channel() {
         return channel;
     }
@@ -117,6 +130,7 @@ public final class ResilientRedisSubscriber {
             toClose = current;
             current = null;
         }
+        firstAttemptDone.countDown();
         closeQuietly(toClose);
     }
 
@@ -155,6 +169,7 @@ public final class ResilientRedisSubscriber {
         failures = 0;
         downSinceMillis = 0L;
         runOnUp();
+        firstAttemptDone.countDown();
     }
 
     private synchronized boolean install(Subscription sub) {
@@ -180,6 +195,7 @@ public final class ResilientRedisSubscriber {
                 failures, delay, channel, describe(e));
         }
         schedule(delay);
+        firstAttemptDone.countDown();
     }
 
     /** 连接结束/异常回调（来自 Vert.x 事件循环），转交调度线程串行处理。 */

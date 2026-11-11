@@ -3,9 +3,13 @@ package io.aster.policy.cache;
 import io.aster.policy.api.PolicyCacheKey;
 import io.aster.policy.api.cache.PolicyCacheManager;
 import io.aster.policy.test.RedisEnabledTest;
+import io.quarkus.redis.datasource.RedisDataSource;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import io.vertx.core.json.JsonObject;
 import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
 
 import java.util.concurrent.TimeUnit;
 
@@ -26,6 +30,9 @@ public class DistributedCacheInvalidationTest {
 
     @Inject
     PolicyCacheManager cacheManager;
+
+    @Inject
+    RedisDataSource redis;
 
     @Test
     public void testLocalCacheRegistration() {
@@ -101,6 +108,29 @@ public class DistributedCacheInvalidationTest {
         await().atMost(3, TimeUnit.SECONDS)
             .untilAsserted(() -> assertFalse(cacheManager.snapshotTenantCacheKeys("tenant3").contains(key),
                 "Cache entry should be invalidated via Redis Pub/Sub"));
+    }
+
+    @Test
+    public void testRemoteInvalidationFromAnotherInstance() {
+        // Given: 订阅就绪（就绪信号而非固定 sleep，避免启动后订阅尚未建立时的偶发失败）
+        await().atMost(Duration.ofSeconds(15)).until(cacheManager::isInvalidationChannelUp);
+        var key = new PolicyCacheKey("tenant5", "aster.finance.loan", "evaluateLoanEligibility", new Object[]{"{}"});
+        cacheManager.registerCacheEntry(key, "tenant5");
+
+        // When: 另一实例直接经 Redis 广播精确键失效（本实例本地不做任何失效）
+        String payload = new JsonObject()
+            .put("tenantId", "tenant5")
+            .put("policyModule", key.getPolicyModule())
+            .put("policyFunction", key.getPolicyFunction())
+            .put("hash", key.hashCode())
+            .encode();
+        long receivers = redis.execute("PUBLISH", "policy-cache:invalidate", payload).toLong();
+
+        // Then: 本实例已登记为订阅者，且收到后清掉该键
+        assertTrue(receivers >= 1, "本实例应已订阅 policy-cache:invalidate");
+        await().atMost(3, TimeUnit.SECONDS)
+            .untilAsserted(() -> assertFalse(cacheManager.snapshotTenantCacheKeys("tenant5").contains(key),
+                "远程失效消息应清掉本实例的缓存索引"));
     }
 
     @Test
