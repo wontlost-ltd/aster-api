@@ -1,7 +1,10 @@
 package io.aster.policy.api.cache;
 
 import io.aster.policy.api.PolicyCacheKey;
+import io.aster.policy.api.model.PolicyEvaluationResult;
 import io.aster.policy.test.RedisEnabledTest;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.redis.datasource.RedisDataSource;
 import io.quarkus.test.junit.QuarkusTest;
 import io.vertx.core.Context;
@@ -40,8 +43,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 才挂处理器，而确认在连接事件循环 L 上先到达被丢弃；旧实现还只在启动时订阅一次、不跟踪也不重试。
  *
  * <p>第一个用例把时序做成必然：在粘滞到繁忙 C≠L 的线程上（重新）建立订阅，要求在超时内就绪，
- * 且随后经 Redis 直接 PUBLISH 的失效消息真正清掉本实例的租户索引。第二个用例只踢掉本频道的订阅连接，
- * 要求订阅自动恢复、继续接收失效消息，并作废断线前的本地主缓存（断线期间的失效已漏收）。
+ * 且随后经 Redis 直接 PUBLISH 的失效消息真正经消息路径送达（远程失效计数 +1、租户索引清空）。
+ * 第二个用例只踢掉本频道的订阅连接，并在断线窗口内由「另一实例」广播租户级失效（必然漏收），
+ * 要求订阅自动恢复、继续接收失效消息，并补齐漏收：本实例写入的主缓存条目被作废。
+ * {@link PolicyCacheInvalidationRedisBackedIT} 以 Redis 后端（生产默认）重跑同样的用例。
+ *
+ * <p>送达断言只认消息路径独有的副作用（远程失效计数），并在注册前排空失效执行器，避免订阅恢复时
+ * 排队的缓存作废（同样会清索引）冒充送达。
  */
 @QuarkusTest
 @RedisEnabledTest
@@ -67,6 +75,11 @@ class PolicyCacheInvalidationSubscribeIT {
 
     @Inject
     Vertx vertx;
+
+    @Inject
+    MeterRegistry meterRegistry;
+
+    private static final Duration QUEUE_IDLE_TIMEOUT = Duration.ofSeconds(10);
 
     @Test
     void subscriptionIsReadyAndDeliversEvenWhenCallerLoopIsBusy() throws Exception {
@@ -94,49 +107,85 @@ class PolicyCacheInvalidationSubscribeIT {
     }
 
     @Test
-    void subscriptionRecoversAfterConnectionDrop() {
-        // 只踢本频道的订阅连接，不波及同一 Redis 上其他广播订阅（apikey / lexicon / ui-messages …）：
-        // 重订阅前后对比 pub/sub 连接列表，新增的那条即本频道连接。
-        Set<String> before = pubsubClientIds();
-        assertTrue(cacheManager.subscribeInvalidationChannel(), "重订阅应在启动等待内就绪");
-        Set<String> added = new HashSet<>(pubsubClientIds());
-        added.removeAll(before);
-        assertEquals(1, added.size(), "重订阅应恰好新增一条 pub/sub 连接: " + added);
+    void missedTenantInvalidationIsRepairedAfterReconnect() throws Exception {
+        String connectionId = resubscribeAndFindConnection();
         assertRemoteInvalidationDelivered("before-drop");
 
-        // 断线前已缓存的结果：断线期间若有其他实例失效它，本实例收不到，恢复后必须被作废。
-        var staleKey = new PolicyCacheKey("tenant-subscribe-it-stale-" + UUID.randomUUID(), "aster.it.module", "fn",
-            new Object[]{"{}"});
-        cacheManager.getPolicyResultCache().<PolicyCacheKey, String>get(staleKey, k -> "cached").await().indefinitely();
-        assertNotNull(cacheManager.getCaffeineCacheDelegate().getIfPresent(staleKey), "断线前结果应已缓存");
+        // 本实例走生产路径写入并追踪的条目（写主缓存 + 登记租户索引）。
+        String tenant = "tenant-subscribe-it-missed-" + UUID.randomUUID();
+        var key = new PolicyCacheKey(tenant, "aster.it.module", "fn", new Object[]{"{}"});
+        assertEquals("cached", cachedResult(key, "cached"), "断线前结果应已写入主缓存");
+        cacheManager.registerCacheEntry(key, tenant);
 
-        String connectionId = added.iterator().next();
         assertEquals(1L, redis.execute("CLIENT", "KILL", "ID", connectionId).toLong(), "应踢掉本频道订阅连接");
+        // 断线窗口内另一实例广播租户级失效：重订阅至少退避 500ms，此刻本频道无订阅者，消息必然漏收。
+        assertEquals(0L, publishRaw(tenantWide(tenant)), "断线窗口内的失效应无人接收（漏收）");
 
-        // 断线后按 1s 起步的退避重订阅；恢复后失效消息必须继续送达。
+        // 恢复后：订阅重新就绪，且恢复作废清掉该租户的追踪键（期间没有任何送达的消息能做到这点）。
         await().atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(100))
             .until(() -> cacheManager.isInvalidationChannelUp() && publishRaw("probe-" + UUID.randomUUID()) >= 1);
+        await().atMost(Duration.ofSeconds(5))
+            .until(() -> !cacheManager.snapshotTenantCacheKeys(tenant).contains(key));
+        cacheManager.awaitInvalidationQueueIdle(QUEUE_IDLE_TIMEOUT);
+        assertEquals("fresh", cachedResult(key, "fresh"), "漏收的租户级失效应在恢复后被补齐，主缓存条目已作废");
+
         assertRemoteInvalidationDelivered("after-drop");
-        await().atMost(Duration.ofSeconds(5)).until(() ->
-            cacheManager.getCaffeineCacheDelegate().getIfPresent(staleKey) == null);
     }
 
-    /** 注册一个租户缓存键，经 Redis 直接 PUBLISH 租户级失效（模拟另一实例），要求本实例索引被清掉。 */
-    private void assertRemoteInvalidationDelivered(String label) {
+    /**
+     * 重订阅本频道并找出它的服务端连接 id：对比重订阅前后的 pub/sub 连接（只看 sub=1 的频道订阅），
+     * 只踢这一条，不波及同一 Redis 上其他广播订阅。若恰逢其他订阅重连导致新增不唯一，重试。
+     */
+    private String resubscribeAndFindConnection() {
+        Set<String> added = Set.of();
+        for (int attempt = 0; attempt < 3 && added.size() != 1; attempt++) {
+            Set<String> before = channelSubscriberIds();
+            assertTrue(cacheManager.subscribeInvalidationChannel(), "重订阅应在启动等待内就绪");
+            added = new HashSet<>(channelSubscriberIds());
+            added.removeAll(before);
+        }
+        assertEquals(1, added.size(), "重订阅应恰好新增一条 pub/sub 连接: " + added);
+        return added.iterator().next();
+    }
+
+    /** 经主缓存读取 key：命中返回已缓存值，未命中时以 value 回填并返回 value。两种缓存后端通用。 */
+    private String cachedResult(PolicyCacheKey key, String value) {
+        PolicyEvaluationResult result = cacheManager.getPolicyResultCache()
+            .<PolicyCacheKey, PolicyEvaluationResult>get(key, k -> new PolicyEvaluationResult(value, 1.0, false))
+            .await().atMost(Duration.ofSeconds(5));
+        return String.valueOf(result.getResult());
+    }
+
+    /**
+     * 注册一个租户缓存键，经 Redis 直接 PUBLISH 租户级失效（模拟另一实例），要求消息经本实例的
+     * 订阅送达：远程失效计数只由消息处理路径递增，且租户索引被清掉。
+     */
+    private void assertRemoteInvalidationDelivered(String label) throws Exception {
+        // 先排空执行器：订阅（重新）建立时排队的缓存作废也会清索引，不能让它冒充送达。
+        cacheManager.awaitInvalidationQueueIdle(QUEUE_IDLE_TIMEOUT);
         String tenant = "tenant-subscribe-it-" + label + "-" + UUID.randomUUID();
         var key = new PolicyCacheKey(tenant, "aster.it.module", "fn", new Object[]{"{}"});
         cacheManager.registerCacheEntry(key, tenant);
         assertTrue(cacheManager.snapshotTenantCacheKeys(tenant).contains(key), label + "：注册后索引应含该键");
 
-        String payload = new JsonObject()
+        assertTrue(publishRaw(tenantWide(tenant)) >= 1, label + "：PUBLISH 时服务端应已登记失效订阅者");
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+            assertEquals(1.0, remoteInvalidations(tenant), 0.0001, label + "：远程失效消息应经订阅送达本实例"));
+        cacheManager.awaitInvalidationQueueIdle(QUEUE_IDLE_TIMEOUT);
+        assertFalse(cacheManager.snapshotTenantCacheKeys(tenant).contains(key), label + "：远程失效消息应清掉本实例租户索引");
+    }
+
+    private double remoteInvalidations(String tenant) {
+        Counter counter = meterRegistry.find("policy_cache_remote_invalidations_total").tag("tenant", tenant).counter();
+        return counter == null ? 0.0 : counter.count();
+    }
+
+    private static String tenantWide(String tenant) {
+        return new JsonObject()
             .put("tenantId", tenant)
             .putNull("policyModule")
             .putNull("policyFunction")
             .encode();
-        assertTrue(publishRaw(payload) >= 1, label + "：PUBLISH 时服务端应已登记失效订阅者");
-        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
-            assertFalse(cacheManager.snapshotTenantCacheKeys(tenant).contains(key),
-                label + "：远程失效消息应清掉本实例租户索引"));
     }
 
     /** 在调用线程上（其粘滞上下文即 callerLoop）：让 callerLoop 持续繁忙，再（重新）建立订阅；校验未接近超时上限。 */
@@ -212,11 +261,11 @@ class PolicyCacheInvalidationSubscribeIT {
         return name.get();
     }
 
-    /** 当前全部 pub/sub 连接的 id（CLIENT LIST 每行形如 {@code id=7 addr=... sub=1 ...}）。 */
-    private Set<String> pubsubClientIds() {
+    /** 当前全部「频道订阅数为 1、无模式订阅」的 pub/sub 连接 id（CLIENT LIST 每行形如 {@code id=7 addr=... sub=1 psub=0 ...}）。 */
+    private Set<String> channelSubscriberIds() {
         Set<String> ids = new HashSet<>();
         for (String line : redis.execute("CLIENT", "LIST", "TYPE", "pubsub").toString().split("\\R")) {
-            if (line.startsWith("id=")) {
+            if (line.startsWith("id=") && line.contains(" sub=1 ") && line.contains(" psub=0 ")) {
                 ids.add(line.substring(3, line.indexOf(' ')));
             }
         }

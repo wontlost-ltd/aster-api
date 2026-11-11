@@ -201,7 +201,8 @@ public class PolicyCacheManager {
             LOG.warn("初始化 Redis 缓存失效订阅失败", e);
             return;
         }
-        startupSubscribePending.set(true);
+        // 只有真正有界等待时（非事件循环线程）bean 才在订阅就绪前不可用；事件循环上的懒加载路径不跳过恢复作废。
+        startupSubscribePending.set(!Context.isOnEventLoopThread());
         try {
             subscribeInvalidationChannel();
         } finally {
@@ -213,7 +214,7 @@ public class PolicyCacheManager {
      * 订阅交给 {@link RedisBroadcastSupervisor}：先挂处理器再 SUBSCRIBE（无确认丢失竞态），失败或断线后
      * 退避重订阅，并暴露 {@code aster_redis_broadcast_up{channel="policy-cache:invalidate"}}。
      *
-     * <p>每次（重新）订阅成功后作废本地主缓存，补齐 down 期间漏收的失效（见 {@link #resyncAfterSubscribe()}）。
+     * <p>每次（重新）订阅成功后作废本实例负责的主缓存条目，补齐 down 期间漏收的失效（见 {@link #resyncAfterSubscribe()}）。
      *
      * <p>为保留旧实现「启动返回即已订阅」的语义，这里有界等待首次尝试出结果；在事件循环线程上
      * （懒加载 bean 首次被 reactive 路径触达时）不等待，只异步建立。down 期间本实例只收不到
@@ -245,30 +246,49 @@ public class PolicyCacheManager {
     }
 
     /**
-     * 每次（重新）订阅成功后执行：pub/sub 不持久，订阅建立前 / 断线期间其他实例发出的失效已永久漏收。
-     * 本地 Caffeine 主缓存只能整体作废才能确保不再返回陈旧决策（代价是本实例一次冷缓存）。
-     * Redis 后端（生产默认）的主缓存是共享的，源实例已直接删除对应条目，无需作废、避免全副本缓存雪崩。
+     * 每次（重新）订阅成功后执行：pub/sub 不持久，订阅建立前 / 断线期间其他实例发出的失效已永久漏收，
+     * 必须作废本实例负责的主缓存条目才能确保不再返回陈旧决策：
+     * <ul>
+     *   <li>本地 Caffeine 后端：整体作废（代价是本实例一次冷缓存）。</li>
+     *   <li>Redis 后端（生产默认，共享缓存）：只作废本实例追踪索引里的键。租户 / 模块范围的失效只覆盖
+     *       源实例自己索引里的键，其他副本写入的共享条目要靠各副本收到广播后按自己的索引删除；
+     *       断线期间漏收则这些条目会被全部副本读到直至 TTL。只删本副本写入的键，不会引发全副本缓存雪崩。</li>
+     * </ul>
      * 与远程失效同在单线程执行器上执行，保持先后顺序。启动等待内的首次成功跳过（见 startupSubscribePending）。
      */
     private void resyncAfterSubscribe() {
-        if (startupSubscribePending.compareAndSet(true, false) || caffeineCacheDelegate == null) {
+        if (startupSubscribePending.compareAndSet(true, false)) {
             return;
         }
         try {
-            invalidationExecutor.execute(this::invalidateAllLocalResults);
+            invalidationExecutor.execute(this::invalidateOwnedResults);
         } catch (RejectedExecutionException e) {
-            LOG.debug("失效执行器已关闭（停机中），跳过订阅恢复后的本地缓存作废");
+            LOG.debug("失效执行器已关闭（停机中），跳过订阅恢复后的缓存作废");
         }
     }
 
-    private void invalidateAllLocalResults() {
+    private void invalidateOwnedResults() {
         try {
-            policyResultCache.invalidateAll().await().indefinitely();
+            Set<PolicyCacheKey> tracked = new HashSet<>();
+            tenantCacheIndex.values().forEach(tracked::addAll);
+            // 先摘追踪再作废主缓存：作废之后写入的条目会重新登记索引，不会留下未追踪的活条目。
             clearAllCache();
-            LOG.infof("Redis 缓存失效订阅（重新）建立，已作废本地策略结果缓存以补齐可能漏收的失效: %s",
-                INVALIDATION_CHANNEL);
+            if (caffeineCacheDelegate != null) {
+                policyResultCache.invalidateAll().await().indefinitely();
+            } else {
+                tracked.forEach(this::invalidateResultCache);
+            }
+            LOG.infof("Redis 缓存失效订阅（重新）建立，已作废本实例策略结果缓存以补齐可能漏收的失效: %s（追踪键 %d 个）",
+                INVALIDATION_CHANNEL, tracked.size());
         } catch (Exception e) {
-            LOG.warnf(e, "订阅恢复后作废本地策略结果缓存失败: %s", INVALIDATION_CHANNEL);
+            LOG.warnf(e, "订阅恢复后作废策略结果缓存失败: %s", INVALIDATION_CHANNEL);
+        }
+    }
+
+    /** 等待失效执行器处理完此前排队的任务（远程失效 / 恢复作废）。包级可见供测试消除异步时序。 */
+    void awaitInvalidationQueueIdle(Duration timeout) throws Exception {
+        if (invalidationExecutor != null) {
+            invalidationExecutor.submit(() -> { }).get(timeout.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
         }
     }
 

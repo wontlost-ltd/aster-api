@@ -3,6 +3,8 @@ package io.aster.policy.cache;
 import io.aster.policy.api.PolicyCacheKey;
 import io.aster.policy.api.cache.PolicyCacheManager;
 import io.aster.policy.test.RedisEnabledTest;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.redis.datasource.RedisDataSource;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -33,6 +35,9 @@ public class DistributedCacheInvalidationTest {
 
     @Inject
     RedisDataSource redis;
+
+    @Inject
+    MeterRegistry meterRegistry;
 
     @Test
     public void testLocalCacheRegistration() {
@@ -114,23 +119,26 @@ public class DistributedCacheInvalidationTest {
     public void testRemoteInvalidationFromAnotherInstance() {
         // Given: 订阅就绪（就绪信号而非固定 sleep，避免启动后订阅尚未建立时的偶发失败）
         await().atMost(Duration.ofSeconds(15)).until(cacheManager::isInvalidationChannelUp);
-        var key = new PolicyCacheKey("tenant5", "aster.finance.loan", "evaluateLoanEligibility", new Object[]{"{}"});
-        cacheManager.registerCacheEntry(key, "tenant5");
+        String tenant = "tenant5-" + java.util.UUID.randomUUID();
+        var key = new PolicyCacheKey(tenant, "aster.finance.loan", "evaluateLoanEligibility", new Object[]{"{}"});
+        cacheManager.registerCacheEntry(key, tenant);
 
         // When: 另一实例直接经 Redis 广播精确键失效（本实例本地不做任何失效）
         String payload = new JsonObject()
-            .put("tenantId", "tenant5")
+            .put("tenantId", tenant)
             .put("policyModule", key.getPolicyModule())
             .put("policyFunction", key.getPolicyFunction())
             .put("hash", key.hashCode())
             .encode();
         long receivers = redis.execute("PUBLISH", "policy-cache:invalidate", payload).toLong();
 
-        // Then: 本实例已登记为订阅者，且收到后清掉该键
+        // Then: 本实例已登记为订阅者，消息经订阅送达（远程失效计数只由消息处理路径递增），且清掉该键
         assertTrue(receivers >= 1, "本实例应已订阅 policy-cache:invalidate");
-        await().atMost(3, TimeUnit.SECONDS)
-            .untilAsserted(() -> assertFalse(cacheManager.snapshotTenantCacheKeys("tenant5").contains(key),
-                "远程失效消息应清掉本实例的缓存索引"));
+        await().atMost(3, TimeUnit.SECONDS).untilAsserted(() -> {
+            Counter counter = meterRegistry.find("policy_cache_remote_invalidations_total").tag("tenant", tenant).counter();
+            assertTrue(counter != null && counter.count() >= 1.0, "远程失效消息应经订阅送达本实例");
+            assertFalse(cacheManager.snapshotTenantCacheKeys(tenant).contains(key), "远程失效消息应清掉本实例的缓存索引");
+        });
     }
 
     @Test
