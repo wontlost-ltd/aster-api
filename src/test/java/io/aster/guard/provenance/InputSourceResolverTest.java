@@ -136,6 +136,17 @@ class InputSourceResolverTest {
   }
 
   @Test
+  void factExpiresAtTruncatedToMicrosNeverLaterThanSigned() {
+    Instant signed = NOW.plusSeconds(600).plusNanos(123_456_789);
+    VerifiedFacts v = facts(ISSUER_KID, signed, Map.of("context.amount", "ledger.amount"));
+
+    InputSources s = InputSourceResolver.resolve(action(USER, "agent", null), v, USER, Set.of());
+
+    // timestamptz 只存微秒：截断后行与收据一致，且不晚于签名里的 expiresAt
+    assertThat(s.factExpiresAt()).isEqualTo(NOW.plusSeconds(600).plusNanos(123_456_000));
+  }
+
+  @Test
   void principalIdentityMatchedRecordedEvenWhenFactCovers() {
     VerifiedFacts v = facts(ISSUER_KID, NOW.plusSeconds(600), Map.of("principal.id", "idp.sub"));
 

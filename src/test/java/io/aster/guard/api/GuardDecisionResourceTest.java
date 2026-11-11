@@ -31,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -673,7 +674,12 @@ class GuardDecisionResourceTest {
   void validFactMarksVerifiedInResponseRowAndReceipt() throws Exception {
     TestFactSigner signer = TestFactSigner.newKey();
     register(signer);
-    ObjectNode fact = amountFact(signer).sign();
+    // expiresAt 故意带纳秒：Linux JDK 的 Instant.now() 本就是纳秒精度（macOS 仅微秒），而 timestamptz 只存微秒——
+    // 决策行与收据都须记成同一个截断到微秒的值，不能一个四舍五入、一个保留纳秒
+    Instant now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+    Instant signedExpiresAt = now.plusSeconds(600).plusNanos(123_456_789);
+    ObjectNode fact = amountFact(signer).window(now.minusSeconds(30), signedExpiresAt).sign();
+    Instant recordedExpiresAt = signedExpiresAt.truncatedTo(ChronoUnit.MICROS);
 
     Response resp = postRaw(withFacts(fact));
 
@@ -684,12 +690,12 @@ class GuardDecisionResourceTest {
     GuardDecisionEntity row = decisionRow(resp.jsonPath().getString("decisionId"));
     assertThat(JSON.readTree(row.verifiedFields)).isEqualTo(JSON.readTree("[\"context.amount\"]"));
     assertThat(JSON.readTree(row.factIssuers)).isEqualTo(JSON.readTree("[\"" + ISSUER_KID + "\"]"));
-    assertThat(row.factExpiresAt).isEqualTo(Instant.parse(fact.get("expiresAt").asText()));
+    assertThat(row.factExpiresAt).isEqualTo(recordedExpiresAt);
     JsonNode md = receiptMetadata(resp);
     assertThat(md.get("verifiedFields")).isEqualTo(JSON.readTree("[\"context.amount\"]"));
     assertThat(md.get("factIssuers")).isEqualTo(JSON.readTree("[\"" + ISSUER_KID + "\"]"));
     assertThat(md.get("factSources")).isEqualTo(JSON.readTree("[\"context.amount=ledger.amount\"]"));
-    assertThat(md.get("factExpiresAt").asText()).isEqualTo(Instant.parse(fact.get("expiresAt").asText()).toString());
+    assertThat(md.get("factExpiresAt").asText()).isEqualTo(recordedExpiresAt.toString());
     // principal.type 为 agent：服务端解析不适用，不写 principalIdentityMatched
     assertThat(md.has("principalIdentityMatched")).isFalse();
     assertThat(md.has("inputSourcesTruncated")).isFalse();

@@ -7,6 +7,7 @@ import jakarta.inject.Inject;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
@@ -59,7 +60,15 @@ public class InputSourceResolver {
       }
     }
     return new InputSources(verified, facts.issuerKids(), facts.sourcesByPath(), identityMatched,
-        facts.earliestExpiresAt());
+        recordableExpiresAt(facts.earliestExpiresAt()));
+  }
+
+  /**
+   * 事实失效时刻截断到微秒：决策行的 {@code fact_expires_at}（timestamptz 只存微秒，且对纳秒四舍五入）与收据
+   * metadata 必须记同一个值；向下截断只会让事实更早失效（fail-closed），绝不会晚于签名里的 {@code expiresAt}。
+   */
+  private static Instant recordableExpiresAt(Instant expiresAt) {
+    return expiresAt == null ? null : expiresAt.truncatedTo(ChronoUnit.MICROS);
   }
 
   /**
