@@ -450,26 +450,30 @@ class AuditImmutabilityTest {
     // ============================================================
 
     private void emit(String tenantId, String func) throws Exception {
+        long before = countOf(tenantId);
         auditEventProducer.fireAsync(new AuditEvent(
             EventType.POLICY_EVALUATION, Instant.now(), tenantId,
             "test.module", func, null, null, null, "tester", true, 1L, null,
             Map.of(), null, null, null, null));
-        waitForCount(tenantId);
+        waitForCount(tenantId, before + 1);
     }
 
-    private void waitForCount(String tenantId) throws Exception {
-        for (int i = 0; i < 100; i++) {
-            long n = db.queryLong(
-                "SELECT COUNT(*) FROM audit_logs WHERE tenant_id = ?", tenantId);
-            if (n > 0) {
-                Thread.sleep(30);
-                long after = db.queryLong(
-                    "SELECT COUNT(*) FROM audit_logs WHERE tenant_id = ?", tenantId);
-                if (after == n) return;
-            }
+    /**
+     * 等到本次异步事件真正落库（租户记录数达到 {@code expected}）。
+     *
+     * <p>不能只看「记录数 &gt; 0 且 30ms 内不变」：第二条起该条件在新记录落库前就成立，
+     * 慢机器上锚定 / 篡改会抢在最后一条落库之前执行，锚点于是落在倒数第二条上。
+     */
+    private void waitForCount(String tenantId, long expected) throws Exception {
+        for (int i = 0; i < 300; i++) {
+            if (countOf(tenantId) >= expected) return;
             Thread.sleep(30);
         }
-        throw new AssertionError("审计记录未在预期时间内落库: " + tenantId);
+        throw new AssertionError("审计记录未在预期时间内落库: " + tenantId + " expected=" + expected);
+    }
+
+    private long countOf(String tenantId) {
+        return db.queryLong("SELECT COUNT(*) FROM audit_logs WHERE tenant_id = ?", tenantId);
     }
 
     private long anchorCount(String tenantId) {

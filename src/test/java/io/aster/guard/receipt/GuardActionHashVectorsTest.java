@@ -69,7 +69,9 @@ class GuardActionHashVectorsTest {
       }
       JsonNode input = STRICT.readTree(v.get("input"));
       if ("unsafe_integer".equals(error) || "invalid_string".equals(error)) {
-        assertThatThrownBy(() -> JcsCanonicalizer.canonicalize(input)).as(name).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> JcsCanonicalizer.canonicalize(input)).as(name)
+            .isInstanceOfSatisfying(JcsCanonicalizer.InvalidJsonValueException.class,
+                e -> assertThat(e.code()).as(name).isEqualTo(error));
         assertThatThrownBy(() -> hasher.hash(input)).as(name).isInstanceOf(GuardInvalidActionException.class);
         continue;
       }

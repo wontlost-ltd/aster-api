@@ -1,19 +1,28 @@
 package io.aster.guard.api;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
+import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardDecisionEntity;
+import io.aster.guard.provenance.FactIssuerStore;
+import io.aster.guard.provenance.TestFactSigner;
 import io.aster.guard.receipt.GuardReceiptEntity;
+import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import io.aster.policy.evidence.EvaluationEvidence;
+import io.aster.policy.governance.RuleMetadata;
 import io.aster.security.apikey.ApiKeyVerifierService;
 import io.aster.security.apikey.ApiKeyVerifyResult;
 import io.aster.security.apikey.InternalCallerSigning;
 import io.aster.test.PostgresTestResource;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.common.QuarkusTestResource;
+import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
@@ -22,6 +31,7 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -39,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @QuarkusTest
 @QuarkusTestResource(PostgresTestResource.class)
 @TestProfile(GuardFromEvidenceResourceTest.AuthProfile.class)
-class GuardFromEvidenceResourceTest {
+public class GuardFromEvidenceResourceTest {
   /** 与 AuditReceiptHmacAuthTest 同款：apikey 鉴权与 HMAC 密钥同时打开，signature 关闭以贴近生产。 */
   public static class AuthProfile implements QuarkusTestProfile {
     @Override
@@ -62,9 +72,11 @@ class GuardFromEvidenceResourceTest {
   private static final String DPO = "Data Protection Officer";
   private static final String BEARER_KEY = "ak_test_guard_evidence_member";
   private static final String HMAC_KEY = "s2-1a-0-characterization-key-32b!";
+  private static final ObjectMapper JSON = new ObjectMapper();
 
   @Inject AuditChainAppender appender;
   @Inject ApiKeyVerifierService verifier;
+  @Inject FactIssuerStore factIssuerStore;
   @ConfigProperty(name = "aster.guard.receipt.signing-keys") String signingKeys;
 
   @BeforeEach
@@ -422,5 +434,140 @@ class GuardFromEvidenceResourceTest {
         .call(() -> GuardDecisionEntity.<GuardDecisionEntity>findById(decisionId));
     assertThat(row.policyVersionId).isEqualTo(7L);
     assertThat(row.evidenceCorrelationId).isEqualTo(cid);
+  }
+
+  // ---- ADR 0040 §11 D2 (b)(c) / D4：from-evidence 同样验签并标注来源 ----
+
+  /** 本租户登记一个新 kid 的签发方（每个用例独立 kid，避免与同 JVM 其他用例的公钥冲突）。 */
+  private TestFactSigner registeredSigner(String kid) {
+    TestFactSigner signer = TestFactSigner.newKey().kid(kid);
+    var saved = factIssuerStore.upsert(TENANT, TestFactSigner.ISSUER, kid, signer.publicKey(), true, null, "u-admin",
+        Instant.now());
+    assertThat(saved).isInstanceOf(FactIssuerStore.UpsertResult.Saved.class);
+    return signer;
+  }
+
+  private static String newKid() {
+    return "k-" + UUID.randomUUID().toString().substring(0, 8);
+  }
+
+  private static ObjectNode amountFact(TestFactSigner signer) {
+    Instant now = Instant.now();
+    return signer.fresh().audience(TENANT).window(now.minusSeconds(30), now.plusSeconds(600))
+        .claims("{\"context.amount\":250000}").sources("{\"context.amount\":\"ledger.amount\"}").sign();
+  }
+
+  private static String bodyWithFacts(String cid, String principal, JsonNode... facts) {
+    ObjectNode body = (ObjectNode) readTree(body(cid));
+    ObjectNode action = (ObjectNode) body.get("action");
+    if (principal != null) {
+      action.set("principal", readTree(principal));
+    }
+    var list = action.putArray("facts");
+    for (JsonNode f : facts) {
+      list.add(f);
+    }
+    return body.toString();
+  }
+
+  private static JsonNode readTree(String json) {
+    try {
+      return JSON.readTree(json);
+    } catch (Exception e) {
+      throw new IllegalArgumentException(json, e);
+    }
+  }
+
+  private static long decisionsFor(String cid) {
+    return QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.count("evidenceCorrelationId", cid));
+  }
+
+  /** 伪造签名（另一把密钥签的同一 issuer#kid）→ 400 invalid_fact，不开决策；已开决策的同一证据也不能被伪造事实重放。 */
+  @Test
+  void forgedFactOnFromEvidenceIs400() {
+    String kid = newKid();
+    registeredSigner(kid);
+    ObjectNode forged = amountFact(TestFactSigner.newKey().kid(kid));
+    String cid = newCid();
+    appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+
+    Response rejected = signedPost(FROM_EVIDENCE, bodyWithFacts(cid, null, forged), TENANT, "u-req", List.of());
+    Response opened = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    Response replayWithForged = signedPost(FROM_EVIDENCE, bodyWithFacts(cid, null, forged), TENANT, "u-req", List.of());
+
+    assertThat(rejected.statusCode()).as(rejected.asString()).isEqualTo(400);
+    assertThat(rejected.jsonPath().getString("error")).isEqualTo("invalid_fact");
+    assertThat(rejected.jsonPath().getString("reason")).isEqualTo("bad_signature");
+    assertThat(opened.statusCode()).as(opened.asString()).isEqualTo(200);
+    assertThat(replayWithForged.statusCode()).isEqualTo(400);
+    assertThat(replayWithForged.jsonPath().getString("reason")).isEqualTo("bad_signature");
+    assertThat(decisionsFor(cid)).isEqualTo(1);
+  }
+
+  @Test
+  void validFactOnFromEvidenceMarksFieldVerified() throws Exception {
+    String kid = newKid();
+    TestFactSigner signer = registeredSigner(kid);
+    String cid = newCid();
+    appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+
+    Response resp = signedPost(FROM_EVIDENCE, bodyWithFacts(cid, null, amountFact(signer)), TENANT, "u-req", List.of());
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getList("inputSources.verified")).containsExactly("context.amount");
+    assertThat(resp.jsonPath().getList("inputSources.factIssuers")).containsExactly(TestFactSigner.ISSUER + "#" + kid);
+    GuardDecisionEntity row = QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.<GuardDecisionEntity>findById(
+        UUID.fromString(resp.jsonPath().getString("decisionId"))));
+    assertThat(JSON.readTree(row.verifiedFields)).isEqualTo(JSON.readTree("[\"context.amount\"]"));
+    assertThat(JSON.readTree(row.factIssuers)).isEqualTo(JSON.readTree("[\"" + TestFactSigner.ISSUER + "#" + kid + "\"]"));
+    assertThat(row.factExpiresAt).isNotNull();
+  }
+
+  /** 路径 (c)：HMAC 签过的 userId 即 principal.id（principal.type=user）→ verified；业务角色取签名内的角色。 */
+  @Test
+  void signedUserPrincipalIsVerifiedOnFromEvidence() {
+    String cid = newCid();
+    appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+
+    Response resp = signedPost(FROM_EVIDENCE,
+        bodyWithFacts(cid, "{\"id\":\"u-req\",\"type\":\"user\",\"roles\":[\"ops\"]}"), TENANT, "u-req",
+        List.of("ops"));
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getList("inputSources.verified")).containsExactly("principal.id", "principal.roles");
+  }
+  /**
+   * ADR 0040 §11 D5：from-evidence 同样执行档案门。规则引用的 context.amount 为 declared（人手填写、未附事实）
+   * → DENY unverified_input 而非 PENDING：写决策收据（unverifiedFields）与决策行，不建待审批。
+   * 规则元数据经 {@link QuarkusMock} 替换，只作用于当前用例（引擎尚不产出 inputRefs，见 Task 16）。
+   */
+  @Test
+  void fromEvidenceAlsoGated() {
+    PolicyEvaluationService evaluation = Mockito.mock(PolicyEvaluationService.class);
+    Mockito.when(evaluation.ruleMetadata(TENANT, "guard.customer", "decide")).thenReturn(
+        new RuleMetadata("CUST-DEL-001", List.of("GDPR:ART17"), "eu-ai-act-high-risk", List.of("context.amount"), true));
+    QuarkusMock.installMockForType(evaluation, PolicyEvaluationService.class);
+    String cid = newCid();
+    appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+
+    Response resp = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("outcome")).isEqualTo("DENY");
+    assertThat(resp.jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
+    assertThat(resp.jsonPath().getString("reasonCode")).isEqualTo("unverified_input");
+    assertThat(resp.jsonPath().getString("reason")).isNull();
+    assertThat(resp.jsonPath().getString("approval")).isNull();
+    String decisionId = resp.jsonPath().getString("decisionId");
+    UUID id = UUID.fromString(decisionId);
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.<GuardDecisionEntity>findById(id))
+        .reasonCode).isEqualTo("unverified_input");
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardApprovalEntity.count("decisionId", id))).isZero();
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id))).isZero();
+    Response receipts = signedGet(RECEIPTS, "decisionIds=" + decisionId, TENANT, "u-export");
+    assertThat(receipts.statusCode()).as(receipts.asString()).isEqualTo(200);
+    assertThat(receipts.jsonPath().getString("receipts[0].metadata.reasonCode")).isEqualTo("unverified_input");
+    assertThat(receipts.jsonPath().getList("receipts[0].metadata.unverifiedFields")).containsExactly("context.amount");
+    assertThat(receipts.jsonPath().getString("receipts[0].metadata.evidenceCorrelationId")).isEqualTo(cid);
   }
 }

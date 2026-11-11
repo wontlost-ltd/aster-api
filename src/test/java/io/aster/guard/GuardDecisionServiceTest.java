@@ -9,6 +9,10 @@ import io.aster.guard.api.GuardActionRequest.ActionName;
 import io.aster.guard.api.GuardActionRequest.Principal;
 import io.aster.guard.api.GuardActionRequest.Resource;
 import io.aster.guard.api.GuardDecisionResponse;
+import io.aster.guard.provenance.FactIssuerStore;
+import io.aster.guard.provenance.FactVerifier;
+import io.aster.guard.provenance.GuardFactIssuerEntity;
+import io.aster.guard.provenance.InputSourceResolver;
 import io.aster.guard.receipt.ExecutionReceipt;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptSigner;
@@ -22,6 +26,7 @@ import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import io.aster.policy.evidence.AgentIdentity;
+import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.repository.PolicySourceRepository;
 import io.smallrye.mutiny.Uni;
@@ -37,6 +42,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
@@ -81,6 +87,7 @@ class GuardDecisionServiceTest {
   private final ObjectMapper json = new ObjectMapper();
   private GuardDecisionService service;
   private ExecutionReceiptSigner signer;
+  private final FactIssuerStore issuerStore = mock(FactIssuerStore.class);
 
   @BeforeEach
   void setUp() {
@@ -101,11 +108,19 @@ class GuardDecisionServiceTest {
     when(repository.findActiveVersion(catalog.id)).thenReturn(Optional.of(version));
     when(store.findByIdempotencyKey(anyString(), anyString())).thenReturn(Optional.empty());
     when(appender.appendSync(any())).thenReturn(new AppendedRecord(88213L, HASH, PREV));
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION)).thenReturn(RuleMetadata.NONE);
   }
 
   private GuardDecisionService serviceWith(ExecutionReceiptIssuer issuer) {
+    return serviceWith(issuer, NOW);
+  }
+
+  /** {@code readClock}：重放 / 回读判定 factsStale 用的时刻（签发方表以 {@link #issuerStore} 代替）。 */
+  private GuardDecisionService serviceWith(ExecutionReceiptIssuer issuer, Instant readClock) {
     return new GuardDecisionService(evaluationService, repository, appender, store, new GuardActionMapper(),
-        new GuardReceiptBuilder(), json, issuer, Duration.ofHours(24), Supplier::get);
+        new GuardReceiptBuilder(), json, issuer, new FactVerifier(issuerStore, Clock.fixed(NOW, ZoneOffset.UTC)),
+        new InputSourceResolver(issuerStore, Clock.fixed(readClock, ZoneOffset.UTC)), Duration.ofHours(24),
+        Supplier::get);
   }
 
   /** 与决策同一次调用写入的执行收据行（null 表示未签发）。 */
@@ -166,7 +181,7 @@ class GuardDecisionServiceTest {
   void Verdict_allow_ALLOW且写收据与决策() throws Exception {
     verdict("ALLOW", null, null);
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, "idem-1");
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
 
     assertThat(r.outcome()).isEqualTo("ALLOW");
     assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
@@ -207,7 +222,7 @@ class GuardDecisionServiceTest {
   void allowIssuesExecutionReceiptSavedWithDecision() throws Exception {
     verdict("ALLOW", null, null);
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     ExecutionReceipt receipt = r.executionReceipt();
     assertThat(receipt).isNotNull();
@@ -233,7 +248,7 @@ class GuardDecisionServiceTest {
   @Test
   void denyCarriesActionHashButNoReceipt() {
     verdict("DENY", null, "no");
-    GuardDecisionResponse deny = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse deny = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
     assertThat(deny.executionReceipt()).isNull();
     assertThat(savedDecision().actionHash).isEqualTo(ACTION_HASH);
     assertThat(savedReceipt()).isNull();
@@ -242,7 +257,7 @@ class GuardDecisionServiceTest {
   @Test
   void pendingCarriesActionHashButNoReceipt() {
     verdict("REQUIRE_APPROVAL", "Data Protection Officer", "customer record deletion");
-    GuardDecisionResponse pending = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse pending = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
     assertThat(pending.executionReceipt()).isNull();
     assertThat(savedDecision().actionHash).isEqualTo(ACTION_HASH);
     assertThat(savedReceipt()).isNull();
@@ -257,7 +272,7 @@ class GuardDecisionServiceTest {
         .thenThrow(new ExecutionReceiptUnavailableException("down", new IllegalStateException()));
     service = serviceWith(broken);
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     assertThat(r.effectiveOutcome()).isEqualTo("DENY");
     assertThat(r.reasonCode()).isEqualTo("receipt_unavailable");
@@ -273,7 +288,7 @@ class GuardDecisionServiceTest {
     verdict("ALLOW", null, null);
     when(appender.appendSync(any())).thenThrow(new AuditChainAppender.AuditAppendException("down", new RuntimeException()));
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     assertThat(r.reasonCode()).isEqualTo("receipt_unavailable");
     assertThat(r.executionReceipt()).isNull();
@@ -301,7 +316,7 @@ class GuardDecisionServiceTest {
   @Test
   void 传入规则的参数是不可变Map() {
     verdict("ALLOW", null, null);
-    service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
     verify(evaluationService).evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), args.capture());
@@ -320,7 +335,7 @@ class GuardDecisionServiceTest {
     inner.put("b", null);
     Action a = new Action(new Principal("agent-42", null, null), new ActionName("send_email"), null, Map.of("a", inner), null);
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", new GuardActionRequest(MODULE, FUNCTION, a, null), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", new GuardActionRequest(MODULE, FUNCTION, a, null), ACTION_HASH, null, null);
 
     assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
     ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
@@ -343,7 +358,7 @@ class GuardDecisionServiceTest {
     verdict("REQUIRE_APPROVAL", "Data Protection Officer", "customer record deletion");
     Instant before = Instant.now();
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     assertThat(r.outcome()).isEqualTo("REQUIRE_APPROVAL");
     assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
@@ -374,7 +389,7 @@ class GuardDecisionServiceTest {
   void Verdict_escalate_PENDING且待审批无指定角色() {
     verdict("ESCALATE", null, "unusual amount");
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
     assertThat(r.approval().requiredRole()).isNull();
@@ -386,7 +401,7 @@ class GuardDecisionServiceTest {
   void Verdict_deny_DENY无reasonCode() {
     verdict("DENY", null, "blocked");
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     assertThat(r.outcome()).isEqualTo("DENY");
     assertThat(r.effectiveOutcome()).isEqualTo("DENY");
@@ -404,7 +419,7 @@ class GuardDecisionServiceTest {
     when(evaluationService.evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any()))
         .thenReturn(Uni.createFrom().item(result));
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     assertThat(r.outcome()).isEqualTo("DENY");
     assertThat(r.effectiveOutcome()).isEqualTo("DENY");
@@ -418,7 +433,7 @@ class GuardDecisionServiceTest {
   @Test
   void 未知outcome的Verdict按not_a_verdict拒绝() {
     verdict("MAYBE", null, null);
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
     assertThat(r.effectiveOutcome()).isEqualTo("DENY");
     assertThat(r.reasonCode()).isEqualTo("not_a_verdict");
   }
@@ -428,7 +443,7 @@ class GuardDecisionServiceTest {
     when(evaluationService.evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any()))
         .thenReturn(Uni.createFrom().failure(new RuntimeException("策略执行失败: boom")));
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     assertThat(r.outcome()).isEqualTo("DENY");
     assertThat(r.effectiveOutcome()).isEqualTo("DENY");
@@ -442,7 +457,7 @@ class GuardDecisionServiceTest {
   void 评估同步抛异常同样fail_closed() {
     when(evaluationService.evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any()))
         .thenThrow(new IllegalStateException("boom"));
-    assertThat(service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null).reasonCode()).isEqualTo("evaluation_failed");
+    assertThat(service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null).reasonCode()).isEqualTo("evaluation_failed");
   }
 
   /**
@@ -464,7 +479,7 @@ class GuardDecisionServiceTest {
     try {
       when(evaluationService.evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any()))
           .thenThrow(new IllegalStateException("boom-sentinel"));
-      assertThat(service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null).reasonCode()).isEqualTo("evaluation_failed");
+      assertThat(service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null).reasonCode()).isEqualTo("evaluation_failed");
     } finally {
       logger.removeHandler(probe);
       logger.setLevel(original);
@@ -494,7 +509,7 @@ class GuardDecisionServiceTest {
     verdict("REQUIRE_APPROVAL", "Data Protection Officer", "customer record deletion");
     when(appender.appendSync(any())).thenThrow(new AuditChainAppender.AuditAppendException("down", new RuntimeException()));
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     assertThat(r.outcome()).isEqualTo("DENY");
     assertThat(r.effectiveOutcome()).isEqualTo("DENY");
@@ -517,7 +532,7 @@ class GuardDecisionServiceTest {
         null, null, null, new GuardDecisionResponse.ReceiptView(1L, HASH, PREV), null, "R");
     when(store.findByIdempotencyKey(TENANT, "idem-1")).thenReturn(Optional.of(storedFor(request(), stored)));
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, "idem-1");
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
 
     assertThat(r).isEqualTo(stored);
     verifyNoInteractions(evaluationService, appender, repository);
@@ -543,7 +558,7 @@ class GuardDecisionServiceTest {
         new GuardActionRequest("guard.other", FUNCTION, a, null));
 
     for (GuardActionRequest other : others) {
-      assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", other, ACTION_HASH, "idem-1"))
+      assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", other, ACTION_HASH, null, "idem-1"))
           .isInstanceOf(GuardIdempotencyMismatchException.class);
     }
     verifyNoInteractions(evaluationService, appender, repository);
@@ -560,14 +575,14 @@ class GuardDecisionServiceTest {
         new Principal("agent-42", "service", List.of("other-role")), a.action(), a.resource(), a.context(),
         new AgentIdentity("unknown", "other-model", null, "s-2")), null);
 
-    assertThat(service.decide(TENANT, "user-1", "ak-1", sameAction, ACTION_HASH, "idem-1")).isEqualTo(stored);
+    assertThat(service.decide(TENANT, "user-1", "ak-1", sameAction, ACTION_HASH, null, "idem-1")).isEqualTo(stored);
   }
 
   @Test
   void 决策行记录请求方用户与API_key() {
     verdict("ALLOW", null, null);
 
-    service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     GuardDecisionEntity e = savedDecision();
     assertThat(e.requestedBy).isEqualTo("user-1");
@@ -584,7 +599,7 @@ class GuardDecisionServiceTest {
     when(store.findByIdempotencyKey(TENANT, "idem-1")).thenReturn(Optional.empty(), Optional.of(e));
     doThrow(new GuardIdempotencyRaceException(new RuntimeException("23505"))).when(store).saveDecision(any(), any(), any());
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, "idem-1");
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
 
     assertThat(r).isEqualTo(winner);
     // 本请求的待审批行与决策行在同一事务里，冲突时一起回滚，不会留下孤儿审批。
@@ -597,8 +612,8 @@ class GuardDecisionServiceTest {
     IllegalStateException down = new IllegalStateException("db down");
     doThrow(down).doNothing().when(store).saveDecision(any(), any(), any());
 
-    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, "idem-1")).isSameAs(down);
-    GuardDecisionResponse retry = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, "idem-1");
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1")).isSameAs(down);
+    GuardDecisionResponse retry = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
 
     ArgumentCaptor<GuardApprovalEntity> approvals = ArgumentCaptor.forClass(GuardApprovalEntity.class);
     verify(store, org.mockito.Mockito.times(2)).saveDecision(any(), approvals.capture(), any());
@@ -612,7 +627,7 @@ class GuardDecisionServiceTest {
   void Verdict的role超长按not_a_verdict拒绝() {
     verdict("REQUIRE_APPROVAL", "r".repeat(256), "customer record deletion");
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     assertThat(r.effectiveOutcome()).isEqualTo("DENY");
     assertThat(r.reasonCode()).isEqualTo("not_a_verdict");
@@ -625,7 +640,7 @@ class GuardDecisionServiceTest {
   void Verdict的reason超长按not_a_verdict拒绝() {
     verdict("ALLOW", null, "x".repeat(256));
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     assertThat(r.outcome()).isEqualTo("DENY");
     assertThat(r.reasonCode()).isEqualTo("not_a_verdict");
@@ -636,7 +651,7 @@ class GuardDecisionServiceTest {
   @Test
   void Verdict的role与reason恰为255可接受() {
     verdict("REQUIRE_APPROVAL", "r".repeat(255), "x".repeat(255));
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
     assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
     assertThat(savedApproval().requiredRole).hasSize(255);
   }
@@ -645,7 +660,7 @@ class GuardDecisionServiceTest {
   void 空白幂等键视为未提供() {
     verdict("ALLOW", null, null);
 
-    service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, "   ");
+    service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "   ");
 
     verify(store, never()).findByIdempotencyKey(anyString(), anyString());
     assertThat(savedDecision().idempotencyKey).isNull();
@@ -654,11 +669,11 @@ class GuardDecisionServiceTest {
 
   @Test
   void 幂等键超长或含控制字符报invalid_action且不评估() {
-    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, "k".repeat(256)))
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "k".repeat(256)))
         .isInstanceOf(GuardInvalidActionException.class);
-    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, "idem\n1"))
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem\n1"))
         .isInstanceOf(GuardInvalidActionException.class);
-    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, "idem\u00071"))
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem\u00071"))
         .isInstanceOf(GuardInvalidActionException.class);
     verifyNoInteractions(evaluationService, appender, repository);
     verify(store, never()).findByIdempotencyKey(anyString(), anyString());
@@ -668,7 +683,7 @@ class GuardDecisionServiceTest {
   @Test
   void 幂等键恰为255可用() {
     verdict("ALLOW", null, null);
-    service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, "k".repeat(255));
+    service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "k".repeat(255));
     assertThat(savedDecision().idempotencyKey).hasSize(255);
   }
 
@@ -676,7 +691,7 @@ class GuardDecisionServiceTest {
   void 策略不存在_GuardPolicyNotFoundException() {
     when(repository.findActiveCatalog(TENANT, MODULE, FUNCTION)).thenReturn(Optional.empty());
 
-    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null))
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null))
         .isInstanceOf(GuardPolicyNotFoundException.class)
         .extracting(ex -> ((GuardPolicyNotFoundException) ex).reasonCode()).isEqualTo(GuardReasonCode.POLICY_NOT_FOUND);
     verifyNoInteractions(evaluationService, appender);
@@ -690,16 +705,16 @@ class GuardDecisionServiceTest {
     when(repository.findActiveCatalog(TENANT, MODULE, FUNCTION)).thenReturn(Optional.of(catalog));
     when(repository.findActiveVersion(catalog.id)).thenReturn(Optional.empty());
 
-    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null)).isInstanceOf(GuardPolicyNotFoundException.class);
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null)).isInstanceOf(GuardPolicyNotFoundException.class);
   }
 
   @Test
   void 请求缺策略地址或action报invalid_action() {
     GuardActionRequest noModule = new GuardActionRequest(" ", FUNCTION, request().action(), null);
-    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", noModule, ACTION_HASH, null)).isInstanceOf(GuardInvalidActionException.class);
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", noModule, ACTION_HASH, null, null)).isInstanceOf(GuardInvalidActionException.class);
     GuardActionRequest noAction = new GuardActionRequest(MODULE, FUNCTION, null, null);
-    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", noAction, ACTION_HASH, null)).isInstanceOf(GuardInvalidActionException.class);
-    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", null, ACTION_HASH, null)).isInstanceOf(GuardInvalidActionException.class);
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", noAction, ACTION_HASH, null, null)).isInstanceOf(GuardInvalidActionException.class);
+    assertThatThrownBy(() -> service.decide(TENANT, "user-1", "ak-1", null, ACTION_HASH, null, null)).isInstanceOf(GuardInvalidActionException.class);
     verifyNoInteractions(evaluationService, appender);
   }
 
@@ -799,7 +814,7 @@ class GuardDecisionServiceTest {
     when(store.findApprovalByDecision(any())).thenAnswer(inv -> Optional.ofNullable(approval.get()));
     long start = System.nanoTime();
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", requestWaiting(5), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", requestWaiting(5), ACTION_HASH, null, null);
 
     assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
     assertThat(r.approval().status()).isEqualTo("APPROVED");
@@ -820,7 +835,7 @@ class GuardDecisionServiceTest {
     when(store.findApprovalByDecision(any())).thenAnswer(inv -> Optional.ofNullable(approval.get()));
     long start = System.nanoTime();
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", requestWaiting(1), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", requestWaiting(1), ACTION_HASH, null, null);
 
     assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
     assertThat(Duration.ofNanos(System.nanoTime() - start)).isGreaterThanOrEqualTo(Duration.ofMillis(900));
@@ -836,7 +851,7 @@ class GuardDecisionServiceTest {
     }).when(store).saveDecision(any(), any(), any());
 
     try {
-      GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", requestWaiting(30), ACTION_HASH, null);
+      GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", requestWaiting(30), ACTION_HASH, null, null);
 
       assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
       assertThat(Thread.currentThread().isInterrupted()).isTrue();
@@ -852,7 +867,7 @@ class GuardDecisionServiceTest {
     verdict("ALLOW", null, null);
     long start = System.nanoTime();
 
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", requestWaiting(30), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", requestWaiting(30), ACTION_HASH, null, null);
 
     assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
     assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(2));
@@ -862,7 +877,7 @@ class GuardDecisionServiceTest {
   @Test
   void 响应序列化字母序且省略空字段() throws Exception {
     verdict("ALLOW", null, null);
-    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null);
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     String body = json.writeValueAsString(r);
 
@@ -871,5 +886,220 @@ class GuardDecisionServiceTest {
     assertThat(body.indexOf("\"decisionId\"")).isLessThan(body.indexOf("\"effectiveOutcome\""));
     assertThat(body.indexOf("\"policyVersion\"")).isLessThan(body.indexOf("\"receipt\""));
     assertThat(body).contains("\"policyVersion\":{\"id\":1730890123456,\"sourceHash\":\"" + "d".repeat(64) + "\",\"version\":3}");
+  }
+
+  // ---- ADR 0040 §11 D4 / D6：输入来源进响应、决策行与收据 ----
+
+  /**
+   * 不带事实、主体非 user 的现有调用方：响应与引入来源标记之前逐字节相同（字面量录自改动前的序列化），
+   * 决策行三列为 null，收据不含任何来源键。
+   */
+  @Test
+  void noFactsResponseByteIdenticalToToday() throws Exception {
+    verdict("DENY", null, "amount too large");
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
+
+    String expected = "{\"controls\":[\"GDPR:ART17\"],\"decisionId\":\"" + r.decisionId() + "\","
+        + "\"effectiveOutcome\":\"DENY\",\"outcome\":\"DENY\","
+        + "\"policyVersion\":{\"id\":1730890123456,\"sourceHash\":\"" + "d".repeat(64) + "\",\"version\":3},"
+        + "\"reason\":\"amount too large\",\"receipt\":{\"auditId\":88213,\"hash\":\"" + HASH + "\",\"prevHash\":\""
+        + PREV + "\"},\"ruleId\":\"CUST-DEL-001\"}";
+    assertThat(json.writeValueAsString(r)).isEqualTo(expected);
+    GuardDecisionEntity e = savedDecision();
+    assertThat(e.responseJson).isEqualTo(expected);
+    assertThat(e.verifiedFields).isNull();
+    assertThat(e.factIssuers).isNull();
+    assertThat(e.factExpiresAt).isNull();
+    assertThat(appendedEvent().metadata()).doesNotContainKeys("verifiedFields", "factIssuers", "factSources",
+        "principalIdentityMatched", "factExpiresAt", "inputSourcesTruncated");
+  }
+
+  /** principal.type=user 且 id 等于提交者：principal.id / roles verified，进响应、决策行与收据（无事实）。 */
+  @Test
+  void userPrincipalVerifiedIntoResponseRowAndReceipt() throws Exception {
+    verdict("DENY", null, "no");
+    Action a = new Action(new Principal("user-1", "user", List.of("ops")), new ActionName("delete_customer_record"),
+        new Resource("customer", "C-1001"), Map.of("amount", 250000), null);
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", Set.of("ops", "finance"),
+        new GuardActionRequest(MODULE, FUNCTION, a, null), ACTION_HASH, null, null);
+
+    assertThat(r.inputSources()).isEqualTo(new GuardDecisionResponse.InputSourcesView(List.of(), null,
+        List.of("principal.id", "principal.roles")));
+    assertThat(json.writeValueAsString(r)).contains("\"inputSources\":{\"verified\":[\"principal.id\",\"principal.roles\"]}");
+    GuardDecisionEntity e = savedDecision();
+    assertThat(e.verifiedFields).isEqualTo("[\"principal.id\",\"principal.roles\"]");
+    assertThat(e.factIssuers).isNull();
+    assertThat(e.factExpiresAt).isNull();
+    assertThat(appendedEvent().metadata()).containsEntry("verifiedFields", List.of("principal.id", "principal.roles"))
+        .containsEntry("principalIdentityMatched", true)
+        .doesNotContainKeys("factIssuers", "factSources", "factExpiresAt", "inputSourcesTruncated");
+  }
+
+  /** 7 参 decide 不带已验证业务角色：roles 不能被证实，principal.id 仍按提交者判定。 */
+  @Test
+  void decideWithoutBusinessRolesLeavesRolesDeclared() {
+    verdict("DENY", null, "no");
+    Action a = new Action(new Principal("user-1", "user", List.of("ops")), new ActionName("delete_customer_record"),
+        new Resource("customer", "C-1001"), Map.of("amount", 250000), null);
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", new GuardActionRequest(MODULE, FUNCTION, a, null),
+        ACTION_HASH, null, null);
+
+    assertThat(r.inputSources().verified()).containsExactly("principal.id");
+  }
+
+  private GuardDecisionEntity storedWithFacts(Instant factExpiresAt) throws Exception {
+    GuardDecisionResponse stored = new GuardDecisionResponse(null, List.of(), UUID.randomUUID().toString(), "ALLOW",
+        null, new GuardDecisionResponse.InputSourcesView(List.of("idp.example.com#2026-11"), null,
+        List.of("context.amount")), "ALLOW", null, null, null, new GuardDecisionResponse.ReceiptView(1L, HASH, PREV),
+        null, "R");
+    GuardDecisionEntity e = storedFor(request(), stored);
+    e.id = UUID.fromString(stored.decisionId());
+    e.tenantId = TENANT;
+    e.verifiedFields = "[\"context.amount\"]";
+    e.factIssuers = "[\"idp.example.com#2026-11\"]";
+    e.factExpiresAt = factExpiresAt;
+    return e;
+  }
+
+  private void issuerEnabled() {
+    GuardFactIssuerEntity row = new GuardFactIssuerEntity();
+    row.enabled = true;
+    when(issuerStore.find(TENANT, "idp.example.com", "2026-11")).thenReturn(Optional.of(row));
+  }
+
+  /**
+   * 重放不重验首次的事实（ADR 0040 §11 D4）：now >= fact_expires_at 时只追加 inputSources.factsStale，
+   * 其余与存储响应相同；不评估、不写事件、不改写决策行。过期前重放与存储响应完全相同。
+   */
+  @Test
+  void replayAfterFactExpiryMarksStaleWithoutNewEvent() throws Exception {
+    Instant expires = NOW.plusSeconds(60);
+    GuardDecisionEntity row = storedWithFacts(expires);
+    GuardDecisionResponse stored = json.readValue(row.responseJson, GuardDecisionResponse.class);
+    when(store.findByIdempotencyKey(TENANT, "idem-1")).thenReturn(Optional.of(row));
+    issuerEnabled();
+    ExecutionReceiptIssuer issuer = new ExecutionReceiptIssuer(signer, Clock.fixed(NOW, ZoneOffset.UTC));
+
+    GuardDecisionResponse fresh = serviceWith(issuer, expires.minusMillis(1))
+        .decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
+    GuardDecisionResponse stale = serviceWith(issuer, expires)
+        .decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
+
+    assertThat(fresh).isEqualTo(stored);
+    assertThat(stale.inputSources()).isEqualTo(new GuardDecisionResponse.InputSourcesView(
+        List.of("idp.example.com#2026-11"), true, List.of("context.amount")));
+    assertThat(json.writeValueAsString(stale)).isEqualTo(json.writeValueAsString(stored)
+        .replace("\"inputSources\":{\"factIssuers\":[\"idp.example.com#2026-11\"],",
+            "\"inputSources\":{\"factIssuers\":[\"idp.example.com#2026-11\"],\"factsStale\":true,"));
+    verifyNoInteractions(evaluationService, appender, repository);
+    verify(store, never()).saveDecision(any(), any(), any());
+  }
+
+  /** 首次记录的签发方现已禁用：GET 回读同样标 factsStale。 */
+  @Test
+  void getAfterIssuerDisabledMarksStale() throws Exception {
+    GuardDecisionEntity row = storedWithFacts(NOW.plusSeconds(600));
+    when(store.findDecision(TENANT, row.id)).thenReturn(Optional.of(row));
+    GuardFactIssuerEntity disabled = new GuardFactIssuerEntity();
+    disabled.enabled = false;
+    when(issuerStore.find(TENANT, "idp.example.com", "2026-11")).thenReturn(Optional.of(disabled));
+
+    GuardDecisionResponse r = service.get(TENANT, row.id).orElseThrow();
+
+    assertThat(r.inputSources().factsStale()).isTrue();
+  }
+  /** 档案要求 verifiedInputs 的规则元数据（ADR 0046 §11 D1）：inputRefs 为 null 表示 IR 未提供。 */
+  private void requiresVerifiedInputs(List<String> inputRefs) {
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION)).thenReturn(
+        new RuleMetadata("CUST-DEL-001", List.of("GDPR:ART17"), "eu-ai-act-high-risk", inputRefs, true));
+  }
+
+  /**
+   * ADR 0040 §11 D5：被引用的字段为 declared → 不评估、DENY unverified_input（reason 为 null），
+   * 写链收据（unverifiedFields）与决策行，但不建待审批、不签执行收据——即便规则本会 ALLOW / REQUIRE_APPROVAL。
+   */
+  @Test
+  void gateDenyCreatesNoApprovalAndNoExecutionReceipt() throws Exception {
+    verdict("REQUIRE_APPROVAL", "Data Protection Officer", "customer record deletion");
+    requiresVerifiedInputs(List.of("principal.id", "context.amount"));
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
+
+    assertThat(r.outcome()).isEqualTo("DENY");
+    assertThat(r.effectiveOutcome()).isEqualTo("DENY");
+    assertThat(r.reasonCode()).isEqualTo("unverified_input");
+    assertThat(r.reason()).isNull();
+    assertThat(r.role()).isNull();
+    assertThat(r.approval()).isNull();
+    assertThat(r.executionReceipt()).isNull();
+    assertThat(r.ruleId()).isEqualTo("CUST-DEL-001");
+    assertThat(r.receipt()).isEqualTo(new GuardDecisionResponse.ReceiptView(88213L, HASH, PREV));
+    AuditEvent event = appendedEvent();
+    assertThat(event.success()).isFalse();
+    assertThat(event.metadata()).containsEntry("outcome", "DENY").containsEntry("reasonCode", "unverified_input")
+        .containsEntry("unverifiedFields", List.of("context.amount", "principal.id"))
+        .doesNotContainKey("reason").doesNotContainKey("approvalId");
+    GuardDecisionEntity e = savedDecision();
+    assertThat(e.outcome).isEqualTo("DENY");
+    assertThat(e.reasonCode).isEqualTo("unverified_input");
+    assertThat(json.readValue(e.responseJson, GuardDecisionResponse.class)).isEqualTo(r);
+    assertThat(savedApproval()).isNull();
+    assertThat(savedReceipt()).isNull();
+  }
+
+  /** 门在版本解析之后、评估之前：被拒时规则根本不执行；IR 无 inputRefs → input_refs_unavailable，收据无 unverifiedFields。 */
+  @Test
+  void gateRunsBeforeEvaluation() {
+    verdict("ALLOW", null, null);
+    requiresVerifiedInputs(null);
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("DENY");
+    assertThat(r.reasonCode()).isEqualTo("input_refs_unavailable");
+    assertThat(r.executionReceipt()).isNull();
+    assertThat(appendedEvent().metadata()).containsEntry("reasonCode", "input_refs_unavailable")
+        .doesNotContainKey("unverifiedFields");
+    verify(evaluationService, never()).evaluatePolicy(any(), any(), any(), any());
+    InOrder order = inOrder(repository, evaluationService);
+    order.verify(repository).findActiveCatalog(TENANT, MODULE, FUNCTION);
+    order.verify(evaluationService).ruleMetadata(TENANT, MODULE, FUNCTION);
+    assertThat(savedReceipt()).isNull();
+  }
+
+  /** 被引用的字段全部 verified（principal.id 由服务端证实为提交者）→ 照常评估，结论与收据与无档案时同形。 */
+  @Test
+  void verifiedReferencedInputsProceedToEvaluation() {
+    verdict("ALLOW", null, null);
+    requiresVerifiedInputs(List.of("principal.id"));
+    Action a = new Action(new Principal("user-1", "user", null), new ActionName("delete_customer_record"),
+        new Resource("customer", "C-1001"), Map.of("amount", 250000), null);
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", new GuardActionRequest(MODULE, FUNCTION, a, null),
+        ACTION_HASH, null, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
+    assertThat(r.reasonCode()).isNull();
+    assertThat(r.executionReceipt()).isNotNull();
+    assertThat(appendedEvent().metadata()).doesNotContainKey("unverifiedFields");
+    verify(evaluationService).evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any());
+  }
+
+  /** 读不到规则元数据（编译失败等）与评估失败同一结论：DENY evaluation_failed，不执行规则。 */
+  @Test
+  void ruleMetadataFailureDeniesEvaluationFailed() {
+    verdict("ALLOW", null, null);
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION)).thenThrow(new RuntimeException("compile failed"));
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("DENY");
+    assertThat(r.reasonCode()).isEqualTo("evaluation_failed");
+    assertThat(r.ruleId()).isNull();
+    verify(evaluationService, never()).evaluatePolicy(any(), any(), any(), any());
+    assertThat(savedApproval()).isNull();
   }
 }

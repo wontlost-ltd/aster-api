@@ -8,6 +8,7 @@ import io.aster.guard.GuardIdempotencyMismatchException;
 import io.aster.guard.GuardInvalidActionException;
 import io.aster.guard.GuardPolicyNotFoundException;
 import io.aster.guard.GuardRequestBodyReader;
+import io.aster.guard.provenance.GuardInvalidFactException;
 import io.aster.guard.receipt.GuardReceiptService;
 import io.aster.policy.rest.RequestIdentityResolver;
 import io.aster.policy.security.rbac.RequireRole;
@@ -31,6 +32,7 @@ import java.io.InputStream;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -92,6 +94,8 @@ public class GuardDecisionResource {
     GuardRequestBodyReader.Parsed<GuardActionRequest> req;
     try {
       req = bodyReader.read(body, GuardActionRequest.class);
+    } catch (GuardInvalidFactException bad) {
+      return invalidFact(bad);
     } catch (GuardInvalidActionException bad) {
       return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_action", bad.getMessage());
     }
@@ -99,6 +103,8 @@ public class GuardDecisionResource {
     String tenantId = identityResolver.tenantId();
     String performedBy = identityResolver.performedBy();
     String apiKeyId = identityResolver.apiKeyId();
+    // 已验证业务角色：principal.roles 只有在其中才能被服务端证实（ADR 0040 §11 D2 (a)）
+    Set<String> businessRoles = Set.copyOf(identityResolver.businessRoles());
     // 月度配额按归属取键（ADR 0015 §3）：团队 key 计入 team owner 的池。
     String quotaOwnerId = identityResolver.quotaOwnerId();
     // 套餐门禁与计量只针对 API 调用；HMAC 已验签、无 API key 的内部会话调用两者都不经过。
@@ -111,13 +117,15 @@ public class GuardDecisionResource {
       return quotaRejection.get();
     }
     try {
-      GuardDecisionResponse decision = service.decide(tenantId, performedBy, apiKeyId, req.value(), req.actionHash(),
-          idempotencyKey);
+      GuardDecisionResponse decision = service.decide(tenantId, performedBy, apiKeyId, businessRoles, req.value(),
+          req.actionHash(), req.action(), idempotencyKey);
       if (apiCall) {
         apiQuotaGuard.recordAsync(quotaOwnerId, performedBy, tenantId, apiKeyId, PATH, "success",
             System.currentTimeMillis() - startTime);
       }
       return Response.ok(decision).build();
+    } catch (GuardInvalidFactException bad) {
+      return invalidFact(bad);
     } catch (GuardInvalidActionException bad) {
       return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_action", bad.getMessage());
     } catch (GuardIdempotencyMismatchException mismatch) {
@@ -140,7 +148,10 @@ public class GuardDecisionResource {
     try {
       GuardRequestBodyReader.Parsed<GuardFromEvidenceRequest> req = bodyReader.read(body, GuardFromEvidenceRequest.class);
       return Response.ok(evidenceService.createFromEvidence(identityResolver.tenantId(),
-          identityResolver.performedBy(), req.value(), req.actionHash())).build();
+          identityResolver.performedBy(), Set.copyOf(identityResolver.businessRoles()), req.value(), req.actionHash(),
+          req.action())).build();
+    } catch (GuardInvalidFactException bad) {
+      return invalidFact(bad);
     } catch (GuardInvalidActionException bad) {
       return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_action", bad.getMessage());
     } catch (GuardApprovalConflictException e) {
@@ -227,6 +238,22 @@ public class GuardDecisionResource {
       default -> Response.Status.BAD_REQUEST;
     };
     return status.getStatusCode();
+  }
+
+  /**
+   * 400 {@code invalid_fact}（ADR 0040 §11 D3）：{@code error, message} 之后附 {@code issuer / kid / reason}；
+   * issuer、kid 无法从请求中确定时省略。不计量（与其他 400 一致）。
+   */
+  private static Response invalidFact(GuardInvalidFactException bad) {
+    Map<String, Object> details = new LinkedHashMap<>();
+    if (bad.issuer() != null) {
+      details.put("issuer", bad.issuer());
+    }
+    if (bad.kid() != null) {
+      details.put("kid", bad.kid());
+    }
+    details.put("reason", bad.reason());
+    return error(Response.Status.BAD_REQUEST.getStatusCode(), "invalid_fact", bad.getMessage(), details);
   }
 
   private static Response error(int status, String code, String message) {

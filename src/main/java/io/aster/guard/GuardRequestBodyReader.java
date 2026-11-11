@@ -10,6 +10,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.exc.InvalidDefinitionException;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
+import io.aster.guard.provenance.FactVerifier;
+import io.aster.guard.provenance.GuardInvalidFactException;
 import io.aster.guard.receipt.ActionHasher;
 import io.quarkus.hibernate.validator.runtime.jaxrs.ResteasyReactiveViolationException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -38,13 +40,17 @@ import java.util.Set;
  *   <li>Bean Validation 违规 → {@link ResteasyReactiveViolationException}，与 {@code @Valid} 失败同一映射器。</li>
  * </ul>
  * 在此之上新增两类 400 {@code invalid_action}：任一层重复键（{@code STRICT_DUPLICATE_DETECTION}），
- * 以及 {@code action} 内不满足 I-JSON 的数值（{@link ActionHasher}）。
+ * 以及 {@code action} 内不满足 I-JSON 的数值（{@link ActionHasher}）；后者落在 {@code action.facts[]} 内时
+ * 改报 {@link GuardInvalidFactException}（{@code invalid_fact}，ADR 0040 §11 D3）。
  */
 @ApplicationScoped
 public class GuardRequestBodyReader {
 
-  /** 解析结果；{@code actionHash} 在 {@code action} 缺失或不是对象时为 null（服务层随后按必填项拒绝）。 */
-  public record Parsed<T>(T value, String actionHash) {}
+  /**
+   * 解析结果；{@code action} 为请求体 {@code action} 子树原文（签名事实据此验签），与 {@code actionHash}
+   * 一样在 {@code action} 缺失或不是对象时为 null（服务层随后按必填项拒绝）。
+   */
+  public record Parsed<T>(T value, String actionHash, JsonNode action) {}
 
   private final ObjectMapper mapper;
   private final ActionHasher hasher;
@@ -58,6 +64,7 @@ public class GuardRequestBodyReader {
   }
 
   /**
+   * @throws GuardInvalidFactException   {@code action.facts[]} 内含非有限数 / 超出 ±(2^53−1) 的数值或孤立代理项
    * @throws GuardInvalidActionException 重复键，或 {@code action} 含非有限数 / 超出 ±(2^53−1) 的整数
    * @throws MismatchedInputException    类型不符；资源方法须原样抛出，交给 Quarkus 内置映射器
    * @throws IOException                 读取请求体失败
@@ -65,16 +72,18 @@ public class GuardRequestBodyReader {
   public <T> Parsed<T> read(InputStream body, Class<T> type) throws IOException {
     byte[] bytes = readAll(body);
     if (bytes.length == 0) {
-      return new Parsed<>(null, null);
+      return new Parsed<>(null, null, null);
     }
     T value = readTyped(bytes, type);
     if (value == null) {
-      return new Parsed<>(null, null);
+      return new Parsed<>(null, null, null);
     }
-    JsonNode action = readStrictTree(bytes).get("action");
-    String actionHash = action != null && action.isObject() ? hasher.hash(action) : null;
+    JsonNode tree = readStrictTree(bytes).get("action");
+    JsonNode action = tree != null && tree.isObject() ? tree : null;
+    FactVerifier.requireCanonicalFacts(action);
+    String actionHash = action == null ? null : hasher.hash(action);
     validate(value);
-    return new Parsed<>(value, actionHash);
+    return new Parsed<>(value, actionHash, action);
   }
 
   /** 与 Quarkus {@code FullyFeaturedServerJacksonMessageBodyReader} 相同的异常分流。 */

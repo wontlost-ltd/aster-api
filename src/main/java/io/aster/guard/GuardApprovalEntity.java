@@ -20,6 +20,9 @@ import java.util.UUID;
 @Entity
 @Table(name = "guard_approvals")
 public class GuardApprovalEntity extends PanacheEntityBase {
+  /** {@link #expiredReason} 的取值：所依赖事实的签发方已吊销（禁用、删除或过 {@code not_after}）。 */
+  public static final String EXPIRED_FACT_ISSUER_REVOKED = "fact_issuer_revoked";
+
   @Id @Column(name = "id") public UUID id;
   @Column(name = "tenant_id", nullable = false) public String tenantId;
   @Column(name = "decision_id", nullable = false) public UUID decisionId;
@@ -33,6 +36,8 @@ public class GuardApprovalEntity extends PanacheEntityBase {
   @Column(name = "comment") public String comment;
   @Column(name = "expires_at", nullable = false) public Instant expiresAt;
   @Column(name = "receipt_audit_id") public Long receiptAuditId;
+  /** 转 EXPIRED 的原因（ADR 0040 §11 D4）：自然过期为 null，签发方吊销为 {@code fact_issuer_revoked}。 */
+  @Column(name = "expired_reason", length = 32) public String expiredReason;
   @Column(name = "created_at", nullable = false) public Instant createdAt = Instant.now();
 
   public static Optional<GuardApprovalEntity> findByDecision(UUID decisionId) {

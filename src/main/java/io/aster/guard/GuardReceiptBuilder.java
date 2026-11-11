@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.guard.api.ResultRequest;
+import io.aster.guard.provenance.InputSources;
 import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.common.PIIRedactor;
 import io.aster.policy.event.AuditEvent;
@@ -19,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 import static io.aster.guard.GuardText.clip;
@@ -46,20 +48,38 @@ public class GuardReceiptBuilder {
   static final int MAX_COMMENT = 1000;
   /** 与 audit_logs.performed_by 列宽一致，超长会让整条收据写入失败。 */
   static final int MAX_PERFORMED_BY = 100;
-  static final String SYSTEM_ACTOR = "SYSTEM";
+  public static final String SYSTEM_ACTOR = "SYSTEM";
+  /** 与 guard_fact_issuers.kid 列宽一致。 */
+  static final int MAX_KID = 64;
+  /** 吊销事件逐条列出的受影响决策上限（ADR 0040 §11 D4）。 */
+  static final int MAX_AFFECTED_DECISIONS = 64;
   /** metadata 序列化长度预算：低于追加器的 4096 上限，留出余量。 */
   static final int METADATA_BUDGET = 3800;
+  /** 输入来源键（ADR 0041 §11 D1）：verified 路径、签发方、签发端来源、档案来源门拒绝时的未验证路径。 */
+  static final String KEY_VERIFIED_FIELDS = "verifiedFields";
+  static final String KEY_FACT_ISSUERS = "factIssuers";
+  static final String KEY_FACT_SOURCES = "factSources";
+  static final String KEY_UNVERIFIED_FIELDS = "unverifiedFields";
+  static final String KEY_INPUT_SOURCES_TRUNCATED = "inputSourcesTruncated";
+  /** 四个来源列表任一被缩短（含超过条数上限被截断）即写 {@code inputSourcesTruncated: true}；该键本身永不删除。 */
+  static final Set<String> INPUT_SOURCE_LISTS =
+      Set.of(KEY_VERIFIED_FIELDS, KEY_FACT_ISSUERS, KEY_FACT_SOURCES, KEY_UNVERIFIED_FIELDS);
+  /** verifiedFields / factSources / unverifiedFields 至多 64 项、factIssuers 至多 8 项（ADR 0041 §11 D1）。 */
+  static final int MAX_INPUT_SOURCE_ITEMS = 64;
+  static final int MAX_FACT_ISSUERS = 8;
   /**
-   * 决策事件超出预算时的缩短顺序：先缩对追溯价值最低、体积最大的字段，最后才动「谁对什么做了什么」。
-   * reason（规则说明）→ agentSession → agentVersion → principalRoles → agentModel → agentProvider
-   * → principalType → resourceType → resourceId → actionName → principalId；文本每轮缩到不超过一半，列表每轮删掉最后一项，直到达标或该字段为空，再处理下一个。
+   * 决策事件超出预算时的缩短顺序（ADR 0041 §11 D1）：先缩对追溯价值最低、体积最大的字段，最后才动「谁对什么做了什么」。
+   * reason（规则说明）→ agentSession → agentVersion → principalRoles → factIssuers → verifiedFields → factSources
+   * → unverifiedFields → agentModel → agentProvider → principalType → resourceType → resourceId → actionName
+   * → principalId；文本每轮缩到不超过一半，列表每轮删掉最后一项，直到达标或该字段为空，再处理下一个。
    * 身份与完整性字段（decisionId、approvalId、contextHash、outcome、effectiveOutcome、reasonCode、
-   * ruleId、policyVersionId、sourceHash、idempotencyKey）永不改动；自由文本全部清空仍超限时，最后才删除 controls。
+   * ruleId、policyVersionId、sourceHash、idempotencyKey）以及 principalIdentityMatched、factExpiresAt、
+   * inputSourcesTruncated 永不改动；自由文本全部清空仍超限时，最后才删除 controls。
    */
   static final List<String> SHRINK_ORDER = List.of("reason", EvaluationEvidence.KEY_AGENT_SESSION,
-      EvaluationEvidence.KEY_AGENT_VERSION, "principalRoles", EvaluationEvidence.KEY_AGENT_MODEL,
-      EvaluationEvidence.KEY_AGENT_PROVIDER, "principalType", "resourceType", "resourceId", "actionName",
-      "principalId");
+      EvaluationEvidence.KEY_AGENT_VERSION, "principalRoles", KEY_FACT_ISSUERS, KEY_VERIFIED_FIELDS, KEY_FACT_SOURCES,
+      KEY_UNVERIFIED_FIELDS, EvaluationEvidence.KEY_AGENT_MODEL, EvaluationEvidence.KEY_AGENT_PROVIDER,
+      "principalType", "resourceType", "resourceId", "actionName", "principalId");
   /**
    * 审批事件唯一可缩短的键：comment 是审批人自由填写的理由；decidedBy、requiredRole 是审批的身份事实，
    * 与 decisionId、approvalId、outcome、decisionReceiptHash 一样永不改动。按现有列宽（comment ≤ 1000、
@@ -104,6 +124,8 @@ public class GuardReceiptBuilder {
     put(m, "approvalId", approvalId);
     put(m, "idempotencyKey", clip(draft.idempotencyKey(), MAX_TEXT));
     put(m, "evidenceCorrelationId", evidenceCorrelationId);
+    putInputSources(m, draft.inputSources());
+    putList(m, KEY_UNVERIFIED_FIELDS, draft.unverifiedFields(), MAX_INPUT_SOURCE_ITEMS);
     Long version = draft.policyVersion() == null ? null : draft.policyVersion().version();
     return new AuditEvent(EventType.ACTION_GUARD_DECISION, Instant.now(), draft.tenantId(),
         draft.policyModule(), draft.policyFunction(), null, null, version,
@@ -125,6 +147,7 @@ public class GuardReceiptBuilder {
     put(m, "requiredRole", clip(a.requiredRole, MAX_TEXT));
     put(m, "comment", clip(a.comment, MAX_COMMENT));
     put(m, "decisionReceiptHash", decisionReceiptHash);
+    put(m, "expiredReason", a.expiredReason);
     String actor = a.decidedBy == null ? SYSTEM_ACTOR : clip(a.decidedBy, MAX_PERFORMED_BY);
     return new AuditEvent(EventType.ACTION_GUARD_APPROVAL, Instant.now(), a.tenantId,
         null, null, null, null, null, actor, a.status == GuardApprovalStatus.APPROVED, null, null,
@@ -180,6 +203,28 @@ public class GuardReceiptBuilder {
         RESULT_SHRINK_ORDER);
   }
 
+  /**
+   * 签发方吊销事件（ADR 0040 §11 D4，ADR 0041 §11）：写在租户链上，一条吊销对应多条决策，因此不写 decisionId
+   * （decision_id 列不投影）。{@code affectedDecisionIds} 为本次实际转 EXPIRED 的审批所属决策，至多
+   * {@link #MAX_AFFECTED_DECISIONS} 项；超出时另写总数 {@code affectedCount} 与 {@code affectedTruncated: true}。
+   * issuer / kid 按列宽截断（255 / 64），64 个 UUID 加上限长的 issuer 仍在预算内，不需要缩短顺序。
+   *
+   * @param performedBy 操作者；{@code not_after} 到期由调度发起时为 {@code SYSTEM}
+   */
+  public AuditEvent issuerRevokedEvent(String tenantId, String issuer, String kid, String performedBy,
+                                       List<UUID> affectedDecisionIds) {
+    Map<String, Object> m = new LinkedHashMap<>();
+    put(m, "issuer", clip(issuer, MAX_TEXT));
+    put(m, "kid", clip(kid, MAX_KID));
+    put(m, "performedBy", clip(performedBy, MAX_PERFORMED_BY));
+    m.put("affectedDecisionIds", affectedDecisionIds.stream().limit(MAX_AFFECTED_DECISIONS).map(UUID::toString).toList());
+    if (affectedDecisionIds.size() > MAX_AFFECTED_DECISIONS) {
+      m.put("affectedCount", affectedDecisionIds.size());
+      m.put("affectedTruncated", Boolean.TRUE);
+    }
+    return receiptEvent(EventType.GUARD_FACT_ISSUER_REVOKED, tenantId, performedBy, true, m, List.of());
+  }
+
   private AuditEvent receiptEvent(EventType type, String tenantId, String performedBy, boolean success,
                                   Map<String, Object> m, List<String> shrinkOrder) {
     Objects.requireNonNull(tenantId, "tenantId");
@@ -188,11 +233,39 @@ public class GuardReceiptBuilder {
         Collections.unmodifiableMap(fitBudget(m, shrinkOrder)), null, null, null, null);
   }
 
-  /** 按给定顺序缩短自由文本直到测量长度 ≤ {@link #METADATA_BUDGET}；仍超限则删除 controls（审批事件没有该键）。 */
+  /**
+   * 输入来源键（ADR 0041 §11 D1），null / 空不写：全 declared 且未做身份判定的决策与引入来源标记前的收据键集相同。
+   * 列表已是字典序（{@link InputSources}），超过条数上限时截去末项并置 {@code inputSourcesTruncated}。
+   */
+  private static void putInputSources(Map<String, Object> m, InputSources s) {
+    putList(m, KEY_VERIFIED_FIELDS, List.copyOf(s.verified()), MAX_INPUT_SOURCE_ITEMS);
+    putList(m, KEY_FACT_ISSUERS, List.copyOf(s.factIssuers()), MAX_FACT_ISSUERS);
+    putList(m, KEY_FACT_SOURCES, s.factSourceEntries(), MAX_INPUT_SOURCE_ITEMS);
+    put(m, "principalIdentityMatched", s.principalIdentityMatched());
+    put(m, "factExpiresAt", s.factExpiresAt() == null ? null : s.factExpiresAt().toString());
+  }
+
+  private static void putList(Map<String, Object> m, String key, List<String> values, int max) {
+    if (values.isEmpty()) {
+      return;
+    }
+    m.put(key, values.size() > max ? List.copyOf(values.subList(0, max)) : values);
+    if (values.size() > max) {
+      m.put(KEY_INPUT_SOURCES_TRUNCATED, Boolean.TRUE);
+    }
+  }
+
+  /**
+   * 按给定顺序缩短自由文本直到测量长度 ≤ {@link #METADATA_BUDGET}；仍超限则删除 controls（审批事件没有该键）。
+   * 缩短任一来源列表时同时写 {@code inputSourcesTruncated: true}（首次缩短即置，之后的测量已计入该键）。
+   */
   Map<String, Object> fitBudget(Map<String, Object> m, List<String> shrinkOrder) {
     for (String key : shrinkOrder) {
       while (measure(m) > METADATA_BUDGET && shrinkable(m.get(key))) {
         m.put(key, shrink(m.get(key)));
+        if (INPUT_SOURCE_LISTS.contains(key)) {
+          m.put(KEY_INPUT_SOURCES_TRUNCATED, Boolean.TRUE);
+        }
       }
     }
     if (measure(m) > METADATA_BUDGET) {

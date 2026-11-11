@@ -3,12 +3,15 @@ package io.aster.guard;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardDecisionResponse.ApprovalView;
+import io.aster.guard.api.GuardDecisionResponse.InputSourcesView;
 import io.aster.guard.api.GuardDecisionResponse.PolicyVersionView;
 import io.aster.guard.api.GuardDecisionResponse.ReceiptView;
+import io.aster.guard.provenance.InputSources;
 import io.aster.guard.receipt.ExecutionReceipt;
 import io.aster.policy.evidence.AgentIdentity;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static io.aster.guard.GuardText.clip;
@@ -47,11 +50,20 @@ final class GuardDecisionAssembler {
     ReceiptView receiptView = receipt == null ? null
         : new ReceiptView(receipt.auditId(), receipt.currentHash(), receipt.prevHash());
     return new GuardDecisionResponse(approval, draft.controls(), decisionId.toString(), draft.effectiveOutcome(),
-        executionReceipt, draft.outcome(), draft.policyVersion(), draft.reason(), draft.reasonCodeValue(), receiptView, draft.role(),
-        draft.ruleId());
+        executionReceipt, inputSourcesView(draft.inputSources()), draft.outcome(), draft.policyVersion(), draft.reason(),
+        draft.reasonCodeValue(), receiptView, draft.role(), draft.ruleId());
+  }
+
+  /** verified 为空（全部 declared）时整个对象不写（ADR 0040 §11 D4），无事实的现有调用方响应逐字节不变。 */
+  static InputSourcesView inputSourcesView(InputSources sources) {
+    if (sources.verified().isEmpty()) {
+      return null;
+    }
+    return new InputSourcesView(List.copyOf(sources.factIssuers()), null, List.copyOf(sources.verified()));
   }
 
   /**
+   * 来源三列（ADR 0040 §11 D4）：verified 路径与签发方为 JSON 字符串数组，空则 null（旧行同为 null = 全 declared / 无事实）。
    * 请求方身份按列宽截到 255：只用于四眼「相等即拒绝」比对，截断只会多拒绝、不会放过同一人
    * （审批人标识本身限 1–255 字符）。策略版本缺失（从证据开的决策）时版本列留空。
    */
@@ -83,6 +95,10 @@ final class GuardDecisionAssembler {
     e.responseJson = json.writeJson(response);
     e.requestedBy = clip(performedBy, MAX_COLUMN_TEXT);
     e.requestedApiKeyId = clip(apiKeyId, MAX_COLUMN_TEXT);
+    InputSources sources = draft.inputSources();
+    e.verifiedFields = sources.verified().isEmpty() ? null : json.writeJson(sources.verified());
+    e.factIssuers = sources.factIssuers().isEmpty() ? null : json.writeJson(sources.factIssuers());
+    e.factExpiresAt = sources.factExpiresAt();
     return e;
   }
 

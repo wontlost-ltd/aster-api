@@ -29,6 +29,11 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
   public static final String KEY_AGENT_VERSION = "agentVersion";
   public static final String KEY_AGENT_SESSION = "agentSession";
   public static final String KEY_AGENT_SOURCE = "agentSource";
+  /**
+   * 评估输入来源（ADR 0041 §11 D2）：{@code /evaluate*} 的输入全部来自请求体、没有验签通道，凡发事件即写常量
+   * {@code declared}，让证据包能诚实标出「评估输入未经验证」（旧事件无此键 → 证据包记 legacy）。
+   */
+  public static final String KEY_INPUT_SOURCE = "inputSource";
 
   public static final String KEY_ROLE = "role";
   public static final String KEY_REASON = "reason";
@@ -100,6 +105,7 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
       put(m, KEY_AGENT_SESSION, clip(agent.session()));
       m.put(KEY_AGENT_SOURCE, SOURCE_DECLARED);
     }
+    m.put(KEY_INPUT_SOURCE, SOURCE_DECLARED);
     return m;
   }
 

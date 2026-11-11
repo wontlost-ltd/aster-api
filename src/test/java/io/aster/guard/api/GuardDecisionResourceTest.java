@@ -1,10 +1,15 @@
 package io.aster.guard.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.aster.audit.chain.AuditChainAnchorService;
 import io.aster.guard.DeployedMapParamProbeTest;
 import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardDecisionEntity;
+import io.aster.guard.provenance.FactIssuerStore;
+import io.aster.guard.provenance.GuardFactIssuerEntity;
+import io.aster.guard.provenance.TestFactSigner;
 import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.guard.receipt.ReceiptSigningKeys;
 import io.aster.policy.cache.CompiledPolicyCache;
@@ -26,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -70,6 +76,7 @@ class GuardDecisionResourceTest {
   @Inject CompiledPolicyCache compiledPolicyCache;
   @Inject PolicyVersionResolutionCache versionResolutionCache;
   @Inject AuditChainAnchorService anchorService;
+  @Inject FactIssuerStore factIssuerStore;
   @ConfigProperty(name = "aster.guard.receipt.signing-keys") String signingKeys;
 
   @BeforeEach
@@ -88,6 +95,7 @@ class GuardDecisionResourceTest {
       GuardApprovalEntity.delete("tenantId = ?1", tenant);
       GuardReceiptEntity.delete("tenantId = ?1", tenant);
       GuardDecisionEntity.delete("tenantId = ?1", tenant);
+      GuardFactIssuerEntity.delete("tenantId = ?1", tenant);
       PolicyCatalog.update("defaultVersionId = null where tenantId = ?1", tenant);
       PolicyArtifact.delete("policyVersionId in (select id from PolicyVersion where tenantId = ?1)", tenant);
       PolicyVersion.delete("tenantId = ?1", tenant);
@@ -539,5 +547,308 @@ class GuardDecisionResourceTest {
     assertThat(resp.statusCode()).isEqualTo(200);
     assertThat(resp.jsonPath().getBoolean("valid")).isTrue();
     assertThat(resp.jsonPath().getInt("recordsVerified")).isGreaterThanOrEqualTo(1);
+  }
+
+  // ---- ADR 0040 §11 D3 / D4：签名事实验签 ----
+
+  private static final ObjectMapper JSON = new ObjectMapper();
+
+  /** allowBody() 的 action（context.amount = 250000）附上给定事实后的原文请求体。 */
+  private static String withFacts(JsonNode... facts) {
+    ObjectNode body = JSON.valueToTree(allowBody());
+    var list = ((ObjectNode) body.get("action")).putArray("facts");
+    for (JsonNode f : facts) {
+      list.add(f);
+    }
+    return body.toString();
+  }
+
+  private static TestFactSigner amountFact(TestFactSigner signer) {
+    Instant now = Instant.now();
+    return signer.audience(TENANT).window(now.minusSeconds(30), now.plusSeconds(600))
+        .claims("{\"context.amount\":250000}").sources("{\"context.amount\":\"ledger.amount\"}");
+  }
+
+  private void register(TestFactSigner signer) {
+    var saved = factIssuerStore.upsert(TENANT, TestFactSigner.ISSUER, TestFactSigner.KID, signer.publicKey(), true, null,
+        "user-guard-rest", Instant.now());
+    assertThat(saved).isInstanceOf(FactIssuerStore.UpsertResult.Saved.class);
+  }
+
+  private static long auditRows() {
+    return QuarkusTransaction.requiringNew().call(() -> AuditLog.count("tenantId", TENANT));
+  }
+
+  @Test
+  void validFactIsAcceptedEndToEnd() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(signer);
+
+    Response resp = postRaw(withFacts(amountFact(signer).sign()));
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+  }
+
+  /** 未知 kid、签名被篡改 → 400 invalid_fact（带 issuer / kid / reason），不评估、不落决策行、不写链收据。 */
+  @Test
+  void invalidFactIs400AndWritesNoReceipt() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(signer);
+    ObjectNode tampered = amountFact(signer).sign();
+    ((ObjectNode) tampered.get("sources")).put("context.amount", "agent.selfReported");
+    long auditBefore = auditRows();
+
+    Response unknownKid = postRaw(withFacts(amountFact(TestFactSigner.newKey().kid("2026-12")).sign()));
+    Response badSignature = postRaw(withFacts(tampered));
+
+    assertThat(unknownKid.statusCode()).isEqualTo(400);
+    assertThat(unknownKid.jsonPath().getString("error")).isEqualTo("invalid_fact");
+    assertThat(unknownKid.jsonPath().getString("issuer")).isEqualTo(TestFactSigner.ISSUER);
+    assertThat(unknownKid.jsonPath().getString("kid")).isEqualTo("2026-12");
+    assertThat(unknownKid.jsonPath().getString("reason")).isEqualTo("unknown_issuer");
+    assertThat(badSignature.statusCode()).isEqualTo(400);
+    assertThat(badSignature.jsonPath().getString("error")).isEqualTo("invalid_fact");
+    assertThat(badSignature.jsonPath().getString("reason")).isEqualTo("bad_signature");
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.count("tenantId", TENANT))).isZero();
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("tenantId", TENANT))).isZero();
+    assertThat(auditRows()).isEqualTo(auditBefore);
+  }
+
+  /** facts 内的不安全整数报 invalid_fact（reason unsafe_integer），而不是笼统的 invalid_action。 */
+  @Test
+  void unsafeIntegerInFactIs400InvalidFact() {
+    ObjectNode fact = amountFact(TestFactSigner.newKey()).sign();
+    ((ObjectNode) fact.get("claims")).put("context.amount", 9_007_199_254_740_992L);
+
+    Response resp = postRaw(withFacts(fact));
+
+    assertThat(resp.statusCode()).isEqualTo(400);
+    assertThat(resp.jsonPath().getString("error")).isEqualTo("invalid_fact");
+    assertThat(resp.jsonPath().getString("reason")).isEqualTo("unsafe_integer");
+    assertThat(resp.jsonPath().getString("kid")).isEqualTo(TestFactSigner.KID);
+  }
+
+  /**
+   * 验签先于幂等查键（ADR 0040 §11 D4）：同键首次无事实得 200，再带无效事实 → 400 而非重放首次决策；
+   * 之后同键同体仍重放首次决策（无效请求没有占用或改写该键）。
+   */
+  @Test
+  void invalidFactRejectedBeforeIdempotencyReplay() {
+    String key = "idem-fact-" + UUID.randomUUID();
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(signer);
+    Response first = postRaw(withFacts(), key);
+    ObjectNode expired = amountFact(signer).window(Instant.now().minusSeconds(1200), Instant.now().minusSeconds(600))
+        .sign();
+
+    Response withBadFact = postRaw(withFacts(expired), key);
+    Response replay = postRaw(withFacts(), key);
+
+    assertThat(first.statusCode()).isEqualTo(200);
+    assertThat(withBadFact.statusCode()).isEqualTo(400);
+    assertThat(withBadFact.jsonPath().getString("error")).isEqualTo("invalid_fact");
+    assertThat(withBadFact.jsonPath().getString("reason")).isEqualTo("expired");
+    assertThat(replay.statusCode()).isEqualTo(200);
+    assertThat(replay.jsonPath().getString("decisionId")).isEqualTo(first.jsonPath().getString("decisionId"));
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.count("tenantId", TENANT))).isEqualTo(1);
+  }
+
+  // ---- ADR 0040 §11 D2 / D4、ADR 0041 §11 D1：逐字段来源进响应、决策行与收据 ----
+
+  private static final String ISSUER_KID = TestFactSigner.ISSUER + "#" + TestFactSigner.KID;
+
+  private static GuardDecisionEntity decisionRow(String decisionId) {
+    return QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.<GuardDecisionEntity>findById(
+        UUID.fromString(decisionId)));
+  }
+
+  /** 决策收据（链上 ACTION_GUARD_DECISION 行）的 metadata。 */
+  private static JsonNode receiptMetadata(Response resp) throws Exception {
+    long auditId = resp.jsonPath().getLong("receipt.auditId");
+    AuditLog row = QuarkusTransaction.requiringNew().call(() -> AuditLog.<AuditLog>findById(auditId));
+    return JSON.readTree(row.metadata);
+  }
+
+  @Test
+  void validFactMarksVerifiedInResponseRowAndReceipt() throws Exception {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(signer);
+    // expiresAt 故意带纳秒：Linux JDK 的 Instant.now() 本就是纳秒精度（macOS 仅微秒），而 timestamptz 只存微秒——
+    // 决策行与收据都须记成同一个截断到微秒的值，不能一个四舍五入、一个保留纳秒
+    Instant now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+    Instant signedExpiresAt = now.plusSeconds(600).plusNanos(123_456_789);
+    ObjectNode fact = amountFact(signer).window(now.minusSeconds(30), signedExpiresAt).sign();
+    Instant recordedExpiresAt = signedExpiresAt.truncatedTo(ChronoUnit.MICROS);
+
+    Response resp = postRaw(withFacts(fact));
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getList("inputSources.verified")).containsExactly("context.amount");
+    assertThat(resp.jsonPath().getList("inputSources.factIssuers")).containsExactly(ISSUER_KID);
+    assertThat(resp.jsonPath().getMap("inputSources")).doesNotContainKey("factsStale");
+    GuardDecisionEntity row = decisionRow(resp.jsonPath().getString("decisionId"));
+    assertThat(JSON.readTree(row.verifiedFields)).isEqualTo(JSON.readTree("[\"context.amount\"]"));
+    assertThat(JSON.readTree(row.factIssuers)).isEqualTo(JSON.readTree("[\"" + ISSUER_KID + "\"]"));
+    assertThat(row.factExpiresAt).isEqualTo(recordedExpiresAt);
+    JsonNode md = receiptMetadata(resp);
+    assertThat(md.get("verifiedFields")).isEqualTo(JSON.readTree("[\"context.amount\"]"));
+    assertThat(md.get("factIssuers")).isEqualTo(JSON.readTree("[\"" + ISSUER_KID + "\"]"));
+    assertThat(md.get("factSources")).isEqualTo(JSON.readTree("[\"context.amount=ledger.amount\"]"));
+    assertThat(md.get("factExpiresAt").asText()).isEqualTo(recordedExpiresAt.toString());
+    // principal.type 为 agent：服务端解析不适用，不写 principalIdentityMatched
+    assertThat(md.has("principalIdentityMatched")).isFalse();
+    assertThat(md.has("inputSourcesTruncated")).isFalse();
+  }
+
+  @Test
+  void noFactsAgentPrincipalHasNoInputSources() throws Exception {
+    Response resp = post(TENANT, allowBody(), null);
+
+    assertThat(resp.statusCode()).isEqualTo(200);
+    assertThat(resp.jsonPath().getMap("$")).doesNotContainKey("inputSources");
+    GuardDecisionEntity row = decisionRow(resp.jsonPath().getString("decisionId"));
+    assertThat(row.verifiedFields).isNull();
+    assertThat(row.factIssuers).isNull();
+    assertThat(row.factExpiresAt).isNull();
+    JsonNode md = receiptMetadata(resp);
+    for (String key : List.of("verifiedFields", "factIssuers", "factSources", "principalIdentityMatched", "factExpiresAt",
+        "inputSourcesTruncated")) {
+      assertThat(md.has(key)).as(key).isFalse();
+    }
+  }
+
+  /** principal.type=user 且 id 等于提交者（X-User-Id），roles ⊆ 已验证业务角色：两者 verified，收据记 identityMatched。 */
+  @Test
+  void userPrincipalEqualToPerformedByIsVerifiedEndToEnd() throws Exception {
+    ObjectNode body = JSON.valueToTree(allowBody());
+    ((ObjectNode) body.get("action")).set("principal",
+        JSON.readTree("{\"id\":\"user-guard-rest\",\"type\":\"user\",\"roles\":[\"ops\"]}"));
+
+    Response resp = given()
+        .header("X-Tenant-Id", TENANT)
+        .header("X-User-Id", "user-guard-rest")
+        .header("X-User-Business-Roles", "ops, finance")
+        .contentType(ContentType.JSON)
+        .body(body.toString().getBytes(StandardCharsets.UTF_8))
+        .when().post("/api/v1/guard/decisions");
+    Response otherUser = given()
+        .header("X-Tenant-Id", TENANT)
+        .header("X-User-Id", "someone-else")
+        .contentType(ContentType.JSON)
+        .body(body.toString().getBytes(StandardCharsets.UTF_8))
+        .when().post("/api/v1/guard/decisions");
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getList("inputSources.verified")).containsExactly("principal.id", "principal.roles");
+    assertThat(resp.jsonPath().getMap("inputSources")).doesNotContainKey("factIssuers");
+    assertThat(receiptMetadata(resp).get("principalIdentityMatched").asBoolean()).isTrue();
+    assertThat(otherUser.statusCode()).isEqualTo(200);
+    assertThat(otherUser.jsonPath().getMap("$")).doesNotContainKey("inputSources");
+    assertThat(receiptMetadata(otherUser).get("principalIdentityMatched").asBoolean()).isFalse();
+  }
+
+  /**
+   * 幂等指纹不含 facts（ADR 0040 §11.3 第 3 条）：同键换一组有效事实 → 200 重放首次决策，且报告的是<b>首次</b>
+   * 决策存储的 inputSources，而不是本次请求的事实；同键不带事实同样重放。
+   */
+  @Test
+  void sameKeyDifferentFactsIsNot422() {
+    String key = "idem-facts-" + UUID.randomUUID();
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(signer);
+    Instant now = Instant.now();
+    ObjectNode resourceFact = signer.fresh().audience(TENANT).window(now.minusSeconds(30), now.plusSeconds(600))
+        .claims("{\"resource.id\":\"C-1001\"}").sources("{\"resource.id\":\"crm.customerId\"}").sign();
+
+    Response first = postRaw(withFacts(amountFact(signer).sign()), key);
+    Response otherFacts = postRaw(withFacts(resourceFact), key);
+    Response noFacts = postRaw(withFacts(), key);
+
+    assertThat(first.statusCode()).as(first.asString()).isEqualTo(200);
+    for (Response replay : List.of(otherFacts, noFacts)) {
+      assertThat(replay.statusCode()).as(replay.asString()).isEqualTo(200);
+      assertThat(replay.jsonPath().getString("decisionId")).isEqualTo(first.jsonPath().getString("decisionId"));
+      assertThat(replay.jsonPath().getList("inputSources.verified")).containsExactly("context.amount");
+      assertThat(replay.asString()).isEqualTo(first.asString());
+    }
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.count("tenantId", TENANT))).isEqualTo(1);
+  }
+
+  /**
+   * 首次记录的签发方被禁用后：同键重放与 GET 回读都追加 inputSources.factsStale=true，effectiveOutcome 不变；
+   * 不写新事件、不改写 response_json。
+   */
+  @Test
+  void replayAfterIssuerDisabledMarksStaleWithoutNewEvent() {
+    String key = "idem-stale-" + UUID.randomUUID();
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(signer);
+    Response first = postRaw(withFacts(amountFact(signer).sign()), key);
+    String decisionId = first.jsonPath().getString("decisionId");
+    String storedJson = decisionRow(decisionId).responseJson;
+    assertThat(factIssuerStore.markRevoked(TENANT, TestFactSigner.ISSUER, TestFactSigner.KID, "user-guard-rest", Instant.now())).isTrue();
+    long auditBefore = auditRows();
+
+    Response replay = postRaw(withFacts(), key);
+    Response read = get(TENANT, decisionId);
+
+    assertThat(first.statusCode()).as(first.asString()).isEqualTo(200);
+    for (Response r : List.of(replay, read)) {
+      assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+      assertThat(r.jsonPath().getString("decisionId")).isEqualTo(decisionId);
+      assertThat(r.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+      assertThat(r.jsonPath().getBoolean("inputSources.factsStale")).isTrue();
+      assertThat(r.jsonPath().getList("inputSources.verified")).containsExactly("context.amount");
+    }
+    assertThat(first.jsonPath().getMap("inputSources")).doesNotContainKey("factsStale");
+    assertThat(auditRows()).isEqualTo(auditBefore);
+    assertThat(decisionRow(decisionId).responseJson).isEqualTo(storedJson);
+  }
+
+  /** 点路径按嵌套解释：context 里与 claim 路径相撞的含 '.' 字面键 → 400 invalid_fact（ambiguous_path）。 */
+  @Test
+  void dottedContextKeyUnderClaimedPathIs400() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(signer);
+    ObjectNode body = (ObjectNode) readTree(withFacts(amountFact(signer).sign()));
+    ((ObjectNode) body.get("action")).set("context", readTree("{\"amount\":250000,\"amount.currency\":\"EUR\"}"));
+    ObjectNode unrelated = (ObjectNode) readTree(withFacts(amountFact(signer).sign()));
+    ((ObjectNode) unrelated.get("action")).set("context", readTree("{\"amount\":250000,\"note.text\":\"x\"}"));
+
+    Response resp = postRaw(body.toString());
+    Response ok = postRaw(unrelated.toString());
+
+    assertThat(resp.statusCode()).isEqualTo(400);
+    assertThat(resp.jsonPath().getString("error")).isEqualTo("invalid_fact");
+    assertThat(resp.jsonPath().getString("reason")).isEqualTo("ambiguous_path");
+    assertThat(ok.statusCode()).as(ok.asString()).isEqualTo(200);
+    assertThat(ok.jsonPath().getList("inputSources.verified")).containsExactly("context.amount");
+  }
+
+  /** principal.id 写成数字：Jackson 会强转为 "42"，claim 不能为它背书 → 400 invalid_fact（claim_type_mismatch）。 */
+  @Test
+  void numericClaimOnTypedStringFieldIs400() {
+    TestFactSigner signer = TestFactSigner.newKey();
+    register(signer);
+    Instant now = Instant.now();
+    ObjectNode fact = signer.fresh().audience(TENANT).window(now.minusSeconds(30), now.plusSeconds(600))
+        .claims("{\"principal.id\":42}").sources("{\"principal.id\":\"idp.sub\"}").sign();
+    ObjectNode body = (ObjectNode) readTree(withFacts(fact));
+    ((ObjectNode) ((ObjectNode) body.get("action")).get("principal")).put("id", 42);
+
+    Response resp = postRaw(body.toString());
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(400);
+    assertThat(resp.jsonPath().getString("error")).isEqualTo("invalid_fact");
+    assertThat(resp.jsonPath().getString("reason")).isEqualTo("claim_type_mismatch");
+  }
+
+  private static JsonNode readTree(String json) {
+    try {
+      return JSON.readTree(json);
+    } catch (Exception e) {
+      throw new IllegalArgumentException(json, e);
+    }
   }
 }
