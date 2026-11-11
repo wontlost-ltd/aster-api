@@ -3,8 +3,12 @@ package io.aster.common.redis;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.redis.datasource.RedisDataSource;
-import io.quarkus.redis.datasource.pubsub.ReactivePubSubCommands.ReactiveRedisSubscriber;
 import io.quarkus.runtime.ShutdownEvent;
+import io.vertx.mutiny.redis.client.Command;
+import io.vertx.mutiny.redis.client.RedisConnection;
+import io.vertx.mutiny.redis.client.Request;
+import io.vertx.mutiny.redis.client.Response;
+import io.vertx.redis.client.ResponseType;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -13,10 +17,12 @@ import jakarta.inject.Inject;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
@@ -30,8 +36,14 @@ import java.util.function.Consumer;
  * <p>每个频道暴露一个 gauge {@code aster_redis_broadcast_up{channel=...}}：1 = 订阅已建立，
  * 0 = down（调用方正走降级兜底），可据此告警。
  *
- * <p>订阅使用 reactive API 并自带 {@link #SUBSCRIBE_TIMEOUT}，而非阻塞 API 继承的
+ * <p>订阅直接在 Vert.x Redis 连接上进行并自带 {@link #SUBSCRIBE_TIMEOUT}，而非阻塞 API 继承的
  * {@code quarkus.redis.timeout}（默认 100ms）——后者对冷启动建连 + SUBSCRIBE 太短。
+ *
+ * <p>不用 Quarkus 的 {@code ReactivePubSubCommands.subscribe}：它在 SUBSCRIBE 写出成功<strong>之后</strong>
+ * 才给连接挂上消息处理器，而写完成回调可能被派发到别的事件循环上下文，服务端的 SUBSCRIBE 确认
+ * 便有机会先到达——Vert.x 记一条 {@code No handler waiting for message: [subscribe, ...]} 并丢弃，
+ * 确认永远等不到，每次都要白等满超时再退避重试（nightly fresh-it 约半数启动命中）。这里先挂处理器
+ * 再发 SUBSCRIBE，确认必然被收到，订阅就绪由服务端确认决定而不是靠时序运气。
  */
 @ApplicationScoped
 public class RedisBroadcastSupervisor {
@@ -139,12 +151,54 @@ public class RedisBroadcastSupervisor {
             .register(registry);
     }
 
-    private ResilientRedisSubscriber.Connector redisConnector(String channel, Consumer<String> onMessage) {
+    /**
+     * 一次性订阅动作：建专用长连接 → 先挂处理器 → 发 SUBSCRIBE → 等服务端确认。
+     * 返回即保证服务端已登记本连接为该频道订阅者（此后 PUBLISH 必达）。包级可见供集成测试直接调用。
+     */
+    ResilientRedisSubscriber.Connector redisConnector(String channel, Consumer<String> onMessage) {
         return onDrop -> {
-            ReactiveRedisSubscriber sub = redisDataSource.get().getReactive().pubsub(String.class)
-                .subscribe(channel, onMessage, onDrop, error -> onDrop.run())
-                .await().atMost(SUBSCRIBE_TIMEOUT);
-            return () -> sub.unsubscribe().await().atMost(UNSUBSCRIBE_TIMEOUT);
+            RedisConnection connection = redisDataSource.get().getReactive().getRedis()
+                .connect().await().atMost(SUBSCRIBE_TIMEOUT);
+            CompletableFuture<Void> confirmed = new CompletableFuture<>();
+            connection.handler(reply -> onReply(reply, channel, confirmed, onMessage));
+            connection.endHandler(onDrop);
+            connection.exceptionHandler(error -> onDrop.run());
+            try {
+                // SUBSCRIBE 在 Vert.x 层是「写出即完成」的 void 命令，真正的就绪信号是随后的确认消息。
+                connection.send(Request.cmd(Command.SUBSCRIBE).arg(channel)).await().atMost(SUBSCRIBE_TIMEOUT);
+                confirmed.get(SUBSCRIBE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (Exception e) {
+                connection.closeAndForget();
+                throw e;
+            }
+            return () -> {
+                try {
+                    connection.send(Request.cmd(Command.UNSUBSCRIBE).arg(channel)).await().atMost(UNSUBSCRIBE_TIMEOUT);
+                } finally {
+                    connection.closeAndForget();
+                }
+            };
         };
+    }
+
+    /** 分派订阅连接上的推送：本频道的 subscribe 确认 → 就绪；message → 回调；错误回复 → 订阅失败。 */
+    static void onReply(Response reply, String channel, CompletableFuture<Void> confirmed,
+                        Consumer<String> onMessage) {
+        if (reply == null) {
+            return;
+        }
+        if (reply.type() == ResponseType.ERROR) {
+            confirmed.completeExceptionally(new IllegalStateException("SUBSCRIBE 被拒绝: " + reply));
+            return;
+        }
+        if ((reply.type() != ResponseType.MULTI && reply.type() != ResponseType.PUSH) || reply.size() < 3) {
+            return;
+        }
+        String kind = reply.get(0).toString();
+        if ("message".equalsIgnoreCase(kind)) {
+            onMessage.accept(reply.get(2).toString());
+        } else if ("subscribe".equalsIgnoreCase(kind) && channel.equals(reply.get(1).toString())) {
+            confirmed.complete(null);
+        }
     }
 }
