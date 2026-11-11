@@ -32,6 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 /**
@@ -79,6 +80,12 @@ public class PolicyCacheManager {
     private PubSubCommands<String> pubSubCommands;
     private volatile ResilientRedisSubscriber invalidationSubscriber;
     private ExecutorService invalidationExecutor;
+
+    /**
+     * 启动等待期间为 true：此时 bean 尚未对外可用、本地缓存为空，首次订阅成功无需作废缓存。
+     * 否则异步作废会在启动后才执行，清掉刚开始服务的请求写入的条目。
+     */
+    private final AtomicBoolean startupSubscribePending = new AtomicBoolean();
 
     @PostConstruct
     void initCacheLifecycleTracking() {
@@ -194,7 +201,12 @@ public class PolicyCacheManager {
             LOG.warn("初始化 Redis 缓存失效订阅失败", e);
             return;
         }
-        subscribeInvalidationChannel();
+        startupSubscribePending.set(true);
+        try {
+            subscribeInvalidationChannel();
+        } finally {
+            startupSubscribePending.set(false);
+        }
     }
 
     /**
@@ -236,10 +248,10 @@ public class PolicyCacheManager {
      * 每次（重新）订阅成功后执行：pub/sub 不持久，订阅建立前 / 断线期间其他实例发出的失效已永久漏收。
      * 本地 Caffeine 主缓存只能整体作废才能确保不再返回陈旧决策（代价是本实例一次冷缓存）。
      * Redis 后端（生产默认）的主缓存是共享的，源实例已直接删除对应条目，无需作废、避免全副本缓存雪崩。
-     * 与远程失效同在单线程执行器上执行，保持先后顺序。
+     * 与远程失效同在单线程执行器上执行，保持先后顺序。启动等待内的首次成功跳过（见 startupSubscribePending）。
      */
     private void resyncAfterSubscribe() {
-        if (caffeineCacheDelegate == null) {
+        if (startupSubscribePending.compareAndSet(true, false) || caffeineCacheDelegate == null) {
             return;
         }
         try {
