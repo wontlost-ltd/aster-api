@@ -204,6 +204,58 @@ class ResilientRedisSubscriberTest {
         assertThat(connector.closes.get()).isEqualTo(1);
     }
 
+    @Test
+    @DisplayName("awaitFirstAttempt：首次成功 → 返回 true")
+    void awaitFirstAttemptReturnsUpOnSuccess() throws Exception {
+        ResilientRedisSubscriber sub = newSubscriber(new FlakyConnector(0), null);
+        sub.start();
+        assertThat(sub.awaitFirstAttempt(Duration.ofSeconds(5))).isTrue();
+        sub.close();
+    }
+
+    @Test
+    @DisplayName("awaitFirstAttempt：首次失败立即返回 false，不等满超时，后台继续重试")
+    void awaitFirstAttemptReturnsFastOnFailure() throws Exception {
+        // 先让连接器一直失败，避免毫秒级退避下后续重试抢在断言前成功；断言后再放行。
+        FlakyConnector connector = new FlakyConnector(Integer.MAX_VALUE);
+        ResilientRedisSubscriber sub = newSubscriber(connector, null);
+        sub.start();
+
+        long t0 = System.nanoTime();
+        assertThat(sub.awaitFirstAttempt(Duration.ofSeconds(10))).isFalse();
+        assertThat(Duration.ofNanos(System.nanoTime() - t0)).isLessThan(Duration.ofSeconds(2));
+
+        connector.failTimes = 0;
+        await().atMost(Duration.ofSeconds(5)).until(sub::isUp);
+        sub.close();
+    }
+
+    @Test
+    @DisplayName("awaitFirstAttempt：首次尝试未完成时 close 立即释放等待者")
+    void closeReleasesFirstAttemptWaiter() throws Exception {
+        ResilientRedisSubscriber.Connector slow = onDrop -> {
+            Thread.sleep(3_000);
+            return () -> { };
+        };
+        ResilientRedisSubscriber sub =
+            new ResilientRedisSubscriber("test_broadcast", "ch", slow, scheduler, FAST, null);
+        sub.start();
+        // 调度线程正被慢连接占着，close 必须从别的线程发起（与停机路径一致）。
+        Thread closer = new Thread(() -> {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            sub.close();
+        });
+        closer.start();
+
+        long t0 = System.nanoTime();
+        assertThat(sub.awaitFirstAttempt(Duration.ofSeconds(10))).isFalse();
+        assertThat(Duration.ofNanos(System.nanoTime() - t0)).isLessThan(Duration.ofSeconds(2));
+    }
+
     private static double gauge(SimpleMeterRegistry registry) {
         return registry.get(RedisBroadcastSupervisor.METRIC_NAME).tag("channel", "aster:test:ch").gauge().value();
     }
