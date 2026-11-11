@@ -216,7 +216,8 @@ class ResilientRedisSubscriberTest {
     @Test
     @DisplayName("awaitFirstAttempt：首次失败立即返回 false，不等满超时，后台继续重试")
     void awaitFirstAttemptReturnsFastOnFailure() throws Exception {
-        FlakyConnector connector = new FlakyConnector(2);
+        // 先让连接器一直失败，避免毫秒级退避下后续重试抢在断言前成功；断言后再放行。
+        FlakyConnector connector = new FlakyConnector(Integer.MAX_VALUE);
         ResilientRedisSubscriber sub = newSubscriber(connector, null);
         sub.start();
 
@@ -224,6 +225,7 @@ class ResilientRedisSubscriberTest {
         assertThat(sub.awaitFirstAttempt(Duration.ofSeconds(10))).isFalse();
         assertThat(Duration.ofNanos(System.nanoTime() - t0)).isLessThan(Duration.ofSeconds(2));
 
+        connector.failTimes = 0;
         await().atMost(Duration.ofSeconds(5)).until(sub::isUp);
         sub.close();
     }

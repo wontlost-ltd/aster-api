@@ -14,6 +14,8 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -38,8 +40,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 才挂处理器，而确认在连接事件循环 L 上先到达被丢弃；旧实现还只在启动时订阅一次、不跟踪也不重试。
  *
  * <p>第一个用例把时序做成必然：在粘滞到繁忙 C≠L 的线程上（重新）建立订阅，要求在超时内就绪，
- * 且随后经 Redis 直接 PUBLISH 的失效消息真正清掉本实例的租户索引。第二个用例踢掉服务端全部
- * pub/sub 连接，要求订阅自动恢复并继续接收失效消息。
+ * 且随后经 Redis 直接 PUBLISH 的失效消息真正清掉本实例的租户索引。第二个用例只踢掉本频道的订阅连接，
+ * 要求订阅自动恢复、继续接收失效消息，并作废断线前的本地主缓存（断线期间的失效已漏收）。
  */
 @QuarkusTest
 @RedisEnabledTest
@@ -93,16 +95,30 @@ class PolicyCacheInvalidationSubscribeIT {
 
     @Test
     void subscriptionRecoversAfterConnectionDrop() {
-        await().atMost(Duration.ofSeconds(15)).until(cacheManager::isInvalidationChannelUp);
+        // 只踢本频道的订阅连接，不波及同一 Redis 上其他广播订阅（apikey / lexicon / ui-messages …）：
+        // 重订阅前后对比 pub/sub 连接列表，新增的那条即本频道连接。
+        Set<String> before = pubsubClientIds();
+        assertTrue(cacheManager.subscribeInvalidationChannel(), "重订阅应在启动等待内就绪");
+        Set<String> added = new HashSet<>(pubsubClientIds());
+        added.removeAll(before);
+        assertEquals(1, added.size(), "重订阅应恰好新增一条 pub/sub 连接: " + added);
         assertRemoteInvalidationDelivered("before-drop");
 
-        long killed = redis.execute("CLIENT", "KILL", "TYPE", "pubsub").toLong();
-        assertTrue(killed >= 1, "应至少踢掉本实例的失效订阅连接");
+        // 断线前已缓存的结果：断线期间若有其他实例失效它，本实例收不到，恢复后必须被作废。
+        var staleKey = new PolicyCacheKey("tenant-subscribe-it-stale-" + UUID.randomUUID(), "aster.it.module", "fn",
+            new Object[]{"{}"});
+        cacheManager.getPolicyResultCache().<PolicyCacheKey, String>get(staleKey, k -> "cached").await().indefinitely();
+        assertNotNull(cacheManager.getCaffeineCacheDelegate().getIfPresent(staleKey), "断线前结果应已缓存");
+
+        String connectionId = added.iterator().next();
+        assertEquals(1L, redis.execute("CLIENT", "KILL", "ID", connectionId).toLong(), "应踢掉本频道订阅连接");
 
         // 断线后按 1s 起步的退避重订阅；恢复后失效消息必须继续送达。
         await().atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(100))
             .until(() -> cacheManager.isInvalidationChannelUp() && publishRaw("probe-" + UUID.randomUUID()) >= 1);
         assertRemoteInvalidationDelivered("after-drop");
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+            cacheManager.getCaffeineCacheDelegate().getIfPresent(staleKey) == null);
     }
 
     /** 注册一个租户缓存键，经 Redis 直接 PUBLISH 租户级失效（模拟另一实例），要求本实例索引被清掉。 */
@@ -194,6 +210,17 @@ class PolicyCacheInvalidationSubscribeIT {
         assertTrue(done.await(5, TimeUnit.SECONDS), "事件循环应响应");
         assertNotNull(name.get());
         return name.get();
+    }
+
+    /** 当前全部 pub/sub 连接的 id（CLIENT LIST 每行形如 {@code id=7 addr=... sub=1 ...}）。 */
+    private Set<String> pubsubClientIds() {
+        Set<String> ids = new HashSet<>();
+        for (String line : redis.execute("CLIENT", "LIST", "TYPE", "pubsub").toString().split("\\R")) {
+            if (line.startsWith("id=")) {
+                ids.add(line.substring(3, line.indexOf(' ')));
+            }
+        }
+        return ids;
     }
 
     private long publishRaw(String payload) {
