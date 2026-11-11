@@ -87,6 +87,10 @@ jobs:
           # 仅测试/仅压测：固定种子 0x0d×32 的公开密钥，非生产，不得用于任何真实环境。
           ASTER_GUARD_RECEIPT_SIGNING_KEYS: '{"revision":1,"keys":[{"kid":"perf-only","privateKey":"DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0"}]}'
           ASTER_GUARD_RECEIPT_ACTIVE_KID: perf-only
+          # ADR 0050：prod profile 下 ToolchainIdentityGuard 拒绝含 dev 占位段的工具链身份，
+          # build 段来自 ASTER_RUNTIME_BUILD（缺省 dev → 启动即失败）。与 deploy.yml / Dockerfile.jvm
+          # 同口径，用产出该 jar 的提交 sha。core/validator 段由兄弟仓 jar 的版本 stamp 提供，无需设置。
+          ASTER_RUNTIME_BUILD: ${{ github.sha }}
           # 禁用所有遥测/外部依赖，缩减启动时间
           OTEL_TRACES_EXPORTER: "none"
           # quarkus.otel.enabled is a build-time property; setting it via env

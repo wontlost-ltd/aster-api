@@ -249,7 +249,9 @@ jobs:
   # **aster-api 有 PR** 时才跑。真实漏洞正是「改了语言包却根本不碰 aster-api」
   # ——没有 PR，守门没机会执行（2026-08-03 实测：线上因此显示裸 key）。
   # 本 job 从时间维度补缺口：每晚主动比对，漂移即开 issue。
-  # 只读 + 开 issue，不改任何仓代码，故只需内置 GITHUB_TOKEN。
+  # 只读 + 开 issue，不改任何仓代码：开/关 issue 用内置 GITHUB_TOKEN；检出私有兄弟仓用
+  # CROSS_REPO_TOKEN（与 setup-aster-build 检出同两个仓同一凭据）。checkout-sibling 的 token
+  # 是必填输入、无缺省回退，漏传即 "Input required and not supplied: token"。
   ui-messages-drift:
     runs-on: ubuntu-latest
     steps:
@@ -260,10 +262,12 @@ jobs:
         with:
           repository: aster-cloud/aster-lang-locales
           path: aster-lang-locales
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
       - uses: aster-cloud/aster-lang-platform/.github/actions/checkout-sibling@main
         with:
           repository: aster-cloud/aster-lang-hi
           path: aster-lang-hi
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
 
       - name: Detect drift
         id: drift
