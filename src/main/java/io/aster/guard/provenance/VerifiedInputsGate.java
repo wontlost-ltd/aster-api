@@ -26,6 +26,10 @@ import java.util.TreeSet;
  * </ol>
  * verified 判定用 {@link InputSources#isVerified} 的祖先语义：覆盖 {@code context.customer} 的事实同时证实
  * {@code context.customer.tier}；反之子路径 verified 不能证实被整体引用的父对象。
+ *
+ * <p>IR 的 {@code inputRefs} 是引擎的源码字段路径，比对前先经 {@link GuardInputRefPaths#guardShape} 映射为请求路径
+ * （ADR 0046 §11.6 第 3 条）；映射不出的引用按 {@code "*"} 处理。<b>显式引用的路径即使本次请求里没有该字段也计入</b>：
+ * 缺字段不能读作「不需要验证」，它同样是未验证 → {@code unverified_input}。
  */
 public final class VerifiedInputsGate {
   /** 引用无法静态定位的顶元（ADR 0046 §11 D2）。 */
@@ -55,7 +59,7 @@ public final class VerifiedInputsGate {
     if (!meta.verifiedInputsRequired()) {
       return Optional.empty();
     }
-    List<String> refs = meta.inputRefs();
+    List<String> refs = GuardInputRefPaths.guardShape(meta.inputRefs());
     if (refs == null) {
       return Optional.of(new GateDenial(GuardReasonCode.INPUT_REFS_UNAVAILABLE, List.of()));
     }

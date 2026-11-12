@@ -152,13 +152,26 @@ public class PolicyEvaluationService {
     }
 
     /**
-     * 读取被执行规则的元数据而<b>不执行</b>规则（ADR 0040 §11 D5：guard 在评估之前按档案要求比对输入来源）。
-     * 与 {@link #evaluatePolicy} 同一套版本解析与编译缓存：命中即只解析 Core IR；未命中时走同一 single-flight
-     * 编译并回填缓存，随后的评估直接命中，不重复编译。
+     * 按指定版本评估（Task 16：guard 先按已解析的 versionId 取规则元数据，再按同一 versionId 评估，二者之间激活版本
+     * 移动也不会漂移）。与 {@link #evaluatePolicy} 同一 {@code normalizeContext} 步骤与结果缓存；动态加载关闭时
+     * 忽略 {@code versionId}，与 {@link #evaluatePolicy} 的无版本路径相同。
      *
-     * <p>阻塞方法，须在 worker 线程调用（guard 决策路径即是）。
+     * @param versionId {@code String.valueOf(PolicyVersion.id)}；null 等同 {@link #evaluatePolicy}
+     */
+    public Uni<PolicyEvaluationResult> evaluatePolicyAtVersion(String tenantId, String policyModule,
+            String policyFunction, String versionId, Object[] context) {
+        if (versionId == null) {
+            return evaluatePolicy(tenantId, policyModule, policyFunction, context);
+        }
+        return evaluatePolicyWithVersionId(tenantId, policyModule, policyFunction,
+            dynamicLoadingEnabled ? versionId : null, normalizeContext(tenantId, context));
+    }
+
+    /**
+     * 读取活跃版本的规则元数据：先解析版本（与 {@link #evaluatePolicy} 同一版本解析缓存），再委托
+     * {@link #ruleMetadata(String, String, String, String)}。动态加载关闭时不解析版本。
      *
-     * @throws RuntimeException 策略不存在、不可执行、入口函数无效或编译失败——与同一次评估会失败的原因相同
+     * <p>阻塞方法，须在 worker 线程调用。
      */
     public RuleMetadata ruleMetadata(String tenantId, String policyModule, String policyFunction) {
         String versionId = null;
@@ -169,7 +182,22 @@ public class PolicyEvaluationService {
                 ? cached.versionId()
                 : resolveVersionId(tenantId, policyModule, policyFunction).await().atMost(RULE_METADATA_TIMEOUT);
         }
-        PolicyCacheKey cacheKey = new PolicyCacheKey(tenantId, policyModule, policyFunction, versionId, new Object[0]);
+        return ruleMetadata(tenantId, policyModule, policyFunction, versionId);
+    }
+
+    /**
+     * 读取指定版本中被执行规则的元数据而<b>不执行</b>规则（ADR 0040 §11 D5：guard 在评估之前按档案要求比对输入来源）。
+     * 与评估同一套编译缓存：命中即取产物上 memo 的元数据（每个产物只解析一次 Core IR）；未命中时走同一 single-flight
+     * 编译并回填缓存，随后的评估直接命中，不重复编译。{@code versionId} 为 null 或动态加载关闭时按活跃版本解析。
+     *
+     * <p>阻塞方法，须在 worker 线程调用（guard 决策路径即是）。
+     *
+     * @throws RuntimeException 策略或该版本不存在（跨租户 / 跨策略的版本同样视为不存在）、不可执行、入口函数无效或
+     *                          编译失败——与同一次评估会失败的原因相同
+     */
+    public RuleMetadata ruleMetadata(String tenantId, String policyModule, String policyFunction, String versionId) {
+        PolicyCacheKey cacheKey = new PolicyCacheKey(tenantId, policyModule, policyFunction,
+            dynamicLoadingEnabled ? versionId : null, new Object[0]);
         io.aster.policy.cache.CompiledPolicy compiled = cachedCompiled(cacheKey);
         if (compiled == null) {
             compiled = compileOnce(cacheKey).await().atMost(RULE_METADATA_TIMEOUT);
@@ -177,7 +205,12 @@ public class PolicyEvaluationService {
         if (compiled.getEntryFailure() != null) {
             throw io.aster.policy.parser.EntryFunctionException.cached(compiled.getEntryFailure());
         }
-        return RuleMetadata.of(parseCoreModule(compiled.getCoreJson()), policyFunction);
+        return ruleMetadataOf(compiled, policyFunction);
+    }
+
+    /** 产物上 memo 的规则元数据；IR 解析失败按无元数据处理（{@link #parseCoreModule}）。 */
+    private static RuleMetadata ruleMetadataOf(io.aster.policy.cache.CompiledPolicy compiled, String policyFunction) {
+        return compiled.ruleMetadata(policyFunction, fn -> RuleMetadata.of(parseCoreModule(compiled.getCoreJson()), fn));
     }
 
     /**
@@ -352,8 +385,7 @@ public class PolicyEvaluationService {
         long durationNanos = deterministicTiming ? 0L : Math.max(0, endMarker - startMarker);
         // 治理字段（ADR 0039/0046）：ruleId / controls 读被执行函数的 Core IR 注解，profile 读模块声明；
         // 解析失败只降级为无元数据，不影响评估结果。
-        CoreModel.Module module = parseCoreModule(coreJson);
-        RuleMetadata meta = RuleMetadata.of(module, cacheKey.getPolicyFunction());
+        RuleMetadata meta = ruleMetadataOf(compiled, cacheKey.getPolicyFunction());
         // 版本身份（aster-api#459）取自编译产物：它由解析到的 PolicyVersion 构造，与门禁校验的是同一版本
         return new PolicyEvaluationResult(executionResult.result(), durationNanos / 1_000_000.0, false,
             VerdictView.from(executionResult.result()).orElse(null), meta.ruleId(), meta.controls(), meta.profile(),

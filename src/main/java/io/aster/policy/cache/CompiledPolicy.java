@@ -1,8 +1,11 @@
 package io.aster.policy.cache;
 
 import io.aster.policy.compiler.CompilationMetadata;
+import io.aster.policy.governance.RuleMetadata;
 
 import java.time.Instant;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 /**
  * 编译后的策略缓存结构
@@ -21,6 +24,11 @@ public class CompiledPolicy {
     private final Instant compiledAt;
     /** 非空表示该版本无法执行所请求的函数（确定性失败），coreJson 为 null。 */
     private final String entryFailure;
+    /**
+     * 按函数名缓存的规则元数据：每个编译产物只解析一次 Core IR。随产物一起被缓存淘汰，条目数不超过模块的函数数，
+     * 不另设容量上限；元数据只取决于不可变的 coreJson 与随 jar 固定的注册表，所以不需要失效。
+     */
+    private final ConcurrentHashMap<String, RuleMetadata> ruleMetadataByFunction = new ConcurrentHashMap<>();
 
     public CompiledPolicy(
         String versionId,
@@ -64,6 +72,13 @@ public class CompiledPolicy {
      */
     public static CompiledPolicy entryFailure(String versionId, String sourceHash, String message) {
         return new CompiledPolicy(versionId, sourceHash, null, null, null, message);
+    }
+
+    /**
+     * 取该产物中函数 {@code function} 的规则元数据；首次调用时用 {@code compute} 从 coreJson 算出并记住。
+     */
+    public RuleMetadata ruleMetadata(String function, Function<String, RuleMetadata> compute) {
+        return ruleMetadataByFunction.computeIfAbsent(function, compute);
     }
 
     /** 入口选择失败的原因；成功编译时为 null。 */

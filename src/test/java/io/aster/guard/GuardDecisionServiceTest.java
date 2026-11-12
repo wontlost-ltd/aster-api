@@ -29,6 +29,7 @@ import io.aster.policy.evidence.AgentIdentity;
 import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.repository.PolicySourceRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.smallrye.mutiny.Uni;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -76,6 +77,8 @@ class GuardDecisionServiceTest {
   private static final String PREV = "c".repeat(64);
   /** 请求体 action 原文的 jcs-sha256/v1（由资源层算好传入，服务只透传与签发）。 */
   private static final String ACTION_HASH = "e".repeat(64);
+  /** 活跃版本（setUp 中 version.id）的字符串形式：元数据与评估都按它固定。 */
+  private static final String VERSION_ID = "1730890123456";
   private static final Instant NOW = Instant.parse("2026-11-08T01:00:00.987654Z");
   private static final String KEYS = "{\"revision\":1,\"keys\":["
       + "{\"kid\":\"k1\",\"privateKey\":\"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE\"}]}";
@@ -88,6 +91,7 @@ class GuardDecisionServiceTest {
   private GuardDecisionService service;
   private ExecutionReceiptSigner signer;
   private final FactIssuerStore issuerStore = mock(FactIssuerStore.class);
+  private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
 
   @BeforeEach
   void setUp() {
@@ -108,7 +112,7 @@ class GuardDecisionServiceTest {
     when(repository.findActiveVersion(catalog.id)).thenReturn(Optional.of(version));
     when(store.findByIdempotencyKey(anyString(), anyString())).thenReturn(Optional.empty());
     when(appender.appendSync(any())).thenReturn(new AppendedRecord(88213L, HASH, PREV));
-    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION)).thenReturn(RuleMetadata.NONE);
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION, VERSION_ID)).thenReturn(RuleMetadata.NONE);
   }
 
   private GuardDecisionService serviceWith(ExecutionReceiptIssuer issuer) {
@@ -119,7 +123,7 @@ class GuardDecisionServiceTest {
   private GuardDecisionService serviceWith(ExecutionReceiptIssuer issuer, Instant readClock) {
     return new GuardDecisionService(evaluationService, repository, appender, store, new GuardActionMapper(),
         new GuardReceiptBuilder(), json, issuer, new FactVerifier(issuerStore, Clock.fixed(NOW, ZoneOffset.UTC)),
-        new InputSourceResolver(issuerStore, Clock.fixed(readClock, ZoneOffset.UTC)), Duration.ofHours(24),
+        new InputSourceResolver(issuerStore, Clock.fixed(readClock, ZoneOffset.UTC)), meters, Duration.ofHours(24),
         Supplier::get);
   }
 
@@ -154,7 +158,7 @@ class GuardDecisionServiceTest {
     Map<String, Object> raw = Map.of("__type", "Verdict", "outcome", outcome);
     PolicyEvaluationResult result = new PolicyEvaluationResult(raw, 1.0, false,
         new VerdictView(outcome, role, reason), "CUST-DEL-001", List.of("GDPR:ART17"));
-    when(evaluationService.evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any()))
+    when(evaluationService.evaluatePolicyAtVersion(eq(TENANT), eq(MODULE), eq(FUNCTION), eq(VERSION_ID), any()))
         .thenReturn(Uni.createFrom().item(result));
   }
 
@@ -319,7 +323,7 @@ class GuardDecisionServiceTest {
     service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
-    verify(evaluationService).evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), args.capture());
+    verify(evaluationService).evaluatePolicyAtVersion(eq(TENANT), eq(MODULE), eq(FUNCTION), eq(VERSION_ID), args.capture());
     assertThat(args.getValue()).hasSize(1);
     @SuppressWarnings("unchecked")
     Map<String, Object> flat = (Map<String, Object>) args.getValue()[0];
@@ -339,7 +343,7 @@ class GuardDecisionServiceTest {
 
     assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
     ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
-    verify(evaluationService).evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), args.capture());
+    verify(evaluationService).evaluatePolicyAtVersion(eq(TENANT), eq(MODULE), eq(FUNCTION), eq(VERSION_ID), args.capture());
     @SuppressWarnings("unchecked")
     Map<String, Object> flat = (Map<String, Object>) args.getValue()[0];
     @SuppressWarnings("unchecked")
@@ -416,7 +420,7 @@ class GuardDecisionServiceTest {
     when(result.getResult()).thenReturn(Boolean.TRUE);
     when(result.getDecision()).thenReturn(null);
     when(result.getControls()).thenReturn(List.of());
-    when(evaluationService.evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any()))
+    when(evaluationService.evaluatePolicyAtVersion(eq(TENANT), eq(MODULE), eq(FUNCTION), eq(VERSION_ID), any()))
         .thenReturn(Uni.createFrom().item(result));
 
     GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
@@ -440,7 +444,7 @@ class GuardDecisionServiceTest {
 
   @Test
   void 评估抛异常_DENY_evaluation_failed() {
-    when(evaluationService.evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any()))
+    when(evaluationService.evaluatePolicyAtVersion(eq(TENANT), eq(MODULE), eq(FUNCTION), eq(VERSION_ID), any()))
         .thenReturn(Uni.createFrom().failure(new RuntimeException("策略执行失败: boom")));
 
     GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
@@ -455,7 +459,7 @@ class GuardDecisionServiceTest {
 
   @Test
   void 评估同步抛异常同样fail_closed() {
-    when(evaluationService.evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any()))
+    when(evaluationService.evaluatePolicyAtVersion(eq(TENANT), eq(MODULE), eq(FUNCTION), eq(VERSION_ID), any()))
         .thenThrow(new IllegalStateException("boom"));
     assertThat(service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null).reasonCode()).isEqualTo("evaluation_failed");
   }
@@ -477,7 +481,7 @@ class GuardDecisionServiceTest {
     logger.addHandler(probe);
     logger.setLevel(Level.ALL);
     try {
-      when(evaluationService.evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any()))
+      when(evaluationService.evaluatePolicyAtVersion(eq(TENANT), eq(MODULE), eq(FUNCTION), eq(VERSION_ID), any()))
           .thenThrow(new IllegalStateException("boom-sentinel"));
       assertThat(service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null).reasonCode()).isEqualTo("evaluation_failed");
     } finally {
@@ -856,7 +860,7 @@ class GuardDecisionServiceTest {
       assertThat(r.effectiveOutcome()).isEqualTo("PENDING");
       assertThat(Thread.currentThread().isInterrupted()).isTrue();
       verify(store, never()).findDecision(any(), any());
-      verify(evaluationService, times(1)).evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any());
+      verify(evaluationService, times(1)).evaluatePolicyAtVersion(eq(TENANT), eq(MODULE), eq(FUNCTION), eq(VERSION_ID), any());
     } finally {
       Thread.interrupted();
     }
@@ -1013,7 +1017,7 @@ class GuardDecisionServiceTest {
   }
   /** 档案要求 verifiedInputs 的规则元数据（ADR 0046 §11 D1）：inputRefs 为 null 表示 IR 未提供。 */
   private void requiresVerifiedInputs(List<String> inputRefs) {
-    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION)).thenReturn(
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION, VERSION_ID)).thenReturn(
         new RuleMetadata("CUST-DEL-001", List.of("GDPR:ART17"), "eu-ai-act-high-risk", inputRefs, true));
   }
 
@@ -1024,7 +1028,7 @@ class GuardDecisionServiceTest {
   @Test
   void gateDenyCreatesNoApprovalAndNoExecutionReceipt() throws Exception {
     verdict("REQUIRE_APPROVAL", "Data Protection Officer", "customer record deletion");
-    requiresVerifiedInputs(List.of("principal.id", "context.amount"));
+    requiresVerifiedInputs(List.of("principal_id", "context.amount"));
 
     GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
 
@@ -1063,10 +1067,10 @@ class GuardDecisionServiceTest {
     assertThat(r.executionReceipt()).isNull();
     assertThat(appendedEvent().metadata()).containsEntry("reasonCode", "input_refs_unavailable")
         .doesNotContainKey("unverifiedFields");
-    verify(evaluationService, never()).evaluatePolicy(any(), any(), any(), any());
+    verify(evaluationService, never()).evaluatePolicyAtVersion(any(), any(), any(), any(), any());
     InOrder order = inOrder(repository, evaluationService);
     order.verify(repository).findActiveCatalog(TENANT, MODULE, FUNCTION);
-    order.verify(evaluationService).ruleMetadata(TENANT, MODULE, FUNCTION);
+    order.verify(evaluationService).ruleMetadata(TENANT, MODULE, FUNCTION, VERSION_ID);
     assertThat(savedReceipt()).isNull();
   }
 
@@ -1074,7 +1078,7 @@ class GuardDecisionServiceTest {
   @Test
   void verifiedReferencedInputsProceedToEvaluation() {
     verdict("ALLOW", null, null);
-    requiresVerifiedInputs(List.of("principal.id"));
+    requiresVerifiedInputs(List.of("principal_id"));
     Action a = new Action(new Principal("user-1", "user", null), new ActionName("delete_customer_record"),
         new Resource("customer", "C-1001"), Map.of("amount", 250000), null);
 
@@ -1085,21 +1089,52 @@ class GuardDecisionServiceTest {
     assertThat(r.reasonCode()).isNull();
     assertThat(r.executionReceipt()).isNotNull();
     assertThat(appendedEvent().metadata()).doesNotContainKey("unverifiedFields");
-    verify(evaluationService).evaluatePolicy(eq(TENANT), eq(MODULE), eq(FUNCTION), any());
+    verify(evaluationService).evaluatePolicyAtVersion(eq(TENANT), eq(MODULE), eq(FUNCTION), eq(VERSION_ID), any());
   }
 
   /** 读不到规则元数据（编译失败等）与评估失败同一结论：DENY evaluation_failed，不执行规则。 */
   @Test
   void ruleMetadataFailureDeniesEvaluationFailed() {
     verdict("ALLOW", null, null);
-    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION)).thenThrow(new RuntimeException("compile failed"));
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION, VERSION_ID)).thenThrow(new RuntimeException("compile failed"));
 
     GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
 
     assertThat(r.effectiveOutcome()).isEqualTo("DENY");
     assertThat(r.reasonCode()).isEqualTo("evaluation_failed");
     assertThat(r.ruleId()).isNull();
-    verify(evaluationService, never()).evaluatePolicy(any(), any(), any(), any());
+    verify(evaluationService, never()).evaluatePolicyAtVersion(any(), any(), any(), any(), any());
     assertThat(savedApproval()).isNull();
+  }
+
+  /**
+   * 版本固定（Task 16 carry-over 2）：元数据与评估都使用决策解析出的同一 versionId，二者之间激活版本移动也不漂移；
+   * 不再走按活跃版本解析的旧入口。
+   */
+  @Test
+  void gateAndEvaluationUseSameVersion() {
+    verdict("ALLOW", null, null);
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
+
+    assertThat(r.effectiveOutcome()).isEqualTo("ALLOW");
+    assertThat(r.policyVersion().id()).isEqualTo(Long.parseLong(VERSION_ID));
+    InOrder order = inOrder(repository, evaluationService);
+    order.verify(repository).findActiveCatalog(TENANT, MODULE, FUNCTION);
+    order.verify(evaluationService).ruleMetadata(TENANT, MODULE, FUNCTION, VERSION_ID);
+    order.verify(evaluationService).evaluatePolicyAtVersion(eq(TENANT), eq(MODULE), eq(FUNCTION), eq(VERSION_ID), any());
+    verify(evaluationService, never()).ruleMetadata(any(), any(), any());
+    verify(evaluationService, never()).evaluatePolicy(any(), any(), any(), any());
+  }
+
+  /** 读不到规则元数据时计 counter（path=decisions），结论仍为 evaluation_failed。 */
+  @Test
+  void ruleMetadataFailureCountsDecisionsPath() {
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION, VERSION_ID)).thenThrow(new RuntimeException("x"));
+
+    service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
+
+    assertThat(meters.get("aster.guard.rule.metadata.unavailable").tag("path", "decisions").counter().count())
+        .isEqualTo(1.0);
   }
 }

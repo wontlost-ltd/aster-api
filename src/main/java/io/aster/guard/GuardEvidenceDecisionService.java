@@ -11,12 +11,17 @@ import io.aster.guard.api.GuardFromEvidenceRequest;
 import io.aster.guard.provenance.FactVerifier;
 import io.aster.guard.provenance.FactVerifier.VerifiedFacts;
 import io.aster.guard.provenance.GuardInvalidFactException;
+import io.aster.guard.api.GuardActionRequest;
 import io.aster.guard.provenance.InputSourceResolver;
+import io.aster.guard.provenance.ProfileRequirements;
 import io.aster.guard.provenance.VerifiedInputsGate;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.entity.AuditLog;
 import io.aster.policy.event.EventType;
+import io.aster.policy.evidence.EvaluationEvidence;
 import io.aster.policy.governance.RuleMetadata;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -49,6 +54,7 @@ import static io.aster.guard.GuardText.isBlank;
  * 失败即 400 {@code invalid_fact}；签名内的用户即 performedBy，{@code principal.type == "user"} 且 id 相同时 verified。
  * 同样执行档案来源门（ADR 0040 §11 D5）：模块档案要求 verifiedInputs 而规则引用的输入为 declared 时，决策为
  * DENY（{@code unverified_input} / {@code input_refs_unavailable}）而非 PENDING，写决策收据与决策行但不建待审批。
+ * 门的 DENY 同样写决策行，因而消耗该证据的相关键：同一相关键重放返回这条 DENY，补齐事实后须用新的评估事件。
  *
  * <p>阻塞方法：须在非事务的 worker 线程调用——存储层每步自开独立事务，唯一索引冲突时才能干净地回读先到者。
  */
@@ -70,6 +76,8 @@ public class GuardEvidenceDecisionService {
   private GuardDecisionAssembler assembler;
   private FactVerifier factVerifier;
   private PolicyEvaluationService evaluationService;
+  private ProfileRequirements profileRequirements;
+  private Counter metadataUnavailable;
   private Duration approvalTtl;
 
   /** CDI 客户端代理所需。 */
@@ -81,6 +89,7 @@ public class GuardEvidenceDecisionService {
                                       GuardActionMapper mapper, AuditChainAppender appender,
                                       GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
                                       FactVerifier factVerifier, PolicyEvaluationService evaluationService,
+                                      ProfileRequirements profileRequirements, MeterRegistry meterRegistry,
                                       @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl) {
     this.store = store;
     this.decisionService = decisionService;
@@ -92,6 +101,8 @@ public class GuardEvidenceDecisionService {
     this.assembler = new GuardDecisionAssembler(json);
     this.factVerifier = factVerifier;
     this.evaluationService = evaluationService;
+    this.profileRequirements = profileRequirements;
+    this.metadataUnavailable = GuardMetrics.ruleMetadataUnavailable(meterRegistry, "from_evidence");
     this.approvalTtl = approvalTtl;
   }
 
@@ -127,7 +138,8 @@ public class GuardEvidenceDecisionService {
           Map.of("outcome", String.valueOf(outcome)));
     }
     GuardDecisionDraft draft = gate(draftOf(tenantId, event, req, actionHash, metadata, outcome)
-        .withInputSources(InputSourceResolver.resolve(req.action(), facts, performedBy, businessRoles)), req);
+        .withInputSources(InputSourceResolver.resolve(req.action(), facts, performedBy, businessRoles)), req.action(),
+        metadata);
 
     UUID decisionId = UUID.randomUUID();
     UUID approvalId = draft.needsApproval() ? UUID.randomUUID() : null;
@@ -154,24 +166,46 @@ public class GuardEvidenceDecisionService {
   }
 
   /**
-   * 档案来源门（ADR 0040 §11 D5），规则元数据取锚定事件所指模块的活跃编译产物。被拒时改判 DENY 并带上
-   * unverifiedFields，调用方随之不建待审批。
+   * 档案来源门（ADR 0040 §11 D5）。规则元数据按评估事件的 {@code policyVersionId} 取（事件没有版本时取活跃版本），
+   * 与被锚定的那次评估是同一版本。被拒时改判 DENY 并带上 unverifiedFields，调用方随之不建待审批。
    *
-   * <p>读不到元数据（如 evaluateSource 锚定的模块从未保存过版本）时按无档案要求处理：from-evidence 今天就不依赖
-   * 已保存版本，在这里改判会让既有的即时源码试点全部失败。引擎产出 verifiedInputs 之前门本身不会拒绝任何请求。
+   * <p>读不到元数据（evaluate-source 锚定的模块从未保存过版本是常态）时不再一律放行：改用事件的 {@code profile}
+   * 经 {@link ProfileRequirements} 判定——要求 verifiedInputs → DENY {@code input_refs_unavailable}，否则放行。
+   * 两种情况都计 counter；事件无 profile 时只记 DEBUG，带 profile 时记 WARN。今天没有任何档案要求 verifiedInputs，
+   * 所以门不会拒绝任何请求。
    */
-  private GuardDecisionDraft gate(GuardDecisionDraft draft, GuardFromEvidenceRequest req) {
+  GuardDecisionDraft gate(GuardDecisionDraft draft, GuardActionRequest.Action action, Map<String, Object> event) {
     RuleMetadata meta;
     try {
-      meta = evaluationService.ruleMetadata(draft.tenantId(), draft.policyModule(), draft.policyFunction());
+      meta = ruleMetadata(draft, event);
     } catch (RuntimeException e) {
-      LOG.debugf("from-evidence 读取规则元数据失败，按无档案要求处理: %s.%s: %s", draft.policyModule(),
-          draft.policyFunction(), e.getMessage());
-      return draft;
+      return withoutRuleMetadata(draft, text(event, EvaluationEvidence.KEY_PROFILE), e);
     }
-    return VerifiedInputsGate.check(meta, draft.inputSources(), VerifiedInputsGate.presentLeafPaths(req.action()))
+    return VerifiedInputsGate.check(meta, draft.inputSources(), VerifiedInputsGate.presentLeafPaths(action))
         .map(denial -> draft.denyUnverified(denial.code(), denial.unverifiedFields()))
         .orElse(draft);
+  }
+
+  private RuleMetadata ruleMetadata(GuardDecisionDraft draft, Map<String, Object> event) {
+    return event.get(EvaluationEvidence.KEY_POLICY_VERSION_ID) instanceof Number version
+        ? evaluationService.ruleMetadata(draft.tenantId(), draft.policyModule(), draft.policyFunction(),
+            String.valueOf(version.longValue()))
+        : evaluationService.ruleMetadata(draft.tenantId(), draft.policyModule(), draft.policyFunction());
+  }
+
+  /** 元数据读不到：按事件档案判定（未知档案按不要求，ADR 0046 §11.6 第 6 条）。 */
+  private GuardDecisionDraft withoutRuleMetadata(GuardDecisionDraft draft, String profile, RuntimeException e) {
+    metadataUnavailable.increment();
+    if (isBlank(profile)) {
+      LOG.debugf("from-evidence 读不到规则元数据，事件无档案: %s.%s: %s", draft.policyModule(), draft.policyFunction(),
+          e.getMessage());
+    } else {
+      LOG.warnf("from-evidence 读不到规则元数据，按事件档案 %s 判定: %s.%s: %s", profile, draft.policyModule(),
+          draft.policyFunction(), e.getMessage());
+    }
+    return profileRequirements.verifiedInputsRequired(profile)
+        ? draft.denyUnverified(GuardReasonCode.INPUT_REFS_UNAVAILABLE, List.of())
+        : draft;
   }
 
   /** 同步写决策收据（带锚定的评估相关键）；失败返回 null，由调用方改判 DENY receipt_unavailable。 */

@@ -21,6 +21,8 @@ import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.repository.PolicySourceRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -84,6 +86,7 @@ public class GuardDecisionService {
   private InputSourceResolver inputSourceResolver;
   private Duration approvalTtl;
   private VersionLookupTx versionLookupTx;
+  private Counter metadataUnavailable;
 
   /** CDI 客户端代理所需。 */
   protected GuardDecisionService() {
@@ -94,17 +97,19 @@ public class GuardDecisionService {
                               AuditChainAppender appender, GuardDecisionStore store, GuardActionMapper mapper,
                               GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
                               ExecutionReceiptIssuer receiptIssuer, FactVerifier factVerifier,
-                              InputSourceResolver inputSourceResolver,
+                              InputSourceResolver inputSourceResolver, MeterRegistry meterRegistry,
                               @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl) {
     this(evaluationService, policySourceRepository, appender, store, mapper, receiptBuilder, objectMapper, receiptIssuer,
-        factVerifier, inputSourceResolver, approvalTtl, lookup -> QuarkusTransaction.requiringNew().call(lookup::get));
+        factVerifier, inputSourceResolver, meterRegistry, approvalTtl,
+        lookup -> QuarkusTransaction.requiringNew().call(lookup::get));
   }
 
   GuardDecisionService(PolicyEvaluationService evaluationService, PolicySourceRepository policySourceRepository,
                        AuditChainAppender appender, GuardDecisionStore store, GuardActionMapper mapper,
                        GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
                        ExecutionReceiptIssuer receiptIssuer, FactVerifier factVerifier,
-                       InputSourceResolver inputSourceResolver, Duration approvalTtl, VersionLookupTx versionLookupTx) {
+                       InputSourceResolver inputSourceResolver, MeterRegistry meterRegistry, Duration approvalTtl,
+                       VersionLookupTx versionLookupTx) {
     this.evaluationService = evaluationService;
     this.policySourceRepository = policySourceRepository;
     this.appender = appender;
@@ -118,6 +123,7 @@ public class GuardDecisionService {
     this.inputSourceResolver = inputSourceResolver;
     this.approvalTtl = approvalTtl;
     this.versionLookupTx = versionLookupTx;
+    this.metadataUnavailable = GuardMetrics.ruleMetadataUnavailable(meterRegistry, "decisions");
   }
 
   /**
@@ -306,14 +312,16 @@ public class GuardDecisionService {
   /**
    * 档案来源门（ADR 0040 §11 D5）：档案要求 verifiedInputs 而规则引用的输入未全部 verified 时，不评估、直接 DENY
    * （reason 为 null，收据列出 unverifiedFields）；之后照常写收据与决策行，DENY 不建审批、不签执行收据。
-   * 读不到规则元数据（编译失败等，评估也会以同一原因失败）按 evaluation_failed 拒绝，同样不执行规则。
-   * 档案不要求时返回 empty，由 {@link #evaluate} 照旧评估。
+   * 读不到规则元数据（编译失败等，评估也会以同一原因失败）按 evaluation_failed 拒绝并计数，同样不执行规则。
+   * 档案不要求时返回 empty，由 {@link #evaluate} 照旧评估。元数据按决策已解析的版本读取，与评估同一版本。
    */
   private Optional<GuardDecisionDraft> gate(GuardDecisionDraft base, GuardActionRequest.Action action) {
     RuleMetadata meta;
     try {
-      meta = evaluationService.ruleMetadata(base.tenantId(), base.policyModule(), base.policyFunction());
+      meta = evaluationService.ruleMetadata(base.tenantId(), base.policyModule(), base.policyFunction(),
+          versionIdOf(base));
     } catch (RuntimeException e) {
+      metadataUnavailable.increment();
       LOG.warnf("Action Guard 读取规则元数据失败，按 DENY 处理: %s.%s: %s: %s", base.policyModule(),
           base.policyFunction(), e.getClass().getSimpleName(), e.getMessage());
       LOG.debugf(e, "Action Guard 读取规则元数据失败堆栈: %s.%s", base.policyModule(), base.policyFunction());
@@ -324,15 +332,23 @@ public class GuardDecisionService {
             .denyUnverified(denial.code(), denial.unverifiedFields()));
   }
 
+  /** 决策已解析的活跃版本 id（{@code String.valueOf(PolicyVersion.id)}，与编译缓存键同形）。 */
+  private static String versionIdOf(GuardDecisionDraft draft) {
+    return draft.policyVersion() == null || draft.policyVersion().id() == null
+        ? null : String.valueOf(draft.policyVersion().id());
+  }
+
   /**
    * 评估并把结果映射到草稿；传给规则的是不可变 Map（规则运行时可经 interop 写入可变集合）。
+   * 按 {@link #gate} 读元数据时的同一版本评估。
    * 不用 {@code Map.copyOf}：它拒绝 null 值且打乱键序，而 context 允许 null 叶子（已由 mapper 递归冻结）。
    */
   private GuardDecisionDraft evaluate(GuardDecisionDraft base) {
     PolicyEvaluationResult result;
     try {
-      result = evaluationService.evaluatePolicy(base.tenantId(), base.policyModule(), base.policyFunction(),
-          new Object[]{Collections.unmodifiableMap(new LinkedHashMap<>(base.action()))}).await().atMost(EVALUATION_TIMEOUT);
+      result = evaluationService.evaluatePolicyAtVersion(base.tenantId(), base.policyModule(), base.policyFunction(),
+          versionIdOf(base), new Object[]{Collections.unmodifiableMap(new LinkedHashMap<>(base.action()))})
+          .await().atMost(EVALUATION_TIMEOUT);
     } catch (RuntimeException e) {
       // 调用方可随意触发（如规则不接受的 context 类型）：WARN 只记一行，堆栈留给 DEBUG，避免日志被逐请求放大。
       LOG.warnf("Action Guard 评估失败，按 DENY 处理: %s.%s: %s: %s", base.policyModule(), base.policyFunction(),
