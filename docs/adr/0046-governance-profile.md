@@ -222,7 +222,7 @@ Rule decide given applicant as Applicant, produce Verdict:
    | 字段访问 `e.f` | 把 `e` 的每个路径 p 扩成 `p.f`；`e` 含 `*` 则仍为 `*` |
    | `Let x be e.` / `Set x to e.` | 变量 x 绑定到 `e` 的来源集；之后对 x 的引用取该集合。多次赋值（含分支内赋值）取**并**（流不敏感、路径不敏感：宁可多收不少收） |
    | 记录构造 `Construct T with f1 = e1 …`、列表字面量 | 结果是**聚合**：按字段 / 元素分别保存来源集；后续 `.f1` 取对应集合。无法按字段分解时（如传入整个聚合再做动态访问）退化为各字段并集 |
-   | 同模块调用 `g(a1, a2)` | 把 g 的形参绑定到实参来源集做**内联求值**（g 的分析结果以形参为符号，调用点代入；任何递归（互递归与直接自递归）→ `*`，超过 8 层或超出单规则分析工作预算 → `*`，见 §11.6 第 12–13 条）；g 的返回值来源集是 g 体内 `Return` 表达式的并 |
+   | 同模块调用 `g(a1, a2)` | 把 g 的形参绑定到实参来源集做**内联求值**（g 的分析结果以形参为符号，调用点代入；任何递归（互递归与直接自递归）→ `*`，超过 8 层或超出单规则节点访问预算 → `*`，见 §11.6 第 12–13 条）；g 的返回值来源集是 g 体内 `Return` 表达式的并 |
    | `Match` / `If` 分支、模式绑定 `When x is Some(v)` | 被匹配表达式（Match 主语）本身算一次读取，记入结果；其来源集绑定到模式变量；各分支取并（§11.6 第 15 条） |
    | 对 Map 用字面量键取值 `m["amount"]` 或 `m.amount` | 路径扩展 `.amount` |
    | 对 Map 用**非字面量**键取值、迭代 Map 的键 / 值、把 `context`（或任何含输入来源的值）整体转为文本 / 序列化 | **`*`** |
@@ -340,11 +340,13 @@ Rule decide given applicant as Applicant, produce Verdict:
 10. **落地顺序以 1.0.44 列车计划为准**：①′ 守护测试作为列车前的独立 PR 合并；② 与 ③ 合并为同名分支组（registry 1.2.0、两引擎 `inputRefs` 与 E708、E708 译文）同批合并，因为 core / ts 注册表副本的 parity 测试要求 locales 与副本同时变；D1 要的「旧解析器忽略新键」由守护测试在旧 tag 上运行证明，不靠 ② 先于 ③ 的时间差。
 11. **给 cloud ⑥ 设计的提示**：签名事实必须附在**第一次** `from-evidence` 请求上。门的 DENY 会消耗该证据的 correlationId（ADR 0040 §11 D5 实施澄清），事后补附事实无法挽回，只能重新评估得到新的评估事件。
 12. **任何递归一律 `*`**（取代 §11.2 规则表「自递归展开一次至定点」）：互递归与直接自递归都产生 `*`，construct 为 `recursion`；分析器在内联栈上发现被调函数已在栈中即判定，不做定点迭代。理由：定点迭代需要两引擎对「展开几次」「部分结果如何合并」逐位一致，换来的只是少数递归规则能通过 E708，而高风险档案下的规则本就应当让「读了什么」一眼可见；更保守，且两引擎实现更简单。代价：自递归规则在要求 verifiedInputs 的档案下必须改写为迭代或拆出非递归读取。
-13. **单规则分析工作预算**：除 8 层内联深度上限外，每条规则的分析还受一个**共享计数器**约束——表达式节点访问次数与内联调用次数记入同一预算，其中内联调用总数另有硬上限 4096；任一预算耗尽即整条规则按 `*` 处理，construct 为 `inline-depth`（与深度超限同类，不新增 construct，闭集不变）。目的是防止分支调用链指数展开拖垮编译。预算数值**在两引擎中取同一固定值**，以 aster-lang-core `InputRefsAnalyzer` 中的常量为准（aster-lang-ts 镜像同值），本 ADR 不复述数字；预算耗尽的判定点属于 parity 夹具的断言范围。
+13. **单规则节点访问预算与内联记忆化。**
+    - 预算：每条规则的分析受**节点访问预算**约束，常量 `MAX_NODE_VISITS = 200_000`（core `InputRefsAnalyzer.MAX_NODE_VISITS`，ts `input-refs.ts` 的 `MAX_NODE_VISITS`，两引擎同值、按同一口径计数：`eval` 每访问一个表达式节点即把先序编号计数器加一，编号超过上限 → 该节点产生 `*`，construct 为 `inline-depth`，不再展开）。计数器与 E708 `construct` 的先序编号共用，所以两引擎在同一 IR 上耗尽预算的节点相同。此前草案的「内联调用总数上限 4096」（`MAX_INLINE_CALLS`）**已取消**，由本预算取代；内联嵌套深度上限 `MAX_INLINE_DEPTH = 8` 不变，超出同样是 `inline-depth`。construct 闭集不变。
+    - 记忆化：同模块调用的内联结果按（调用栈、被调函数、实参来源）缓存（`memo` / `memoKey`），同一调用点的重复展开不再重遍历函数体。记忆化只是实现优化，**结果与不记忆化的完整遍历逐项相同，包括 E708 报告的 `construct`**（缓存摘要记录体内第一个产生 `*` 的 construct，命中时在实参之后、调用点之后的节点之前按先序重新登记）；缓存键含调用栈，因此不会把递归判定带到别的调用上下文。取值依据：语料中最大的规则不足 2 千次访问，20 万次留两个数量级余量，同时把恶意扇出（如 64×64 调用链）的分析耗时限制在毫秒级。
 14. **调用分类细则**（补充第 2 条末句「被调函数按模块限定名分类」）：
     - 未限定名：本模块函数 → 同模块内联；单段 builtin 与运算符 → 消费实参；其余（非局部、非 builtin）→ `cross-module-call` 的 `*`。
-    - 限定名：属于本模块（`<模块名>.<函数名>`）→ 同模块内联；首段在 builtin 命名空间白名单内 → 按 builtin 分析（实参被消费，Map.keys / Map.values、Crypto.hash 等特例见第 16 条）；其余一律 `cross-module-call` 的 `*`。
-    - builtin 命名空间白名单（闭集）：`Text`、`List`、`Map`、`Maybe`、`Option`、`Result`、`Date`、`Decimal`、`Verdict`、`PII`、`Int`、`Bool`、`Crypto`、`IO`。新增命名空间须同时改两引擎与 parity 夹具。此前「限定名且未被导入即视为 builtin」的写法被取代：未登记的限定名（拼写错误、尚未登记的命名空间）不再被默许为 builtin，而是保守地得到 `*`。
+    - 限定名：属于本模块（`<模块名>.<函数名>`）→ 同模块内联；首段在 builtin 命名空间白名单（`BUILTIN_NAMESPACES`）内 → 按 builtin 分析（实参被消费，Map.keys / Map.values、Crypto.hash 等特例见第 16 条）；其余一律 `cross-module-call` 的 `*`。
+    - builtin 命名空间白名单（闭集；core `InputRefsAnalyzer.BUILTIN_NAMESPACES`，ts `input-refs.ts` 同名常量，同表）：`Bool`、`Crypto`、`Date`、`Decimal`、`IO`、`Int`、`List`、`Map`、`Maybe`、`Option`、`PII`、`Result`、`Text`、`Verdict`。新增命名空间须同时改两引擎与 parity 夹具。此前「限定名且未被导入即视为 builtin」的写法被取代：未登记的限定名（拼写错误、尚未登记的命名空间）不再被默许为 builtin，而是保守地得到 `*`。
 15. **Match 主语算一次读取**：`Match` 的被匹配表达式在进入分支前即记为消费，不论各分支是否再引用模式变量。这是可靠性所需：分支选择本身取决于主语的值（`Match req.context.tier` 仅凭走了哪个分支就泄露了 `context.tier`），不记则 `inputRefs` 会漏报。模式变量绑定到主语的来源集；各分支取并。
 16. **序列化与迭代特例的取值**：`Map.keys` / `Map.values` 作用于带输入来源的值 → `*`，construct `map-iteration`；`Crypto.hash`、`Int.toString`、`Bool.toString` 作用于输入派生值 → `*`，construct `whole-input-serialized`。已知误报：`Int.toString` 作用于标量叶子（如 `Int.toString(req.context.count)`）并未整体序列化任何记录，但 1.3.0 翻转后会在要求 verifiedInputs 的档案下得到 E708。当前接受该误报以换取实现简单；是否按「标量叶子豁免」收窄，待 X4 生产扫描（§11.4 ⑦ 发布前的只读扫描）给出真实命中数后再定。
 17. **硬前置条件：祖先路径记录的可靠性依赖前缀规则。** 若干形状记录的是**祖先路径**而不是具体叶子，例如 `List.filter(req.context.items, f)` 记 `context.items`，传入整个子记录的调用记该子记录路径。这对「已验证」的判定只有在第 9 条前缀规则成立时才可靠：非叶子引用被满足，当且仅当其下每个出现的叶子都 verified（且至少有一个）。该规则已在 aster-api `VerifiedInputsGate` 实现（aster-api#487）。因此：**前缀规则是 1.3.0 翻转（§11.4 ⑦）的硬前置条件**——翻转所在的 aster-api 版本必须包含 #487，且其回归测试（非叶子引用下存在未验证叶子 → DENY `unverified_input`）在发版前通过；任何绕过或削弱前缀规则的改动都等同于破坏 `inputRefs` 的可靠性，必须同时撤回翻转。
