@@ -557,6 +557,13 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
 
 **D5 与 Profile 的衔接（执行点）。** 模块档案要求 `verifiedInputs`（ADR 0046 §11 R62）时，guard 在评估**之前**把规则的静态输入引用集 `inputRefs` 与本请求的 verified 集合比对：存在被引用却为 `declared` 的路径 → 不评估，直接 DENY `unverified_input`（200，fail-closed 表与 §3.2 同体：`reason` 为 null，收据 `unverifiedFields` 列出路径），写收据与决策行但**不**建待审批（人不能替未验证的输入背书）。模块 IR 没有 `inputRefs`（旧引擎编译）而档案要求 verifiedInputs → DENY `input_refs_unavailable`（与 E707 同精神：基础设施缺位不读成策略违规）。`from-evidence` 同样执行：cloud 执行输入是人手填的 `declared`，高风险模块的 from-evidence 决策将是 DENY 而非 PENDING，除非 cloud 附签名事实——这是有意的；档案何时开始要求 verifiedInputs、cloud 何时具备附 facts 的能力，按 ADR 0046 §11 D5 的默认方案排期（registry 1.2.0 不要求，1.3.0 翻转）。
 
+D5 实施澄清（2026-11-12，ADR 0046 §11.6）：
+
+- **路径空间**：IR 的 `inputRefs` 是引擎的源码字段路径（`principal_roles`、`action`、`context.amount`），比对前由 aster-api 映射为请求路径；`POST /decisions` 用 guard 形状（与 `GuardActionMapper.flatten` 共用一张常量键表），`from-evidence` 用评估事件里写事件时已映射好的证据形状路径（ADR 0046 §11.6 第 3、4 条）。映射不出的路径（含根 `""`）按 `*` 处理。
+- **缺字段计入**：显式 `inputRefs` 中的路径即使本请求里没有该字段也计入——缺字段 = 未验证 → DENY `unverified_input`。
+- **版本固定**：取规则元数据与评估使用同一个已解析的策略版本；`from-evidence` 按评估事件的 `policyVersionId` 取元数据。元数据读不到（如 evaluate-source 模块没有已保存版本）时按事件 `profile` + 注册表判定：要求 verifiedInputs → DENY `input_refs_unavailable`，否则放行；两种情况都计 counter。
+- **gate DENY 消耗证据**：`from-evidence` 的 gate DENY（`unverified_input` / `input_refs_unavailable`）与评估得出的 DENY 一样写决策行与收据，因而**消耗**该证据的 `evidenceCorrelationId`：同一 correlationId 的重放返回这条 DENY；补齐签名事实后重新申请，须使用新的评估事件（新的 correlationId）。
+
 **D6 兼容。** 不带 `facts` 的现有调用方：全部字段 `declared`，响应无 `inputSources`，行为与今天逐字节一致；只有声明了要求 verifiedInputs 档案的模块会观察到 DENY，而这类档案在 ADR 0046 §11 落地前不存在。aster-guard SDK：`GuardAction.facts?`、`GuardDecision.inputSources?` 可选；MCP 代理不生成事实（它不是可信签发方）。
 
 ### 11.3 验收

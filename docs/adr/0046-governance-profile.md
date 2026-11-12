@@ -246,8 +246,8 @@ Rule decide given applicant as Applicant, produce Verdict:
    | `Let s be Text.format(req.context) …`（整体序列化） | `*` → E708 |
    | `Let r be ext.score(req.context.amount).`（`ext` 为 `Use` 导入） | `*` → E708 |
    | `Let f be pick(req.action). Let v be apply f to req.context …`（函数值来自变量） | `*` → E708 |
-   | `If req.principal_roles contains "ops" …` | `principal.roles`（数组整叶子；与 ADR 0040 §11 D1 一致） |
-   | 规则只用常量与 `req.action` | `action.name` |
+   | `If req.principal_roles contains "ops" …` | 引擎 `principal_roles` → guard 形状映射为 `principal.roles`（数组整叶子；与 ADR 0040 §11 D1 一致；两种路径空间见 §11.6 第 3 条） |
+   | 规则只用常量与 `req.action` | 引擎 `action` → guard 形状映射为 `action.name`（§11.6 第 3 条） |
    | `Let c be req.context. Let lim be limitFor(c.tier). If c.amount > lim …`（`limitFor` 读 `t` 做比较，不再读输入） | `context.tier`、`context.amount`（同模块内联，形参 `t` 代入 `context.tier`） |
    | 内联深度**恰好 8 层**：`decide → h1 → h2 → … → h8`，`h8 given c as GuardContext` 读 `c.amount`，每层把 `req.context` 原样传下去 | `context.amount`（8 层在上界内，仍可静态定位；两引擎 parity 夹具钉住该边界） |
    | 同上但 **9 层**（`h9` 才读 `c.amount`） | `*` → E708（超过内联上界；夹具与上一条成对） |
@@ -280,7 +280,7 @@ Rule decide given applicant as Applicant, produce Verdict:
    - 第一期来源函数清单（`src/config/fact-sources.ts`，每项 `{ id, allowedPaths, resolve(ctx, args) }`，新增须改代码与测试，不可运行时配置）：`hmac.userId`（路径 `principal.id`，取签入 canonical 的 userId）；`idp.businessRoles`（路径 `principal.roles`，取策略租户的 `TeamMember.businessRoles` / `User.businessRoles`）；`catalog.piiMark`（路径 `context.<field>.$pii`，取数据目录对该字段的 PII 标记——供 ADR 0042 §11 的标记交叉核对，不签业务值）；试点专用 `fixture.creditPilot`（路径 `context.*`，只在 `NODE_ENV !== 'production'` 且租户为 `credit-pilot` 时登记，从 seed 固定 fixture 文件读值，**不读请求体**）。
    - 每条签出的事实在 `claims` 之外带 `sources: { "<path>": "<source id>" }`，进入签名载荷（aster-api 验签时原样校验，不解释）；aster-api 收据 `factIssuers` 旁增 `factSources`（`path=source` 列表，≤ 64 项，缩短顺序排在 `verifiedFields` 之后），证据包 `guardInputSources.factSources` 展示每条事实的 source。
    - 验收（cloud 集成测试）：提交含 `value` 的签发请求 → 400 `claims_not_allowed`；`source` 不在清单 → 400 `unknown_fact_source`；`path` 不在该 source 的 `allowedPaths` → 400 `path_not_allowed`；执行路由产出的事实其 `sources` 与清单一致；证据包 v6 条目展示 `factSources`。(c) 为信贷试点配置一个测试签发方（seed 脚本生成 Ed25519 密钥对、写入 `guard_fact_issuers`），`run-credit-pilot.ts` 与 Playwright 用它对四组 fixture 的 `context.*` 签名后执行，使 from-evidence 在要求 verifiedInputs 时得到 PENDING 而非 DENY。
-3. **registry 1.3.0（aster-lang-locales）**：第 2 项合并并在本地栈跑通（九款状态不变、`reviewers[]` 仍含 Credit Officer）后，把 `eu-ai-act-high-risk.requires.verifiedInputs` 翻为 `true` 并发布；aster-api 与 cloud 升 locales pin。翻转是数据变更，不需要引擎列车（引擎已在 ③ 支持该键）。翻转后，任何声明该档案而没有签名事实的生产策略会在 guard 路径被 DENY——发布 1.3.0 前由用户在生产库只读扫描声明了该档案的策略（SQL 与 ADR 0051 §16.2 的扫描同法），逐一确认有签发方配置。
+3. **registry 1.3.0（aster-lang-locales）**：第 2 项合并并在本地栈跑通（九款状态不变、`reviewers[]` 仍含 Credit Officer）后，把 `eu-ai-act-high-risk.requires.verifiedInputs` 翻为 `true` 并发布；aster-api 与 cloud 升 locales pin。翻转是数据变更，但**需要引擎列车**（§11.6 第 7 条：aster-api 读 core jar 内的注册表副本，该副本受 parity 测试约束须与 locales 相等）。翻转后，任何声明该档案而没有签名事实的生产策略会在 guard 路径被 DENY——发布 1.3.0 前由用户在生产库只读扫描声明了该档案的策略（SQL 与 ADR 0051 §16.2 的扫描同法），逐一确认有签发方配置。
 4. 期间若有租户想在 1.3.0 前启用：自定义档案可在注册表加 `…-verified` 变体（如 `eu-ai-act-high-risk-verified`，要求 verifiedInputs=true），由该租户策略显式声明。
 
 ### 11.3 验收
@@ -293,7 +293,7 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 ### 11.4 分阶段落地顺序（需发版列车）
 
-① 本节与 ADR 0040 §11 / ADR 0041 §11 同车次定稿 → ①′ aster-lang-core、aster-lang-ts、aster-cloud 各自加「忽略未知 registry 字段」守护测试并随各自下一次常规发版（D1）→ ② aster-lang-locales 发布 registry 1.2.0（只加键，全部档案 `verifiedInputs=false`）→ ③ aster-lang-core 与 aster-lang-ts **同车次**：`verifiedInputs` 解析、`inputRefs`、E708、parity 夹具（aster-lang-test）；E708 的英文模板随码表进 `error_codes.json` → ④ locales 补 E708 zh/de 译文（hi 由 aster-lang-hi）；**译文补发前**，按 ADR 0051 §16.1 R56 的回退规则，aster-api 编译通道与 cloud 编辑器对 E708 显示 `error_codes.json` 的英文模板（码与参数完整，仅文案未本地化），不阻塞 ③/⑤ → ⑤ aster-api 升级引擎 pin（发版列车自动部署）：`RuleMetadata.inputRefs` 与 guard 执行点生效，但因无档案要求 verifiedInputs，不拒绝任何请求 → ⑥ aster-cloud 升级 pin、编辑器展示 `inputRefs`、签发方设置页、from-evidence 附 facts、试点测试签发方（D5 第 2 项）→ ⑦ locales registry **1.3.0** 翻转 `eu-ai-act-high-risk.verifiedInputs=true`，aster-api / cloud 升 locales pin（D5 第 3 项；发布前用户执行生产只读扫描）。②–⑥ 任一顺序颠倒都不会改变现有策略行为；只有 ⑦ 是行为变更点。
+① 本节与 ADR 0040 §11 / ADR 0041 §11 同车次定稿 → ①′ aster-lang-core、aster-lang-ts、aster-cloud 各自加「忽略未知 registry 字段」守护测试并随各自下一次常规发版（D1）→ ② aster-lang-locales 发布 registry 1.2.0（只加键，全部档案 `verifiedInputs=false`）→ ③ aster-lang-core 与 aster-lang-ts **同车次**：`verifiedInputs` 解析、`inputRefs`、E708、parity 夹具（aster-lang-test）；E708 的英文模板随码表进 `error_codes.json` → ④ locales 补 E708 zh/de 译文（hi 由 aster-lang-hi）；**译文补发前**，按 ADR 0051 §16.1 R56 的回退规则，aster-api 编译通道与 cloud 编辑器对 E708 显示 `error_codes.json` 的英文模板（码与参数完整，仅文案未本地化），不阻塞 ③/⑤ → ⑤ aster-api 升级引擎 pin（发版列车自动部署）：`RuleMetadata.inputRefs` 与 guard 执行点生效，但因无档案要求 verifiedInputs，不拒绝任何请求 → ⑥ aster-cloud 升级 pin、编辑器展示 `inputRefs`、签发方设置页、from-evidence 附 facts、试点测试签发方（D5 第 2 项）→ ⑦ locales registry **1.3.0** 翻转 `eu-ai-act-high-risk.verifiedInputs=true`，随**引擎发版列车**（core 副本同步）发布，aster-api 升引擎 pin、cloud 升注册表副本（D5 第 3 项、§11.6 第 7 条；前置条件还有：aster-api 已部署「评估事件自带 `inputRefs`」并关闭 from-evidence 的 fail-open，cloud 具备签发能力；发布前用户执行生产只读扫描）。②–⑥ 任一顺序颠倒都不会改变现有策略行为；只有 ⑦ 是行为变更点。
 
 ### 11.5 已选默认与可改项
 
@@ -304,3 +304,27 @@ Rule decide given applicant as Applicant, produce Verdict:
 | `inputRefs` 产出范围 | 仅返回 Verdict 的规则（声明档案的模块） | 全部函数 | IR 体积与 parity 语料范围扩大，无运行期消费方 |
 | E708 范围 | 仅声明档案且档案要求 verifiedInputs 的模块；未声明档案的模块**不报**（守 §7「零新增诊断」） | 对未声明档案模块报 warning | 违背 §7 承诺，编辑器噪声 |
 | `*` 的运行期处理 | 视为引用全部输入，DENY `unverified_input`（D2） | — | 放宽即放行未验证输入，不提供选项 |
+
+### 11.6 实施澄清（2026-11-12）
+
+来源：实施计划 `docs/superpowers/plans/2026-11-12-train-1044-task16-engine.md`（1.0.44 列车，用户 2026-11-12 确认 Q1–Q6）。本小节只澄清 §11.2–§11.5 未写明的细节，不改变决策；与上文冲突处以本小节为准。
+
+1. **`inputRefs` 的写入条件与计算位置。**
+   - 写入条件：模块声明了档案（`module.profile != null`，不论注册表里是否有该档案、要求项是什么），**且**函数返回 Verdict（与 `GovernanceChecker.returnsVerdict` 同口径）。其余函数不写该键；未声明档案的模块 IR 逐字节不变。
+   - 计算位置：在 **R2（`TypedReferenceResolver`）之后**，不在 lowering 末尾。R2 负责把本地化名称规范化、判定 `x.f` 是记录字段还是 Map 键；在 R2 之前计算，zh / de 源码会产出本地化路径。分析器是纯函数，不读注册表。R2 之后仍会复制 Func 的通道必须保留该字段。
+   - 取值：路径用点连接，最多 8 段；按 UTF-16 码元字典序去重（Java `String.compareTo` 与 JS 默认 `sort` 同序）。规则不读输入时为 `[]`，与 null（未提供，旧引擎）区分。
+2. **补充传播规则**（§11.2 D2 规则表的补遗）：
+   - (a) 直接消费第一个参数本身（标量参数如 `given amount`，或整条记录参与比较）→ 路径 `""`（根）。整体转文本 / 序列化仍为 `"*"`。
+   - (b) 字面量 Map 键为空串或含 `.` → `"*"`（点路径无法无歧义表示）。
+   - (c) 第一个参数之外的参数不追踪（§11.2 只定义第一个参数）。
+   - **`"*"` 独占**：`"*"` 是顶元；出现 `"*"` 时列表**只含** `["*"]`，因为它已覆盖其余路径，两引擎也不必对「`*` 与具体路径并存」的排序达成一致。
+   - **被调函数按模块限定名分类**：R2 之后 Call 目标名是规范全名；它等于本模块某个 Func（`<module>.<name>`），或者是未限定的本模块名，才按同模块调用内联。经 `Use … as Alias` 导入的函数，即使别名与本模块函数同名，也按跨模块调用处理（→ `*`）。
+3. **两种路径空间：引擎路径 vs 请求路径。** 引擎只看得到规则第一个参数的**源码字段路径**（作者写的名字，编辑器展示的也是它），与 guard 无关；guard 请求路径（`principal.roles`、`action.name`、`context.amount`）由 aster-api 按**入口形状**映射：
+   - **guard 形状**（仅 `POST /api/v1/guard/decisions`，规则参数是 `GuardActionMapper.flatten` 产出的扁平记录）：`principal_id→principal.id`、`principal_type→principal.type`、`principal_roles[.…]→principal.roles`、`action→action.name`、`resource_type→resource.type`、`resource_id→resource.id`、`agent_model→agent.model`、`context→context`、`context.<p>→context.<p>`；标量字段带子路径（如 `action.x`）、`""`、`"*"`、未知首段 → `*`。映射表与 `flatten` 的键表是同一张常量表。
+   - **证据形状**（`from-evidence`）：评估输入是 `context`，第一个参数名进入路径前缀。映射在**写评估事件时**完成（见第 4 条）：只有当第一个参数由命名输入 Map 中的某个键实际匹配时，路径映射为 `context.<实际匹配键>.<path>`，`""` 映射为 `context.<该键>`；位置数组输入、无法确定匹配键、或路径含 `*` → `["*"]`。
+   - 因此根路径 `""` 在 guard 形状下为 `*`（扁平记录整体被消费，等于读全部输入），在证据形状下为 `context.<实际匹配键>`。
+4. **评估事件自带输入引用**（ADR 0041 §11 D2 键旁登记）：`POLICY_EVALUATION` metadata 在 `profile` 旁新增 `inputRefs`（写事件时已按第 3 条证据形状映射好的请求路径）与 `verifiedInputsRequired`（布尔），只在模块声明档案时写入；无档案事件的 metadata 逐字节不变。`inputRefs` 序列化后 ≤ 1024 字节且 ≤ 32 项，超过任一上限整体写 `["*"]`（审计链 metadata 上限 4096 字节，超长会被截断成非法 JSON）。`from-evidence` 优先读事件里的这两项——evaluate-source 模块没有已保存版本，无法事后取 IR；事件里没有（旧事件）时按「事件 `profile` + 注册表」判定，要求 verifiedInputs → DENY `input_refs_unavailable`。
+5. **显式引用即使请求中缺字段也计入**：`inputRefs` 中的路径在本请求里不存在，等于该路径未经验证 → 档案要求 verifiedInputs 时 DENY `unverified_input`（缺字段不能当作「不需要验证」）。
+6. **未知档案在运行期按「不要求 verifiedInputs」处理**：编译期已报 E705，此类模块无法保存。代价：D5 第 4 项的 `…-verified` 自定义档案若在某个注册表版本里被回滚删除，声明它的模块会悄悄降为不要求；回滚注册表前须先扫描声明该档案的策略。aster-api 对「元数据读不到」计 counter 与日志。
+7. **1.3.0 翻转需要引擎列车**（更正 D5 第 3 项「不需要引擎列车」）：aster-api 读的是 core jar 内的注册表副本（`ControlRegistry.loadDefault()`），该副本由 `ControlRegistrySiblingParityTest` 约束须与 locales 深度相等，所以翻转须 core 发版、aster-api 升 pin。§11.4 ⑦ 已相应改写。
+8. **E708 的 `construct`**：取**先序遍历中第一个产生 `*` 的节点**的类别。遍历顺序：规则体语句按源码顺序；遇到同模块调用时先遍历实参，再进入被内联的被调函数体（深度优先），然后回到调用点之后继续；同一表达式的子节点按 Core IR 字段声明顺序。`construct` 闭集：`dynamic-map-key`、`map-iteration`、`whole-input-serialized`、`cross-module-call`、`function-value`、`inline-depth`、`recursion`、`path-too-long`、`unrepresentable-key`；值不翻译。
