@@ -17,9 +17,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 是 Error 级，会穿透一切 {@code catch (Exception)} 变成 500。解析器必须把它归为带码 E054
  * 的用户源码错误（{@link InProcessCnlParser.CnlParseException}），与守卫触发时同一出口。
  *
- * <p>为了不依赖运行平台的默认栈大小（macOS 2MB、Linux 1MB），在显式 256K 栈的线程上解析：
- * 实测该栈上括号约 28 层即溢出，60 层既低于任何版本的守卫阈值（64 / 300）又必然溢出，
- * 两种 core 版本下都稳定走到 StackOverflowError 路径。
+ * <p>为了不依赖运行平台的默认栈大小（macOS 2MB、Linux 1MB），在显式小栈的线程上解析 60 层括号
+ * （低于任何版本的守卫阈值 64 / 300）。解释执行时 256K 栈约 28 层即溢出；JIT 热身后帧变小，
+ * 故从 256K 起递减栈大小直到溢出（见 {@link #overflowingParse}）。
  */
 class InProcessCnlParserStackOverflowTest {
 
@@ -45,11 +45,27 @@ class InProcessCnlParserStackOverflowTest {
         return out[0];
     }
 
+    /**
+     * 递减栈大小，取第一个让 60 层括号解析失败的栈。帧大小取决于 JIT：同一 JVM 里前面的用例把解析器
+     * 热身编译之后，256K 栈能装下 60 层（实测热身后 192K / 256K 都能解析成功，128K 仍溢出），固定栈会
+     * 让本用例失去溢出前提。从大到小找到的第一个失败栈恰好在最深的递归阶段（语法分析 / 构建 AST）溢出，
+     * 规范化等浅递归阶段不会先溢出，因此断言的仍是同一条 E054 出口。
+     */
+    private static Throwable overflowingParse(String source) throws InterruptedException {
+        for (long kb : new long[]{256, 192, 160, 128, 96, 64}) {
+            Throwable thrown = parseOn(kb * 1024, source);
+            if (thrown != null) {
+                return thrown;
+            }
+        }
+        return null;
+    }
+
     @Test
     void stackOverflowDuringParseIsCodedE054NotError() throws InterruptedException {
-        Throwable thrown = parseOn(SMALL_STACK, nestedParens(60));
+        Throwable thrown = overflowingParse(nestedParens(60));
 
-        assertNotNull(thrown, "256K 栈上 60 层括号必须失败（否则本测试没有覆盖溢出路径）");
+        assertNotNull(thrown, "64K–256K 栈上 60 层括号必须有一档失败（否则本测试没有覆盖溢出路径）");
         InProcessCnlParser.CnlParseException e = assertInstanceOf(InProcessCnlParser.CnlParseException.class, thrown,
             "StackOverflowError 必须在解析边界归为 CnlParseException，实际: " + thrown);
         List<CnlErrorListener.Diagnostic> diags = e.getDiagnostics();

@@ -27,11 +27,11 @@ public final class ParseBudget {
     private static final AtomicLong EXCEEDED = new AtomicLong();
 
     private final long budgetNanos;
-    private final long deadline;
+    private final long startNanos;
 
     private ParseBudget(long budgetNanos) {
         this.budgetNanos = budgetNanos;
-        this.deadline = budgetNanos > 0 ? System.nanoTime() + budgetNanos : Long.MAX_VALUE;
+        this.startNanos = System.nanoTime();
     }
 
     /** 设定进程级默认预算；null 恢复默认值，≤ 0 表示不限时。 */
@@ -66,7 +66,8 @@ public final class ParseBudget {
 
     /** 已超时则抛 {@link Exceeded}。调用方负责控制调用频率（nanoTime 本身约数十纳秒）。 */
     void check() {
-        if (System.nanoTime() > deadline) {
+        // 按已用时长比较（而非 start + budget 的绝对截止点）：nanoTime 可为任意值，相加可能溢出
+        if (budgetNanos > 0 && System.nanoTime() - startNanos > budgetNanos) {
             throw new Exceeded(this);
         }
     }
