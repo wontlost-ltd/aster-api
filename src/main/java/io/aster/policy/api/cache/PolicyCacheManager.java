@@ -2,6 +2,8 @@ package io.aster.policy.api.cache;
 
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
+import io.aster.common.redis.RedisBroadcastSupervisor;
+import io.aster.common.redis.ResilientRedisSubscriber;
 import io.aster.policy.api.PolicyCacheKey;
 import io.aster.policy.metrics.PolicyMetrics;
 import io.micrometer.core.instrument.Counter;
@@ -12,7 +14,6 @@ import io.quarkus.cache.CacheName;
 import io.quarkus.cache.CaffeineCache;
 import io.quarkus.redis.datasource.RedisDataSource;
 import io.quarkus.redis.datasource.pubsub.PubSubCommands;
-import io.quarkus.redis.datasource.pubsub.PubSubCommands.RedisSubscriber;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -20,6 +21,7 @@ import jakarta.inject.Inject;
 import jakarta.enterprise.inject.Instance;
 import org.jboss.logging.Logger;
 
+import io.vertx.core.Context;
 import io.vertx.core.json.JsonObject;
 
 import java.time.Duration;
@@ -29,6 +31,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 /**
@@ -40,6 +44,13 @@ public class PolicyCacheManager {
     private static final Logger LOG = Logger.getLogger(PolicyCacheManager.class);
     private static final String INVALIDATION_CHANNEL = "policy-cache:invalidate";
     private static final String CACHE_NAME = "policy-results";
+    private static final String BROADCAST_NAME = "policy_cache_invalidate_broadcast";
+
+    /**
+     * 启动时等待首次订阅出结果的上限：与 {@code RedisBroadcastSupervisor} 单次订阅超时同量级，
+     * 保留旧实现「启动即订阅」的就绪语义，又不会因 Redis 不可达而无限阻塞启动。
+     */
+    static final Duration STARTUP_SUBSCRIBE_WAIT = Duration.ofSeconds(6);
 
     @Inject
     @CacheName("policy-results")
@@ -50,6 +61,9 @@ public class PolicyCacheManager {
 
     @Inject
     MeterRegistry meterRegistry;
+
+    @Inject
+    RedisBroadcastSupervisor broadcastSupervisor;
 
     @Inject
     PolicyMetrics policyMetrics;
@@ -64,8 +78,14 @@ public class PolicyCacheManager {
     private final ConcurrentHashMap<String, Counter> cacheEvictionCounters = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Counter> remoteInvalidationCounters = new ConcurrentHashMap<>();
     private PubSubCommands<String> pubSubCommands;
-    private RedisSubscriber redisSubscriber;
+    private volatile ResilientRedisSubscriber invalidationSubscriber;
     private ExecutorService invalidationExecutor;
+
+    /**
+     * 启动等待期间为 true：此时 bean 尚未对外可用、本地缓存为空，首次订阅成功无需作废缓存。
+     * 否则异步作废会在启动后才执行，清掉刚开始服务的请求写入的条目。
+     */
+    private final AtomicBoolean startupSubscribePending = new AtomicBoolean();
 
     @PostConstruct
     void initCacheLifecycleTracking() {
@@ -177,13 +197,114 @@ public class PolicyCacheManager {
                 return thread;
             });
             pubSubCommands = redisDataSource.get().pubsub(String.class);
-            redisSubscriber = pubSubCommands.subscribe(INVALIDATION_CHANNEL, payload ->
-                invalidationExecutor.execute(() -> handleRemoteInvalidation(payload))
-            );
-            LOG.infof("Redis 分布式缓存失效通道已启用: %s", INVALIDATION_CHANNEL);
         } catch (Exception e) {
             LOG.warn("初始化 Redis 缓存失效订阅失败", e);
+            return;
         }
+        // 只有真正有界等待时（非事件循环线程）bean 才在订阅就绪前不可用；事件循环上的懒加载路径不跳过恢复作废。
+        startupSubscribePending.set(!Context.isOnEventLoopThread());
+        try {
+            subscribeInvalidationChannel();
+        } finally {
+            startupSubscribePending.set(false);
+        }
+    }
+
+    /**
+     * 订阅交给 {@link RedisBroadcastSupervisor}：先挂处理器再 SUBSCRIBE（无确认丢失竞态），失败或断线后
+     * 退避重订阅，并暴露 {@code aster_redis_broadcast_up{channel="policy-cache:invalidate"}}。
+     *
+     * <p>每次（重新）订阅成功后作废本实例负责的主缓存条目，补齐 down 期间漏收的失效（见 {@link #resyncAfterSubscribe()}）。
+     *
+     * <p>为保留旧实现「启动返回即已订阅」的语义，这里有界等待首次尝试出结果；在事件循环线程上
+     * （懒加载 bean 首次被 reactive 路径触达时）不等待，只异步建立。down 期间本实例只收不到
+     * 跨实例失效，主结果缓存仍按 TTL 过期兜底。重复调用会替换并关闭旧订阅。包级可见供集成测试调用。
+     *
+     * @return 返回时订阅是否已建立
+     */
+    boolean subscribeInvalidationChannel() {
+        ResilientRedisSubscriber subscriber = broadcastSupervisor.subscribe(BROADCAST_NAME, INVALIDATION_CHANNEL,
+            this::dispatchRemoteInvalidation, this::resyncAfterSubscribe);
+        invalidationSubscriber = subscriber;
+        boolean up = Context.isOnEventLoopThread() ? subscriber.isUp() : awaitFirstAttempt(subscriber);
+        if (up) {
+            LOG.infof("Redis 分布式缓存失效通道已启用: %s", INVALIDATION_CHANNEL);
+        } else {
+            LOG.warnf("Redis 缓存失效订阅尚未建立，后台持续重试（期间跨实例失效退化到 TTL 兜底）: %s",
+                INVALIDATION_CHANNEL);
+        }
+        return up;
+    }
+
+    /** 订阅回调运行在 Vert.x 事件循环上：只转交单线程执行器（其内可安全 await 主缓存失效）。 */
+    private void dispatchRemoteInvalidation(String payload) {
+        try {
+            invalidationExecutor.execute(() -> handleRemoteInvalidation(payload));
+        } catch (RejectedExecutionException e) {
+            LOG.debugf("失效执行器已关闭（停机中），丢弃远程失效消息: %s", payload);
+        }
+    }
+
+    /**
+     * 每次（重新）订阅成功后执行：pub/sub 不持久，订阅建立前 / 断线期间其他实例发出的失效已永久漏收，
+     * 必须作废本实例负责的主缓存条目才能确保不再返回陈旧决策：
+     * <ul>
+     *   <li>本地 Caffeine 后端：整体作废（代价是本实例一次冷缓存）。</li>
+     *   <li>Redis 后端（生产默认，共享缓存）：只作废本实例追踪索引里的键。租户 / 模块范围的失效只覆盖
+     *       源实例自己索引里的键，其他副本写入的共享条目要靠各副本收到广播后按自己的索引删除；
+     *       断线期间漏收则这些条目会被全部副本读到直至 TTL。只删本副本写入的键，不会引发全副本缓存雪崩。</li>
+     * </ul>
+     * 与远程失效同在单线程执行器上执行，保持先后顺序。启动等待内的首次成功跳过（见 startupSubscribePending）。
+     */
+    private void resyncAfterSubscribe() {
+        if (startupSubscribePending.compareAndSet(true, false)) {
+            return;
+        }
+        try {
+            invalidationExecutor.execute(this::invalidateOwnedResults);
+        } catch (RejectedExecutionException e) {
+            LOG.debug("失效执行器已关闭（停机中），跳过订阅恢复后的缓存作废");
+        }
+    }
+
+    private void invalidateOwnedResults() {
+        try {
+            Set<PolicyCacheKey> tracked = new HashSet<>();
+            tenantCacheIndex.values().forEach(tracked::addAll);
+            // 先摘追踪再作废主缓存：作废之后写入的条目会重新登记索引，不会留下未追踪的活条目。
+            clearAllCache();
+            if (caffeineCacheDelegate != null) {
+                policyResultCache.invalidateAll().await().indefinitely();
+            } else {
+                tracked.forEach(this::invalidateResultCache);
+            }
+            LOG.infof("Redis 缓存失效订阅（重新）建立，已作废本实例策略结果缓存以补齐可能漏收的失效: %s（追踪键 %d 个）",
+                INVALIDATION_CHANNEL, tracked.size());
+        } catch (Exception e) {
+            LOG.warnf(e, "订阅恢复后作废策略结果缓存失败: %s", INVALIDATION_CHANNEL);
+        }
+    }
+
+    /** 等待失效执行器处理完此前排队的任务（远程失效 / 恢复作废）。包级可见供测试消除异步时序。 */
+    void awaitInvalidationQueueIdle(Duration timeout) throws Exception {
+        if (invalidationExecutor != null) {
+            invalidationExecutor.submit(() -> { }).get(timeout.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private static boolean awaitFirstAttempt(ResilientRedisSubscriber subscriber) {
+        try {
+            return subscriber.awaitFirstAttempt(STARTUP_SUBSCRIBE_WAIT);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return subscriber.isUp();
+        }
+    }
+
+    /** 跨实例失效订阅当前是否已建立（就绪信号）；false 表示本实例暂时收不到其他实例的失效广播。 */
+    public boolean isInvalidationChannelUp() {
+        ResilientRedisSubscriber subscriber = invalidationSubscriber;
+        return subscriber != null && subscriber.isUp();
     }
 
     public void registerCacheEntry(PolicyCacheKey key, String tenantId) {
@@ -388,13 +509,10 @@ public class PolicyCacheManager {
 
     @PreDestroy
     void shutdownInvalidationChannel() {
-        if (redisSubscriber != null) {
-            try {
-                redisSubscriber.unsubscribe();
-            } catch (Exception e) {
-                // P2-R20: log instead of silently swallow during shutdown
-                LOG.debugf("Redis unsubscribe during shutdown failed: %s", e.getMessage());
-            }
+        ResilientRedisSubscriber subscriber = invalidationSubscriber;
+        if (subscriber != null) {
+            // close 幂等且自行吞掉退订异常（记 debug），与监护者停机时的统一关闭不冲突。
+            subscriber.close();
         }
         if (invalidationExecutor != null) {
             // P3-R20: graceful shutdown — give in-flight tasks 2s to finish
