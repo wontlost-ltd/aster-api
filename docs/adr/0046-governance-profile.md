@@ -222,11 +222,11 @@ Rule decide given applicant as Applicant, produce Verdict:
    | 字段访问 `e.f` | 把 `e` 的每个路径 p 扩成 `p.f`；`e` 含 `*` 则仍为 `*` |
    | `Let x be e.` / `Set x to e.` | 变量 x 绑定到 `e` 的来源集；之后对 x 的引用取该集合。多次赋值（含分支内赋值）取**并**（流不敏感、路径不敏感：宁可多收不少收） |
    | 记录构造 `Construct T with f1 = e1 …`、列表字面量 | 结果是**聚合**：按字段 / 元素分别保存来源集；后续 `.f1` 取对应集合。无法按字段分解时（如传入整个聚合再做动态访问）退化为各字段并集 |
-   | 同模块调用 `g(a1, a2)` | 把 g 的形参绑定到实参来源集做**内联求值**（g 的分析结果以形参为符号，调用点代入；递归调用按一次展开后定点，超过 8 层或互递归 → `*`）；g 的返回值来源集是 g 体内 `Return` 表达式的并 |
-   | `Match` / `If` 分支、模式绑定 `When x is Some(v)` | 被匹配表达式的来源集绑定到模式变量；各分支取并 |
+   | 同模块调用 `g(a1, a2)` | 把 g 的形参绑定到实参来源集做**内联求值**（g 的分析结果以形参为符号，调用点代入；任何递归（互递归与直接自递归）→ `*`，超过 8 层或超出单规则分析工作预算 → `*`，见 §11.6 第 12–13 条）；g 的返回值来源集是 g 体内 `Return` 表达式的并 |
+   | `Match` / `If` 分支、模式绑定 `When x is Some(v)` | 被匹配表达式（Match 主语）本身算一次读取，记入结果；其来源集绑定到模式变量；各分支取并（§11.6 第 15 条） |
    | 对 Map 用字面量键取值 `m["amount"]` 或 `m.amount` | 路径扩展 `.amount` |
    | 对 Map 用**非字面量**键取值、迭代 Map 的键 / 值、把 `context`（或任何含输入来源的值）整体转为文本 / 序列化 | **`*`** |
-   | 跨模块调用（`Use` 导入的函数）且任一实参来源集非 ∅ | **`*`**（不分析导入模块；§15–16 之前导入签名契约未落地，见 ADR 0051 §16.3） |
+   | 跨模块调用（`Use` 导入的函数）、未限定的非本模块非 builtin 调用、以及限定名不在 builtin 命名空间白名单内的调用，且任一实参来源集非 ∅ | **`*`**（construct `cross-module-call`；不分析导入模块；§15–16 之前导入签名契约未落地，见 ADR 0051 §16.3） |
    | 把输入子记录传给同模块函数 | 不是 `*`：按「同模块调用」内联，子记录的路径前缀随形参代入（`g(req.context)` 中 g 读 `c.amount` → `context.amount`） |
    | 闭包 / 函数值（ADR 0052 之后允许的函数值、`Apply`） | 调用目标静态可定位（同模块具名函数作为值直接传递）→ 按同模块调用处理；目标来自变量或参数（高阶）→ **`*`** |
    | 常量、不含输入来源的表达式 | ∅ |
@@ -251,7 +251,8 @@ Rule decide given applicant as Applicant, produce Verdict:
    | `Let c be req.context. Let lim be limitFor(c.tier). If c.amount > lim …`（`limitFor` 读 `t` 做比较，不再读输入） | `context.tier`、`context.amount`（同模块内联，形参 `t` 代入 `context.tier`） |
    | 内联深度**恰好 8 层**：`decide → h1 → h2 → … → h8`，`h8 given c as GuardContext` 读 `c.amount`，每层把 `req.context` 原样传下去 | `context.amount`（8 层在上界内，仍可静态定位；两引擎 parity 夹具钉住该边界） |
    | 同上但 **9 层**（`h9` 才读 `c.amount`） | `*` → E708（超过内联上界；夹具与上一条成对） |
-   | 互递归：`isOk(c)` 调 `isBad(c)`，`isBad(c)` 调 `isOk(c)`，任一方读 `c.amount` | `*` → E708（一次展开后未达定点） |
+   | 互递归：`isOk(c)` 调 `isBad(c)`，`isBad(c)` 调 `isOk(c)`，任一方读 `c.amount` | `*` → E708（construct `recursion`） |
+| 直接自递归：`walk(c)` 在体内再调 `walk(c)`，并读 `c.amount` | `*` → E708（construct `recursion`；不再展开一次求定点，§11.6 第 12 条） |
 
    运行时对 `"*"` 的保守处理（写明，供 ⑤ 之前已发布 IR 或 E708 被绕过的情形）：aster-api 在档案要求 `verifiedInputs` 时把 `"*"` 视为「引用全部输入叶子」，即请求中**每个** declared 叶子都算被引用 → DENY `unverified_input`，收据 `unverifiedFields` 写 `["*"]`。编译期 E708 与运行期保守处理是同一条规则的两道门，前者让作者改源码，后者保证前者缺位时不放行。
 2. **E708 `GOV_PROFILE_INPUT_UNRESOLVABLE`（error）**：档案要求 `verifiedInputs` 且某 Verdict 规则的 `inputRefs` 含 `"*"`。消息参数 `rule / profile / construct`。这是唯一的新编译期诊断，它管的是**可判定性**而不是来源：高风险规则必须让「读了什么」静态可见，否则运行期无从比对。aster-api 编译通道保持 error 级（与 E705/E706 同列）；cloud 保存门随之拒绝。
@@ -307,7 +308,7 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 ### 11.6 实施澄清（2026-11-12）
 
-来源：实施计划 `docs/superpowers/plans/2026-11-12-train-1044-task16-engine.md`（1.0.44 列车，用户 2026-11-12 确认 Q1–Q6）。本小节澄清 §11.2–§11.5 未写明的细节，并更正 D5 第 3 项、补充运行期未知档案规则（用户 2026-11-12 确认 Q3/Q4）。被本小节取代的只有：D5 第 3 项「翻转不需要引擎列车」（第 7 条）、D1 守护测试的发版时点与 §11.4 ②/③ 的先后（第 10 条）、§11.2 正反例表中 `principal.roles` / `action.name` 两行的路径写法（第 3 条）；其余以上文为准。
+来源：实施计划 `docs/superpowers/plans/2026-11-12-train-1044-task16-engine.md`（1.0.44 列车，用户 2026-11-12 确认 Q1–Q6）。本小节澄清 §11.2–§11.5 未写明的细节，并更正 D5 第 3 项、补充运行期未知档案规则（用户 2026-11-12 确认 Q3/Q4）。被本小节取代的只有：D5 第 3 项「翻转不需要引擎列车」（第 7 条）、§11.2 规则表中「递归按一次展开后定点」与「限定名即 builtin」的写法（第 12、14 条）、D1 守护测试的发版时点与 §11.4 ②/③ 的先后（第 10 条）、§11.2 正反例表中 `principal.roles` / `action.name` 两行的路径写法（第 3 条）；其余以上文为准。
 
 1. **`inputRefs` 的写入条件与计算位置。**
    - 写入条件：模块声明了档案（`module.profile != null`，不论注册表里是否有该档案、要求项是什么），**且**函数返回 Verdict（与 `GovernanceChecker.returnsVerdict` 同口径）。其余函数不写该键；未声明档案的模块 IR 逐字节不变。
@@ -338,3 +339,12 @@ Rule decide given applicant as Applicant, produce Verdict:
    「出现的叶子」与 `presentLeafPaths` 同口径：数组是一个整叶子，空对象自身是一个叶子，请求未给出的字段不算出现。`r` 之下没有任何出现的叶子（字段缺失）→ 未满足（第 5 条）。例：`context.applicant` 或裸 `context` 被引用时，其下每个出现的叶子都须 verified。
 10. **落地顺序以 1.0.44 列车计划为准**：①′ 守护测试作为列车前的独立 PR 合并；② 与 ③ 合并为同名分支组（registry 1.2.0、两引擎 `inputRefs` 与 E708、E708 译文）同批合并，因为 core / ts 注册表副本的 parity 测试要求 locales 与副本同时变；D1 要的「旧解析器忽略新键」由守护测试在旧 tag 上运行证明，不靠 ② 先于 ③ 的时间差。
 11. **给 cloud ⑥ 设计的提示**：签名事实必须附在**第一次** `from-evidence` 请求上。门的 DENY 会消耗该证据的 correlationId（ADR 0040 §11 D5 实施澄清），事后补附事实无法挽回，只能重新评估得到新的评估事件。
+12. **任何递归一律 `*`**（取代 §11.2 规则表「自递归展开一次至定点」）：互递归与直接自递归都产生 `*`，construct 为 `recursion`；分析器在内联栈上发现被调函数已在栈中即判定，不做定点迭代。理由：定点迭代需要两引擎对「展开几次」「部分结果如何合并」逐位一致，换来的只是少数递归规则能通过 E708，而高风险档案下的规则本就应当让「读了什么」一眼可见；更保守，且两引擎实现更简单。代价：自递归规则在要求 verifiedInputs 的档案下必须改写为迭代或拆出非递归读取。
+13. **单规则分析工作预算**：除 8 层内联深度上限外，每条规则的分析还受一个**共享计数器**约束——表达式节点访问次数与内联调用次数记入同一预算，其中内联调用总数另有硬上限 4096；任一预算耗尽即整条规则按 `*` 处理，construct 为 `inline-depth`（与深度超限同类，不新增 construct，闭集不变）。目的是防止分支调用链指数展开拖垮编译。预算数值**在两引擎中取同一固定值**，以 aster-lang-core `InputRefsAnalyzer` 中的常量为准（aster-lang-ts 镜像同值），本 ADR 不复述数字；预算耗尽的判定点属于 parity 夹具的断言范围。
+14. **调用分类细则**（补充第 2 条末句「被调函数按模块限定名分类」）：
+    - 未限定名：本模块函数 → 同模块内联；单段 builtin 与运算符 → 消费实参；其余（非局部、非 builtin）→ `cross-module-call` 的 `*`。
+    - 限定名：属于本模块（`<模块名>.<函数名>`）→ 同模块内联；首段在 builtin 命名空间白名单内 → 按 builtin 分析（实参被消费，Map.keys / Map.values、Crypto.hash 等特例见第 16 条）；其余一律 `cross-module-call` 的 `*`。
+    - builtin 命名空间白名单（闭集）：`Text`、`List`、`Map`、`Maybe`、`Option`、`Result`、`Date`、`Decimal`、`Verdict`、`PII`、`Int`、`Bool`、`Crypto`、`IO`。新增命名空间须同时改两引擎与 parity 夹具。此前「限定名且未被导入即视为 builtin」的写法被取代：未登记的限定名（拼写错误、尚未登记的命名空间）不再被默许为 builtin，而是保守地得到 `*`。
+15. **Match 主语算一次读取**：`Match` 的被匹配表达式在进入分支前即记为消费，不论各分支是否再引用模式变量。这是可靠性所需：分支选择本身取决于主语的值（`Match req.context.tier` 仅凭走了哪个分支就泄露了 `context.tier`），不记则 `inputRefs` 会漏报。模式变量绑定到主语的来源集；各分支取并。
+16. **序列化与迭代特例的取值**：`Map.keys` / `Map.values` 作用于带输入来源的值 → `*`，construct `map-iteration`；`Crypto.hash`、`Int.toString`、`Bool.toString` 作用于输入派生值 → `*`，construct `whole-input-serialized`。已知误报：`Int.toString` 作用于标量叶子（如 `Int.toString(req.context.count)`）并未整体序列化任何记录，但 1.3.0 翻转后会在要求 verifiedInputs 的档案下得到 E708。当前接受该误报以换取实现简单；是否按「标量叶子豁免」收窄，待 X4 生产扫描（§11.4 ⑦ 发布前的只读扫描）给出真实命中数后再定。
+17. **硬前置条件：祖先路径记录的可靠性依赖前缀规则。** 若干形状记录的是**祖先路径**而不是具体叶子，例如 `List.filter(req.context.items, f)` 记 `context.items`，传入整个子记录的调用记该子记录路径。这对「已验证」的判定只有在第 9 条前缀规则成立时才可靠：非叶子引用被满足，当且仅当其下每个出现的叶子都 verified（且至少有一个）。该规则已在 aster-api `VerifiedInputsGate` 实现（aster-api#487）。因此：**前缀规则是 1.3.0 翻转（§11.4 ⑦）的硬前置条件**——翻转所在的 aster-api 版本必须包含 #487，且其回归测试（非叶子引用下存在未验证叶子 → DENY `unverified_input`）在发版前通过；任何绕过或削弱前缀规则的改动都等同于破坏 `inputRefs` 的可靠性，必须同时撤回翻转。
