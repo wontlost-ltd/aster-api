@@ -152,6 +152,8 @@ public class PolicyEvaluationResource {
     // 把最坏单次解析耗时压进秒级；Mutiny 每请求墙钟超时（.ifNoItem().after().failWith()）延后
     // 单独处理——它挂在 JAX-RS reactive 返回的 Uni 上，需在能跑 Quarkus 增强/集成测试的环境里
     // 验证后再加。见 issue #98。
+    // 语法分析阶段另有协作式时间预算（aster.parse.time-budget，aster-cloud/aster-lang-core#254）：超时在解析线程内
+    // 中止并返回带码 E054，线程随之释放——Uni 层的墙钟超时做不到这一点（只断开响应，计算仍占着线程）。
 
     @Inject
     PolicyEvaluationService evaluationService;
