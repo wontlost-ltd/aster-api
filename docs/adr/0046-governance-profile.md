@@ -201,7 +201,7 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 **D1 档案新要求项 `requires.verifiedInputs: boolean`**（缺省 `false`）。注册表升 `1.2.0`：**所有既有档案（含 `eu-ai-act-high-risk`）保持 `false`**，本版只引入键与校验；`eu-ai-act-high-risk` 翻为 `true` 推迟到 `1.3.0`（时点与条件见 D5）。三份副本（core / ts / cloud）与守护测试同步；`exportControls` 校验新键为布尔。
 
-前置依赖「旧解析器忽略未知 registry 字段」：三份副本的解析器（core `ControlRegistry`、ts `governance/controls.ts`、cloud 的注册表读取）今天都只取已知字段，但没有测试钉住。守护测试**各归各仓**：aster-lang-core、aster-lang-ts、aster-cloud 各加一条「`profiles[].requires` 含未知键时加载成功且该键被忽略」的测试，并**先于 registry 1.2.0 发布**随各自下一次常规发版（core / ts 走 1.0.43 列车，cloud 随下一次部署）；locales 1.2.0 在三者都发布后再发（§11.4 ②）。这样 1.2.0 到达任何消费方时，它的解析器都已被证明忽略新键。
+前置依赖「旧解析器忽略未知 registry 字段」：三份副本的解析器（core `ControlRegistry`、ts `governance/controls.ts`、cloud 的注册表读取）今天都只取已知字段，但没有测试钉住。守护测试**各归各仓**：aster-lang-core、aster-lang-ts、aster-cloud 各加一条「`profiles[].requires` 含未知键时加载成功且该键被忽略」的测试，并**先于 registry 1.2.0 发布**随各自下一次常规发版（core / ts 走 1.0.43 列车，cloud 随下一次部署）；locales 1.2.0 在三者都发布后再发（§11.4 ②）。这样 1.2.0 到达任何消费方时，它的解析器都已被证明忽略新键。（守护测试的发版时点与 §11.4 ②/③ 的先后已被 1.0.44 列车计划取代：守护测试随列车前的独立 PR 合并，② 与 ③ 合并为同名分支组同批合并，见 §11.6 第 10 条。）
 
 **D2 编译期 E7xx 还是运行期 fail-closed——比较与推荐。**
 
@@ -280,8 +280,8 @@ Rule decide given applicant as Applicant, produce Verdict:
    - 第一期来源函数清单（`src/config/fact-sources.ts`，每项 `{ id, allowedPaths, resolve(ctx, args) }`，新增须改代码与测试，不可运行时配置）：`hmac.userId`（路径 `principal.id`，取签入 canonical 的 userId）；`idp.businessRoles`（路径 `principal.roles`，取策略租户的 `TeamMember.businessRoles` / `User.businessRoles`）；`catalog.piiMark`（路径 `context.<field>.$pii`，取数据目录对该字段的 PII 标记——供 ADR 0042 §11 的标记交叉核对，不签业务值）；试点专用 `fixture.creditPilot`（路径 `context.*`，只在 `NODE_ENV !== 'production'` 且租户为 `credit-pilot` 时登记，从 seed 固定 fixture 文件读值，**不读请求体**）。
    - 每条签出的事实在 `claims` 之外带 `sources: { "<path>": "<source id>" }`，进入签名载荷（aster-api 验签时原样校验，不解释）；aster-api 收据 `factIssuers` 旁增 `factSources`（`path=source` 列表，≤ 64 项，缩短顺序排在 `verifiedFields` 之后），证据包 `guardInputSources.factSources` 展示每条事实的 source。
    - 验收（cloud 集成测试）：提交含 `value` 的签发请求 → 400 `claims_not_allowed`；`source` 不在清单 → 400 `unknown_fact_source`；`path` 不在该 source 的 `allowedPaths` → 400 `path_not_allowed`；执行路由产出的事实其 `sources` 与清单一致；证据包 v6 条目展示 `factSources`。(c) 为信贷试点配置一个测试签发方（seed 脚本生成 Ed25519 密钥对、写入 `guard_fact_issuers`），`run-credit-pilot.ts` 与 Playwright 用它对四组 fixture 的 `context.*` 签名后执行，使 from-evidence 在要求 verifiedInputs 时得到 PENDING 而非 DENY。
-3. **registry 1.3.0（aster-lang-locales）**：第 2 项合并并在本地栈跑通（九款状态不变、`reviewers[]` 仍含 Credit Officer）后，把 `eu-ai-act-high-risk.requires.verifiedInputs` 翻为 `true` 并发布；aster-api 与 cloud 升 locales pin。翻转是数据变更，但**需要引擎列车**（§11.6 第 7 条：aster-api 读 core jar 内的注册表副本，该副本受 parity 测试约束须与 locales 相等）。翻转后，任何声明该档案而没有签名事实的生产策略会在 guard 路径被 DENY——发布 1.3.0 前由用户在生产库只读扫描声明了该档案的策略（SQL 与 ADR 0051 §16.2 的扫描同法），逐一确认有签发方配置。
-4. 期间若有租户想在 1.3.0 前启用：自定义档案可在注册表加 `…-verified` 变体（如 `eu-ai-act-high-risk-verified`，要求 verifiedInputs=true），由该租户策略显式声明。
+3. **registry 1.3.0（aster-lang-locales）**：第 2 项合并并在本地栈跑通（九款状态不变、`reviewers[]` 仍含 Credit Officer）后，把 `eu-ai-act-high-risk.requires.verifiedInputs` 翻为 `true`，随**引擎发版列车**发布（core 内注册表副本同步）；aster-api 升引擎 pin，cloud 升自己的注册表副本（与 §11.4 ⑦ 同；§11.6 第 7 条：aster-api 读 core jar 内的注册表副本，该副本受 parity 测试约束须与 locales 相等）。翻转后，任何声明该档案而没有签名事实的生产策略会在 guard 路径被 DENY——发布 1.3.0 前由用户在生产库只读扫描声明了该档案的策略（SQL 与 ADR 0051 §16.2 的扫描同法），逐一确认有签发方配置。
+4. 期间若有租户想在 1.3.0 前启用：自定义档案可在注册表加 `…-verified` 变体（如 `eu-ai-act-high-risk-verified`，要求 verifiedInputs=true），由该租户策略显式声明。新增这类变体同样是注册表变更，**同样需要引擎列车**（理由同第 3 项）。
 
 ### 11.3 验收
 
@@ -307,12 +307,12 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 ### 11.6 实施澄清（2026-11-12）
 
-来源：实施计划 `docs/superpowers/plans/2026-11-12-train-1044-task16-engine.md`（1.0.44 列车，用户 2026-11-12 确认 Q1–Q6）。本小节只澄清 §11.2–§11.5 未写明的细节，不改变决策；与上文冲突处以本小节为准。
+来源：实施计划 `docs/superpowers/plans/2026-11-12-train-1044-task16-engine.md`（1.0.44 列车，用户 2026-11-12 确认 Q1–Q6）。本小节澄清 §11.2–§11.5 未写明的细节，并更正 D5 第 3 项、补充运行期未知档案规则（用户 2026-11-12 确认 Q3/Q4）。被本小节取代的只有：D5 第 3 项「翻转不需要引擎列车」（第 7 条）、D1 守护测试的发版时点与 §11.4 ②/③ 的先后（第 10 条）、§11.2 正反例表中 `principal.roles` / `action.name` 两行的路径写法（第 3 条）；其余以上文为准。
 
 1. **`inputRefs` 的写入条件与计算位置。**
    - 写入条件：模块声明了档案（`module.profile != null`，不论注册表里是否有该档案、要求项是什么），**且**函数返回 Verdict（与 `GovernanceChecker.returnsVerdict` 同口径）。其余函数不写该键；未声明档案的模块 IR 逐字节不变。
    - 计算位置：在 **R2（`TypedReferenceResolver`）之后**，不在 lowering 末尾。R2 负责把本地化名称规范化、判定 `x.f` 是记录字段还是 Map 键；在 R2 之前计算，zh / de 源码会产出本地化路径。分析器是纯函数，不读注册表。R2 之后仍会复制 Func 的通道必须保留该字段。
-   - 取值：路径用点连接，最多 8 段；按 UTF-16 码元字典序去重（Java `String.compareTo` 与 JS 默认 `sort` 同序）。规则不读输入时为 `[]`，与 null（未提供，旧引擎）区分。
+   - 取值：路径用点连接，**引擎路径**最多 8 段（超过 → `*`，construct `path-too-long`）；按 UTF-16 码元字典序去重（Java `String.compareTo` 与 JS 默认 `sort` 同序）。规则不读输入时为 `[]`，与 null（未提供，旧引擎）区分。
 2. **补充传播规则**（§11.2 D2 规则表的补遗）：
    - (a) 直接消费第一个参数本身（标量参数如 `given amount`，或整条记录参与比较）→ 路径 `""`（根）。整体转文本 / 序列化仍为 `"*"`。
    - (b) 字面量 Map 键为空串或含 `.` → `"*"`（点路径无法无歧义表示）。
@@ -323,8 +323,18 @@ Rule decide given applicant as Applicant, produce Verdict:
    - **guard 形状**（仅 `POST /api/v1/guard/decisions`，规则参数是 `GuardActionMapper.flatten` 产出的扁平记录）：`principal_id→principal.id`、`principal_type→principal.type`、`principal_roles[.…]→principal.roles`、`action→action.name`、`resource_type→resource.type`、`resource_id→resource.id`、`agent_model→agent.model`、`context→context`、`context.<p>→context.<p>`；标量字段带子路径（如 `action.x`）、`""`、`"*"`、未知首段 → `*`。映射表与 `flatten` 的键表是同一张常量表。
    - **证据形状**（`from-evidence`）：评估输入是 `context`，第一个参数名进入路径前缀。映射在**写评估事件时**完成（见第 4 条）：只有当第一个参数由命名输入 Map 中的某个键实际匹配时，路径映射为 `context.<实际匹配键>.<path>`，`""` 映射为 `context.<该键>`；位置数组输入、无法确定匹配键、或路径含 `*` → `["*"]`。
    - 因此根路径 `""` 在 guard 形状下为 `*`（扁平记录整体被消费，等于读全部输入），在证据形状下为 `context.<实际匹配键>`。
-4. **评估事件自带输入引用**（ADR 0041 §11 D2 键旁登记）：`POLICY_EVALUATION` metadata 在 `profile` 旁新增 `inputRefs`（写事件时已按第 3 条证据形状映射好的请求路径）与 `verifiedInputsRequired`（布尔），只在模块声明档案时写入；无档案事件的 metadata 逐字节不变。`inputRefs` 序列化后 ≤ 1024 字节且 ≤ 32 项，超过任一上限整体写 `["*"]`（审计链 metadata 上限 4096 字节，超长会被截断成非法 JSON）。`from-evidence` 优先读事件里的这两项——evaluate-source 模块没有已保存版本，无法事后取 IR；事件里没有（旧事件）时按「事件 `profile` + 注册表」判定，要求 verifiedInputs → DENY `input_refs_unavailable`。
+4. **评估事件自带输入引用**（ADR 0041 §11 D2 键旁登记）：`POLICY_EVALUATION` metadata 在 `profile` 旁新增 `inputRefs`（写事件时已按第 3 条证据形状映射好的请求路径）与 `verifiedInputsRequired`（布尔），只在模块声明档案时写入；无档案事件的 metadata 逐字节不变。
+   - **上限**：对**映射之后**的列表检查——≤ 32 项，且整个 JSON 数组序列化后的 **UTF-8 字节数** ≤ 1024；超过任一上限整体写 `["*"]`（审计链 metadata 上限 4096 字节，超长会被截断成非法 JSON）。8 段上限只约束引擎路径（第 1 条），本上限只约束映射后的请求路径（第 9 条）。规则不读输入时写 `[]`，**不省略**。
+   - **IR 没有 `inputRefs`**（声明档案的模块由旧引擎编译）：事件**不写** `inputRefs`，消费方回退到下面的「档案 + 注册表」判定。
+   - **要求项永远在消费时重算**：是否要求 verifiedInputs 一律由事件的 `profile` 加**当前**注册表在消费时判定；事件里的 `verifiedInputsRequired` 只是写事件时的快照，供审计，**不参与判定**。否则 1.3.0 翻转前写下、`verifiedInputsRequired=false` 的事件在翻转后仍会放行未验证输入。事件自带的 `inputRefs` 照常使用——它是编译事实，不随注册表变化。
+   - `from-evidence` 的取用顺序见 ADR 0040 §11 D5 实施澄清：事件自带 `inputRefs` → 按事件 `policyVersionId` 取的规则元数据 → 都没有且要求 verifiedInputs → DENY `input_refs_unavailable`。evaluate-source 模块没有已保存版本，事件是它唯一的来源。
 5. **显式引用即使请求中缺字段也计入**：`inputRefs` 中的路径在本请求里不存在，等于该路径未经验证 → 档案要求 verifiedInputs 时 DENY `unverified_input`（缺字段不能当作「不需要验证」）。
-6. **未知档案在运行期按「不要求 verifiedInputs」处理**：编译期已报 E705，此类模块无法保存。代价：D5 第 4 项的 `…-verified` 自定义档案若在某个注册表版本里被回滚删除，声明它的模块会悄悄降为不要求；回滚注册表前须先扫描声明该档案的策略。aster-api 对「元数据读不到」计 counter 与日志。
+6. **未知档案在运行期按「不要求 verifiedInputs」处理**：编译期已报 E705，此类模块无法保存。代价：D5 第 4 项的 `…-verified` 自定义档案若在某个注册表版本里被回滚删除，声明它的模块会悄悄降为不要求；回滚注册表前须先扫描声明该档案的策略。aster-api 对「元数据读不到」计 counter（`aster_guard_rule_metadata_unavailable_total{path}`）并记日志：默认 DEBUG（evaluate-source 锚定读不到元数据是常态），只有事件带非空 `profile` 时升为 WARN。
 7. **1.3.0 翻转需要引擎列车**（更正 D5 第 3 项「不需要引擎列车」）：aster-api 读的是 core jar 内的注册表副本（`ControlRegistry.loadDefault()`），该副本由 `ControlRegistrySiblingParityTest` 约束须与 locales 深度相等，所以翻转须 core 发版、aster-api 升 pin。§11.4 ⑦ 已相应改写。
 8. **E708 的 `construct`**：取**先序遍历中第一个产生 `*` 的节点**的类别。遍历顺序：规则体语句按源码顺序；遇到同模块调用时先遍历实参，再进入被内联的被调函数体（深度优先），然后回到调用点之后继续；同一表达式的子节点按 Core IR 字段声明顺序。`construct` 闭集：`dynamic-map-key`、`map-iteration`、`whole-input-serialized`、`cross-module-call`、`function-value`、`inline-depth`、`recursion`、`path-too-long`、`unrepresentable-key`；值不翻译。
+9. **非叶子引用的满足规则**（前缀规则）：引用 `r` 被满足，当且仅当
+   - `r` 本身或其祖先路径被签名事实覆盖（verified 的祖先语义）；或
+   - `r` 不是本请求中出现的叶子，而本请求中 `r` 之下**至少有一个**出现的叶子，且这些叶子**全部** verified。
+   「出现的叶子」与 `presentLeafPaths` 同口径：数组是一个整叶子，空对象自身是一个叶子，请求未给出的字段不算出现。`r` 之下没有任何出现的叶子（字段缺失）→ 未满足（第 5 条）。例：`context.applicant` 或裸 `context` 被引用时，其下每个出现的叶子都须 verified。
+10. **落地顺序以 1.0.44 列车计划为准**：①′ 守护测试作为列车前的独立 PR 合并；② 与 ③ 合并为同名分支组（registry 1.2.0、两引擎 `inputRefs` 与 E708、E708 译文）同批合并，因为 core / ts 注册表副本的 parity 测试要求 locales 与副本同时变；D1 要的「旧解析器忽略新键」由守护测试在旧 tag 上运行证明，不靠 ② 先于 ③ 的时间差。
+11. **给 cloud ⑥ 设计的提示**：签名事实必须附在**第一次** `from-evidence` 请求上。门的 DENY 会消耗该证据的 correlationId（ADR 0040 §11 D5 实施澄清），事后补附事实无法挽回，只能重新评估得到新的评估事件。
