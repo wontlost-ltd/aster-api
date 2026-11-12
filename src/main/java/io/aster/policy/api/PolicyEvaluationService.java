@@ -158,8 +158,13 @@ public class PolicyEvaluationService {
      *
      * @param versionId {@code String.valueOf(PolicyVersion.id)}；null 等同 {@link #evaluatePolicy}
      */
-    public Uni<PolicyEvaluationResult> evaluatePolicyAtVersion(String tenantId, String policyModule,
-            String policyFunction, String versionId, Object[] context) {
+    @WithSpan("policy.evaluate")
+    public Uni<PolicyEvaluationResult> evaluatePolicyAtVersion(
+            @SpanAttribute("tenant.id") String tenantId,
+            @SpanAttribute("policy.module") String policyModule,
+            @SpanAttribute("policy.function") String policyFunction,
+            @SpanAttribute("policy.version_id") String versionId,
+            Object[] context) {
         if (versionId == null) {
             return evaluatePolicy(tenantId, policyModule, policyFunction, context);
         }

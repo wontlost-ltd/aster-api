@@ -178,4 +178,23 @@ class PolicyEvaluationServiceRuleMetadataTest {
         new ActionName("delete_customer_record"), null, Map.of("amount", 250000), null);
     assertThat(VerifiedInputsGate.check(meta, InputSources.NONE, VerifiedInputsGate.presentLeafPaths(action))).isEmpty();
   }
+
+  /** 租户隔离：别的租户的 versionId 交给本租户的按版本入口，按「不存在」拒绝，不加载他人的产物。 */
+  @Test
+  void foreignTenantVersionIdIsRejected() {
+    String other = TENANT + "-other";
+    clean(other);
+    try {
+      Long foreign = DeployedMapParamProbeTest.deploy(other, MODULE, FUNCTION, source("OTHER-1"));
+      DeployedMapParamProbeTest.deploy(TENANT, MODULE, FUNCTION, source("MINE-1"));
+
+      org.assertj.core.api.Assertions.assertThatThrownBy(
+          () -> service.ruleMetadata(TENANT, MODULE, FUNCTION, String.valueOf(foreign)))
+          .isInstanceOf(PolicyNotExecutableException.class).hasMessageContaining("not found");
+      org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.evaluatePolicyAtVersion(TENANT, MODULE,
+          FUNCTION, String.valueOf(foreign), new Object[]{request()}).await().indefinitely());
+    } finally {
+      clean(other);
+    }
+  }
 }

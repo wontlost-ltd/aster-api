@@ -21,7 +21,10 @@ import java.util.stream.Collectors;
  *   <li>{@code context} → {@code context}，{@code context.<p>} → {@code context.<p>}；</li>
  *   <li>根 {@code ""}（扁平记录整体被消费）、{@code *}、未知首段 → {@code *}。</li>
  * </ul>
- * 证据形状（from-evidence）的路径在写评估事件时已经是 {@code context.<键>.<path>} 或 {@code *}，它们是本映射的不动点。
+ * 证据形状（from-evidence）的路径在写评估事件时已经映射为 {@code context.<键>.<path>} 或 {@code *}（引擎 1.0.44 之后），
+ * 它们是本映射的不动点，所以门对两种入口用同一个映射。注意：from-evidence 从 IR 读到的<b>引擎原样</b>路径不是 guard 形状，
+ * 经本映射多半落为 {@code *}（fail-closed）；引擎产出 inputRefs 之后，from-evidence 须改用事件自带的已映射路径，
+ * 不得再把 IR 路径交给本映射。
  */
 public final class GuardInputRefPaths {
   private static final Map<String, FlatField> BY_KEY = Arrays.stream(FlatField.values())
