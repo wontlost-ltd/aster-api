@@ -544,7 +544,8 @@ public class GuardFromEvidenceResourceTest {
   @Test
   void fromEvidenceAlsoGated() {
     PolicyEvaluationService evaluation = Mockito.mock(PolicyEvaluationService.class);
-    Mockito.when(evaluation.ruleMetadata(TENANT, "guard.customer", "decide")).thenReturn(
+    // 评估事件带 policyVersionId：元数据按该版本读取
+    Mockito.when(evaluation.ruleMetadata(TENANT, "guard.customer", "decide", "1730890123456")).thenReturn(
         new RuleMetadata("CUST-DEL-001", List.of("GDPR:ART17"), "eu-ai-act-high-risk", List.of("context.amount"), true));
     QuarkusMock.installMockForType(evaluation, PolicyEvaluationService.class);
     String cid = newCid();
@@ -567,7 +568,8 @@ public class GuardFromEvidenceResourceTest {
     Response receipts = signedGet(RECEIPTS, "decisionIds=" + decisionId, TENANT, "u-export");
     assertThat(receipts.statusCode()).as(receipts.asString()).isEqualTo(200);
     assertThat(receipts.jsonPath().getString("receipts[0].metadata.reasonCode")).isEqualTo("unverified_input");
-    assertThat(receipts.jsonPath().getList("receipts[0].metadata.unverifiedFields")).containsExactly("context.amount");
+    // 版本元数据的 IR 引用无法映射到证据形状，按「*」比对（ADR 0040 §11 D5 实施澄清）
+    assertThat(receipts.jsonPath().getList("receipts[0].metadata.unverifiedFields")).containsExactly("*");
     assertThat(receipts.jsonPath().getString("receipts[0].metadata.evidenceCorrelationId")).isEqualTo(cid);
   }
 }

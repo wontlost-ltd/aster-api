@@ -40,6 +40,51 @@ public class GuardActionMapper {
   /** sha256-sorted-json/v1：Map 键排序后序列化，摘要与 context 的键写入顺序无关。 */
   private static final ObjectMapper SORTED = new ObjectMapper().configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
 
+  /**
+   * flatten 产出的键与它们对应的 guard 请求路径：规则参数键表与 inputRefs 的 guard 形状映射
+   * （{@code GuardInputRefPaths}，ADR 0046 §11.6 第 3 条）共用这一张常量表，声明顺序即 flatten 的键序。
+   */
+  public enum FlatField {
+    PRINCIPAL_ID("principal_id", "principal.id", Shape.SCALAR),
+    PRINCIPAL_TYPE("principal_type", "principal.type", Shape.SCALAR),
+    PRINCIPAL_ROLES("principal_roles", "principal.roles", Shape.LIST),
+    ACTION("action", "action.name", Shape.SCALAR),
+    RESOURCE_TYPE("resource_type", "resource.type", Shape.SCALAR),
+    RESOURCE_ID("resource_id", "resource.id", Shape.SCALAR),
+    CONTEXT("context", "context", Shape.OBJECT),
+    AGENT_MODEL("agent_model", "agent.model", Shape.SCALAR);
+
+    /**
+     * 值的形状决定子路径如何映射：标量没有子路径；列表是一个整叶子（ADR 0040 §11 D1），子路径并入列表本身；
+     * 对象的子路径原样接在请求路径之后。
+     */
+    public enum Shape { SCALAR, LIST, OBJECT }
+
+    private final String key;
+    private final String requestPath;
+    private final Shape shape;
+
+    FlatField(String key, String requestPath, Shape shape) {
+      this.key = key;
+      this.requestPath = requestPath;
+      this.shape = shape;
+    }
+
+    /** 规则参数记录中的键。 */
+    public String key() {
+      return key;
+    }
+
+    /** 对应的 guard 请求路径（与 {@code VerifiedInputsGate.presentLeafPaths} 同一路径空间）。 */
+    public String requestPath() {
+      return requestPath;
+    }
+
+    public Shape shape() {
+      return shape;
+    }
+  }
+
   public Map<String, Object> flatten(GuardActionRequest.Action a) {
     if (a == null || a.principal() == null || isBlank(a.principal().id())) {
       throw new GuardInvalidActionException("principal.id 必填");
@@ -52,14 +97,14 @@ public class GuardActionMapper {
       throw new GuardInvalidActionException("context 超过 " + MAX_CONTEXT_BYTES + " 字节");
     }
     LinkedHashMap<String, Object> m = new LinkedHashMap<>();
-    m.put("principal_id", text("principal.id", a.principal().id(), ""));
-    m.put("principal_type", text("principal.type", a.principal().type(), "agent"));
-    m.put("principal_roles", roles(a.principal().roles()));
-    m.put("action", text("action.name", a.action().name(), ""));
-    m.put("resource_type", text("resource.type", a.resource() == null ? null : a.resource().type(), ""));
-    m.put("resource_id", text("resource.id", a.resource() == null ? null : a.resource().id(), ""));
-    m.put("context", context);
-    m.put("agent_model", text("agent.model", a.agent() == null ? null : a.agent().model(), ""));
+    m.put(FlatField.PRINCIPAL_ID.key(), text("principal.id", a.principal().id(), ""));
+    m.put(FlatField.PRINCIPAL_TYPE.key(), text("principal.type", a.principal().type(), "agent"));
+    m.put(FlatField.PRINCIPAL_ROLES.key(), roles(a.principal().roles()));
+    m.put(FlatField.ACTION.key(), text("action.name", a.action().name(), ""));
+    m.put(FlatField.RESOURCE_TYPE.key(), text("resource.type", a.resource() == null ? null : a.resource().type(), ""));
+    m.put(FlatField.RESOURCE_ID.key(), text("resource.id", a.resource() == null ? null : a.resource().id(), ""));
+    m.put(FlatField.CONTEXT.key(), context);
+    m.put(FlatField.AGENT_MODEL.key(), text("agent.model", a.agent() == null ? null : a.agent().model(), ""));
     return m;
   }
 

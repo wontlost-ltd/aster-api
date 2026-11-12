@@ -418,7 +418,10 @@ public class PolicyCompileResourceTest {
         .then()
             .statusCode(200)
             .body("success", is(true))
-            .body("controlsRegistryVersion", is("1.1.0"))
+            // 取 core jar 内注册表的版本：pin 升级（1.1.0 → 1.2.0 …）不必改测试
+            .body("controlsRegistryVersion", allOf(
+                is(aster.core.typecheck.governance.ControlRegistry.loadDefault().version()),
+                matchesPattern("\\d+\\.\\d+\\.\\d+")))
             .body("diagnostics.findAll { it.code == 'W704' }", hasSize(1))
             .body("diagnostics.find { it.code == 'W704' }.severity", is("warning"))
             .body("diagnostics.find { it.code == 'W704' }.message", containsString("ACME:ART1"))
