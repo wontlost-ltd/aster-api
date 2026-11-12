@@ -18,6 +18,7 @@ import aster.core.typecheck.model.Diagnostic;
 import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.atn.PredictionMode;
 import org.jboss.logging.Logger;
 
 import java.util.List;
@@ -164,6 +165,18 @@ public class InProcessCnlParser {
     static ParseResult parseUnsafeWithAliases(String source, String locale, VocabularyScopes scopes,
                                               Map<SemanticTokenKind, List<String>> aliasSet,
                                               NameResolver resolver) {
+        return parseUnsafeWithAliases(source, locale, scopes, aliasSet, resolver,
+            ParseBudget.startDefault(), PredictionMode.SLL);
+    }
+
+    /**
+     * 完整解析流程。{@code budget} 限定语法分析阶段的耗时（aster-cloud/aster-lang-core#254），
+     * {@code predictionMode} 生产固定为 SLL；测试注入 LL 以复现 core 报告的指数级预测并验证预算能中止它。
+     */
+    static ParseResult parseUnsafeWithAliases(String source, String locale, VocabularyScopes scopes,
+                                              Map<SemanticTokenKind, List<String>> aliasSet,
+                                              NameResolver resolver, ParseBudget budget,
+                                              PredictionMode predictionMode) {
         if (source == null || source.isBlank()) {
             throw new CnlParseException("CNL 源代码不能为空");
         }
@@ -207,11 +220,12 @@ public class InProcessCnlParser {
             tokens.seek(0);
 
             AsterParser parser = new AsterParser(tokens);
-            // R30+ audit P1：ANTLR 默认 LL 模式在病理语法下会回溯 O(2^n)，
-            // 给个 SLL 上限作为 DoS 防御。在正常语法上 SLL 与 LL 等价；
-            // 解析失败时 ANTLR 会自动 fallback 到 LL，对正常输入零代价。
-            parser.getInterpreter().setPredictionMode(
-                org.antlr.v4.runtime.atn.PredictionMode.SLL);
+            // R30+ audit P1：ANTLR 默认 LL 模式在病理语法下预测耗时可达 O(2^n)（core#254：result of
+            // 交替嵌套 32 层约 8.6s），这里固定用 SLL。SLL 失败时 ANTLR 不会自动回退 LL（直接报语法错误），
+            // 而且 SLL 也有病态输入（混合 result of / Map / 函数类型嵌套，实测 1–5KB 可达数秒到数十秒），
+            // 所以预测器另外带时间预算：超时协作式中止，归为带码 E054（见 BudgetedParserATNSimulator）。
+            parser.getInterpreter().setPredictionMode(predictionMode);
+            parser.setInterpreter(new BudgetedParserATNSimulator(parser, parser.getInterpreter(), budget));
 
             // 3. 添加错误监听器（与 lexer 共享同一份）
             parser.removeErrorListeners();
@@ -226,6 +240,8 @@ public class InProcessCnlParser {
             } catch (StackOverflowError e) {
                 // 语法分析期递归先于守卫溢出：位置取溢出时的当前 token（仍在深嵌套表达式所在行）
                 throw codedFailure(errorListener, nestingOverflow(parser.getCurrentToken()));
+            } catch (ParseBudget.Exceeded e) {
+                throw budgetExceeded(errorListener, e.budget(), parser.getCurrentToken(), source.length());
             }
 
             // 检查解析错误：抛给用户的是友好化的首个错误（根因），原始 ANTLR
@@ -302,6 +318,27 @@ public class InProcessCnlParser {
         return new aster.core.parser.ParseDiagnosticException(
             aster.core.typecheck.ErrorCode.PARSE_NESTING_TOO_DEEP,
             Map.of("limit", String.valueOf(NESTING_DEPTH_LIMIT)), overflowMessage(), line, column);
+    }
+
+    /**
+     * 语法分析超出时间预算（core#254）：复用 E054 而不新增码——码表由 core / ts / locales 三方共享，
+     * 新码需三仓同车发版；已知能耗尽预算的输入全是深层类型嵌套，E054「嵌套过深，拆成更小的具名部分」
+     * 的文案与改法都适用。{@code limit} 照旧填嵌套上限（模板只引用它），另带 {@code reason=time-budget}
+     * 与 {@code budgetMs} 供客户端与日志区分「超层数」和「超时」。
+     */
+    private static BudgetExceededFailure budgetExceeded(CnlErrorListener listener, ParseBudget budget,
+                                                        org.antlr.v4.runtime.Token at, int sourceLength) {
+        ParseBudget.recordExceeded();
+        LOG.warnf("CNL 语法分析超出时间预算 %dms，已中止（源码长度 %d，位置 %d:%d）",
+            budget.budgetMillis(), sourceLength,
+            at == null ? 0 : at.getLine(), at == null ? 0 : at.getCharPositionInLine() + 1);
+        listener.report(new aster.core.parser.ParseDiagnosticException(
+            aster.core.typecheck.ErrorCode.PARSE_NESTING_TOO_DEEP,
+            Map.of("limit", String.valueOf(NESTING_DEPTH_LIMIT),
+                "reason", BudgetExceededFailure.REASON,
+                "budgetMs", String.valueOf(budget.budgetMillis())),
+            "解析超出时间预算 " + budget.budgetMillis() + "ms", at));
+        return new BudgetExceededFailure(listener.getSummary(), listener.getDiagnostics());
     }
 
     private static String overflowMessage() {
@@ -463,6 +500,21 @@ public class InProcessCnlParser {
             int col = d.span().map(o -> o.start == null ? 1 : o.start.col).orElse(1);
             return new CnlErrorListener.Diagnostic(line, col, d.code().code() + " " + d.message(), d.code().code(),
                 java.util.Map.of());
+        }
+    }
+
+    /**
+     * 语法分析超出时间预算（core#254）。携带与其它语法错误同形的 E054 诊断；单独成类是为了让
+     * 按版本缓存编译结果的调用方识别它——超时取决于当时的机器负载，不是源码的恒定属性，不得缓存。
+     */
+    public static final class BudgetExceededFailure extends CnlParseException {
+        private static final long serialVersionUID = 1L;
+
+        /** E054 诊断 {@code reason} 参数的取值。 */
+        public static final String REASON = "time-budget";
+
+        BudgetExceededFailure(String message, List<CnlErrorListener.Diagnostic> diagnostics) {
+            super(message, diagnostics);
         }
     }
 

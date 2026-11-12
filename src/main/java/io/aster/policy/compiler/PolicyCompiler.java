@@ -199,21 +199,33 @@ public class PolicyCompiler {
             return CompilationResult.failure(
                 errors.stream().map(PolicyCompiler::typecheckError).toList(),
                 errors.stream().map(d -> mapTypecheckDiagnostic(d, false)).toList());
+        } catch (InProcessCnlParser.BudgetExceededFailure e) {
+            // 解析超时（core#254）取决于当时的负载，不是版本源码的恒定属性：按版本编译的结果会进
+            // policy-compile-by-version 缓存（失败也缓存），这里改为抛出，缓存不登记异常，调用方按编译失败处理。
+            if (versionId != null) {
+                throw e;
+            }
+            return parseFailure(versionId, e);
         } catch (InProcessCnlParser.CnlParseException e) {
-            // 语法错误（带结构化诊断）的消息已是策略语言的整句（「CNL syntax error — Line …」），不再叠中文前缀
-            String message = e.getDiagnostics().isEmpty() ? "CNL 解析失败: " + e.getMessage() : e.getMessage();
-            logUserSourceError(versionId, e);
-            // 透传结构化诊断（含 1-based 行列），供编译端点精确标错。
-            List<CompilationResult.Diagnostic> diags = e.getDiagnostics().stream()
-                .map(d -> new CompilationResult.Diagnostic(d.line(), d.column(), d.line(), d.column(), d.message(),
-                    d.code(), "error", null, null, true, d.params()))
-                .toList();
-            return CompilationResult.failure(java.util.List.of(message), diags);
+            return parseFailure(versionId, e);
         } catch (Exception e) {
             String message = "CNL 编译失败: " + e.getMessage();
             LOG.error(message, e);
             return CompilationResult.failure(message);
         }
+    }
+
+    /** 语法错误（含带码诊断）映射为编译失败结果。 */
+    private CompilationResult parseFailure(Long versionId, InProcessCnlParser.CnlParseException e) {
+        // 语法错误（带结构化诊断）的消息已是策略语言的整句（「CNL syntax error — Line …」），不再叠中文前缀
+        String message = e.getDiagnostics().isEmpty() ? "CNL 解析失败: " + e.getMessage() : e.getMessage();
+        logUserSourceError(versionId, e);
+        // 透传结构化诊断（含 1-based 行列），供编译端点精确标错。
+        List<CompilationResult.Diagnostic> diags = e.getDiagnostics().stream()
+            .map(d -> new CompilationResult.Diagnostic(d.line(), d.column(), d.line(), d.column(), d.message(),
+                d.code(), "error", null, null, true, d.params()))
+            .toList();
+        return CompilationResult.failure(java.util.List.of(message), diags);
     }
 
     /** 按版本冻结的源码重新类型检查，不读取已存编译产物。 */
