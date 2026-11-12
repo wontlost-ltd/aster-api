@@ -169,17 +169,25 @@ public class GuardEvidenceDecisionService {
    * 档案来源门（ADR 0040 §11 D5）。规则元数据按评估事件的 {@code policyVersionId} 取（事件没有版本时取活跃版本），
    * 与被锚定的那次评估是同一版本。被拒时改判 DENY 并带上 unverifiedFields，调用方随之不建待审批。
    *
-   * <p>读不到元数据（evaluate-source 锚定的模块从未保存过版本是常态）时不再一律放行：改用事件的 {@code profile}
-   * 经 {@link ProfileRequirements} 判定——要求 verifiedInputs → DENY {@code input_refs_unavailable}，否则放行。
-   * 两种情况都计 counter；事件无 profile 时只记 DEBUG，带 profile 时记 WARN。今天没有任何档案要求 verifiedInputs，
-   * 所以门不会拒绝任何请求。
+   * <p>判定顺序（ADR 0040 §11 D5 实施澄清）：
+   * <ol>
+   *   <li>要求项在消费时由事件 {@code profile} 经 {@link ProfileRequirements}（当前注册表）重算，按事件版本取到的元数据
+   *       显示要求同样算要求；事件里的 {@code verifiedInputsRequired} 快照只供审计，不读；</li>
+   *   <li>引用集取版本元数据中的 IR {@code inputRefs}：它是引擎原样路径，缺少写事件时的输入匹配键，无法映射到证据形状，
+   *       非空即按 {@code "*"} 处理（fail-closed）；没有引用集（IR 未提供）→ {@code input_refs_unavailable}；</li>
+   *   <li>读不到元数据（evaluate-source 锚定的模块从未保存过版本是常态）：要求 → DENY {@code input_refs_unavailable}，
+   *       否则放行；计 counter，事件无 profile 时只记 DEBUG，带 profile 时记 WARN。</li>
+   * </ol>
+   * 事件自带、写事件时已映射的 {@code inputRefs} 随引擎 1.0.44（Task 16b）加入，届时优先于第 2 步。
+   * 今天没有任何档案要求 verifiedInputs，所以门不会拒绝任何请求。
    */
   GuardDecisionDraft gate(GuardDecisionDraft draft, GuardActionRequest.Action action, Map<String, Object> event) {
+    String profile = text(event, EvaluationEvidence.KEY_PROFILE);
     RuleMetadata meta;
     try {
-      meta = ruleMetadata(draft, event);
+      meta = evidenceShape(ruleMetadata(draft, event), profileRequirements.verifiedInputsRequired(profile));
     } catch (RuntimeException e) {
-      return withoutRuleMetadata(draft, text(event, EvaluationEvidence.KEY_PROFILE), e);
+      return withoutRuleMetadata(draft, profile, e);
     }
     return VerifiedInputsGate.check(meta, draft.inputSources(), VerifiedInputsGate.presentLeafPaths(action))
         .map(denial -> draft.denyUnverified(denial.code(), denial.unverifiedFields()))
@@ -191,6 +199,17 @@ public class GuardEvidenceDecisionService {
         ? evaluationService.ruleMetadata(draft.tenantId(), draft.policyModule(), draft.policyFunction(),
             String.valueOf(version.longValue()))
         : evaluationService.ruleMetadata(draft.tenantId(), draft.policyModule(), draft.policyFunction());
+  }
+
+  /**
+   * 把版本元数据转成 from-evidence 可用的形态：要求项与事件档案的重算结果取或；IR 引用非空时整体视为 {@code "*"}
+   * （引擎路径没有证据形状的匹配键前缀），空列表（规则不读输入）保持为空。
+   */
+  private static RuleMetadata evidenceShape(RuleMetadata meta, boolean profileRequires) {
+    List<String> refs = meta.inputRefs() == null || meta.inputRefs().isEmpty()
+        ? meta.inputRefs() : List.of(VerifiedInputsGate.ALL_INPUTS);
+    return new RuleMetadata(meta.ruleId(), meta.controls(), meta.profile(), refs,
+        meta.verifiedInputsRequired() || profileRequires);
   }
 
   /** 元数据读不到：按事件档案判定（未知档案按不要求，ADR 0046 §11.6 第 6 条）。 */

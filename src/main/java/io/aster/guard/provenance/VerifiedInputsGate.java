@@ -24,8 +24,9 @@ import java.util.TreeSet;
  *       {@code unverified_input}，{@code unverifiedFields = ["*"]}；</li>
  *   <li>其余引用路径中 declared 的（字典序）非空 → {@code unverified_input}。</li>
  * </ol>
- * verified 判定用 {@link InputSources#isVerified} 的祖先语义：覆盖 {@code context.customer} 的事实同时证实
- * {@code context.customer.tier}；反之子路径 verified 不能证实被整体引用的父对象。
+ * 单个引用的满足规则（ADR 0046 §11.6 第 9 条，前缀规则）：引用自身或祖先被事实覆盖（{@link InputSources#isVerified}
+ * 的祖先语义）即满足；否则，若它不是本请求中出现的叶子、而其下至少有一个出现的叶子且这些叶子全部 verified，也满足
+ * （如 {@code context.applicant}、裸 {@code context}）。其下没有出现的叶子（字段缺失）不满足。
  *
  * <p>IR 的 {@code inputRefs} 是引擎的源码字段路径，比对前先经 {@link GuardInputRefPaths#guardShape} 映射为请求路径
  * （ADR 0046 §11.6 第 3 条）；映射不出的引用按 {@code "*"} 处理。<b>显式引用的路径即使本次请求里没有该字段也计入</b>：
@@ -52,7 +53,7 @@ public final class VerifiedInputsGate {
   }
 
   /**
-   * @param presentLeafPaths 本次请求中出现的输入叶子路径（{@link #presentLeafPaths}），只在 {@code "*"} 时使用
+   * @param presentLeafPaths 本次请求中出现的输入叶子路径（{@link #presentLeafPaths}）：{@code "*"} 与非叶子引用按它判定
    */
   public static Optional<GateDenial> check(RuleMetadata meta, InputSources sources, Set<String> presentLeafPaths) {
     Objects.requireNonNull(meta, "meta");
@@ -67,10 +68,23 @@ public final class VerifiedInputsGate {
       return Optional.of(new GateDenial(GuardReasonCode.UNVERIFIED_INPUT, List.of(ALL_INPUTS)));
     }
     SortedSet<String> declared = new TreeSet<>();
-    refs.stream().filter(r -> !ALL_INPUTS.equals(r) && !sources.isVerified(r)).forEach(declared::add);
+    refs.stream().filter(r -> !ALL_INPUTS.equals(r) && !satisfied(r, sources, presentLeafPaths)).forEach(declared::add);
     return declared.isEmpty()
         ? Optional.empty()
         : Optional.of(new GateDenial(GuardReasonCode.UNVERIFIED_INPUT, List.copyOf(declared)));
+  }
+
+  /** 前缀规则：自身 / 祖先被覆盖，或（非出现的叶子且）其下出现的叶子非空且全部 verified。 */
+  private static boolean satisfied(String ref, InputSources sources, Set<String> presentLeafPaths) {
+    if (sources.isVerified(ref)) {
+      return true;
+    }
+    if (presentLeafPaths.contains(ref)) {
+      return false;
+    }
+    String prefix = ref + ".";
+    List<String> under = presentLeafPaths.stream().filter(p -> p.startsWith(prefix)).toList();
+    return !under.isEmpty() && under.stream().allMatch(sources::isVerified);
   }
 
   /**

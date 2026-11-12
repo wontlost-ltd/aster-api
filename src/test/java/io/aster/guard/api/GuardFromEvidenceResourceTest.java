@@ -568,7 +568,8 @@ public class GuardFromEvidenceResourceTest {
     Response receipts = signedGet(RECEIPTS, "decisionIds=" + decisionId, TENANT, "u-export");
     assertThat(receipts.statusCode()).as(receipts.asString()).isEqualTo(200);
     assertThat(receipts.jsonPath().getString("receipts[0].metadata.reasonCode")).isEqualTo("unverified_input");
-    assertThat(receipts.jsonPath().getList("receipts[0].metadata.unverifiedFields")).containsExactly("context.amount");
+    // 版本元数据的 IR 引用无法映射到证据形状，按「*」比对（ADR 0040 §11 D5 实施澄清）
+    assertThat(receipts.jsonPath().getList("receipts[0].metadata.unverifiedFields")).containsExactly("*");
     assertThat(receipts.jsonPath().getString("receipts[0].metadata.evidenceCorrelationId")).isEqualTo(cid);
   }
 }

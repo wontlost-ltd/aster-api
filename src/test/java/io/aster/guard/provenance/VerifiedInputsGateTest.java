@@ -127,4 +127,22 @@ class VerifiedInputsGateTest {
         "context.amount", "context.customer.note", "context.customer.tier", "context.empty", "context.tags",
         "principal.id", "principal.roles", "resource.type");
   }
+
+  /** 前缀规则（ADR 0046 §11.6 第 9 条）：非叶子引用在其下出现的叶子全部 verified 时满足，任一 declared 则不满足。 */
+  @Test
+  void nonLeafRefSatisfiedOnlyWhenAllPresentLeavesUnderItVerified() {
+    Set<String> leaves = Set.of("context.customer.tier", "context.customer.note", "context.amount");
+    RuleMetadata customer = required(List.of("context.customer"));
+
+    assertThat(VerifiedInputsGate.check(customer, verified("context.customer.tier", "context.customer.note"), leaves))
+        .isEmpty();
+    assertThat(VerifiedInputsGate.check(customer, verified("context.customer.tier"), leaves))
+        .contains(new GateDenial(GuardReasonCode.UNVERIFIED_INPUT, List.of("context.customer")));
+    // 裸 context：其下全部出现的叶子都须 verified
+    assertThat(VerifiedInputsGate.check(required(List.of("context")),
+        verified("context.customer.tier", "context.customer.note"), leaves))
+        .contains(new GateDenial(GuardReasonCode.UNVERIFIED_INPUT, List.of("context")));
+    assertThat(VerifiedInputsGate.check(required(List.of("context")),
+        verified("context.customer", "context.amount"), leaves)).isEmpty();
+  }
 }

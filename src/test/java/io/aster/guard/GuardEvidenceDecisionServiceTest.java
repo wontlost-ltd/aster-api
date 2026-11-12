@@ -180,7 +180,7 @@ class GuardEvidenceDecisionServiceTest {
     GuardDecisionDraft gated = service.gate(pending(), action(), event(1730890123456L, "eu-ai-act-high-risk"));
 
     assertThat(gated.reasonCode()).isEqualTo(GuardReasonCode.UNVERIFIED_INPUT);
-    assertThat(gated.unverifiedFields()).containsExactly("context.amount");
+    assertThat(gated.unverifiedFields()).containsExactly("*");
     verify(evaluationService, never()).ruleMetadata(any(), any(), any());
     assertThat(unavailableCount()).isZero();
   }
@@ -193,5 +193,32 @@ class GuardEvidenceDecisionServiceTest {
     GuardDecisionDraft draft = pending();
 
     assertThat(service.gate(draft, action(), event(7L, "eu-ai-act-high-risk"))).isEqualTo(draft);
+  }
+
+  /**
+   * 裁定 1：要求项在消费时按事件 profile + 当前注册表重算。版本元数据说「不要求」（如翻转前的产物快照），
+   * 而事件档案在当前注册表下要求 → 按要求判定。
+   */
+  @Test
+  void requirementRecomputedFromEventProfile() {
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION, "7")).thenReturn(
+        new RuleMetadata("R-1", List.of(), "eu-ai-act-high-risk", null, false));
+    when(profileRequirements.verifiedInputsRequired("eu-ai-act-high-risk")).thenReturn(true);
+
+    GuardDecisionDraft gated = service.gate(pending(), action(), event(7L, "eu-ai-act-high-risk"));
+
+    assertThat(gated.reasonCode()).isEqualTo(GuardReasonCode.INPUT_REFS_UNAVAILABLE);
+  }
+
+  /** 版本元数据的 IR 引用是引擎原样路径，无法映射到证据形状：非空即按「*」判定（全部出现的叶子须 verified）。 */
+  @Test
+  void irRefsFromVersionMetadataTreatedAsStar() {
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION, "7")).thenReturn(
+        new RuleMetadata("R-1", List.of(), "eu-ai-act-high-risk", List.of("context.amount"), true));
+
+    GuardDecisionDraft gated = service.gate(pending(), action(), event(7L, "eu-ai-act-high-risk"));
+
+    assertThat(gated.reasonCode()).isEqualTo(GuardReasonCode.UNVERIFIED_INPUT);
+    assertThat(gated.unverifiedFields()).containsExactly("*");
   }
 }
