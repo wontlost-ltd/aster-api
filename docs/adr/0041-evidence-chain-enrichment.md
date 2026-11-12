@@ -265,6 +265,8 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 
 **D2 `POLICY_EVALUATION` 新键**：`inputSource: "declared"`（常量，与 `agentSource` 同法，凡发事件即写）。`/evaluate*` 的输入全部来自请求体，没有验签通道，这个键的价值是让证据包能诚实标出「评估输入未经验证」；将来 cloud 若对 `/evaluate-source` 附签名事实，键值可扩为 `"mixed"` 并补 `verifiedFields`，形状不变。
 
+`POLICY_EVALUATION` 另有两键，只在模块声明档案时写：`inputRefs`（List of Text；写事件时已映射为请求路径 `context.<键>.<path>`；映射后 ≤ 32 项且 JSON 数组 UTF-8 字节数 ≤ 1024，超限整体写 `["*"]`；`[]` 照写；IR 没有 `inputRefs` 时不写）与 `verifiedInputsRequired`（Boolean，**仅供审计**：消费方一律按事件 `profile` 加当前注册表重算要求项，不读此键）。语义与上限见 ADR 0046 §11.6 第 4 条；无档案事件的 metadata 不变。
+
 **D3 收据查询接口**（§2.4）：`receipts[].metadata` 已原样透传，无需改；`approvals[]` 增 ADR 0042 §11 D3 的四个键（`inputSnapshotHash / inputSnapshotAttested / inputRevealed / inputStatus`）。
 
 **D4 证据包**（与 ADR 0042 §11 同一 `schemaVersion: '6'`，一次升版）：
