@@ -9,7 +9,7 @@
 **明确不在本列车：** X4（cloud 签发能力、`fact-signer.ts`、试点签发方）与 registry **1.3.0** 翻转 `eu-ai-act-high-risk.requires.verifiedInputs=true`。1.3.0 **保持阻塞**，解除条件：
 
 1. 本列车上线；
-2. aster-api Task 16b（下文 PR 15）已部署。它关闭 from-evidence 的 fail-open，并且让评估事件**自带** `inputRefs` / `verifiedInputsRequired`。cloud 的 evaluate-source 模块没有已保存版本，from-evidence 只能从事件读这两项（见 §1.4）；
+2. aster-api Task 16b（下文 PR 15）已部署。它关闭 from-evidence 的 fail-open，并且让评估事件**自带** `inputRefs`（另写 `verifiedInputsRequired` 快照，仅供审计）。cloud 的 evaluate-source 模块没有已保存版本，from-evidence 只能从事件读 `inputRefs`；要求项一律由事件 `profile` + 当前注册表在消费时重算（见 §1.4）；
 3. X4 完成。
 
 **Spec（按此顺序读）：** aster-api `docs/adr/0046-governance-profile.md` §11（R62，尤其 D2 传播规则表与 §11.4 落地顺序）、`docs/adr/0040-action-guard.md` §11（R60，D5 执行点）、主计划 Task 15/16 与「跨仓任务」节。
@@ -146,7 +146,9 @@
     - 取值理由：路径受 8 段、`context` 深度 ≤ 8 和 255 字符文本限制约束，正常规则的引用集远小于 32 项。1 KB 给现有键（correlationId、ruleId、controls、reason、role、profile、版本与两个哈希、agent 三键、inputSource、locale、dynamicExecution）在各自校验上限下留出约 3 KB。写 `["*"]` 在 1.2.0 下无害（没有档案要求 verifiedInputs），1.3.0 之后是 fail-closed。
     - 测试 `EvaluationEvidenceSizeTest`：把每个既有键填到其校验上限，再加上 1 KB 的 `inputRefs` 和 `verifiedInputsRequired`，序列化长度必须 < 4096。若实测超出，下调 `inputRefs` 上限并在本节更新数值，**不得**提高 `MAX_METADATA_SIZE`，因为那属于审计链改动。
   - from-evidence 优先读事件里的这两项。这与「版本列取事件行」的既有做法一致，也是 evaluate-source 模块唯一可靠的来源，因为它们没有已保存版本，`ruleMetadata` 必然抛错。
-  - 事件里没有这两项（旧事件）时，按 PR 2 的「事件 profile + 注册表」路径判定。
+  - **要求项永远在消费时重算**（替代审查裁定 1）：是否要求 verifiedInputs 由事件 `profile` + **当前**注册表判定（按事件版本取到的元数据若显示要求，同样算要求）；事件里的 `verifiedInputsRequired` 是写事件时的快照，只供审计，**不参与判定**。否则 1.3.0 翻转前写下、`verifiedInputsRequired=false` 的事件在翻转后会放行未验证输入。事件自带的 `inputRefs` 是编译事实，照常使用。
+  - from-evidence 引用集的优先级：事件 `inputRefs` → 按事件 `policyVersionId` 取的 IR `inputRefs`（引擎原样路径，缺写事件时的匹配键，一律按 `*`）→ 都没有且要求 → DENY `input_refs_unavailable`。
+  - 映射后的上限按 JSON 数组的 UTF-8 字节数计；`[]` 照写；IR 没有 `inputRefs`（旧引擎编译的档案模块）时事件不写该键，消费方回退到「profile + 注册表」。
 - **路径映射按入口形状二分**（`GuardInputRefPaths`）：
   - **guard 形状**（仅 `POST /decisions`，规则参数是 `flatten` 记录）：
     - 映射表：`principal_id→principal.id`、`principal_type→principal.type`、`principal_roles[.…]→principal.roles`、`action→action.name`、`resource_type→resource.type`、`resource_id→resource.id`、`agent_model→agent.model`、`context→context`、`context.<p>→context.<p>`。
@@ -391,7 +393,7 @@
   - `replay/src/main/java/io/aster/policy/api/convert/NamedContextMapper.java`：`MappingResult` 新增第一个参数实际匹配的输入键。
   - 写事件处：`/evaluate` 与 `/evaluate-source` 两个分支（`PolicyEvaluationResource.java:654-666` 一带）。
   - 新 `src/main/java/io/aster/guard/provenance/EvidenceInputRefPaths.java`：写事件时的证据形状映射。
-  - `src/main/java/io/aster/guard/GuardEvidenceDecisionService.java`：优先使用事件自带的、已映射的 `inputRefs` 与 `verifiedInputsRequired`。
+  - `src/main/java/io/aster/guard/GuardEvidenceDecisionService.java`：优先使用事件自带的、已映射的 `inputRefs`；要求项仍由事件 `profile` + 当前注册表重算（`ProfileRequirements`），**不读**事件的 `verifiedInputsRequired`。
   - `src/main/java/io/aster/policy/rest/model/CompileResponse.java`，以及组装处 `src/main/java/io/aster/policy/rest/PolicyEvaluationResource.java:1026`（`CompileResponse.ok(extractModuleInfo(core), warnings, extractProfile(core))`）。
   - 新 `src/test/java/io/aster/policy/EnginePinGateTest.java`。
 - Tests：
@@ -403,6 +405,7 @@
     - 用真实 `ProfileRequirements` 与注入注册表，重跑 PR 2 的 fail-open 关闭用例；
     - `eventCarriedInputRefsUsedForEvaluateSourceModule`：无已保存版本，直接使用事件里已映射的 `context.<键>.…`；
     - `eventWithoutInputRefsFallsBackToProfile`：旧事件。
+    - `eventRequirementSnapshotIgnored`：事件写 `verifiedInputsRequired=false`、而当前注册表下其 `profile` 要求 → 按要求判定（模拟 1.3.0 翻转前写下的事件）。
   - `EvidenceInputRefPathsTest`：
     - 命名 Map 输入，键为英文写法与本地化写法各一 → `context.<实际键>.<path>`；
     - `""` → `context.<键>`；
@@ -418,7 +421,7 @@
   - `GuardFromEvidenceResourceTest` **不需要改**：已核对，它的夹具事件都不带 `profile`。`appendEvaluation`（`:92-96`）手写的 metadata 没有 profile 键；`appendEvaluateSourceEvaluation`（`:218-221`）构造 `EvaluationEvidence` 时 profile 参数为 `null`。因此新键不会写入，16 例结果不变。
   - 全量 guard 套件与全量 `:replay:test :test`。
 - 提交信息：`feat(guard): 读取引擎 inputRefs 与 verifiedInputs，E708 定为 error（ADR 0046 §11 D2/D4）`。
-- 部署后，Task 16 与 X1–X3 关闭，X4 计划可以开工。1.3.0 仍要等 X4 完成；而且翻转前产生的旧评估事件没有 `inputRefs`，会走「profile + 注册表」路径，要求 verifiedInputs 时 DENY `input_refs_unavailable`。
+- 部署后，Task 16 与 X1–X3 关闭，X4 计划可以开工。1.3.0 仍要等 X4 完成。翻转前写下的评估事件在翻转后照样受约束：要求项按事件 `profile` + 当前注册表重算，所以它们的 `verifiedInputsRequired=false` 快照不会让未验证输入通过——带 `inputRefs` 的事件按引用比对（未附事实 → DENY `unverified_input`），16b 之前的旧事件没有 `inputRefs` → DENY `input_refs_unavailable`。
 
 ---
 
