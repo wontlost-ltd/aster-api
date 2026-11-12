@@ -131,6 +131,51 @@
       ]
     },
     {
+      "name": "E054 类型嵌套=64（list of 链，上限放行）",
+      "source": "Module m.\n\nRule f given x as list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of Int, produce Int:\n  Return x.\n",
+      "codes": []
+    },
+    {
+      "name": "E054 类型嵌套=65（list of 链，上限+1）",
+      "source": "Module m.\n\nRule f given x as list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of list of Int, produce Int:\n  Return x.\n",
+      "codes": [
+        [
+          "E054",
+          3
+        ]
+      ]
+    },
+    {
+      "name": "E054 类型嵌套=64（Map 键 / 值交替，上限放行）",
+      "source": "Module m.\n\nRule f given x as Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int, produce Int:\n  Return x.\n",
+      "codes": []
+    },
+    {
+      "name": "E054 类型嵌套=65（Map 键 / 值交替，上限+1）",
+      "source": "Module m.\n\nRule f given x as Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Map Text to Map Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int to Int, produce Int:\n  Return x.\n",
+      "codes": [
+        [
+          "E054",
+          3
+        ]
+      ]
+    },
+    {
+      "name": "E054 类型嵌套=64（result of 失败分量嵌套，上限放行）",
+      "source": "Module m.\n\nRule f given x as result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and Text, produce Int:\n  Return x.\n",
+      "codes": []
+    },
+    {
+      "name": "E054 类型嵌套=65（result of 失败分量嵌套，上限+1）",
+      "source": "Module m.\n\nRule f given x as result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and result of Int and Text, produce Int:\n  Return x.\n",
+      "codes": [
+        [
+          "E054",
+          3
+        ]
+      ]
+    },
+    {
       "name": "E055 缺能力名",
       "source": "Module m.\n\nRule f, produce Int. It performs io [with]:\n  Return 1.\n",
       "codes": [
