@@ -316,7 +316,7 @@ Rule decide given applicant as Applicant, produce Verdict:
    - 取值：路径用点连接，**引擎路径**最多 8 段（超过 → `*`，construct `path-too-long`）；按 UTF-16 码元字典序去重（Java `String.compareTo` 与 JS 默认 `sort` 同序）。规则不读输入时为 `[]`，与 null（未提供，旧引擎）区分。
 2. **补充传播规则**（§11.2 D2 规则表的补遗）：
    - (a) 直接消费第一个参数本身（标量参数如 `given amount`，或整条记录参与比较）→ 路径 `""`（根）。整体转文本 / 序列化仍为 `"*"`。
-   - (b) 字面量 Map 键为空串或含 `.` → `"*"`（点路径无法无歧义表示）。
+   - (b) 字面量 Map 键为空串、含 `.` 或含控制字符（U+0000–U+001F）→ `"*"`，construct `unrepresentable-key`（点路径无法无歧义表示，控制字符会让路径在日志与审计 JSON 中失真；core `InputRefsAnalyzer.representableKey`，ts `UNREPRESENTABLE_KEY_CHAR`）。
    - (c) 第一个参数之外的参数不追踪（§11.2 只定义第一个参数）。
    - **`"*"` 独占**：`"*"` 是顶元；出现 `"*"` 时列表**只含** `["*"]`，因为它已覆盖其余路径，两引擎也不必对「`*` 与具体路径并存」的排序达成一致。
    - **被调函数按模块限定名分类**：R2 之后 Call 目标名是规范全名；它等于本模块某个 Func（`<module>.<name>`），或者是未限定的本模块名，才按同模块调用内联。经 `Use … as Alias` 导入的函数，即使别名与本模块函数同名，也按跨模块调用处理（→ `*`）。
@@ -346,7 +346,9 @@ Rule decide given applicant as Applicant, produce Verdict:
 14. **调用分类细则**（补充第 2 条末句「被调函数按模块限定名分类」）：
     - 未限定名：本模块函数 → 同模块内联；单段 builtin 与运算符 → 消费实参；其余（非局部、非 builtin）→ `cross-module-call` 的 `*`。
     - 限定名：属于本模块（`<模块名>.<函数名>`）→ 同模块内联；首段在 builtin 命名空间白名单（`BUILTIN_NAMESPACES`）内 → 按 builtin 分析（实参被消费，Map.keys / Map.values、Crypto.hash 等特例见第 16 条）；其余一律 `cross-module-call` 的 `*`。
-    - builtin 命名空间白名单（闭集；core `InputRefsAnalyzer.BUILTIN_NAMESPACES`，ts `input-refs.ts` 同名常量，同表）：`Bool`、`Crypto`、`Date`、`Decimal`、`IO`、`Int`、`List`、`Map`、`Maybe`、`Option`、`PII`、`Result`、`Text`、`Verdict`。新增命名空间须同时改两引擎与 parity 夹具。此前「限定名且未被导入即视为 builtin」的写法被取代：未登记的限定名（拼写错误、尚未登记的命名空间）不再被默许为 builtin，而是保守地得到 `*`。
+    - builtin 命名空间白名单（闭集；core `InputRefsAnalyzer.BUILTIN_NAMESPACES`，ts `input-refs.ts` 同名常量，同表）：`Bool`、`Consent`、`Console`、`Crypto`、`Date`、`Db`、`Decimal`、`GDPR`、`Http`、`IO`、`Int`、`List`、`Log`、`Map`、`Maybe`、`Option`、`PII`、`Result`、`Set`、`Text`、`UUID`、`Verdict`（共 22 项；`Consent`、`Db`、`GDPR`、`Set` 只出现在 TS 的效果 / PII / LSP 表中，为两引擎同表而列入）。新增命名空间须同时改两引擎与 parity 夹具。此前「限定名且未被导入即视为 builtin」的写法被取代：未登记的限定名（拼写错误、尚未登记的命名空间）不再被默许为 builtin，而是保守地得到 `*`。
 15. **Match 主语算一次读取**：`Match` 的被匹配表达式在进入分支前即记为消费，不论各分支是否再引用模式变量。这是可靠性所需：分支选择本身取决于主语的值（`Match req.context.tier` 仅凭走了哪个分支就泄露了 `context.tier`），不记则 `inputRefs` 会漏报。模式变量绑定到主语的来源集；各分支取并。
 16. **序列化与迭代特例的取值**：`Map.keys` / `Map.values` 作用于带输入来源的值 → `*`，construct `map-iteration`；`Crypto.hash`、`Int.toString`、`Bool.toString` 作用于输入派生值 → `*`，construct `whole-input-serialized`。已知误报：`Int.toString` 作用于标量叶子（如 `Int.toString(req.context.count)`）并未整体序列化任何记录，但 1.3.0 翻转后会在要求 verifiedInputs 的档案下得到 E708。当前接受该误报以换取实现简单；是否按「标量叶子豁免」收窄，待 X4 生产扫描（§11.4 ⑦ 发布前的只读扫描）给出真实命中数后再定。
 17. **硬前置条件：祖先路径记录的可靠性依赖前缀规则。** 若干形状记录的是**祖先路径**而不是具体叶子，例如 `List.filter(req.context.items, f)` 记 `context.items`，传入整个子记录的调用记该子记录路径。这对「已验证」的判定只有在第 9 条前缀规则成立时才可靠：非叶子引用被满足，当且仅当其下每个出现的叶子都 verified（且至少有一个）。该规则已在 aster-api `VerifiedInputsGate` 实现（aster-api#487）。因此：**前缀规则是 1.3.0 翻转（§11.4 ⑦）的硬前置条件**——翻转所在的 aster-api 版本必须包含 #487，且其回归测试（非叶子引用下存在未验证叶子 → DENY `unverified_input`）在发版前通过；任何绕过或削弱前缀规则的改动都等同于破坏 `inputRefs` 的可靠性，必须同时撤回翻转。
+18. **E708 检查一律重算 `inputRefs`，不信任 IR 自带值。** aster-api 接受用户提交的 Core IR（如 `POST /evaluate-json`），IR 里的 `inputRefs` 可以伪造。因此治理检查器（core `GovernanceChecker.checkInputRefs`，ts 同口径）对声明要求 verifiedInputs 的档案，总是对规则体调用 `InputRefsAnalyzer.analyze` 重新计算，从不读取 IR 已有的 `inputRefs`；这也使不带该字段的旧 IR 照常被检查。分析带记忆化与节点预算，重算代价可接受。
+19. **1.3.0 翻转的补充前置条件（信任边界）：** aster-api 的运行期消费方（guard / from-evidence 读 `RuleMetadata.inputRefs`）面对**不可信 IR**（用户提交的 Core IR、或不是由本通道编译产出的 IR）时，必须在读取前自行重算 `inputRefs`，或把 IR 携带的 `inputRefs` 一律当作 `["*"]`；否则攻击者可在 IR 里写 `inputRefs: []` 绕过前缀规则与 `unverified_input`。只有经本通道编译、`source_hash` 可核对的 IR，才可直接采信其 `inputRefs`。此条与第 17 条并列，同为 §11.4 ⑦ 的硬前置条件。
