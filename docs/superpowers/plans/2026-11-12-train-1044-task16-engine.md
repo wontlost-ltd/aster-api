@@ -129,8 +129,22 @@
   - 模块级值写入 `moduleOnly`。
 - **未知档案在运行期按 `false`**：编译期已报 E705 且无法保存。代价：如果 D5 第 4 项的 `…-verified` 自定义档案在某个注册表版本里被回滚删除，声明它的模块会悄悄变成不要求。见 §4 第 3 条。
 - **评估事件自带输入引用**（I1，PR 15）：
-  - `EvaluationEvidence` 在 `KEY_PROFILE` 旁新增 `KEY_INPUT_REFS = "inputRefs"`（引擎原样路径列表）与 `KEY_VERIFIED_INPUTS_REQUIRED = "verifiedInputsRequired"`。
+  - `EvaluationEvidence` 在 `KEY_PROFILE` 旁新增两个键：
+    - `KEY_INPUT_REFS = "inputRefs"`：**写事件时就已映射好的请求路径**（N2），不是引擎原样路径。from-evidence 拿不到 IR（evaluate-source 不落版本），也无法事后推断评估输入里第一个参数对应哪个键，所以映射必须在写事件时完成。
+    - `KEY_VERIFIED_INPUTS_REQUIRED = "verifiedInputsRequired"`。
   - 只在模块声明档案时写入；无档案事件的 metadata 逐字节不变。
+  - **映射发生在写事件处**（证据形状）：
+    - 评估输入经 `NamedContextMapper.mapContext`（`replay/.../api/convert/NamedContextMapper.java`，由 `DynamicCnlExecutor.java:325-326` 调用）匹配第一个参数。这个映射接受命名 Map（键可能是本地化写法）或位置数组。
+    - 只有当第一个参数**由命名 Map 中的某个键实际匹配**时，才把路径映射为 `context.<实际匹配到的输入键>.<path>`；`""` 映射为 `context.<该键>`。
+    - 位置数组、无法确定匹配键、或路径含 `*` → `["*"]`。
+    - `MappingResult` 新增「第一个参数实际匹配到的输入键」（可为 null），供写事件处使用。
+  - **数据从哪里来**（更正：`PolicyEvaluationResult` 现在没有 RuleMetadata，见 `PolicyEvaluationResult.java:31-40`；evaluate-source 的证据由 `phase.execResult()` 构造，见 `PolicyEvaluationResource.java:654-666`）：
+    - 在 `PolicyEvaluationResult` 和 evaluate-source 的执行结果（`phase.execResult()` 的类型）上新增 `@JsonInclude(NON_NULL) List<String> inputRefs`（已映射）与 `@JsonInclude(NON_NULL) Boolean verifiedInputsRequired`（无档案时为 null）。
+    - 两个字段都是 NON_NULL：`/evaluate` 的响应体、`PolicyEvaluationResultJacksonTest` 的序列化结果对无档案模块不变；缓存中的旧结果缺这两个键，反序列化为 null，按「旧事件」处理。
+  - **大小上限**（N1）：`AuditChainAppender.MAX_METADATA_SIZE = 4096`（`AuditChainAppender.java:44`）。超长 metadata 会被截断成 `substring + "...truncated"`（`:221-228`），变成非法 JSON；`GuardEvidenceDecisionService.metadataOf` 解析失败后返回 `Map.of()`，导致今天的流量也会得到 409 `evidence_not_approvable`。因此：
+    - `inputRefs` 序列化后 **≤ 1024 字节，且 ≤ 32 项**；超过任一上限时整体写 `["*"]`。
+    - 取值理由：路径受 8 段、`context` 深度 ≤ 8 和 255 字符文本限制约束，正常规则的引用集远小于 32 项。1 KB 给现有键（correlationId、ruleId、controls、reason、role、profile、版本与两个哈希、agent 三键、inputSource、locale、dynamicExecution）在各自校验上限下留出约 3 KB。写 `["*"]` 在 1.2.0 下无害（没有档案要求 verifiedInputs），1.3.0 之后是 fail-closed。
+    - 测试 `EvaluationEvidenceSizeTest`：把每个既有键填到其校验上限，再加上 1 KB 的 `inputRefs` 和 `verifiedInputsRequired`，序列化长度必须 < 4096。若实测超出，下调 `inputRefs` 上限并在本节更新数值，**不得**提高 `MAX_METADATA_SIZE`，因为那属于审计链改动。
   - from-evidence 优先读事件里的这两项。这与「版本列取事件行」的既有做法一致，也是 evaluate-source 模块唯一可靠的来源，因为它们没有已保存版本，`ruleMetadata` 必然抛错。
   - 事件里没有这两项（旧事件）时，按 PR 2 的「事件 profile + 注册表」路径判定。
 - **路径映射按入口形状二分**（`GuardInputRefPaths`）：
@@ -139,8 +153,8 @@
     - 标量字段带子路径（`action.x`、`principal_id.x`、`principal_type.x`、`resource_type.x`、`resource_id.x`、`agent_model.x`）→ `*`。
     - `""`、`"*"`、未知首段 → `*`。
     - 映射表是 `GuardActionMapper` 与 `GuardInputRefPaths` 共用的**常量表**，同一个来源。
-  - **证据形状**（from-evidence；评估输入就是请求的 `context`，规则第一个参数名为 `param0`，取自 IR `params[0].name`）：`<path>` → `context.<param0>.<path>`，`""` → `context.<param0>`，`"*"` → `*`。
-  - 「待用户确认」第 1 条按此落地：`""` 在 guard 形状下为 `*`，在证据形状下为 `context.<param0>`。
+  - **证据形状**（from-evidence）：**不在 from-evidence 时映射**。事件里的 `inputRefs` 在写事件时已经映射为 `context.<实际匹配键>.<path>`（见上），from-evidence 直接与请求的输入来源比对。
+  - 「待用户确认」第 1 条按此落地：`""` 在 guard 形状下为 `*`；在证据形状下为 `context.<实际匹配键>`，没有匹配键时为 `*`。
 - `CompileResponse` 新增 `@JsonInclude(NON_NULL) Map<String, List<String>> inputRefs`：键为函数名，值为**引擎原样路径**（作者视角），只有至少一个函数带 `inputRefs` 时才出现。无档案模块的响应逐字节不变。
 
 ---
@@ -158,7 +172,7 @@
 | 3 | aster-lang-core `test/r62-registry-unknown-keys` | X1：`ControlRegistryTest` 加 `requires含未知键时加载成功且忽略`（`verifiedInputs: true` 与 `futureKey: {}` 同在 → 档案登记成功、四个已知字段值不变） | 本用例；另在 `v1.0.43` tag 上 cherry-pick 本用例运行一次，结果贴 PR 描述（证明线上引擎忽略新键） |
 | 4 | aster-lang-ts `test/r62-registry-unknown-keys` | X1：`test/unit/governance/controls-registry-profiles.test.ts` 同名用例 | 同上，`v1.4.0` tag 上跑一次 |
 | 5 | aster-cloud `test/r62-registry-unknown-keys` | X1：扩展现有 `src/__tests__/services/evidence/control-registry-sources.test.ts`（带 `requires.verifiedInputs` / `futureKey` 的注册表经 `profileTitle` 与证据导出读取不抛错、结果不变） | 本文件；随 cloud 下一次常规部署，不进列车 |
-| 6 | aster-lang-ts `fix/304-effect-name-parse` | ts#304，裁定 (a)：`src/parser/type-parser.ts` `parseEffectList` 接受任意基效果名；`src/lower_to_core.ts:342` 不再对未知效果报 E601，改为**按 pure 处理**，与 core 一致。core 的现状：`CoreLowering.java:133` 原样透传效果，`EffectChecker.Effect.fromString`（`EffectChecker.java:55-61`）把未知名映射为 PURE，`ErrorCode.LOWER_UNKNOWN_EFFECT`（`ErrorCode.java:125`）未被使用。core 不改；不新增 E601 源码触发夹具，因为 lowering parity 夹具已写明 lowering 错误不可由源码触发 | `test/unit/parser/` 新增：`It performs teleport.` 解析成功；lowering 后不报 E601；类型检查结果与 `It performs`（无效果）相同，与 core 同口径。另加双引擎对照：同一源码两端都成功，效果视为 pure。`It performs io [Banana]` 维持现状（另案） |
+| 6 | aster-lang-ts `fix/304-effect-name-parse` | ts#304，裁定 (a)：`src/parser/type-parser.ts` `parseEffectList` 接受任意基效果名；`src/lower_to_core.ts:342` 不再对未知效果报 E601，改为在**检查阶段按 pure 处理**，与 core 一致。效果名**仍原样保留**在 IR 的 `effects` 中：core 保留 `effects:["teleport"]`，aster-lang-test `packages/js/src/ir-normalize.ts:233-240` 会比较声明的效果。core 的现状：`CoreLowering.java:133` 原样透传效果，`EffectChecker.Effect.fromString`（`EffectChecker.java:55-61`）把未知名映射为 PURE，`ErrorCode.LOWER_UNKNOWN_EFFECT`（`ErrorCode.java:125`）未被使用。core 不改；不新增 E601 源码触发夹具，因为 lowering parity 夹具已写明 lowering 错误不可由源码触发 | `test/unit/parser/` 新增：`It performs teleport.` 解析成功；lowering 后不报 E601；类型检查结果与 `It performs`（无效果）相同，与 core 同口径。IR 断言 `effects` 为 `["teleport"]`。aster-lang-test 另加一个 tier1-parity 样例 `effect-unknown-name.aster`，用 `--mode=ir` 锁定两端的 `effects` 一致；这个样例随 PR 6 单独提交，不进阶段 B 分支组。`It performs io [Banana]` 维持现状（另案） |
 | 7a | aster-lang-core `fix/250-type-nesting-guard` | core#250，见下文 | 见下文 |
 | 7b | aster-lang-ts `fix/250-type-nesting-guard` | `shared/parse_diagnostics_parity.json` 与 7a 逐字节同步。**按「ts 会降到 300 以下」做计划**：`src/parser/context.ts` 的 `MAX_TYPE_RECURSION_DEPTH` 改为实测值，CHANGELOG 记为行为变化。计数单位两端相同：ts 现在每进入一次 `parseType` 计 1，包括 Map 的键和值、`result of` 的每个分量、`list of` 的元素；core 按同一单位计数（见 §3） | ts parse parity 夹具全部通过；新增「Map 键 / 值与 `result of` 分量都计入深度」用例，两端在上限与上限+1 上结论相同 |
 
@@ -216,7 +230,7 @@
       - 裸 `context` → `context`；
       - `""`、`"*"`、未知首段 → `*`。
     - 映射表的键集合等于 `flatten(<全部字段都填满的 action>).keySet()`；flatten 新增键而映射表漏改时失败。
-    - 证据形状：`amount` → `context.<param0>.amount`，`""` → `context.<param0>`，`*` → `*`。
+    - 证据形状映射放在写事件处，由 PR 15 的 `EvidenceInputRefPathsTest` 覆盖，见下文。
     - 对 `VerifiedInputsGate.presentLeafPaths` 的输出断言：每个 guard 形状的映射结果都能与之对齐（同一请求路径空间）。
   - `VerifiedInputsGateTest`：`engineFieldPathsAreMappedBeforeCompare`、`explicitRefAbsentFromRequestDenies`。
   - 全量 guard 套件（主计划 Global Constraints 命令）。
@@ -372,8 +386,12 @@
   - `src/main/java/io/aster/policy/compiler/GovernanceDiagnostics.java`：
     - `:84-86` 的 `isProfileCode` 纳入 `GOV_PROFILE_INPUT_UNRESOLVABLE`（调用处 `:74`）；
     - 类 Javadoc `:15` 的码表清单与 `:19` 的档案码说明加 E708。
-  - `src/main/java/io/aster/policy/evidence/EvaluationEvidence.java`：新增 `KEY_INPUT_REFS`、`KEY_VERIFIED_INPUTS_REQUIRED`，只在档案模块写入。写入点在 `/evaluate` 与 `/evaluate-source` 发事件处，值取自 `PolicyEvaluationResult` 中的 RuleMetadata；evaluate-source 用其编译产物。
-  - `src/main/java/io/aster/guard/GuardEvidenceDecisionService.java`：按 §1.4，优先使用事件自带的 `inputRefs` 与 `verifiedInputsRequired`，并用证据形状映射。
+  - `src/main/java/io/aster/policy/evidence/EvaluationEvidence.java`：新增 `KEY_INPUT_REFS`、`KEY_VERIFIED_INPUTS_REQUIRED`，只在档案模块写入，并执行 1 KB / 32 项上限（§1.4）。
+  - `src/main/java/io/aster/policy/api/model/PolicyEvaluationResult.java`、evaluate-source 执行结果类型：新增两个 `@JsonInclude(NON_NULL)` 字段（§1.4）。
+  - `replay/src/main/java/io/aster/policy/api/convert/NamedContextMapper.java`：`MappingResult` 新增第一个参数实际匹配的输入键。
+  - 写事件处：`/evaluate` 与 `/evaluate-source` 两个分支（`PolicyEvaluationResource.java:654-666` 一带）。
+  - 新 `src/main/java/io/aster/guard/provenance/EvidenceInputRefPaths.java`：写事件时的证据形状映射。
+  - `src/main/java/io/aster/guard/GuardEvidenceDecisionService.java`：优先使用事件自带的、已映射的 `inputRefs` 与 `verifiedInputsRequired`。
   - `src/main/java/io/aster/policy/rest/model/CompileResponse.java`，以及组装处 `src/main/java/io/aster/policy/rest/PolicyEvaluationResource.java:1026`（`CompileResponse.ok(extractModuleInfo(core), warnings, extractProfile(core))`）。
   - 新 `src/test/java/io/aster/policy/EnginePinGateTest.java`。
 - Tests：
@@ -383,10 +401,21 @@
   - `PolicyCompileResourceTest`：`compileResponseCarriesInputRefs`（档案模块）、`noProfileCompileResponseUnchanged`（键不存在）。
   - `GuardEvidenceDecisionServiceTest`：
     - 用真实 `ProfileRequirements` 与注入注册表，重跑 PR 2 的 fail-open 关闭用例；
-    - `eventCarriedInputRefsUsedForEvaluateSourceModule`：无已保存版本，从事件读 inputRefs，并用证据形状映射成 `context.<param0>.…`；
+    - `eventCarriedInputRefsUsedForEvaluateSourceModule`：无已保存版本，直接使用事件里已映射的 `context.<键>.…`；
     - `eventWithoutInputRefsFallsBackToProfile`：旧事件。
-  - `EvaluationEvidenceTest`：档案模块的事件含两新键；无档案模块的事件 metadata 逐字节不变。
-  - from-evidence goldens（`GuardFromEvidenceResourceTest`）不变。
+  - `EvidenceInputRefPathsTest`：
+    - 命名 Map 输入，键为英文写法与本地化写法各一 → `context.<实际键>.<path>`；
+    - `""` → `context.<键>`；
+    - 位置数组输入 → `["*"]`；
+    - 匹配键缺失 → `["*"]`；
+    - 超过 32 项或 1 KB → `["*"]`。
+  - `EvaluationEvidenceSizeTest`（§1.4）：最大合法 metadata 加上限内的 `inputRefs` < 4096。
+  - 需要更新的 golden 与测试：
+    - `src/test/java/io/aster/policy/evidence/EvaluationEvidenceTest.java`：档案模块的事件含两新键；无档案模块逐字节不变。
+    - `src/test/java/io/aster/policy/rest/EvaluateEvidenceEventTest.java`：声明档案的用例要更新期望的 metadata 键集合，无档案用例不变。
+    - `src/test/java/io/aster/policy/api/model/PolicyEvaluationResultJacksonTest.java`：保持不变，作为 NON_NULL 的回归测试；新增一例，验证缺少两个新键的旧 JSON 能正常反序列化。
+    - aster-api 中没有导出证据包时枚举 metadata 键的代码；证据包导出在 aster-cloud，只按已知键读取，新增键不影响它（cloud 的展示属 ⑥）。
+  - `GuardFromEvidenceResourceTest` **不需要改**：已核对，它的夹具事件都不带 `profile`。`appendEvaluation`（`:92-96`）手写的 metadata 没有 profile 键；`appendEvaluateSourceEvaluation`（`:218-221`）构造 `EvaluationEvidence` 时 profile 参数为 `null`。因此新键不会写入，16 例结果不变。
   - 全量 guard 套件与全量 `:replay:test :test`。
 - 提交信息：`feat(guard): 读取引擎 inputRefs 与 verifiedInputs，E708 定为 error（ADR 0046 §11 D2/D4）`。
 - 部署后，Task 16 与 X1–X3 关闭，X4 计划可以开工。1.3.0 仍要等 X4 完成；而且翻转前产生的旧评估事件没有 `inputRefs`，会走「profile + 注册表」路径，要求 verifiedInputs 时 DENY `input_refs_unavailable`。
@@ -398,12 +427,12 @@
 | issue | 结论 | 理由 |
 |---|---|---|
 | aster-lang-core#250 类型嵌套守卫 | **进本列车**（PR 7a/7b，aster-api 副本随 PR 14） | 与 #249 同一套文件与测试范式（`AsterCustomLexer` 词法期预闸 + `NestingGuardStackSafetyTest` 显式栈线程），和治理改动不共享文件。阈值：在 512K / 1M 栈、JIT / `-Xint` 下实测首次溢出深度，取 1M `-Xint` 值的一半以下；按 issue 给出的 1M JIT 约 525 层估算，结果会**低于 300**，所以计划按两端同降执行，ts 改常量并在 CHANGELOG 记为行为变化。**计数单位两端统一**：以 ts 现行口径为准，每进入一次类型解析计 1，包括 `list of` 的元素、`map of` 的键和值、`result of` 的每个分量、`option of`。core 的词法期预闸按同一组类型构造词计数，不能只数 `list of` 链。夹具加「上限放行 / 上限+1 E054」，并分别覆盖 list 链、map 键 / 值交替、result 嵌套三种形态，三份副本（ts / core / aster-api）逐字节相同。线上已有 aster-api#474 兜底（StackOverflowError → E054），所以风险低，收益是去掉对兜底的依赖 |
-| aster-lang-ts#304 效果名 TS 比 Java 严 | **进本列车**（PR 6，仅 ts） | 裁定 (a)：core 并不报 E601。`ErrorCode.LOWER_UNKNOWN_EFFECT` 未被使用，`CoreLowering.java:133` 透传效果，`EffectChecker.Effect.fromString`（`:55-61`）把未知名视为 PURE；报 E601 的只有 ts（`lower_to_core.ts:342`）。因此 ts 改为接受未知效果名、按 pure 处理，与 core 对齐。这对生产行为没有影响：aster-api 走 core，一直接受这类源码。不动码表、overlay 与共享 parity 夹具，与阶段 B 不冲突。`performs io [Banana]` 的能力名问题另案 |
+| aster-lang-ts#304 效果名 TS 比 Java 严 | **进本列车**（PR 6，仅 ts） | 裁定 (a)：core 并不报 E601。`ErrorCode.LOWER_UNKNOWN_EFFECT` 未被使用，`CoreLowering.java:133` 透传效果，`EffectChecker.Effect.fromString`（`:55-61`）把未知名视为 PURE；报 E601 的只有 ts（`lower_to_core.ts:342`）。因此 ts 改为接受未知效果名：效果名保留在 IR 的 `effects` 中，只在检查阶段按 pure 处理，与 core 对齐。这对生产行为没有影响：aster-api 走 core，一直接受这类源码。不动码表、overlay 与共享 parity 夹具，与阶段 B 不冲突。`performs io [Banana]` 的能力名问题另案 |
 | aster-lang-core#245 枚举 `is` 比较 | **推迟到 1.0.45** | 要改 ANTLR 文法（`softComparator` 谓词），需要两引擎先约定 IR 形状（issue 自述 TS 运行时语义未验证），还要 truffle eval parity（L3）。新构造也要在 `inputRefs` 传播表里定义规则，与 X2 的分析器同车会把两类 parity 风险叠在一起。它是「Java 更严」（拒绝正确代码），不会产生错误结果，没有线上事故压力 |
 
 ## 4. 待用户确认（替代审查给出的建议裁定，状态均为「**proposed — pending user confirmation**」；确认前按此执行）
 
-1. **根消费路径 `""`**（标量参数、整记录比较）——proposed：保留 `""`，aster-api 按入口形状映射：guard 形状 → `*`，证据形状 → `context.<param0>`。备选是编译期直接记 `*`，但那样所有标量参数的档案规则在 1.3.0 后都会报 E708。
+1. **根消费路径 `""`**（标量参数、整记录比较）——proposed：保留 `""`，aster-api 按入口形状映射：guard 形状 → `*`；证据形状在写事件时映射为 `context.<实际匹配键>`，没有匹配键时为 `*`。备选是编译期直接记 `*`，但那样所有标量参数的档案规则在 1.3.0 后都会报 E708。
 2. **引擎产出源码字段路径，aster-api 负责映射**（更正第 7 条）——proposed：采用，并按 I1 分两种形状映射（§1.4）。备选是由引擎认识 guard 形状，但那会把 guard 契约耦合进编译器。
 3. **未知档案在运行期**——proposed：不要求 verifiedInputs，计 WARN 与 counter。已知风险：D5 第 4 项的 `…-verified` 自定义档案如果在注册表回滚中被删除，声明它的模块会悄悄降为不要求；回滚注册表前须先扫描声明该档案的策略。
 4. **1.3.0 翻转需要引擎列车**（更正第 6 条）——proposed：确认。X4 按「locales + core 副本 + 列车 + aster-api pin」排期，前置条件中加入「评估事件自带 `inputRefs` 的 PR 15 已部署」。
@@ -435,3 +464,8 @@
     - 五仓 main 重跑 CI；
     - 行号更正；
     - 其他测试补充。
+  - 复审又提出 N1–N3，本版已全部采纳：
+    - 事件 `inputRefs` 加大小上限；
+    - 证据形状路径改为写事件时映射，并更正 `PolicyEvaluationResult` 的描述；
+    - #304 保留 IR 中的效果名；
+    - 列出 PR 15 需要更新的 golden。
