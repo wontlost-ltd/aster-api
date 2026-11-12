@@ -183,11 +183,13 @@ public class GuardEvidenceDecisionService {
    */
   GuardDecisionDraft gate(GuardDecisionDraft draft, GuardActionRequest.Action action, Map<String, Object> event) {
     String profile = text(event, EvaluationEvidence.KEY_PROFILE);
+    // 在读元数据之前判定：它的异常不是「元数据读不到」，不计 counter，原样上抛
+    boolean profileRequires = profileRequirements.verifiedInputsRequired(profile);
     RuleMetadata meta;
     try {
-      meta = evidenceShape(ruleMetadata(draft, event), profileRequirements.verifiedInputsRequired(profile));
+      meta = evidenceShape(ruleMetadata(draft, event), profileRequires);
     } catch (RuntimeException e) {
-      return withoutRuleMetadata(draft, profile, e);
+      return withoutRuleMetadata(draft, profile, profileRequires, e);
     }
     return VerifiedInputsGate.check(meta, draft.inputSources(), VerifiedInputsGate.presentLeafPaths(action))
         .map(denial -> draft.denyUnverified(denial.code(), denial.unverifiedFields()))
@@ -213,7 +215,8 @@ public class GuardEvidenceDecisionService {
   }
 
   /** 元数据读不到：按事件档案判定（未知档案按不要求，ADR 0046 §11.6 第 6 条）。 */
-  private GuardDecisionDraft withoutRuleMetadata(GuardDecisionDraft draft, String profile, RuntimeException e) {
+  private GuardDecisionDraft withoutRuleMetadata(GuardDecisionDraft draft, String profile, boolean profileRequires,
+                                                 RuntimeException e) {
     metadataUnavailable.increment();
     if (isBlank(profile)) {
       LOG.debugf("from-evidence 读不到规则元数据，事件无档案: %s.%s: %s", draft.policyModule(), draft.policyFunction(),
@@ -222,7 +225,7 @@ public class GuardEvidenceDecisionService {
       LOG.warnf("from-evidence 读不到规则元数据，按事件档案 %s 判定: %s.%s: %s", profile, draft.policyModule(),
           draft.policyFunction(), e.getMessage());
     }
-    return profileRequirements.verifiedInputsRequired(profile)
+    return profileRequires
         ? draft.denyUnverified(GuardReasonCode.INPUT_REFS_UNAVAILABLE, List.of())
         : draft;
   }

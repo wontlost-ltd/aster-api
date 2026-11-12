@@ -221,4 +221,17 @@ class GuardEvidenceDecisionServiceTest {
     assertThat(gated.reasonCode()).isEqualTo(GuardReasonCode.UNVERIFIED_INPUT);
     assertThat(gated.unverifiedFields()).containsExactly("*");
   }
+
+  /** 档案要求查询自身抛错：原样上抛，不读元数据，不计入「元数据读不到」的 counter。 */
+  @Test
+  void profileLookupFailurePropagatesAndIsNotCountedAsMetadataUnavailable() {
+    when(profileRequirements.verifiedInputsRequired("eu-ai-act-high-risk"))
+        .thenThrow(new IllegalStateException("registry-broken"));
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> service.gate(pending(), action(), event(7L, "eu-ai-act-high-risk")))
+        .isInstanceOf(IllegalStateException.class).hasMessage("registry-broken");
+    assertThat(unavailableCount()).isZero();
+    verify(evaluationService, never()).ruleMetadata(any(), any(), any(), any());
+  }
 }
