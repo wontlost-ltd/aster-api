@@ -25,6 +25,7 @@ class AuditChainAppenderTest {
   static final String TENANT = "tenant-guard-appender";
   @Inject AuditChainAppender appender;
   @Inject BlockingDbTestHelper db;
+  @Inject AuditChainVerifier verifier;
 
   @BeforeEach void clean() { db.executeAsAuditMaintenance("DELETE FROM audit_logs WHERE tenant_id = '" + TENANT + "'"); }
 
@@ -49,6 +50,31 @@ class AuditChainAppenderTest {
     var appended = appender.appendSync(event(Map.of("decisionId", "d-3")));
     AuditLog row = AuditLog.findById(appended.auditId());
     assertThat(AuditHashPayload.digest(row, row.hashVersion)).isEqualTo(row.currentHash);
+  }
+
+  /** aster-api#498：超列宽的 error_message / performed_by / 策略标识列截断后照常入链，哈希按实际落库值计算，验链通过。 */
+  @Test void 截断后的超长列照常入链且验链通过() {
+    Instant start = Instant.now().minusSeconds(1);
+    String performedBy = "1.1.1.1 ".repeat(12).substring(0, 95); // 脱敏后约 190 字符
+    AuditEvent oversized = new AuditEvent(EventType.ACTION_GUARD_DECISION, Instant.now(), TENANT, "m".repeat(300),
+        "f".repeat(300), "p".repeat(300), null, null, performedBy, false, 12L, "e".repeat(999) + "\uD83D\uDE00" + "boom ".repeat(2_000),
+        Map.of("decisionId", "d-clip"), null, null, null, null);
+
+    appender.appendSync(event(Map.of("decisionId", "d-before")));
+    var clipped = appender.appendSync(oversized);
+    appender.appendSync(event(Map.of("decisionId", "d-after")));
+
+    AuditLog row = AuditLog.findById(clipped.auditId());
+    // 列宽边界落在代理对中间：整对舍去，落库值与哈希输入一致（孤立代理项经 JDBC 会被改写，验链即失败）
+    assertThat(row.errorMessage).isEqualTo("e".repeat(999));
+    assertThat(row.performedBy).hasSize(100).startsWith("***.***.***.***");
+    assertThat(row.policyModule).hasSize(200);
+    assertThat(row.policyFunction).hasSize(200);
+    assertThat(row.policyId).hasSize(100);
+    assertThat(AuditHashPayload.digest(row, row.hashVersion)).isEqualTo(row.currentHash);
+    ChainVerificationResult result = verifier.verifyChain(TENANT, start, Instant.now().plusSeconds(1));
+    assertThat(result.isValid()).as(result.getReason()).isTrue();
+    assertThat(result.getRecordsVerified()).isEqualTo(3);
   }
 
   @Test void 失败时不写行() {
