@@ -142,9 +142,10 @@
     - 在 `PolicyEvaluationResult` 和 evaluate-source 的执行结果（`phase.execResult()` 的类型）上新增 `@JsonInclude(NON_NULL) List<String> inputRefs`（已映射）与 `@JsonInclude(NON_NULL) Boolean verifiedInputsRequired`（无档案时为 null）。
     - 两个字段都是 NON_NULL：`/evaluate` 的响应体、`PolicyEvaluationResultJacksonTest` 的序列化结果对无档案模块不变；缓存中的旧结果缺这两个键，反序列化为 null，按「旧事件」处理。
   - **大小上限**（N1）：`AuditChainAppender.MAX_METADATA_SIZE = 4096`（`AuditChainAppender.java:44`）。超长 metadata 会被截断成 `substring + "...truncated"`（`:221-228`），变成非法 JSON；`GuardEvidenceDecisionService.metadataOf` 解析失败后返回 `Map.of()`，导致今天的流量也会得到 409 `evidence_not_approvable`。因此：
-    - `inputRefs` 序列化后 **≤ 1024 字节，且 ≤ 32 项**；超过任一上限时整体写 `["*"]`。
-    - 取值理由：路径受 8 段、`context` 深度 ≤ 8 和 255 字符文本限制约束，正常规则的引用集远小于 32 项。1 KB 给现有键（correlationId、ruleId、controls、reason、role、profile、版本与两个哈希、agent 三键、inputSource、locale、dynamicExecution）在各自校验上限下留出约 3 KB。写 `["*"]` 在 1.2.0 下无害（没有档案要求 verifiedInputs），1.3.0 之后是 fail-closed。
-    - 测试 `EvaluationEvidenceSizeTest`：把每个既有键填到其校验上限，再加上 1 KB 的 `inputRefs` 和 `verifiedInputsRequired`，序列化长度必须 < 4096。若实测超出，下调 `inputRefs` 上限并在本节更新数值，**不得**提高 `MAX_METADATA_SIZE`，因为那属于审计链改动。
+    - `inputRefs` 序列化后 **≤ 512 字节，且 ≤ 32 项**（原定 1024，实测下调，见下）；超过任一上限时整体写 `["*"]`。
+    - 取值理由：路径受 8 段、`context` 深度 ≤ 8 和 255 字符文本限制约束，正常规则的引用集远小于 32 项。原定 1 KB 给现有键（correlationId、ruleId、controls、reason、role、profile、版本与两个哈希、agent 三键、inputSource、locale、dynamicExecution）在各自校验上限下留出约 3 KB。写 `["*"]` 在 1.2.0 下无害（没有档案要求 verifiedInputs），1.3.0 之后是 fail-closed。
+    - 测试 `EvaluationEvidenceSizeTest`：把每个既有键填到其校验上限，再加上上限内的 `inputRefs` 和 `verifiedInputsRequired`，序列化长度必须 < 4096。若实测超出，下调 `inputRefs` 上限并在本节更新数值，**不得**提高 `MAX_METADATA_SIZE`，因为那属于审计链改动。
+    - **实测结果（PR 15 / aster-api#492）**：其余键填到校验上限后约占 3524 字符，只剩约 570，因此上限定为 **512 字节**；ADR 0041 与 ADR 0046 §11.6 第 4 条已同步。
   - from-evidence 优先读事件里的这两项。这与「版本列取事件行」的既有做法一致，也是 evaluate-source 模块唯一可靠的来源，因为它们没有已保存版本，`ruleMetadata` 必然抛错。
   - **要求项永远在消费时重算**（替代审查裁定 1）：是否要求 verifiedInputs 由事件 `profile` + **当前**注册表判定（按事件版本取到的元数据若显示要求，同样算要求）；事件里的 `verifiedInputsRequired` 是写事件时的快照，只供审计，**不参与判定**。否则 1.3.0 翻转前写下、`verifiedInputsRequired=false` 的事件在翻转后会放行未验证输入。事件自带的 `inputRefs` 是编译事实，照常使用。
   - from-evidence 引用集的优先级：事件 `inputRefs` → 按事件 `policyVersionId` 取的 IR `inputRefs`（引擎原样路径，缺写事件时的匹配键，一律按 `*`）→ 都没有且要求 → DENY `input_refs_unavailable`。
@@ -388,7 +389,7 @@
   - `src/main/java/io/aster/policy/compiler/GovernanceDiagnostics.java`：
     - `:84-86` 的 `isProfileCode` 纳入 `GOV_PROFILE_INPUT_UNRESOLVABLE`（调用处 `:74`）；
     - 类 Javadoc `:15` 的码表清单与 `:19` 的档案码说明加 E708。
-  - `src/main/java/io/aster/policy/evidence/EvaluationEvidence.java`：新增 `KEY_INPUT_REFS`、`KEY_VERIFIED_INPUTS_REQUIRED`，只在档案模块写入，并执行 1 KB / 32 项上限（§1.4）。
+  - `src/main/java/io/aster/policy/evidence/EvaluationEvidence.java`：新增 `KEY_INPUT_REFS`、`KEY_VERIFIED_INPUTS_REQUIRED`，只在档案模块写入，并执行 512 字节 / 32 项上限（§1.4）。
   - `src/main/java/io/aster/policy/api/model/PolicyEvaluationResult.java`、evaluate-source 执行结果类型：新增两个 `@JsonInclude(NON_NULL)` 字段（§1.4）。
   - `replay/src/main/java/io/aster/policy/api/convert/NamedContextMapper.java`：`MappingResult` 新增第一个参数实际匹配的输入键。
   - 写事件处：`/evaluate` 与 `/evaluate-source` 两个分支（`PolicyEvaluationResource.java:654-666` 一带）。
@@ -411,7 +412,7 @@
     - `""` → `context.<键>`；
     - 位置数组输入 → `["*"]`；
     - 匹配键缺失 → `["*"]`；
-    - 超过 32 项或 1 KB → `["*"]`。
+    - 超过 32 项或 512 字节 → `["*"]`。
   - `EvaluationEvidenceSizeTest`（§1.4）：最大合法 metadata 加上限内的 `inputRefs` < 4096。
   - 需要更新的 golden 与测试：
     - `src/test/java/io/aster/policy/evidence/EvaluationEvidenceTest.java`：档案模块的事件含两新键；无档案模块逐字节不变。
