@@ -28,6 +28,8 @@ public record EvaluationFailure(int status, String code, String message, String 
     public static final String FUNCTION_NOT_FOUND = "function_not_found";
     public static final String FUNCTION_NOT_EXECUTABLE = "function_not_executable";
     public static final String INVALID_REQUEST = "invalid_request";
+    /** 提交的 Core IR 不是 v2（缺 schemaVersion、类型不对或值不为 2，ADR 0055 §5）。 */
+    public static final String UNSUPPORTED_SCHEMA_VERSION = aster.core.ir.CoreIrJson.UNSUPPORTED_SCHEMA_VERSION;
     public static final String EVALUATION_FAILED = "evaluation_failed";
     public static final String EXECUTION_TIMEOUT = "execution_timeout";
 
@@ -81,7 +83,8 @@ public record EvaluationFailure(int status, String code, String message, String 
         }
         if (t instanceof DynamicCnlExecutor.DynamicExecutionException e) {
             return switch (e.kind()) {
-                case INVALID_INPUT -> new EvaluationFailure(400, INVALID_REQUEST, e.getMessage());
+                // 细分码（如 Core IR 读方的 unsupported_schema_version）优先，否则统一 invalid_request
+                case INVALID_INPUT -> new EvaluationFailure(400, e.code() != null ? e.code() : INVALID_REQUEST, e.getMessage());
                 case FUNCTION_NOT_FOUND -> new EvaluationFailure(404, FUNCTION_NOT_FOUND, e.getMessage());
                 // 超过墙钟上限：原因在策略本身（如指数级递归），重试无益，归 422；消息只含上限值
                 case TIMEOUT -> new EvaluationFailure(422, EXECUTION_TIMEOUT, e.getMessage());

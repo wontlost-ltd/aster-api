@@ -31,6 +31,7 @@ public final class ValueShapeException extends DynamicExecutionException {
     }
 
     /** 机器可读错误码，REST 响应的 {@code code} 字段原样使用。 */
+    @Override
     public String code() {
         return code;
     }

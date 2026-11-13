@@ -44,7 +44,8 @@ import java.util.Objects;
 import java.util.Set;
 
 import io.aster.policy.cache.PolicyVersionResolutionCache;
-import io.aster.common.JacksonMappers;
+import aster.core.ir.CoreIrFormatException;
+import aster.core.ir.CoreIrJson;
 import aster.core.ir.CoreModel;
 import org.jboss.logging.Logger;
 
@@ -415,17 +416,18 @@ public class PolicyEvaluationService {
     }
 
     /**
-     * 把 Core IR JSON 读成 {@link CoreModel.Module}，仅用于提取规则元数据。
-     * 失败时记 warn 并返回 null（→ {@link RuleMetadata#NONE}），绝不让评估因元数据失败。
+     * 把 Core IR JSON 经 {@link CoreIrJson#read} 严格读成 {@link CoreModel.Module}（ADR 0055 §5），仅用于提取规则元数据。
+     * 非 v2 产物被拒收：记 warn 并返回 null（→ {@link RuleMetadata#NONE}）；执行时 Truffle 同样严格拒收该产物，
+     * 评估会以执行失败结束，不会带着空元数据成功。
      */
-    private static CoreModel.Module parseCoreModule(String coreJson) {
+    static CoreModel.Module parseCoreModule(String coreJson) {
         if (coreJson == null) {
             return null;
         }
         try {
-            return JacksonMappers.LENIENT.readValue(coreJson, CoreModel.Module.class);
-        } catch (Exception e) {
-            LOG.warnf(e, "解析 Core IR 以提取规则元数据失败，按无元数据处理");
+            return CoreIrJson.read(coreJson);
+        } catch (CoreIrFormatException e) {
+            LOG.warnf("Core IR 不是合法的 v2 产物，按无规则元数据处理: %s", e.getMessage());
             return null;
         }
     }
@@ -977,60 +979,31 @@ public class PolicyEvaluationService {
     }
 
     /**
-     * 从 Core JSON 解析函数参数信息
+     * 从 Core IR JSON 读出目标函数的形参（名字 + 类型节点 JSON）。
      *
-     * Core JSON 结构示例:
-     * {
-     *   "decls": [
-     *     {
-     *       "@type": "Func",
-     *       "name": "evaluateLoanEligibility",
-     *       "params": [
-     *         { "name": "申请", "type": "..." },
-     *         { "name": "年龄", "type": "..." }
-     *       ]
-     *     }
-     *   ]
-     * }
+     * <p>树经 {@link CoreIrJson#readTree} 读入（ADR 0055 §5：版本预检 + schema + 不变式）；非 v2 产物抛
+     * {@link IllegalArgumentException}，由 {@code validatePolicy} 报告为「策略不可用」，而不是给出空形参表。
      */
-    private java.util.List<ParameterInfo> extractParametersFromCoreJson(String coreJson, String functionName) {
+    static java.util.List<ParameterInfo> extractParametersFromCoreJson(String coreJson, String functionName) {
         java.util.List<ParameterInfo> parameters = new java.util.ArrayList<>();
         if (coreJson == null || coreJson.isBlank()) {
             return parameters;
         }
-
+        com.fasterxml.jackson.databind.JsonNode root;
         try {
-            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-            com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(coreJson);
-            com.fasterxml.jackson.databind.JsonNode decls = root.get("decls");
-
-            if (decls == null || !decls.isArray()) {
-                return parameters;
-            }
-
-            for (com.fasterxml.jackson.databind.JsonNode decl : decls) {
-                // 支持两种格式：@type (旧版) 和 kind (新版 Core IR)
-                String type = decl.has("@type") ? decl.get("@type").asText()
-                    : (decl.has("kind") ? decl.get("kind").asText() : null);
-                String name = decl.has("name") ? decl.get("name").asText() : null;
-
-                // 查找 Func 类型声明
-                if ("Func".equals(type) && functionName.equals(name)) {
-                    com.fasterxml.jackson.databind.JsonNode params = decl.get("params");
-                    if (params != null && params.isArray()) {
-                        for (com.fasterxml.jackson.databind.JsonNode param : params) {
-                            String paramName = param.has("name") ? param.get("name").asText() : "unknown";
-                            String paramType = param.has("type") ? param.get("type").toString() : "Object";
-                            parameters.add(new ParameterInfo(paramName, paramType, paramType));
-                        }
-                    }
-                    break;
-                }
-            }
-        } catch (Exception e) {
-            LOG.warnf(e, "解析 Core JSON 参数信息失败: %s", functionName);
+            root = CoreIrJson.readTree(coreJson);
+        } catch (CoreIrFormatException e) {
+            throw new IllegalArgumentException("Core IR 不是合法的 v2 产物: " + e.getMessage(), e);
         }
-
+        for (com.fasterxml.jackson.databind.JsonNode decl : root.path("decls")) {
+            if ("Func".equals(decl.path("kind").asText()) && functionName.equals(decl.path("name").asText())) {
+                for (com.fasterxml.jackson.databind.JsonNode param : decl.path("params")) {
+                    String paramType = param.path("type").toString();
+                    parameters.add(new ParameterInfo(param.path("name").asText(), paramType, paramType));
+                }
+                break;
+            }
+        }
         return parameters;
     }
 

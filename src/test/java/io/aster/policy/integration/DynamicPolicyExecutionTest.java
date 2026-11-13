@@ -300,14 +300,7 @@ class DynamicPolicyExecutionTest {
     }
 
     /**
-     * 创建测试用的 PolicyArtifact（包含简单的 Core JSON）
-     *
-     * Core JSON 格式遵循 aster-lang-truffle 的 CoreModel.java 定义：
-     * - Module: { name: string, decls: Decl[] }
-     * - Func: { kind: "Func", name, params, ret, body }
-     * - Body: { kind: "Block", statements: Stmt[] }（core 的 CoreModel 要求类型标记，规则元数据按它解析）
-     * - Return: { kind: "Return", expr: Expr }
-     * - Bool: { kind: "Bool", value: boolean }
+     * 创建测试用的 PolicyArtifact：Core IR v2 产物（形状由 core / locales 的 core-ir.v2.schema.json 定义）。
      */
     private PolicyArtifact createTestArtifact(Long versionId) {
         PolicyArtifact artifact = new PolicyArtifact();
@@ -315,32 +308,13 @@ class DynamicPolicyExecutionTest {
         artifact.policyVersionId = versionId;
         artifact.artifactType = "CORE_JSON";
 
-        // 创建符合 CoreModel.Module 格式的 Core JSON
-        String coreJson = """
-            {
-              "name": "%s",
-              "decls": [
-                {
-                  "kind": "Func",
-                  "name": "%s",
-                  "params": [
-                    {"name": "amount", "type": {"kind": "TypeName", "name": "Int"}},
-                    {"name": "term", "type": {"kind": "TypeName", "name": "Int"}}
-                  ],
-                  "ret": {"kind": "TypeName", "name": "Bool"},
-                  "body": {
-                    "kind": "Block",
-                    "statements": [
-                      {
-                        "kind": "Return",
-                        "expr": {"kind": "Bool", "value": true}
-                      }
-                    ]
-                  }
-                }
-              ]
-            }
-            """.formatted(TEST_MODULE, TEST_FUNCTION);
+        // 预编译产物即 Core IR v2 规范字节（ADR 0055）：由 CNL 经名称解析后序列化，与 PolicyCompiler 写入的形状一致
+        String coreJson = aster.core.ir.CoreIrJson.serialize(io.aster.policy.parser.InProcessCnlParser.parse("""
+            Module %s.
+
+            Rule %s given amount as Int, term as Int, produce Bool:
+              Return true.
+            """.formatted(TEST_MODULE, TEST_FUNCTION), null, null).core());
 
         artifact.content = coreJson.getBytes(StandardCharsets.UTF_8);
         artifact.contentSha256 = "test-sha256";

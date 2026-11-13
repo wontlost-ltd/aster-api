@@ -1,7 +1,6 @@
 package io.aster.policy.rest;
 
-import aster.core.ir.CoreModel;
-import aster.core.lowering.CoreLowering;
+import aster.core.ir.CoreIrJson;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.common.JacksonMappers;
@@ -14,7 +13,6 @@ import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.entity.VersionStatus;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.policy.stability.ToolchainIdentityProvider;
-import io.aster.replay.core.parser.ReplayMappers;
 import io.aster.security.apikey.InternalCallerSigning;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
@@ -431,6 +429,30 @@ class EvaluateEvidenceEventTest {
         .doesNotContainKeys("profile", "inputRefs", "verifiedInputsRequired");
   }
 
+  /**
+   * ADR 0055：aster-lang-ts 2.0.0 {@code compile().coreJson} 产出的 Core IR v2 直接提交即可执行，
+   * 响应与证据事件带注解里的 ruleId / controls。夹具 {@code core-ir-v2/ts-v2-rule-metadata.json}
+   * 由 ts 2.0.0 的 {@code compile()} 生成（源码见本用例的期望值）。
+   */
+  @Test
+  void ts_v2_ir_executes_with_rule_metadata() throws Exception {
+    String coreIr;
+    try (var in = EvaluateEvidenceEventTest.class.getResourceAsStream("/core-ir-v2/ts-v2-rule-metadata.json")) {
+      coreIr = new String(java.util.Objects.requireNonNull(in).readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+    }
+    Response resp = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
+        .body(Map.of("policy", coreIr, "context", Map.of("amount", 1), "agent", AGENT))
+        .post("/api/v1/policies/evaluate-json");
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("decision.outcome")).isEqualTo("ALLOW");
+    assertThat(resp.jsonPath().getString("ruleId")).isEqualTo("TS-V2-001");
+    assertThat(resp.jsonPath().getList("controls", String.class)).containsExactly("EU_AI_ACT:ART14");
+
+    Map<String, Object> md = metadataOf(awaitEvent(TENANT, resp.jsonPath().getString("evidence.correlationId")));
+    assertThat(md).containsEntry("ruleId", "TS-V2-001").containsEntry("controls", List.of("EU_AI_ACT:ART14"))
+        .containsEntry("sourceFormat", "json");
+  }
+
   /** ADR 0041 §11 D2：/evaluate、/evaluate-source、/evaluate-json 的事件（含失败与无 agent）都带 inputSource=declared。 */
   @Test
   void evaluateEventsCarryInputSourceDeclared() throws Exception {
@@ -534,9 +556,8 @@ class EvaluateEvidenceEventTest {
 
   private static String coreIrJsonOf(String source, String module) throws Exception {
     String cnl = source.replaceFirst("Module [a-z.]+\\.", "Module " + module + ".");
-    var parsed = InProcessCnlParser.parse(cnl, null, null);
-    CoreModel.Module core = new CoreLowering().lowerModule(parsed.module());
-    return ReplayMappers.DEFAULT.writeValueAsString(core);
+    // 与客户端提交的一致：名称解析后的 Core IR v2 规范字节（档案模块的 inputRefs 在名称解析后才写入）
+    return CoreIrJson.serialize(InProcessCnlParser.parse(cnl, null, null).core());
   }
 
   /** HMAC 已验证的 /evaluate-source 请求；simulate 只对已验证调用方生效。 */

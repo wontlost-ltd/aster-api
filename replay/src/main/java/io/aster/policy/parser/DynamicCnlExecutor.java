@@ -2,6 +2,8 @@ package io.aster.policy.parser;
 
 import aster.core.ast.Module;
 import aster.core.ast.Decl;
+import aster.core.ir.CoreIrFormatException;
+import aster.core.ir.CoreIrJson;
 import aster.core.ir.CoreModel;
 import aster.core.module.LinkException;
 import aster.core.module.ModuleGraphLinker;
@@ -311,16 +313,14 @@ public class DynamicCnlExecutor {
             String coreIrJson, Object context, String functionName) {
         long startTime = System.currentTimeMillis();
         try {
+            // ADR 0055 §5：提交的 IR 只经 core CoreIrJson.read 严格读入（版本预检 → schema → 严格绑定 → 不变式）；
+            // 版本错误带 unsupported_schema_version，其余带 invalid_request，REST 层据此回 400。
             CoreModel.Module coreModule;
             try {
-                coreModule = MAPPER.readValue(coreIrJson, CoreModel.Module.class);
-            } catch (Exception e) {
+                coreModule = CoreIrJson.read(coreIrJson);
+            } catch (CoreIrFormatException e) {
                 throw new DynamicExecutionException(
-                    "Core IR JSON 解析失败: " + e.getMessage(), e, DynamicExecutionException.Kind.INVALID_INPUT);
-            }
-            if (coreModule == null || coreModule.decls == null) {
-                throw new DynamicExecutionException("Core IR JSON 不含任何声明",
-                    DynamicExecutionException.Kind.INVALID_INPUT);
+                    "Core IR JSON 解析失败: " + e.getMessage(), e, DynamicExecutionException.Kind.INVALID_INPUT, e.code());
             }
 
             List<String> functionNames = new java.util.ArrayList<>();
@@ -993,6 +993,8 @@ public class DynamicCnlExecutor {
         }
 
         private final Kind kind;
+        /** 细分错误码（如 Core IR 读方的 {@code unsupported_schema_version}）；null 表示按 kind 的默认码。 */
+        private final String code;
 
         public DynamicExecutionException(String message) {
             this(message, Kind.EXECUTION);
@@ -1005,15 +1007,26 @@ public class DynamicCnlExecutor {
         public DynamicExecutionException(String message, Kind kind) {
             super(message);
             this.kind = kind;
+            this.code = null;
         }
 
         public DynamicExecutionException(String message, Throwable cause, Kind kind) {
+            this(message, cause, kind, null);
+        }
+
+        public DynamicExecutionException(String message, Throwable cause, Kind kind, String code) {
             super(message, cause);
             this.kind = kind;
+            this.code = code;
         }
 
         public Kind kind() {
             return kind;
+        }
+
+        /** 细分错误码；null 时由调用方按 {@link #kind()} 取默认码。 */
+        public String code() {
+            return code;
         }
 
         /** 看门狗中止执行时的统一异常：消息只含上限值，不透出 guest 栈或内部细节。 */

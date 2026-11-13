@@ -327,15 +327,17 @@ public class PolicyEvaluationResource {
      *
      * POST /api/policies/evaluate-json
      * Headers: X-Tenant-Id (optional, defaults to "default")
-     * Body: { "policy": "{...Core IR JSON...}", "context": {...} }
+     * Body: { "policy": "{...Core IR v2 JSON...}", "context": {...} }
      */
     @POST
     @Path("/evaluate-json")
     @Operation(summary = "直接评估请求携带的 Core IR JSON",
-        description = "失败时返回对应 HTTP 状态，响应体仍为 EvaluationResponse：error 为说明，code 为机器可读错误码。")
+        description = "policy 须为 Core IR v2（schemaVersion 为整数 2，如 aster-lang-ts compile().coreJson），按 schema 严格读入。"
+            + "失败时返回对应 HTTP 状态，响应体仍为 EvaluationResponse：error 为说明，code 为机器可读错误码。")
     @APIResponse(responseCode = "200", description = "评估成功",
         content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
-    @APIResponse(responseCode = "400", description = "Core IR 或上下文不合法（code=invalid_request）",
+    @APIResponse(responseCode = "400", description = "Core IR 不是 v2（code=unsupported_schema_version），"
+        + "或 Core IR / 上下文不合法（code=invalid_request）",
         content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
     @APIResponse(responseCode = "404", description = "Core IR 中没有目标函数（code=function_not_found）",
         content = @Content(schema = @Schema(implementation = EvaluationResponse.class)))
@@ -1048,15 +1050,18 @@ public class PolicyEvaluationResource {
         return CompileResponse.fail(diags, error);
     }
 
-    /** Core IR JSON → 树（best-effort，空串或解析失败返回 MissingNode，下游提取一律得到 null）。 */
-    private com.fasterxml.jackson.databind.JsonNode parseCoreJson(String coreJson) {
+    /**
+     * Core IR JSON → 树，经 {@code CoreIrJson.readTree} 严格读入（ADR 0055 §5）。空串或非 v2 产物返回 MissingNode，
+     * 下游提取一律得到 null（不影响编译成功判定，但不采信不合契约的 IR）。
+     */
+    static com.fasterxml.jackson.databind.JsonNode parseCoreJson(String coreJson) {
         if (coreJson == null || coreJson.isBlank()) {
             return com.fasterxml.jackson.databind.node.MissingNode.getInstance();
         }
         try {
-            return io.aster.common.JacksonMappers.PRETTY.readTree(coreJson);
-        } catch (Exception e) {
-            LOG.debugf("Core IR 解析失败（不影响编译成功判定）: %s", e.getMessage());
+            return aster.core.ir.CoreIrJson.readTree(coreJson);
+        } catch (aster.core.ir.CoreIrFormatException e) {
+            LOG.warnf("Core IR 不是合法的 v2 产物，编译响应不带模块信息: %s", e.getMessage());
             return com.fasterxml.jackson.databind.node.MissingNode.getInstance();
         }
     }

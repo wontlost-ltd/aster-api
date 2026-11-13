@@ -5,6 +5,8 @@ import aster.core.cedar.CedarExporter;
 import aster.core.cedar.GuardShape;
 import aster.core.cedar.Probe;
 import aster.core.cedar.ProbeGenerator;
+import aster.core.ir.CoreIrFormatException;
+import aster.core.ir.CoreIrJson;
 import aster.core.ir.CoreModel;
 import aster.core.typecheck.ErrorCode;
 import aster.core.typecheck.model.Diagnostic;
@@ -277,12 +279,15 @@ public class CedarExportService {
         }
     }
 
-    // coreJson 由本服务的编译器产出，解析失败属于内部缺陷
-    private static CoreModel.Module readModule(String coreJson) {
+    /**
+     * coreJson 由本服务的编译器产出，经 {@link CoreIrJson#read} 严格读入（ADR 0055 §5）；
+     * 不是合法 v2 产物属于内部缺陷。
+     */
+    static CoreModel.Module readModule(String coreJson) {
         try {
-            return JacksonMappers.LENIENT.readValue(coreJson, CoreModel.Module.class);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Core IR JSON 解析失败", e);
+            return CoreIrJson.read(coreJson);
+        } catch (CoreIrFormatException e) {
+            throw new IllegalStateException("Core IR JSON 不是合法的 v2 产物", e);
         }
     }
 

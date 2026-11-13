@@ -1,10 +1,10 @@
 package io.aster.policy.stability;
 
+import aster.core.ir.CoreIrFormatException;
+import aster.core.ir.CoreIrJson;
 import aster.core.ir.CoreModel;
 import aster.core.lexicon.SemanticTokenKind;
 import aster.core.stability.StabilityGate;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.compiler.CompilationResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.ws.rs.WebApplicationException;
@@ -35,13 +35,6 @@ import java.util.Set;
 public class StabilityEnforcement {
 
     private static final Logger LOG = Logger.getLogger(StabilityEnforcement.class);
-
-    /**
-     * 宽松 mapper：读旧 coreJson 产物做扫描，容忍未知字段（产物结构可能随版本演进，
-     * 扫描不应因新增字段而崩）。Jackson 多态由 CoreModel 的 @JsonTypeInfo/@JsonSubTypes 驱动。
-     */
-    private static final ObjectMapper LENIENT_MAPPER = new ObjectMapper()
-        .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
 
     @jakarta.inject.Inject
     jakarta.enterprise.event.Event<io.aster.policy.event.AuditEvent> auditEventPublisher;
@@ -177,9 +170,9 @@ public class StabilityEnforcement {
 
     /**
      * 扫已存 coreJson 产物（★compile(versionId) cache / approve / activate 路径，堵 ADR §3.7 盲区）。
-     * 反序列化 coreJson → CoreModel 再扫，不 re-lower（re-lower 会重解释旧版本，违背冻结产物语义）。
+     * coreJson 经 {@code CoreIrJson.read} 严格读成 CoreModel 再扫（ADR 0055 §5），不 re-lower（re-lower 会重解释旧版本，违背冻结产物语义）。
      *
-     * <p>★fail 语义按 strict 分（Codex 审查 L3）：coreJson 空/损坏时——warn-mode 放行（返回空），
+     * <p>★fail 语义按 strict 分（Codex 审查 L3）：coreJson 空、损坏或不是 v2 时——warn-mode 放行（返回空），
      * strict-mode 抛 {@link UnscannableException}（fail-closed，不把「无法判断」当「稳定」）。
      */
     public Result scanCoreJson(String coreJson, boolean strict) {
@@ -191,12 +184,13 @@ public class StabilityEnforcement {
         }
         CoreModel.Module module;
         try {
-            module = LENIENT_MAPPER.readValue(coreJson, CoreModel.Module.class);
-        } catch (Exception e) {
+            // ADR 0055 §5：已存产物同样严格读入；非 v2 产物属于「无法判断」，按 strict 语义处理
+            module = CoreIrJson.read(coreJson);
+        } catch (CoreIrFormatException e) {
             if (strict) {
-                throw new UnscannableException("Core IR 无法反序列化（strict 门禁 fail-closed）: " + e.getMessage());
+                throw new UnscannableException("Core IR 不是合法的 v2 产物（strict 门禁 fail-closed）: " + e.getMessage());
             }
-            LOG.warnf("stability 扫描无法反序列化 coreJson（warn-mode 跳过 stability 检查）: %s", e.getMessage());
+            LOG.warnf("stability 扫描拒收非 v2 的 coreJson（warn-mode 跳过 stability 检查）: %s", e.getMessage());
             return new Result(List.of(), false);
         }
         return scan(module, strict);
