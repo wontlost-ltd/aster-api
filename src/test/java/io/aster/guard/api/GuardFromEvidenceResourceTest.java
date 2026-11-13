@@ -14,7 +14,10 @@ import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
+import io.aster.policy.entity.AuditLog;
+import io.aster.policy.evidence.AgentIdentity;
 import io.aster.policy.evidence.EvaluationEvidence;
+import io.aster.policy.evidence.EvaluationMetadataBudget;
 import io.aster.policy.governance.RuleMetadata;
 import io.aster.security.apikey.ApiKeyVerifierService;
 import io.aster.security.apikey.ApiKeyVerifyResult;
@@ -382,6 +385,61 @@ public class GuardFromEvidenceResourceTest {
     assertThat(r.statusCode()).as(r.asString()).isEqualTo(409);
     assertThat(r.jsonPath().getString("error")).isEqualTo("evidence_not_approvable");
     assertThat(r.jsonPath().getString("outcome")).isEqualTo("null");
+  }
+
+  /**
+   * aster-api#493：超长 applicantId、脱敏变长的 reason、需转义的 agent 字段把评估事件撑过 4096。经预算预检降级后
+   * 写入的是合法 JSON，from-evidence 照常开出待审批，所需角色与结论不受影响（此前截断成非法 JSON → 409）。
+   */
+  @Test
+  void 降级后的超大评估事件仍可从证据开出待审批() throws Exception {
+    String cid = newCid();
+    String esc = "\u0001".repeat(AgentIdentity.MAX_TEXT);
+    EvaluationEvidence evidence = new EvaluationEvidence(cid, "REQUIRE_APPROVAL", "CUST-DEL-001",
+        List.of("GDPR:ART17"), 1730890123456L, new AgentIdentity(esc, esc, esc, esc), DPO,
+        "1.1.1.1 ".repeat(32).substring(0, AgentIdentity.MAX_TEXT), "eu-ai-act-high-risk")
+        .withInputRefs(List.of("context.amount"), false);
+    Map<String, Object> raw = new HashMap<>(Map.of("contextSize", 1, "applicantId", "a@b.cc ".repeat(2_000)));
+    raw.putAll(evidence.toMetadata());
+    AppendedRecord rec = append(TENANT, EvaluationMetadataBudget.fit(raw));
+
+    AuditLog row = QuarkusTransaction.requiringNew().call(() -> AuditLog.<AuditLog>findById(rec.auditId()));
+    assertThat(row.metadata.length()).isLessThanOrEqualTo(AuditChainAppender.MAX_METADATA_SIZE);
+    assertThat(JSON.readTree(row.metadata).get("metadataDegraded").isArray()).isTrue();
+
+    Response opened = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(opened.statusCode()).as(opened.asString()).isEqualTo(200);
+    assertThat(opened.jsonPath().getString("effectiveOutcome")).isEqualTo("PENDING");
+    assertThat(opened.jsonPath().getString("approval.requiredRole")).isEqualTo(DPO);
+    assertThat(opened.jsonPath().getString("ruleId")).isEqualTo("CUST-DEL-001");
+  }
+
+  /** 结论键本身超预算时只剩最小键集（无 outcome）：from-evidence 按不可审批 409，不会开出缺所需角色的待审批。 */
+  @Test
+  void 超出最小键集的评估事件按不可审批409() {
+    String cid = newCid();
+    Map<String, Object> raw = new HashMap<>(Map.of("correlationId", cid, "outcome", "REQUIRE_APPROVAL",
+        "role", "\"".repeat(255), "ruleId", "\u0001".repeat(255),
+        "controls", java.util.stream.IntStream.range(0, 16).mapToObj(i -> "\"".repeat(64)).toList()));
+    append(TENANT, EvaluationMetadataBudget.fit(raw));
+
+    Response r = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(409);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("evidence_not_approvable");
+  }
+
+  /** 绕过预检直接写超限 metadata：追加器写合法 JSON 占位（不再是非法截断），同样按不可审批 409。 */
+  @Test
+  void 未经预检的超限事件写成合法占位_from_evidence409() throws Exception {
+    String cid = newCid();
+    AppendedRecord rec = append(TENANT, Map.of("correlationId", cid, "outcome", "REQUIRE_APPROVAL", "role", DPO,
+        "applicantId", "x".repeat(5_000)));
+
+    AuditLog row = QuarkusTransaction.requiringNew().call(() -> AuditLog.<AuditLog>findById(rec.auditId()));
+    assertThat(JSON.readTree(row.metadata).get("metadataTruncated").asBoolean()).isTrue();
+    Response r = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(409);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("evidence_not_approvable");
   }
 
   @Test

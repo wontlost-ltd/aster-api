@@ -3,6 +3,7 @@ package io.aster.policy.rest;
 import io.aster.policy.rest.model.EvaluationRequest;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.evidence.EvaluationEvidence;
+import io.aster.policy.evidence.EvaluationMetadataBudget;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
@@ -75,19 +76,23 @@ public class PolicyAuditPublisher {
         );
     }
 
+    /**
+     * 合并后经 {@link EvaluationMetadataBudget#fit} 预检（aster-api#493）：applicantId 等请求侧文本封顶，超预算时按固定
+     * 顺序降级，保证追加器写出的是合法 JSON。预算内的 metadata 键集与取值不变。
+     */
     private static Map<String, Object> mergeEvidence(Map<String, Object> metadata, EvaluationEvidence evidence) {
-        if (evidence == null) {
-            return metadata == null ? Collections.emptyMap() : metadata;
-        }
         Map<String, Object> merged = metadata == null ? new HashMap<>() : new HashMap<>(metadata);
-        merged.putAll(evidence.toMetadata());
-        return merged;
+        if (evidence != null) {
+            merged.putAll(evidence.toMetadata());
+        }
+        return merged.isEmpty() ? Collections.emptyMap() : Collections.unmodifiableMap(EvaluationMetadataBudget.fit(merged));
     }
 
     /**
      * 从 {@link EvaluationRequest#context()} 抽出常用 metadata 字段（如
      * {@code applicantId}），供 audit 事件附带。返回不可修改 map 或空 map；
-     * 永不返回 null。
+     * 永不返回 null。applicantId 是请求 context 的业务字段、不受 API 校验约束，
+     * 发布时由 {@link EvaluationMetadataBudget#fit} 截到 {@link EvaluationMetadataBudget#MAX_TEXT}。
      */
     public Map<String, Object> buildMetadata(EvaluationRequest request) {
         if (request == null || request.context() == null || request.context().length == 0) {

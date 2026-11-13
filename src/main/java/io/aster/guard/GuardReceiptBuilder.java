@@ -1,12 +1,9 @@
 package io.aster.guard;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.aster.audit.chain.AuditChainAppender;
+import io.aster.audit.chain.AuditMetadataSize;
 import io.aster.guard.api.ResultRequest;
 import io.aster.guard.provenance.InputSources;
 import io.aster.guard.receipt.GuardReceiptEntity;
-import io.aster.policy.common.PIIRedactor;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import io.aster.policy.evidence.AgentIdentity;
@@ -15,7 +12,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 
 import java.time.Instant;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,8 +49,8 @@ public class GuardReceiptBuilder {
   static final int MAX_KID = 64;
   /** 吊销事件逐条列出的受影响决策上限（ADR 0040 §11 D4）。 */
   static final int MAX_AFFECTED_DECISIONS = 64;
-  /** metadata 序列化长度预算：低于追加器的 4096 上限，留出余量。 */
-  static final int METADATA_BUDGET = 3800;
+  /** metadata 序列化长度预算：低于追加器的 4096 上限，留出余量（与评估事件共用 {@link AuditMetadataSize#BUDGET}）。 */
+  static final int METADATA_BUDGET = AuditMetadataSize.BUDGET;
   /** 输入来源键（ADR 0041 §11 D1）：verified 路径、签发方、签发端来源、档案来源门拒绝时的未验证路径。 */
   static final String KEY_VERIFIED_FIELDS = "verifiedFields";
   static final String KEY_FACT_ISSUERS = "factIssuers";
@@ -88,9 +84,6 @@ public class GuardReceiptBuilder {
   static final List<String> APPROVAL_SHRINK_ORDER = List.of("comment");
   /** 执行结果事件唯一可缩短的键：errorCode 是执行方自填文本，其余为身份与摘要，永不改动。 */
   static final List<String> RESULT_SHRINK_ORDER = List.of("errorCode");
-  /** 只用于测量长度：对 String / List / Long 值，序列化结果与 Quarkus 托管的 ObjectMapper 相同。 */
-  private static final ObjectMapper MEASURE = new ObjectMapper();
-  private final PIIRedactor piiRedactor = new PIIRedactor();
 
   /** 决策事件：success 仅在 outcome 为 ALLOW 时为 true；reason 经追加器脱敏后写入 audit_logs.reason。 */
   public AuditEvent decisionEvent(GuardDecisionDraft draft, UUID decisionId, UUID approvalId, String performedBy) {
@@ -274,26 +267,9 @@ public class GuardReceiptBuilder {
     return m;
   }
 
-  /**
-   * 与追加器一致的测量：取「原样序列化」与「脱敏后序列化」两者较长者。脱敏与追加器共用
-   * {@link AuditChainAppender#isRedactionExempt}：身份键与 UUID 形态的值不脱敏，测量也不计它们的脱敏膨胀。
-   */
+  /** 与追加器一致的测量，见 {@link AuditMetadataSize#measure}。 */
   int measure(Map<String, Object> m) {
-    Map<String, Object> redacted = new HashMap<>();
-    m.forEach((k, v) -> redacted.put(k, v instanceof String s ? redactLikeAppender(k, s) : v));
-    return Math.max(serializedLength(m), serializedLength(redacted));
-  }
-
-  private String redactLikeAppender(String key, String value) {
-    return AuditChainAppender.isRedactionExempt(key, value) ? value : piiRedactor.redact(value);
-  }
-
-  private static int serializedLength(Map<String, Object> m) {
-    try {
-      return MEASURE.writeValueAsString(m).length();
-    } catch (JsonProcessingException e) {
-      throw new IllegalStateException("收据 metadata 无法序列化", e);
-    }
+    return AuditMetadataSize.measure(m);
   }
 
   private static boolean shrinkable(Object v) {
