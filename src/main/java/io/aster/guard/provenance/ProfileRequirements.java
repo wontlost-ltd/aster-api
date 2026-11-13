@@ -9,7 +9,7 @@ import jakarta.enterprise.context.ApplicationScoped;
  * verifiedInputs（ADR 0040 §11 D5 实施澄清；事件里的要求项快照不参与判定）。
  *
  * <p>委托 replay 中唯一的判定 {@link ProfileRequirementsLookup}，与 {@code RuleMetadata} 同一口径；注册表是 core jar 内的
- * 副本（{@link ControlRegistry#loadDefault()}，引擎 pin 1.0.44 起为 registry 1.2.0，全部档案 {@code verifiedInputs=false}）。
+ * 副本（{@link ControlRegistry#loadDefault()}，引擎 pin 1.0.45 起为 registry 1.3.0，仅 {@code eu-ai-act-high-risk} 要求 verifiedInputs）。
  * 未知档案按不要求处理（编译期已报 E705，ADR 0046 §11.6 第 6 条）。
  */
 @ApplicationScoped

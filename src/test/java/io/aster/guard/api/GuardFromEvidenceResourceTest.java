@@ -397,7 +397,8 @@ public class GuardFromEvidenceResourceTest {
     String esc = "\u0001".repeat(AgentIdentity.MAX_TEXT);
     EvaluationEvidence evidence = new EvaluationEvidence(cid, "REQUIRE_APPROVAL", "CUST-DEL-001",
         List.of("GDPR:ART17"), 1730890123456L, new AgentIdentity(esc, esc, esc, esc), DPO,
-        "1.1.1.1 ".repeat(32).substring(0, AgentIdentity.MAX_TEXT), "eu-ai-act-high-risk")
+        // 用 governed：本例只验证降级后的事件仍可审批；registry 1.3.0 起高风险档案无签名事实即 DENY（另有用例覆盖）
+        "1.1.1.1 ".repeat(32).substring(0, AgentIdentity.MAX_TEXT), "governed")
         .withInputRefs(List.of("context.amount"), false);
     Map<String, Object> raw = new HashMap<>(Map.of("contextSize", 1, "applicantId", "a@b.cc ".repeat(2_000)));
     raw.putAll(evidence.toMetadata());
