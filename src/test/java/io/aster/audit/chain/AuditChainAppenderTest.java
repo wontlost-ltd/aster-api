@@ -78,11 +78,12 @@ class AuditChainAppenderTest {
   }
 
   @Test void 失败时不写行() {
-    // tenantId 超过列长 100 → 持久化失败 → 抛异常且表中无该租户行
+    // tenantId 超过列长 100 → 映射阶段明确拒绝（分区键不截断，aster-api#503）→ 抛异常且表中无该租户行
     String longTenant = "t".repeat(150);
     AuditEvent bad = new AuditEvent(EventType.ACTION_GUARD_DECISION, Instant.now(), longTenant, "m", "f", null,
         null, null, "u", false, null, null, Map.of(), null, null, null, null);
-    assertThatThrownBy(() -> appender.appendSync(bad)).isInstanceOf(AuditChainAppender.AuditAppendException.class);
+    assertThatThrownBy(() -> appender.appendSync(bad)).isInstanceOf(AuditChainAppender.AuditAppendException.class)
+        .hasRootCauseInstanceOf(IllegalArgumentException.class);
     assertThat(AuditLog.<AuditLog>find("tenantId = ?1", longTenant).list()).isEmpty();
   }
 }
