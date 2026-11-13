@@ -356,7 +356,7 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 ### 11.7 X4 实施裁定（2026-11-13）
 
-来源：实施计划 `docs/superpowers/plans/2026-11-13-x4-fact-issuance-and-registry-130.md`（wontlost-ltd/aster-api#494，下称「X4 计划」）§6 第 1–15 条，用户 2026-11-13 全部按 proposed 确认。本小节是这些裁定的唯一批准记录；与 §11.2–§11.6 冲突处以本小节为准，被取代的原文逐条注明。未注明的其余条款不变——特别是：`fixture.creditPilot` 不进生产（D5 第 2 项）、要求项在消费时按事件 `profile` + 当前注册表重算（§11.6 第 4 条）、前缀规则与不信任 IR 自带 `inputRefs` 是翻转硬前置（§11.6 第 17、19 条）、签名事实须附在第一次 from-evidence 请求上（§11.6 第 11 条）。
+来源：实施计划 `docs/superpowers/plans/2026-11-13-x4-fact-issuance-and-registry-130.md`（随 wontlost-ltd/aster-api#494 合入 main，与本小节互相引用；#494 合并前以该 PR 分支 `docs/x4-plan` 为准，下称「X4 计划」）§6 第 1–15 条，用户 2026-11-13 全部按 proposed 确认。本小节是这些裁定的唯一批准记录；与 §11.2–§11.6 冲突处以本小节为准，被取代的原文逐条注明。未注明的其余条款不变——特别是：`fixture.creditPilot` 不进生产（D5 第 2 项）、要求项在消费时按事件 `profile` + 当前注册表重算（§11.6 第 4 条）、前缀规则与不信任 IR 自带 `inputRefs` 是翻转硬前置（§11.6 第 17、19 条）、签名事实须附在第一次 from-evidence 请求上（§11.6 第 11 条）。
 
 每条状态均为 **accepted 2026-11-13**。
 
@@ -376,4 +376,4 @@ Rule decide given applicant as Applicant, produce Verdict:
 14. **个人租户也提供签发方设置页。** 落实 ADR 0040 §11 D3「个人租户同样可配」：个人设置子页与团队设置卡片共用同一组件；写权限为个人租户本人或团队 `MEMBER_UPDATE_ROLE`，读权限为个人租户本人或团队 `TEAM_VIEW`。
 15. **签发方吊销导致的过期暂不发通知。** 修订 ADR 0040 §11 D4 第 4 项「`guard.approval_decided` 通知 payload 增 `expiredReason`」：X4 只在收件箱对 `expiredReason = fact_issuer_revoked` 的项显示「签发方已吊销，自动拒绝」；不发通知，因为签发方 DELETE 不返回受影响的审批，cloud 无从逐条通知。通知另案，前提是 aster-api 回传 `affectedDecisionIds`。
 
-**1.3.0 翻转（§11.4 ⑦）的硬门**（X4 计划 Global Constraints，本小节确认）：G0 本小节已合并；G1 X4 计划阶段 A 的 cloud PR 全部合并并部署；G2 本地栈以 1.3.0 注册表完成第 9 条两项验收，且全部对真实 aster-api 验签与执行点进行；G3 生产可验证性台账覆盖扫描报告中全部声明 `eu-ai-act-high-risk` 的模块且无 (c)，扫描输入可信（cloud 导出非空、按种类计数打印、源码头部声明档案的 id 集合与扫描所得逐 id 相等）；G4 aster-api 含 #487（前缀规则）与 #492（Task 16b）；G5 列车前常规扫描在同一非空源集合上，差异只有 G3 台账列出的 E708；G6 aster-api#493（评估事件 metadata 超 4096 字符被截断，from-evidence 409 `evidence_not_approvable`）已修复并部署——翻转后高风险模块的 from-evidence 是用户可见路径。回滚顺序固定为先 cloud（ts / 注册表副本）后 aster-api（引擎 pin），避免出现编辑器报 E708 禁止保存而服务端允许的窗口。
+**1.3.0 翻转（§11.4 ⑦）的硬门**（X4 计划 Global Constraints，本小节确认）：G0 本小节已合并；G1 X4 计划阶段 A 的 cloud PR 全部合并并部署；G2 本地栈以 1.3.0 注册表完成第 9 条两项验收，且全部对真实 aster-api 验签与执行点进行；G3 生产可验证性台账：扫描报告中每个声明 `eu-ai-act-high-risk` 的生产模块（含近 30 天无执行量的）都有用户写下的一条裁定，且恰为第 8 条三种之一——(a) 可验证：列出覆盖其**全部** `inputRefs` 的 `issuer#kid` 与来源函数，且该租户的签发方已启用；(b) 接受翻转后 DENY：须引用本小节第 8 条；(c) 阻塞翻转——存在任一 (c) 或缺裁定的模块即不翻转；扫描输入可信（cloud 导出非空、按种类计数打印、源码头部声明档案的 id 集合与扫描所得逐 id 相等）；G4 aster-api 含 #487（前缀规则）与 #492（Task 16b）；G5 列车前常规扫描在同一非空源集合上，差异只有 G3 台账列出的 E708；G6 aster-api#493（评估事件 metadata 超 4096 字符被截断，from-evidence 409 `evidence_not_approvable`）已修复并部署——翻转后高风险模块的 from-evidence 是用户可见路径。回滚顺序固定为先 cloud（ts / 注册表副本）后 aster-api（引擎 pin），避免出现编辑器报 E708 禁止保存而服务端允许的窗口。
