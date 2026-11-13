@@ -47,10 +47,21 @@ public class TenantFilter implements ContainerRequestFilter {
     private static final String TENANT_HEADER = "X-Tenant-Id";
 
     /**
-     * 租户 ID 格式正则表达式
-     * 仅允许：字母、数字、连字符、下划线，长度 1-64
+     * 租户 ID 长度上限（UTF-16 单元，严格与宽松模式共用，aster-api#503）。
+     *
+     * <p>不超过最窄的租户列：workflow_state.tenant_id VARCHAR(64)；audit_logs / audit_chain_anchors /
+     * policy_versions / policy_catalog / inbox_events 为 100，其余 128–255。audit_logs.tenant_id 是哈希链
+     * 分区键，不能截断，超宽只能整条审计写入失败——所以必须在入口拒绝，而不是在落库处补救。
+     * 已知生产租户形态都远低于此：cloud 的 userId / teamId（UUID 36 或历史 cuid 25）、"trial-playground"、"default"。
      */
-    private static final Pattern TENANT_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9_-]{1,64}$");
+    public static final int MAX_TENANT_ID_LENGTH = 64;
+
+    /**
+     * 租户 ID 格式正则表达式
+     * 仅允许：字母、数字、连字符、下划线，长度 1–{@link #MAX_TENANT_ID_LENGTH}
+     */
+    private static final Pattern TENANT_ID_PATTERN =
+        Pattern.compile("^[a-zA-Z0-9_-]{1," + MAX_TENANT_ID_LENGTH + "}$");
 
     /**
      * R30 reserved-tenant denylist：这些租户名仅供本服务内部 sentinel 使用，
@@ -184,12 +195,13 @@ public class TenantFilter implements ContainerRequestFilter {
             return;
         }
 
-        // 兼容旧版：宽松模式下仅验证长度
-        if (!strictFormat && tenantId.length() > 255) {
-            LOG.warnf("Tenant ID too long: %d characters", tenantId.length());
+        // 兼容旧版：宽松模式下不校验字符集，但长度上限与严格模式相同（aster-api#503：
+        // 原先放行到 255，超过 audit_logs.tenant_id 列宽 100，该租户的每条审计都整条写入失败）
+        if (!strictFormat && tenantId.length() > MAX_TENANT_ID_LENGTH) {
+            LOG.warnf("Tenant ID too long: %d characters (max %d)", tenantId.length(), MAX_TENANT_ID_LENGTH);
             requestContext.abortWith(
                 Response.status(Response.Status.BAD_REQUEST)
-                    .entity("Tenant ID must not exceed 255 characters")
+                    .entity("Tenant ID must not exceed " + MAX_TENANT_ID_LENGTH + " characters")
                     .build()
             );
             return;

@@ -51,8 +51,12 @@ public class AuditChainAppender {
      * audit_logs 有界文本列的列宽（与 V2/V3 迁移、AuditLog 实体一致）。这些列的取值来自未限长输入
      * （请求体、X-User-Id、throwable.getMessage()），且脱敏会让文本变长；一律先脱敏、后按列宽截断
      * （aster-api#493 / #498），避免整条事件写入失败。截断发生在映射阶段，哈希按落库值计算，验链不受影响。
-     * tenant_id 不在此列：它是哈希链分区键，截断会让链查不到，超宽时宁可整条失败（见 toAuditLog）。
+     * tenant_id 不在此列：它是哈希链分区键，截断会让链查不到。入口 TenantFilter 已把租户限到
+     * {@link io.aster.policy.tenant.TenantFilter#MAX_TENANT_ID_LENGTH}（64），超宽在这里不可达；
+     * 若仍出现（非 HTTP 来源的事件），映射阶段即明确拒绝，整条不写（见 toAuditLog）。
      */
+    /** audit_logs.tenant_id 列宽。 */
+    static final int TENANT_COLUMN_MAX_LENGTH = 100;
     /** audit_logs.reason 列宽。 */
     private static final int REASON_COLUMN_MAX_LENGTH = 500;
     /** audit_logs.error_message 列宽。 */
@@ -148,6 +152,11 @@ public class AuditChainAppender {
         //   实测受损：CREDIT_CARD_PATTERN 会吃掉任何「4 组 4 位数字用 - 分隔」的串，
         //   形如 `…-1234-5678-9012-3456` 的 UUID 尾部被替成 `****-****-****-****`。
         //   生产 3430 条中已有 1272 条（37%）键被改写。
+        if (tenant.length() > TENANT_COLUMN_MAX_LENGTH) {
+            // 不截断、不交给数据库报列宽错误：明确拒绝，调用方按「失败不写行」处理（aster-api#503）
+            throw new IllegalArgumentException("audit tenant_id 超过列宽 " + TENANT_COLUMN_MAX_LENGTH
+                + "（实际 " + tenant.length() + "），哈希链分区键不截断，拒绝写入");
+        }
         log.tenantId = tenant;
         log.policyModule = redactAndClip(event.policyModule(), POLICY_NAME_COLUMN_MAX_LENGTH);
         log.policyFunction = redactAndClip(event.policyFunction(), POLICY_NAME_COLUMN_MAX_LENGTH);

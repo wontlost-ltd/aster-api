@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 有界文本列（aster-api#498）：error_message（1000）、performed_by（100）、policy_module / policy_function（200）、
@@ -106,5 +107,27 @@ class AuditChainAppenderColumnBoundsTest {
     String msg = "e".repeat(998) + emoji;
 
     assertThat(withError(msg).errorMessage).isEqualTo(msg);
+  }
+
+  private AuditLog withTenant(String tenant) {
+    return appender.toAuditLog(new AuditEvent(EventType.POLICY_EVALUATION, Instant.now(), tenant, "m", "f",
+        null, null, null, "u", false, 1L, null, Map.of(), null, null, null, null));
+  }
+
+  @Test
+  void tenant恰在列宽100内原样写入() {
+    String tenant = "t".repeat(AuditChainAppender.TENANT_COLUMN_MAX_LENGTH);
+    assertThat(AuditChainAppender.TENANT_COLUMN_MAX_LENGTH).isEqualTo(100);
+    assertThat(withTenant(tenant).tenantId).isEqualTo(tenant);
+  }
+
+  @Test
+  void 超宽tenant不截断而是明确拒绝() {
+    // tenant_id 是哈希链分区键，截断会让该租户的链查不到（aster-api#503）。入口 TenantFilter 已把租户限到 64，
+    // 这里是不依赖入口的兜底：映射阶段即拒绝，不触库、不拿链锁。
+    assertThatThrownBy(() -> withTenant("t".repeat(AuditChainAppender.TENANT_COLUMN_MAX_LENGTH + 1)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("tenant_id")
+        .hasMessageContaining("101");
   }
 }
