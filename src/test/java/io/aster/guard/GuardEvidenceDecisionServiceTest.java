@@ -187,7 +187,7 @@ class GuardEvidenceDecisionServiceTest {
     assertThat(unavailableCount()).isZero();
   }
 
-  /** 今天（registry 1.1.0 / 1.2.0）没有档案要求 verifiedInputs：真实元数据下门不改变任何草稿。 */
+  /** 元数据显示不要求 verifiedInputs（如 registry 1.2.0 之前写下的版本元数据）且注册表未被模拟为要求时，门不改变草稿。 */
   @Test
   void notRequiredMetadataLeavesDraftUnchanged() {
     when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION, "7")).thenReturn(

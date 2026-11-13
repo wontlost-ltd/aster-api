@@ -181,7 +181,8 @@ public class GuardEvidenceDecisionService {
    *   <li>元数据读不到：要求 → DENY {@code input_refs_unavailable}，否则放行；计 counter，事件无 profile 时只记 DEBUG，
    *       带 profile 时记 WARN。</li>
    * </ol>
-   * 注册表 1.2.0 下没有任何档案要求 verifiedInputs，所以门不会拒绝任何请求。
+   * 注册表 1.3.0（引擎 pin 1.0.45）起 {@code eu-ai-act-high-risk} 要求 verifiedInputs：声明该档案的事件，被引用输入未经事实证实即 DENY；
+   * 其余档案不要求，门不改变草稿。
    */
   GuardDecisionDraft gate(GuardDecisionDraft draft, GuardActionRequest.Action action, Map<String, Object> event) {
     String profile = text(event, EvaluationEvidence.KEY_PROFILE);
