@@ -129,4 +129,50 @@ class EvaluationEvidenceTest {
     var e = EvaluationEvidence.of("ALLOW", null, null, null, null);
     assertThat(e.toMetadata()).doesNotContainKeys(EvaluationEvidence.KEY_ROLE, EvaluationEvidence.KEY_REASON);
   }
+
+  // ---- Task 16b：档案模块的事件自带 inputRefs 与 verifiedInputsRequired（ADR 0046 §11.6 第 4 条） ----
+
+  @Test void 档案模块的事件写inputRefs与verifiedInputsRequired() {
+    EvaluationEvidence e = EvaluationEvidence.of("ALLOW", "R-1", List.of(), null, null, null, null, "governed")
+        .withInputRefs(List.of("context.req.amount"), false);
+    assertThat(e.toMetadata()).containsEntry(EvaluationEvidence.KEY_INPUT_REFS, List.of("context.req.amount"))
+        .containsEntry(EvaluationEvidence.KEY_VERIFIED_INPUTS_REQUIRED, false);
+    // 规则不读输入：[] 照写，不省略
+    assertThat(e.withInputRefs(List.of(), true).toMetadata())
+        .containsEntry(EvaluationEvidence.KEY_INPUT_REFS, List.of())
+        .containsEntry(EvaluationEvidence.KEY_VERIFIED_INPUTS_REQUIRED, true);
+    // withVersion 保留两键，correlationId 不变
+    EvaluationEvidence v = e.withVersion(7L, "ab".repeat(32), null);
+    assertThat(v.correlationId()).isEqualTo(e.correlationId());
+    assertThat(v.toMetadata()).containsEntry(EvaluationEvidence.KEY_INPUT_REFS, List.of("context.req.amount"));
+  }
+
+  /** IR 没有 inputRefs（旧引擎编译的档案模块）：不写 inputRefs 键，消费方回退到「档案 + 注册表」。 */
+  @Test void 档案模块无inputRefs时不写该键() {
+    EvaluationEvidence e = EvaluationEvidence.of("ALLOW", "R-1", List.of(), null, null, null, null, "governed")
+        .withInputRefs(null, false);
+    assertThat(e.toMetadata()).doesNotContainKey(EvaluationEvidence.KEY_INPUT_REFS)
+        .containsEntry(EvaluationEvidence.KEY_VERIFIED_INPUTS_REQUIRED, false);
+  }
+
+  /** 无档案模块的事件逐字节不变：即使调用方误传了两项也不写。 */
+  @Test void 无档案模块不写两新键且逐字节不变() throws Exception {
+    EvaluationEvidence base = new EvaluationEvidence("c-9", "ALLOW", "R-1", List.of("GDPR:ART17"), 3L,
+        new AgentIdentity("anthropic", "claude", null, "s-1"), "r", "x");
+    EvaluationEvidence with = base.withInputRefs(List.of("context.a"), true);
+    ObjectMapper om = new ObjectMapper();
+    assertThat(om.writeValueAsString(with.toMetadata())).isEqualTo(om.writeValueAsString(base.toMetadata()));
+    assertThat(with.toMetadata()).doesNotContainKeys(EvaluationEvidence.KEY_INPUT_REFS,
+        EvaluationEvidence.KEY_VERIFIED_INPUTS_REQUIRED);
+  }
+
+  /** 上限在写入时再执行一次：超限整体写 ["*"]。 */
+  @Test void 超限inputRefs写为星号() {
+    List<String> many = IntStream.range(0, 33).mapToObj(i -> "context.k.f" + i).toList();
+    EvaluationEvidence e = EvaluationEvidence.of("ALLOW", "R-1", List.of(), null, null, null, null, "governed")
+        .withInputRefs(many, false);
+    assertThat(e.toMetadata()).containsEntry(EvaluationEvidence.KEY_INPUT_REFS, List.of("*"));
+    assertThat(EvaluationEvidence.capInputRefs(List.of("context." + "x".repeat(600)))).containsExactly("*");
+    assertThat(EvaluationEvidence.capInputRefs(many.subList(0, 32))).hasSize(32);
+  }
 }

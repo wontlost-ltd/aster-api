@@ -15,7 +15,19 @@ public record ReplayExecutorResult(
         long executionTimeMs,
         String ruleId,
         List<String> controls,
-        String profile) {
+        String profile,
+        List<String> inputRefs,
+        boolean verifiedInputsRequired,
+        String inputKey) {
+
+    /**
+     * 不带输入引用信息的构造。inputRefs / verifiedInputsRequired / inputKey 的语义同
+     * {@code DynamicCnlExecutor.ExecutionResult}：引擎源码路径、写事件时的要求项快照、第一个参数实际匹配的输入键。
+     */
+    public ReplayExecutorResult(Object result, String moduleName, String functionName, long executionTimeMs,
+                                String ruleId, List<String> controls, String profile) {
+        this(result, moduleName, functionName, executionTimeMs, ruleId, controls, profile, null, false, null);
+    }
 
     /** ruleId / controls（ADR 0039 §3）为空的便捷构造：无规则元数据的执行器（如测试桩）使用。 */
     public ReplayExecutorResult(Object result, String moduleName, String functionName, long executionTimeMs) {

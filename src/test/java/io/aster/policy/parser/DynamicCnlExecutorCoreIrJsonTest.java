@@ -131,4 +131,44 @@ class DynamicCnlExecutorCoreIrJsonTest {
                 coreIr, Map.of("driver", Map.of("age", 1)), "noSuchRule"))
             .isInstanceOf(RuntimeException.class);
     }
+
+    // ---- Task 16b：不可信 IR 的 inputRefs 一律重算（ADR 0046 §11.6 第 19 条） ----
+
+    private static final String PROFILED = """
+        Module json.profiled.
+        Profile "governed".
+
+        @id("JP-1")
+        Rule main given amount as Int, produce Verdict:
+          If amount greater than 10:
+            Return Verdict.deny("too much").
+          Return Verdict.allow().
+        """;
+
+    /** 伪造 inputRefs=[]：执行结果带的是按函数体重算的引擎路径，连同第一个参数实际匹配的输入键。 */
+    @Test
+    void forgedInputRefsInSubmittedIrAreRecomputed() throws Exception {
+        var tree = (com.fasterxml.jackson.databind.node.ObjectNode) MAPPER.readTree(coreIrJsonOf(PROFILED));
+        for (var decl : tree.withArray("decls")) {
+            if ("main".equals(decl.path("name").asText())) {
+                ((com.fasterxml.jackson.databind.node.ObjectNode) decl).putArray("inputRefs");
+            }
+        }
+
+        ExecutionResult result = DynamicCnlExecutor.executeCoreIrJson(
+            MAPPER.writeValueAsString(tree), Map.of("amount", 1), null);
+
+        assertThat(result.profile()).isEqualTo("governed");
+        assertThat(result.inputRefs()).containsExactly("");
+        assertThat(result.inputKey()).isEqualTo("amount");
+        assertThat(result.verifiedInputsRequired()).isFalse();
+    }
+
+    @Test
+    void noProfileIrCarriesNoInputRefs() throws Exception {
+        ExecutionResult result = DynamicCnlExecutor.executeCoreIrJson(
+            coreIrJsonOf(SOURCE), Map.of("driver", Map.of("age", 42)), null);
+        assertThat(result.inputRefs()).isNull();
+        assertThat(result.inputKey()).isEqualTo("driver");
+    }
 }

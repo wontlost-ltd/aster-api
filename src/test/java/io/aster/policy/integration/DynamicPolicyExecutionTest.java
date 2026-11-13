@@ -305,7 +305,7 @@ class DynamicPolicyExecutionTest {
      * Core JSON 格式遵循 aster-lang-truffle 的 CoreModel.java 定义：
      * - Module: { name: string, decls: Decl[] }
      * - Func: { kind: "Func", name, params, ret, body }
-     * - Body: { statements: Stmt[] }
+     * - Body: { kind: "Block", statements: Stmt[] }（core 的 CoreModel 要求类型标记，规则元数据按它解析）
      * - Return: { kind: "Return", expr: Expr }
      * - Bool: { kind: "Bool", value: boolean }
      */
@@ -329,6 +329,7 @@ class DynamicPolicyExecutionTest {
                   ],
                   "ret": {"kind": "TypeName", "name": "Bool"},
                   "body": {
+                    "kind": "Block",
                     "statements": [
                       {
                         "kind": "Return",

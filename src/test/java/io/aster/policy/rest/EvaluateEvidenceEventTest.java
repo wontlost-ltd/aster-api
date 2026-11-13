@@ -131,7 +131,7 @@ class EvaluateEvidenceEventTest {
         .containsEntry("agentProvider", "anthropic").containsEntry("agentModel", "claude-fable-5-1")
         .containsEntry("agentSession", "s-1").containsEntry("agentSource", "declared")
         .containsEntry("contextSize", 1);
-    assertThat(md).doesNotContainKey("profile");
+    assertThat(md).doesNotContainKeys("profile", "inputRefs", "verifiedInputsRequired");
     assertThat(MAPPER.readTree(resp.asString()).has("profile")).as(resp.asString()).isFalse();
 
     // issue #459：事件指向被执行的封存版本；sourceHash 是源码内容哈希（与 guard 收据、版本行同口径），
@@ -221,8 +221,10 @@ class EvaluateEvidenceEventTest {
     assertThat(resp.jsonPath().getString("profile")).as(resp.asString()).isEqualTo("governed");
     assertThat(resp.jsonPath().getString("ruleId")).isEqualTo("GOV-001");
     String cid = resp.jsonPath().getString("evidence.correlationId");
+    // 规则读 req.action；/evaluate 的输入是位置数组、没有匹配键 → 证据形状为 ["*"]（Task 16b）
     assertThat(metadataOf(awaitEvent(TENANT, cid))).containsEntry("profile", "governed")
-        .containsEntry("ruleId", "GOV-001");
+        .containsEntry("ruleId", "GOV-001").containsEntry("inputRefs", List.of("*"))
+        .containsEntry("verifiedInputsRequired", false);
   }
 
   @Test
@@ -317,7 +319,7 @@ class EvaluateEvidenceEventTest {
     assertThat(md).containsEntry("outcome", "ALLOW").containsEntry("ruleId", "EV-SRC-001")
         .containsEntry("controls", List.of("EU_AI_ACT:ART14")).containsEntry("agentModel", "claude-fable-5-1")
         .containsEntry("agentSource", "declared").containsEntry("sourceFormat", "cnl")
-        .doesNotContainKey("profile");
+        .doesNotContainKeys("profile", "inputRefs", "verifiedInputsRequired");
     assertThat(MAPPER.readTree(resp.asString()).has("profile")).as(resp.asString()).isFalse();
     // issue #459：即时源码无已保存版本 → 不写 policyVersionId / sourceEnvelopeSha256，
     // 但写与封存同算法的源码内容 sourceHash（与 guard 收据、版本行可直接比对）
@@ -335,7 +337,9 @@ class EvaluateEvidenceEventTest {
     String cid = resp.jsonPath().getString("evidence.correlationId");
 
     Map<String, Object> md = metadataOf(awaitEvent(TENANT, cid));
-    assertThat(md).containsEntry("profile", "governed").containsEntry("ruleId", "EV-SRC-001");
+    // 规则不读输入：inputRefs 写 []（不省略）；verifiedInputsRequired 为写事件时的快照（Task 16b）
+    assertThat(md).containsEntry("profile", "governed").containsEntry("ruleId", "EV-SRC-001")
+        .containsEntry("inputRefs", List.of()).containsEntry("verifiedInputsRequired", false);
   }
 
   @Test
@@ -348,7 +352,51 @@ class EvaluateEvidenceEventTest {
     assertThat(resp.jsonPath().getString("profile")).as(resp.asString()).isEqualTo("governed");
     String cid = resp.jsonPath().getString("evidence.correlationId");
 
-    assertThat(metadataOf(awaitEvent(TENANT, cid))).containsEntry("profile", "governed");
+    assertThat(metadataOf(awaitEvent(TENANT, cid))).containsEntry("profile", "governed")
+        .containsEntry("inputRefs", List.of()).containsEntry("verifiedInputsRequired", false);
+  }
+
+  /** 读第一个参数（标量 amount）的档案规则：写事件时映射为 context.<实际匹配键>。 */
+  private static final String READS_AMOUNT_SOURCE = String.join("\n",
+      "Module evidence.reads.",
+      "Profile \"governed\".", "",
+      "@id(\"EV-READ-001\")",
+      "@control(\"EU_AI_ACT:ART14\")",
+      "Rule main given amount as Int, produce Verdict:",
+      "  If amount greater than 10:",
+      "    Return Verdict.deny(\"too much\").",
+      "  Return Verdict.allow().");
+
+  @Test
+  void evaluateSource事件的inputRefs映射为实际匹配键() throws Exception {
+    Response resp = evaluateSource(TENANT, READS_AMOUNT_SOURCE, AGENT, false, false);
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+
+    Map<String, Object> md = metadataOf(awaitEvent(TENANT, resp.jsonPath().getString("evidence.correlationId")));
+    assertThat(md).containsEntry("inputRefs", List.of("context.amount"));
+  }
+
+  /**
+   * ADR 0046 §11.6 第 19 条：/evaluate-json 提交的 Core IR 不可信，伪造的 {@code inputRefs: []} 不得变成空引用集的证据事件；
+   * 元数据按函数体重算，事件写映射后的 context.amount。
+   */
+  @Test
+  void evaluateJson伪造的inputRefs不进证据事件() throws Exception {
+    var tree = (com.fasterxml.jackson.databind.node.ObjectNode)
+        MAPPER.readTree(coreIrJsonOf(READS_AMOUNT_SOURCE, "evidence.forged"));
+    for (var decl : tree.withArray("decls")) {
+      if ("main".equals(decl.path("name").asText())) {
+        ((com.fasterxml.jackson.databind.node.ObjectNode) decl).putArray("inputRefs");
+      }
+    }
+    Map<String, Object> body = Map.of("policy", MAPPER.writeValueAsString(tree), "context", Map.of("amount", 1),
+        "agent", AGENT);
+    Response resp = given().header("X-Tenant-Id", TENANT).header("X-User-Id", "u-ev").contentType(ContentType.JSON)
+        .body(body).post("/api/v1/policies/evaluate-json");
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+
+    Map<String, Object> md = metadataOf(awaitEvent(TENANT, resp.jsonPath().getString("evidence.correlationId")));
+    assertThat(md).containsEntry("profile", "governed").containsEntry("inputRefs", List.of("context.amount"));
   }
 
   /** 成功事件已发布后回放元数据阶段抛错：错误响应仍须带同一个 correlationId（ADR 0041 §2.2）。 */
@@ -380,7 +428,7 @@ class EvaluateEvidenceEventTest {
     Map<String, Object> md = metadataOf(awaitEvent(TENANT, cid));
     assertThat(md).containsEntry("outcome", "ALLOW").containsEntry("ruleId", "EV-SRC-001")
         .containsEntry("agentProvider", "anthropic").containsEntry("sourceFormat", "json")
-        .doesNotContainKey("profile");
+        .doesNotContainKeys("profile", "inputRefs", "verifiedInputsRequired");
   }
 
   /** ADR 0041 §11 D2：/evaluate、/evaluate-source、/evaluate-json 的事件（含失败与无 agent）都带 inputSource=declared。 */

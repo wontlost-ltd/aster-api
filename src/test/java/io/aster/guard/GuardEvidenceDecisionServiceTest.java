@@ -11,6 +11,8 @@ import io.aster.guard.provenance.ProfileRequirements;
 import io.aster.guard.api.GuardActionRequest.Action;
 import io.aster.guard.api.GuardActionRequest.ActionName;
 import io.aster.guard.api.GuardActionRequest.Principal;
+import aster.core.typecheck.governance.ControlRegistry;
+import io.aster.policy.evidence.EvaluationEvidence;
 import io.aster.policy.governance.RuleMetadata;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.aster.policy.api.PolicyEvaluationService;
@@ -233,5 +235,105 @@ class GuardEvidenceDecisionServiceTest {
         .isInstanceOf(IllegalStateException.class).hasMessage("registry-broken");
     assertThat(unavailableCount()).isZero();
     verify(evaluationService, never()).ruleMetadata(any(), any(), any(), any());
+  }
+
+  // ---- Task 16b：事件自带的 inputRefs 优先；要求项一律按事件 profile + 当前注册表重算 ----
+
+  /** 注入的注册表：eu-ai-act-high-risk 要求 verifiedInputs（模拟 registry 1.3.0 翻转之后）。 */
+  private static ControlRegistry registryRequiring(boolean verifiedInputs) {
+    return new ControlRegistry("1.3.0-test", Set.of("EU_AI_ACT:ART14"), Map.of("EU_AI_ACT:ART14", "EU_AI_ACT"),
+        Map.of("eu-ai-act-high-risk", new ControlRegistry.Profile("eu-ai-act-high-risk", true, true,
+            List.of("EU_AI_ACT"), verifiedInputs)));
+  }
+
+  private GuardEvidenceDecisionService serviceWith(ControlRegistry registry) {
+    return new GuardEvidenceDecisionService(store, decisionService, new GuardActionMapper(),
+        mock(AuditChainAppender.class), mock(GuardReceiptBuilder.class), objectMapper,
+        new FactVerifier(mock(FactIssuerStore.class), Clock.systemUTC()), evaluationService,
+        new ProfileRequirements(registry), meters, Duration.ofHours(24));
+  }
+
+  private static Map<String, Object> eventWithRefs(Object inputRefs, Boolean snapshot) {
+    Map<String, Object> m = event(null, "eu-ai-act-high-risk");
+    m.put(EvaluationEvidence.KEY_INPUT_REFS, inputRefs);
+    if (snapshot != null) {
+      m.put(EvaluationEvidence.KEY_VERIFIED_INPUTS_REQUIRED, snapshot);
+    }
+    return m;
+  }
+
+  /** PR 2 的 fail-open 关闭用例，改用真实 ProfileRequirements 与注入注册表：读不到元数据且要求 → DENY。 */
+  @Test
+  void failOpenClosedWithRealProfileRequirements() {
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION)).thenThrow(new IllegalStateException("无已保存版本"));
+
+    GuardDecisionDraft gated = serviceWith(registryRequiring(true))
+        .gate(pending(), action(), event(null, "eu-ai-act-high-risk"));
+
+    assertThat(gated.outcome()).isEqualTo("DENY");
+    assertThat(gated.reasonCode()).isEqualTo(GuardReasonCode.INPUT_REFS_UNAVAILABLE);
+    assertThat(unavailableCount()).isEqualTo(1.0);
+    // 默认注册表（1.2.0，全部不要求）下同一事件放行
+    GuardDecisionDraft draft = pending();
+    assertThat(serviceWith(ControlRegistry.loadDefault()).gate(draft, action(), event(null, "eu-ai-act-high-risk")))
+        .isEqualTo(draft);
+  }
+
+  /**
+   * evaluate-source 锚定的模块没有已保存版本：直接使用事件里写事件时已映射的 {@code context.<键>.…}，不读元数据。
+   * 引用的 context.amount 为 declared → DENY unverified_input 且点名该路径；规则不读输入（[]）→ 放行。
+   */
+  @Test
+  void eventCarriedInputRefsUsedForEvaluateSourceModule() {
+    GuardEvidenceDecisionService svc = serviceWith(registryRequiring(true));
+
+    GuardDecisionDraft gated = svc.gate(pending(), action(), eventWithRefs(List.of("context.amount"), true));
+
+    assertThat(gated.reasonCode()).isEqualTo(GuardReasonCode.UNVERIFIED_INPUT);
+    assertThat(gated.unverifiedFields()).containsExactly("context.amount");
+    GuardDecisionDraft draft = pending();
+    assertThat(svc.gate(draft, action(), eventWithRefs(List.of(), true))).isEqualTo(draft);
+    verify(evaluationService, never()).ruleMetadata(any(), any(), any());
+    verify(evaluationService, never()).ruleMetadata(any(), any(), any(), any());
+    assertThat(unavailableCount()).isZero();
+  }
+
+  /** 16b 之前的旧事件没有 inputRefs：回退到版本元数据，读不到且档案要求 → input_refs_unavailable。 */
+  @Test
+  void eventWithoutInputRefsFallsBackToProfile() {
+    when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION, "7")).thenReturn(
+        new RuleMetadata("R-1", List.of(), "eu-ai-act-high-risk", null, false));
+
+    GuardDecisionDraft gated = serviceWith(registryRequiring(true))
+        .gate(pending(), action(), event(7L, "eu-ai-act-high-risk"));
+
+    assertThat(gated.reasonCode()).isEqualTo(GuardReasonCode.INPUT_REFS_UNAVAILABLE);
+    verify(evaluationService).ruleMetadata(TENANT, MODULE, FUNCTION, "7");
+  }
+
+  /**
+   * 事件的 verifiedInputsRequired 只是写事件时的快照：1.3.0 翻转前写下的 false 快照，在当前注册表要求时照样按要求判定；
+   * 反过来快照为 true 而当前注册表不要求，也不据快照拒绝。
+   */
+  @Test
+  void eventRequirementSnapshotIgnored() {
+    GuardDecisionDraft gated = serviceWith(registryRequiring(true))
+        .gate(pending(), action(), eventWithRefs(List.of("context.amount"), false));
+    assertThat(gated.reasonCode()).isEqualTo(GuardReasonCode.UNVERIFIED_INPUT);
+
+    GuardDecisionDraft draft = pending();
+    assertThat(serviceWith(registryRequiring(false)).gate(draft, action(), eventWithRefs(List.of("context.amount"), true)))
+        .isEqualTo(draft);
+  }
+
+  /** 事件里的 inputRefs 形态不对（非列表、含非字符串项）：按「*」处理（fail-closed）。 */
+  @Test
+  void malformedEventInputRefsTreatedAsStar() {
+    GuardEvidenceDecisionService svc = serviceWith(registryRequiring(true));
+
+    assertThat(svc.gate(pending(), action(), eventWithRefs("context.amount", null)).unverifiedFields())
+        .containsExactly("*");
+    assertThat(svc.gate(pending(), action(), eventWithRefs(java.util.Arrays.asList("context.amount", 3), null))
+        .unverifiedFields()).containsExactly("*");
   }
 }

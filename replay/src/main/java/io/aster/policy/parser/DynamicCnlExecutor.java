@@ -107,6 +107,10 @@ public class DynamicCnlExecutor {
      *
      * <p>ruleId / controls 来自被执行函数的 Core IR 注解（ADR 0039 §3）；无注解时为 null / 空列表。
      * profile 为模块声明的治理档案 id（ADR 0046 §6），未声明时为 null。
+     *
+     * <p>inputRefs / verifiedInputsRequired 见 {@link RuleMetadata}（引擎源码路径，按规则体重算，不采信 IR 自带值）；
+     * inputKey 为第一个参数实际匹配到的命名输入键（{@link NamedContextMapper.MappingResult#firstParamKey}），
+     * 位置输入或未做命名映射时为 null。写评估事件时二者合起来映射为证据形状路径（ADR 0046 §11.6 第 3、4 条）。
      */
     public record ExecutionResult(
         Object result,
@@ -115,8 +119,24 @@ public class DynamicCnlExecutor {
         long executionTimeMs,
         String ruleId,
         List<String> controls,
-        String profile
-    ) {}
+        String profile,
+        List<String> inputRefs,
+        boolean verifiedInputsRequired,
+        String inputKey
+    ) {
+        /** 不带输入引用信息的构造（测试桩与无规则元数据的调用方）。 */
+        public ExecutionResult(Object result, String moduleName, String functionName, long executionTimeMs,
+                               String ruleId, List<String> controls, String profile) {
+            this(result, moduleName, functionName, executionTimeMs, ruleId, controls, profile, null, false, null);
+        }
+
+        static ExecutionResult of(Object result, String moduleName, String functionName, long executionTimeMs,
+                                  RuleMetadata meta, NamedContextMapper.MappingResult mapping) {
+            return new ExecutionResult(result, moduleName, functionName, executionTimeMs, meta.ruleId(),
+                meta.controls(), meta.profile(), meta.inputRefs(), meta.verifiedInputsRequired(),
+                mapping == null ? null : mapping.firstParamKey());
+        }
+    }
 
     private record CoreIrCacheKey(String key) {}
 
@@ -337,9 +357,9 @@ public class DynamicCnlExecutor {
             long executionTime = System.currentTimeMillis() - startTime;
             String moduleName = coreModule.name == null ? "" : coreModule.name;
             LOG.infof("Core IR 直接执行完成: %s.%s, 耗时 %dms", moduleName, targetFunction, executionTime);
+            // 提交的 IR 不可信：RuleMetadata 按规则体重算 inputRefs，不读 IR 自带值（ADR 0046 §11.6 第 19 条）
             RuleMetadata meta = RuleMetadata.of(coreModule, targetFunction);
-            return new ExecutionResult(result, moduleName, targetFunction, executionTime,
-                meta.ruleId(), meta.controls(), meta.profile());
+            return ExecutionResult.of(result, moduleName, targetFunction, executionTime, meta, mappingResult);
         } catch (DynamicExecutionException e) {
             throw e;
         } catch (Exception e) {
@@ -515,15 +535,7 @@ public class DynamicCnlExecutor {
             LOG.infof("动态执行完成: %s.%s, 耗时 %dms", compiled.moduleName(), targetFunction, executionTime);
 
             RuleMetadata meta = RuleMetadata.of(compiled.coreModule(), targetFunction);
-            return new ExecutionResult(
-                result,
-                compiled.moduleName(),
-                targetFunction,
-                executionTime,
-                meta.ruleId(),
-                meta.controls(),
-                meta.profile()
-            );
+            return ExecutionResult.of(result, compiled.moduleName(), targetFunction, executionTime, meta, mapping);
 
         } catch (InProcessCnlParser.CnlParseException e) {
             // 用户源码编译不过（语法 / E8xx）：由 REST 边界统一按 WARN 记录一次，此处不重复

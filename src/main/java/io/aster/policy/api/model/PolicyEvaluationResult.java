@@ -20,6 +20,10 @@ import java.util.Objects;
  * （aster-api#459）：供 /evaluate 把决策钉到版本。sourceHash 与 guard 收据同口径（内容哈希）；信封哈希
  * 旧版本为 null。结果缓存键已含 versionId，命中值与键指向同一版本；无版本时为 null 且不进入缓存 JSON。
  *
+ * <p>inputRefs / verifiedInputsRequired（ADR 0046 §11.6 第 4 条）只在模块声明档案时非 null：前者是写评估事件用的
+ * 证据形状路径（/evaluate 的输入是位置数组、没有匹配键，非空即 {@code ["*"]}），后者是要求项快照、只供审计。
+ * 二者都不进响应契约；缓存里的旧结果缺这两键，读回为 null，事件按「旧事件」不写。
+ *
  * <p>本类会作为 {@code policy-results} 缓存值写入 Redis（生产默认缓存后端）并在命中时按 JSON 还原。
  * 类有两个多参构造器，Jackson 无法自行推断用哪个创建实例，命中时会报 “no Creators” 解码失败，
  * 导致相同请求第二次评估失败（Action Guard 降级为 DENY evaluation_failed）。因此在全参构造器上显式声明
@@ -38,6 +42,8 @@ public class PolicyEvaluationResult {
     private final Long policyVersionId;
     private final String sourceHash;
     private final String sourceEnvelopeSha256;
+    private final List<String> inputRefs;
+    private final Boolean verifiedInputsRequired;
 
     /** 不携带治理字段的构造（decision / ruleId 为 null，controls 为空）。 */
     public PolicyEvaluationResult(Object result, double executionTimeMs, boolean fromCache) {
@@ -56,6 +62,14 @@ public class PolicyEvaluationResult {
         this(result, executionTimeMs, fromCache, decision, ruleId, controls, profile, null, null, null);
     }
 
+    /** 无输入引用的构造（版本身份齐全）。 */
+    public PolicyEvaluationResult(Object result, double executionTimeMs, boolean fromCache,
+                                  VerdictView decision, String ruleId, List<String> controls, String profile,
+                                  Long policyVersionId, String sourceHash, String sourceEnvelopeSha256) {
+        this(result, executionTimeMs, fromCache, decision, ruleId, controls, profile, policyVersionId, sourceHash,
+            sourceEnvelopeSha256, null, null);
+    }
+
     @JsonCreator
     public PolicyEvaluationResult(@JsonProperty("result") Object result,
                                   @JsonProperty("executionTimeMs") double executionTimeMs,
@@ -66,7 +80,9 @@ public class PolicyEvaluationResult {
                                   @JsonProperty("profile") String profile,
                                   @JsonProperty("policyVersionId") Long policyVersionId,
                                   @JsonProperty("sourceHash") String sourceHash,
-                                  @JsonProperty("sourceEnvelopeSha256") String sourceEnvelopeSha256) {
+                                  @JsonProperty("sourceEnvelopeSha256") String sourceEnvelopeSha256,
+                                  @JsonProperty("inputRefs") List<String> inputRefs,
+                                  @JsonProperty("verifiedInputsRequired") Boolean verifiedInputsRequired) {
         this.result = result;
         this.executionTimeMs = executionTimeMs;
         this.fromCache = fromCache;
@@ -77,6 +93,8 @@ public class PolicyEvaluationResult {
         this.policyVersionId = policyVersionId;
         this.sourceHash = sourceHash;
         this.sourceEnvelopeSha256 = sourceEnvelopeSha256;
+        this.inputRefs = inputRefs == null ? null : List.copyOf(inputRefs);
+        this.verifiedInputsRequired = verifiedInputsRequired;
     }
 
     public Object getResult() {
@@ -123,6 +141,22 @@ public class PolicyEvaluationResult {
         return sourceEnvelopeSha256;
     }
 
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public List<String> getInputRefs() {
+        return inputRefs;
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public Boolean getVerifiedInputsRequired() {
+        return verifiedInputsRequired;
+    }
+
+    /** 同一结果换 fromCache 标记（其余字段原样）。 */
+    public PolicyEvaluationResult withFromCache(boolean cached) {
+        return new PolicyEvaluationResult(result, executionTimeMs, cached, decision, ruleId, controls, profile,
+            policyVersionId, sourceHash, sourceEnvelopeSha256, inputRefs, verifiedInputsRequired);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -141,12 +175,14 @@ public class PolicyEvaluationResult {
             && Objects.equals(profile, that.profile)
             && Objects.equals(policyVersionId, that.policyVersionId)
             && Objects.equals(sourceHash, that.sourceHash)
-            && Objects.equals(sourceEnvelopeSha256, that.sourceEnvelopeSha256);
+            && Objects.equals(sourceEnvelopeSha256, that.sourceEnvelopeSha256)
+            && Objects.equals(inputRefs, that.inputRefs)
+            && Objects.equals(verifiedInputsRequired, that.verifiedInputsRequired);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(result, executionTimeMs, fromCache, decision, ruleId, controls, profile,
-            policyVersionId, sourceHash, sourceEnvelopeSha256);
+            policyVersionId, sourceHash, sourceEnvelopeSha256, inputRefs, verifiedInputsRequired);
     }
 }

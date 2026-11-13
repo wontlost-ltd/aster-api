@@ -166,34 +166,49 @@ public class GuardEvidenceDecisionService {
   }
 
   /**
-   * 档案来源门（ADR 0040 §11 D5）。规则元数据按评估事件的 {@code policyVersionId} 取（事件没有版本时取活跃版本），
-   * 与被锚定的那次评估是同一版本。被拒时改判 DENY 并带上 unverifiedFields，调用方随之不建待审批。
+   * 档案来源门（ADR 0040 §11 D5）。被拒时改判 DENY 并带上 unverifiedFields，调用方随之不建待审批。
    *
-   * <p>判定顺序（ADR 0040 §11 D5 实施澄清）：
+   * <p>判定顺序（ADR 0040 §11 D5 实施澄清，ADR 0046 §11.6 第 4 条）：
    * <ol>
-   *   <li>要求项在消费时由事件 {@code profile} 经 {@link ProfileRequirements}（当前注册表）重算，按事件版本取到的元数据
-   *       显示要求同样算要求；事件里的 {@code verifiedInputsRequired} 快照只供审计，不读；</li>
-   *   <li>引用集取版本元数据中的 IR {@code inputRefs}：它是引擎原样路径，缺少写事件时的输入匹配键，无法映射到证据形状，
-   *       非空即按 {@code "*"} 处理（fail-closed）；没有引用集（IR 未提供）→ {@code input_refs_unavailable}；</li>
-   *   <li>读不到元数据（evaluate-source 锚定的模块从未保存过版本是常态）：要求 → DENY {@code input_refs_unavailable}，
-   *       否则放行；计 counter，事件无 profile 时只记 DEBUG，带 profile 时记 WARN。</li>
+   *   <li>要求项在消费时由事件 {@code profile} 经 {@link ProfileRequirements}（当前注册表）重算；事件里的
+   *       {@code verifiedInputsRequired} 是写事件时的快照、只供审计，<b>不读</b>——否则 1.3.0 翻转前写下的 false 快照
+   *       会在翻转后放行未验证输入；</li>
+   *   <li>事件自带 {@code inputRefs}（Task 16b 起，写事件时已映射为 {@code context.<实际匹配键>.<path>}）→ 直接使用，
+   *       不读元数据：evaluate-source 锚定的模块没有已保存版本，事件是唯一来源；形态不对按 {@code "*"}；</li>
+   *   <li>否则（16b 之前的旧事件，或 IR 没有引用集）按事件的 {@code policyVersionId} 取规则元数据（事件没有版本时取活跃版本）。
+   *       元数据显示要求同样算要求；它的 {@code inputRefs} 是引擎原样路径，缺写事件时的输入匹配键，非空即按 {@code "*"}
+   *       （fail-closed）；没有引用集 → {@code input_refs_unavailable}；</li>
+   *   <li>元数据读不到：要求 → DENY {@code input_refs_unavailable}，否则放行；计 counter，事件无 profile 时只记 DEBUG，
+   *       带 profile 时记 WARN。</li>
    * </ol>
-   * 事件自带、写事件时已映射的 {@code inputRefs} 随引擎 1.0.44（Task 16b）加入，届时优先于第 2 步。
-   * 今天没有任何档案要求 verifiedInputs，所以门不会拒绝任何请求。
+   * 注册表 1.2.0 下没有任何档案要求 verifiedInputs，所以门不会拒绝任何请求。
    */
   GuardDecisionDraft gate(GuardDecisionDraft draft, GuardActionRequest.Action action, Map<String, Object> event) {
     String profile = text(event, EvaluationEvidence.KEY_PROFILE);
     // 在读元数据之前判定：它的异常不是「元数据读不到」，不计 counter，原样上抛
     boolean profileRequires = profileRequirements.verifiedInputsRequired(profile);
     RuleMetadata meta;
-    try {
-      meta = evidenceShape(ruleMetadata(draft, event), profileRequires);
-    } catch (RuntimeException e) {
-      return withoutRuleMetadata(draft, profile, profileRequires, e);
+    if (event.containsKey(EvaluationEvidence.KEY_INPUT_REFS)) {
+      meta = new RuleMetadata(draft.ruleId(), draft.controls(), profile,
+          eventInputRefs(event.get(EvaluationEvidence.KEY_INPUT_REFS)), profileRequires);
+    } else {
+      try {
+        meta = evidenceShape(ruleMetadata(draft, event), profileRequires);
+      } catch (RuntimeException e) {
+        return withoutRuleMetadata(draft, profile, profileRequires, e);
+      }
     }
     return VerifiedInputsGate.check(meta, draft.inputSources(), VerifiedInputsGate.presentLeafPaths(action))
         .map(denial -> draft.denyUnverified(denial.code(), denial.unverifiedFields()))
         .orElse(draft);
+  }
+
+  /** 事件自带的引用集须是字符串列表；其余形态（含 null 项）按「*」处理。 */
+  private static List<String> eventInputRefs(Object raw) {
+    if (raw instanceof List<?> list && list.stream().allMatch(String.class::isInstance)) {
+      return list.stream().map(String.class::cast).toList();
+    }
+    return List.of(VerifiedInputsGate.ALL_INPUTS);
   }
 
   private RuleMetadata ruleMetadata(GuardDecisionDraft draft, Map<String, Object> event) {

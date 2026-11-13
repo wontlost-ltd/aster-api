@@ -17,6 +17,7 @@ import io.aster.policy.compiler.CompilationMetadata;
 import io.aster.policy.compiler.CompilationResult;
 import io.aster.policy.compiler.PolicyCompiler;
 import io.aster.policy.entity.PolicyArtifact;
+import io.aster.guard.provenance.EvidenceInputRefPaths;
 import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.entity.PolicyCatalog;
@@ -391,10 +392,14 @@ public class PolicyEvaluationService {
         // 治理字段（ADR 0039/0046）：ruleId / controls 读被执行函数的 Core IR 注解，profile 读模块声明；
         // 解析失败只降级为无元数据，不影响评估结果。
         RuleMetadata meta = ruleMetadataOf(compiled, cacheKey.getPolicyFunction());
-        // 版本身份（aster-api#459）取自编译产物：它由解析到的 PolicyVersion 构造，与门禁校验的是同一版本
+        // 版本身份（aster-api#459）取自编译产物：它由解析到的 PolicyVersion 构造，与门禁校验的是同一版本。
+        // 输入引用（ADR 0046 §11.6 第 4 条）只为档案模块写：/evaluate 的输入是位置数组，没有匹配键（inputKey=null）。
+        boolean profiled = meta.profile() != null;
         return new PolicyEvaluationResult(executionResult.result(), durationNanos / 1_000_000.0, false,
             VerdictView.from(executionResult.result()).orElse(null), meta.ruleId(), meta.controls(), meta.profile(),
-            parseVersionId(compiled.getVersionId()), compiled.getSourceHash(), compiled.getSourceEnvelopeSha256());
+            parseVersionId(compiled.getVersionId()), compiled.getSourceHash(), compiled.getSourceEnvelopeSha256(),
+            profiled ? EvidenceInputRefPaths.evidenceShape(meta.inputRefs(), null) : null,
+            profiled ? meta.verifiedInputsRequired() : null);
     }
 
     /** 编译产物的 versionId 由 {@code String.valueOf(version.id)} 生成；非数字（测试直构）按无版本处理。 */
@@ -674,18 +679,7 @@ public class PolicyEvaluationService {
         if (original == null || original.isFromCache() == fromCache) {
             return original;
         }
-        return new PolicyEvaluationResult(
-            original.getResult(),
-            original.getExecutionTimeMs(),
-            fromCache,
-            original.getDecision(),
-            original.getRuleId(),
-            original.getControls(),
-            original.getProfile(),
-            original.getPolicyVersionId(),
-            original.getSourceHash(),
-            original.getSourceEnvelopeSha256()
-        );
+        return original.withFromCache(fromCache);
     }
 
     /**

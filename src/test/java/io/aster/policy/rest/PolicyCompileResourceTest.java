@@ -514,6 +514,50 @@ public class PolicyCompileResourceTest {
             .body("module.types", contains("Applicant"));
     }
 
+    /**
+     * Task 16b：档案模块的编译响应带 inputRefs（函数名 → 引擎原样路径，作者视角）；只列出 IR 带 inputRefs 的
+     * Verdict 规则，不返回 Verdict 的函数不出现。
+     */
+    @Test
+    public void compileResponseCarriesInputRefs() {
+        String source = String.join("\n",
+            "Module governance.refs.",
+            "Profile \"governed\".", "",
+            "Define Req has action as Text, amount as Int.", "",
+            "@id(\"R-1\")",
+            "Rule decide given req as Req, produce Verdict:",
+            "  If req.amount greater than 10:",
+            "    Return Verdict.deny(req.action).",
+            "  Return Verdict.allow().", "",
+            "@id(\"R-2\")",
+            "Rule open given req as Req, produce Verdict:",
+            "  Return Verdict.allow().", "",
+            "Rule helper given n as Int, produce Int:",
+            "  Return n.", "");
+        compile(source)
+            .body("success", is(true))
+            .body("profile", is("governed"))
+            .body("inputRefs.decide", contains("action", "amount"))
+            .body("inputRefs.open", empty())
+            .body("inputRefs", not(hasKey("helper")));
+    }
+
+    /** 无档案模块：响应不出现 inputRefs 键（逐字节不变）。 */
+    @Test
+    public void noProfileCompileResponseUnchanged() {
+        String source = String.join("\n",
+            "Module governance.norefs.", "",
+            "Define Req has action as Text.", "",
+            "Rule decide given req as Req, produce Verdict:",
+            "  If req.action equals to \"x\":",
+            "    Return Verdict.deny(\"d\").",
+            "  Return Verdict.allow().", "");
+        compile(source)
+            .body("success", is(true))
+            .body("$", not(hasKey("inputRefs")))
+            .body("$", not(hasKey("profile")));
+    }
+
     private io.restassured.response.ValidatableResponse compile(String source) {
         return given()
             .contentType(ContentType.JSON)
