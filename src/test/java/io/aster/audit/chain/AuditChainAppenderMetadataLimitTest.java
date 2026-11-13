@@ -98,6 +98,33 @@ class AuditChainAppenderMetadataLimitTest {
     assertThat(back.get("inputRefs")).isEqualTo(List.of("context.req.amount", "context.req.country"));
   }
 
+  /** 最大合法组合（上限内最长 inputRefs、16 × 64 controls、各文本键 255 且脱敏膨胀）经预检后由追加器实际写出：合法且不超限。 */
+  @Test
+  void 最大字段组合经预检后追加器实际写出合法JSON() throws Exception {
+    String pii = "1.1.1.1 ".repeat(32).substring(0, 255);
+    List<String> refs = EvaluationMetadataBudgetTest.largestRefs();
+    Map<String, Object> m = EvaluationMetadataBudgetTest.normal();
+    m.put("applicantId", pii);
+    m.put("locale", pii);
+    m.put("reason", pii);
+    m.put("role", "Data Protection Officer");
+    m.put("ruleId", "x".repeat(255));
+    m.put("controls", java.util.stream.IntStream.range(0, 16).mapToObj(i -> "C".repeat(62) + String.format("%02d", i)).toList());
+    m.put("inputRefs", refs);
+    for (String k : List.of("agentProvider", "agentModel", "agentVersion", "agentSession")) {
+      m.put(k, pii);
+    }
+
+    String json = map(EvaluationMetadataBudget.fit(m)).metadata;
+
+    assertThat(json.length()).isLessThanOrEqualTo(AuditChainAppender.MAX_METADATA_SIZE);
+    Map<String, Object> back = readMap(json);
+    assertThat(back).doesNotContainKey("metadataTruncated")
+        .containsEntry("role", "Data Protection Officer")
+        .containsEntry("ruleId", "x".repeat(255))
+        .containsEntry("outcome", "REQUIRE_APPROVAL");
+  }
+
   @SuppressWarnings("unchecked")
   private static Map<String, Object> readMap(String json) throws Exception {
     return JSON.readValue(json, Map.class);
