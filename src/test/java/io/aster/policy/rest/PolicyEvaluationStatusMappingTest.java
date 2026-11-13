@@ -157,12 +157,14 @@ class PolicyEvaluationStatusMappingTest {
             .body("error", notNullValue());
     }
 
-    /** schemaVersion 是字符串 "2"：属于类型错误，同样按版本错误拒收。 */
+    /** schemaVersion 是字符串 "2"（类型错误）或整数 1：同样按版本错误拒收。 */
     @Test
-    void schema_version_string_rejected_with_400() {
-        evaluateJson(EMPTY_V2_MODULE.replace("\"schemaVersion\":2", "\"schemaVersion\":\"2\""))
-            .then().statusCode(400)
-            .body("code", equalTo("unsupported_schema_version"));
+    void schema_version_string_or_other_int_rejected_with_400() {
+        for (String version : java.util.List.of("\"2\"", "1")) {
+            evaluateJson(EMPTY_V2_MODULE.replace("\"schemaVersion\":2", "\"schemaVersion\":" + version))
+                .then().statusCode(400)
+                .body("code", equalTo("unsupported_schema_version"));
+        }
     }
 
     @Test
