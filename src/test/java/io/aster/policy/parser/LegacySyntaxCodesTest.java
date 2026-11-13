@@ -162,10 +162,12 @@ class LegacySyntaxCodesTest {
     /**
      * 只有带码路径才用的句子模板（locales 1.0.43 #127 补齐 E051 / E053 / E054 / E065–E069）：这些码从来没有
      * 旧英文句型，不进兼容表，旧句型补码也绝不能映射到它们。parseTimeBudget 是 E054 按 reason=time-budget
-     * 选取的整句变体（aster-lang-core#259），同样只走带码路径。
+     * 选取的整句变体（aster-lang-core#259），同样只走带码路径。duplicateAnnotationArg 是 locales 1.0.46 随
+     * Core IR v2 新增的 E900（注解参数重名，ADR 0055 #3），同理。
      */
     private static final Set<String> CODED_ONLY_KEYS = Set.of("unterminatedString", "literalOutOfRange",
-        "nestingTooDeep", "parseTimeBudget", "misplaced", "emptyBlock", "invalidValue", "callArity", "unknownName");
+        "nestingTooDeep", "parseTimeBudget", "misplaced", "emptyBlock", "invalidValue", "callArity", "unknownName",
+        "duplicateAnnotationArg");
 
     /** 四语目录（locales 1.0.43）仍保留全部旧句型 key，且除诊断、外框、带码模板与 token.* 之外没有别的 key。 */
     @ParameterizedTest

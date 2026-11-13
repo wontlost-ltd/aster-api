@@ -333,6 +333,16 @@
       ]
     },
     {
+      "name": "E067 注解参数值为 null",
+      "source": "Module m.\n\n@x(null)\nRule f given x as Int, produce Int:\n  Return x.\n",
+      "codes": [
+        [
+          "E067",
+          3
+        ]
+      ]
+    },
+    {
       "name": "E068 前缀运算符参数个数",
       "source": "Module m.\n\nRule f given x as Int, produce Int:\n  Return +(x, 1, 2).\n",
       "codes": [
@@ -350,6 +360,16 @@
         [
           "E069",
           8
+        ]
+      ]
+    },
+    {
+      "name": "E900 注解参数重名",
+      "source": "Module m.\n\n@id(name: \"a\", name: \"b\")\nRule f given x as Int, produce Int:\n  Return x.\n",
+      "codes": [
+        [
+          "E900",
+          3
         ]
       ]
     },
@@ -474,6 +494,20 @@
       ],
       "source": "Module m.\n\nUse lib.status as Bib.\n\nDefine Zustand as one of Active, Closed.\n",
       "codes": []
+    },
+    {
+      "name": "E800 签名中未声明的大写类型名不是类型参数（ADR 0055 #10）",
+      "source": "Module m.\n\nRule f given x as Element, produce Element:\n  Return x.\n",
+      "codes": [
+        [
+          "E800",
+          3
+        ],
+        [
+          "E800",
+          3
+        ]
+      ]
     }
   ]
 }
