@@ -1,5 +1,6 @@
 package io.aster.policy.rest;
 
+import io.aster.audit.chain.AuditMetadataSize;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.evidence.AgentIdentity;
 import io.aster.policy.evidence.EvaluationEvidence;
@@ -69,6 +70,31 @@ class PolicyAuditPublisherTest {
     assertThat(ev.tenantId()).isEqualTo("t");
     assertThat(ev.policyModule()).isEqualTo("mod");
     assertThat(ev.policyFunction()).isEqualTo("fn");
+  }
+
+  /** aster-api#493：/evaluate 的 applicantId 来自请求 context、没有长度上限，发布前经预算预检截到 255。 */
+  @Test
+  void 超长applicantId发布前截到上限且整份metadata在预算内() {
+    EvaluationRequest req = new EvaluationRequest("mod", "fn",
+        new Object[]{Map.of("applicantId", "1.1.1.1 ".repeat(5_000))}, null);
+    Map<String, Object> md = publisher.buildMetadata(req);
+    EvaluationEvidence e = EvaluationEvidence.of("REQUIRE_APPROVAL", "R-1", List.of("X"), null, null, "DPO", "r");
+
+    publisher.publish("t", req, "u", true, 5L, null, md, e);
+
+    Map<String, Object> fired = fired().metadata();
+    assertThat((String) fired.get("applicantId")).hasSize(255);
+    assertThat(fired).containsEntry("role", "DPO").containsEntry("outcome", "REQUIRE_APPROVAL")
+        .containsEntry("metadataDegraded", List.of("applicantId"));
+    assertThat(AuditMetadataSize.measure(fired)).isLessThanOrEqualTo(AuditMetadataSize.BUDGET);
+  }
+
+  @Test
+  void 无证据时超长applicantId同样截断() {
+    Map<String, Object> md = Map.of("contextSize", 1, "applicantId", "y".repeat(10_000));
+    publisher.publish("t", request(), "u", false, 7L, "boom", md);
+
+    assertThat((String) fired().metadata().get("applicantId")).hasSize(255);
   }
 
   @Test

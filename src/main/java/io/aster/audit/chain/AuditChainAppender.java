@@ -14,6 +14,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -41,7 +42,13 @@ public class AuditChainAppender {
         }
     }
 
-    private static final int MAX_METADATA_SIZE = 4096;
+    /**
+     * metadata 序列化后的字符数上限。超限时不截断（截断会写出非法 JSON，读取方随之整份读不出），而是写
+     * {@link #oversizedPlaceholder 合法 JSON 占位}；写事件方应先按 {@link AuditMetadataSize} 预检降级，占位只是最后防线。
+     */
+    public static final int MAX_METADATA_SIZE = 4096;
+    /** audit_logs.reason 列宽：脱敏会让文本变长，投影按列宽截断，避免整条事件写入失败。 */
+    private static final int REASON_COLUMN_MAX_LENGTH = 500;
     /** correlation_id / decision_id 列宽。 */
     private static final int COLUMN_ID_MAX_LENGTH = 64;
     /**
@@ -154,7 +161,7 @@ public class AuditChainAppender {
         if (metadata == null || !(metadata.get(key) instanceof String s) || s.isBlank()) {
             return null;
         }
-        return s.length() > COLUMN_ID_MAX_LENGTH ? s.substring(0, COLUMN_ID_MAX_LENGTH) : s;
+        return clip(s, COLUMN_ID_MAX_LENGTH);
     }
 
     /**
@@ -195,7 +202,7 @@ public class AuditChainAppender {
             return null;
         }
         Object reason = metadata.get("reason");
-        return reason != null ? redact(reason.toString()) : null;
+        return reason != null ? clip(redact(reason.toString()), REASON_COLUMN_MAX_LENGTH) : null;
     }
 
     private String serializeMetadata(Map<String, Object> metadata) {
@@ -219,19 +226,43 @@ public class AuditChainAppender {
         try {
             String json = objectMapper.writeValueAsString(redactedMetadata);
             if (json.length() > MAX_METADATA_SIZE) {
-                Log.warnf(
-                    "Metadata too large (%d bytes), truncating to %d bytes",
-                    json.length(),
-                    MAX_METADATA_SIZE
-                );
-                int safeLength = Math.max(0, MAX_METADATA_SIZE - 13);
-                json = json.substring(0, safeLength) + "...truncated";
+                Log.warnf("Metadata too large (%d chars > %d), writing placeholder", json.length(), MAX_METADATA_SIZE);
+                return objectMapper.writeValueAsString(oversizedPlaceholder(metadata, json.length()));
             }
             return json;
         } catch (Exception e) {
             Log.errorf(e, "Failed to serialize metadata");
             return "{\"error\":\"serialization_failed\"}";
         }
+    }
+
+    /**
+     * 超限 metadata 的占位（aster-api#493）：只留 {@code metadataTruncated: true}、原序列化长度，以及
+     * {@code correlationId} / {@code decisionId}（与列投影同样截到 64），保证是合法 JSON 且远低于上限。
+     * 结论键一律不保留：from-evidence 读不到 outcome 即按不可审批拒绝，不会据残缺事件开出决策。
+     */
+    private static Map<String, Object> oversizedPlaceholder(Map<String, Object> metadata, int length) {
+        Map<String, Object> placeholder = new LinkedHashMap<>();
+        placeholder.put("metadataTruncated", Boolean.TRUE);
+        placeholder.put("metadataLength", length);
+        putClippedId(placeholder, metadata, "correlationId");
+        putClippedId(placeholder, metadata, "decisionId");
+        return placeholder;
+    }
+
+    private static void putClippedId(Map<String, Object> target, Map<String, Object> metadata, String key) {
+        String id = stringValue(metadata, key);
+        if (id != null) {
+            target.put(key, id);
+        }
+    }
+
+    /** 按 UTF-16 单元截断，不切开代理对。 */
+    private static String clip(String s, int max) {
+        if (s == null || s.length() <= max) {
+            return s;
+        }
+        return s.substring(0, Character.isHighSurrogate(s.charAt(max - 1)) ? max - 1 : max);
     }
 
     /**

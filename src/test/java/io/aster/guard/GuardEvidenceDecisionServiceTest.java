@@ -336,4 +336,26 @@ class GuardEvidenceDecisionServiceTest {
     assertThat(svc.gate(pending(), action(), eventWithRefs(java.util.Arrays.asList("context.amount", 3), null))
         .unverifiedFields()).containsExactly("*");
   }
+
+  /**
+   * aster-api#493：预算降级把 inputRefs 降为 {@code ["*"]}（不删除）。要求 verifiedInputs 的档案下，降级事件的门判定为
+   * DENY unverified_input 且点名「*」——降级只会更严，绝不因丢键而放行未验证输入。
+   */
+  @Test
+  void budgetDegradedInputRefsFailClosed() {
+    Map<String, Object> raw = eventWithRefs(java.util.stream.IntStream.range(0, 20)
+        .mapToObj(i -> "context.req.f" + i).toList(), true);
+    raw.put("role", "\"".repeat(255));
+    raw.put("ruleId", "\u0001".repeat(255));
+    raw.put("controls", java.util.stream.IntStream.range(0, 16)
+        .mapToObj(i -> "\"".repeat(20) + "C".repeat(42) + String.format("%02d", i)).toList());
+    Map<String, Object> degraded = io.aster.policy.evidence.EvaluationMetadataBudget.fit(raw);
+    assertThat(degraded).containsEntry(EvaluationEvidence.KEY_INPUT_REFS, List.of("*"));
+
+    GuardDecisionDraft gated = serviceWith(registryRequiring(true)).gate(pending(), action(), degraded);
+
+    assertThat(gated.outcome()).isEqualTo("DENY");
+    assertThat(gated.reasonCode()).isEqualTo(GuardReasonCode.UNVERIFIED_INPUT);
+    assertThat(gated.unverifiedFields()).containsExactly("*");
+  }
 }
