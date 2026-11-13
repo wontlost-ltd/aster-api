@@ -95,7 +95,7 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 | 5 | `Func.effects` | **只有这一个字段**：`effects: string[]`，保持源码顺序；具体效应名一律小写；与 `effectParams` 中某个名字相等的条目就是效应变量，原样保留 | 消除 `effects` 与 `declaredEffects` 的冗余，同时保住效应变量。`effects` 在 Java 里仍是 `List<String>`，消费方类型不变。规则：效应参数名不得与内建效应名（大小写不敏感）相同，否则报诊断 | ts（删除 `declaredEffects`，具体效应名小写）；Java（语法、AST、lowering 支持 `<E>` 效应参数，并接入现有 E210 / E211）——**见 §8 待确认 1** |
 | 6 | `Func.effectParams` | 恒输出 `string[]` | 随 #5 | 两侧 |
 | 7 | `Func.effectCaps` / `effectCapsExplicit` | 保留，恒输出 | 显式声明的能力是源码语义；推断出来的能力值属于值层，分期收紧（§6 V2） | 无形状变化 |
-| 8 | `Func.piiLevel` / `piiCategories` | **删除** | 这是派生聚合值：core 内部只有 `CoreLowering` / `CoreCopies` 写它，各仓 `origin/main` 都没有读方，ts 也不产出 | Java |
+| 8 | `Func.piiLevel` / `piiCategories` | **删除** | 这是派生聚合：`CoreLowering.annotateFuncPii` 只是把形参与返回类型里的 `PiiType` 聚合一遍。唯一的读方是 core `StabilityGate.scanFunc` 的兜底分支「签名无 PiiType 但 piiLevel 非空」，而 piiLevel 本就来自签名，这个分支永远不会触发，删掉即可。ts 不产出这两个字段，其它仓没有读方 | Java（`CoreModel`、`CoreLowering`、`CoreCopies`、`StabilityGate`） |
 | 9 | `Param.typeInferred` / `Field.typeInferred` / `Func.retTypeInferred` | 恒输出布尔 | 读方需要知道类型只是占位（ADR 0051 R2），值层分期也以这三个标记划定豁免子树（§6 V1）。Java 去掉 `@JsonIgnore` 和 `NON_DEFAULT` | 两侧 |
 | 10 | `Func.typeParams` | 只列源码声明的类型参数 | ts 在推断返回类型时补的 `"Unknown"` 是 lowering 产物，不是源码内容 | ts |
 | 11 | `annotations`（Func / Field / Param）、`Func.retAnnotations` | 恒输出数组 | 统一按「恒输出」处理 | ts（ts 目前根本没有 `retAnnotations`：AST 若支持返回类型注解就降级它，否则输出 `[]`，并补语料样本） |
