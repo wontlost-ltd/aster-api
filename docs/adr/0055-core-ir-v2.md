@@ -130,7 +130,7 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 
 另有两处以 `readTree` 读 `core_json` 的路径，同样属于 IR 读方：`PolicyEvaluationResource.parseCoreJson`（编译响应里抽取模块信息、档案与 `inputRefs`）和 `PolicyEvaluationService` 中的 `mapper.readTree(coreJson)`。`JacksonMappers.LENIENT` 若还有非 IR 用途，只把 IR 读方迁走。所有 IR 读方，不论是读成模型还是读成树，统一走 core 新增的 `CoreIrJson.read` / `CoreIrJson.readTree`（版本检查 + schema 校验 + 不变式检查）。
 
-**规范十进制串**（`Double.value`、`Range.min`、`Range.max`）：语法为 `-?(0|[1-9][0-9]*)(\.[0-9]*[1-9])?`，即没有指数、没有前导零、没有尾随零，小数部分全零时省略小数点，`-0` 写成 `0`；schema 用 `pattern` 强制。值取自**源码字面量的原文**，这需要在词法 / AST 层保留字面量：Java 的 `Expr.Double` 新增 `String lexeme`，`AstBuilder` 从 token 文本填入；ts lexer 的数值 token 新增 `raw`（`lexer.ts` 目前在 `parseFloat(num)` 处就丢掉了原文），AST 数值节点同样带上 `raw`；`between` 的两端同理。随后lowering 时按字面量构造任意精度十进制数（Java `BigDecimal`，ts `decimal.js`），去掉尾随零后输出无指数形式，不经二进制浮点。因此 `1e-7` 得到 `0.0000001`，`0.30000000000000004` 原样保留，`1.50` 得到 `1.5`，`1E3` 得到 `1000`，`123456789012345678901.5` 原样保留。如果中途经过 double，最后一例会变成 `123456789012345680000`，回归测试靠它来区分。运行时需要浮点数时，再由读方把字符串解析为 double。`CanonicalJson` 只负责转义这些字符串，规范化由 lowering 负责，校验由 schema 负责。
+**规范十进制串**（`Double.value`、`Range.min`、`Range.max`）：语法为 `0|-?[1-9][0-9]*(\.[0-9]*[1-9])?|-?0\.[0-9]*[1-9]`，即没有指数、没有前导零、没有尾随零，小数部分全零时省略小数点，`-0` 写成 `0`；schema 用 `pattern` 强制。值取自**源码字面量的原文**，这需要在词法 / AST 层保留字面量：Java 的 `Expr.Double` 新增 `String lexeme`，`AstBuilder` 从 token 文本填入；ts lexer 的数值 token 新增 `raw`（`lexer.ts` 目前在 `parseFloat(num)` 处就丢掉了原文），AST 数值节点同样带上 `raw`；`between` 的两端同理。随后lowering 时按字面量构造任意精度十进制数（Java `BigDecimal`，ts `decimal.js`），去掉尾随零后输出无指数形式，不经二进制浮点。因此 `1e-7` 得到 `0.0000001`，`0.30000000000000004` 原样保留，`1.50` 得到 `1.5`，`1E3` 得到 `1000`，`123456789012345678901.5` 原样保留。如果中途经过 double，最后一例会变成 `123456789012345680000`，回归测试靠它来区分。运行时需要浮点数时，再由读方把字符串解析为 double。`CanonicalJson` 只负责转义这些字符串，规范化由 lowering 负责，校验由 schema 负责。
 
 **规范序列化**：两引擎各提供一个序列化出口——Java 为 `CoreIrJson.serialize(Module)`，ts 为 `serializeCoreIr(module)`，两者是同一契约的两种语言实现，输出 core `aster.core.canonical.CanonicalJson` 规则下的字节：键按码点升序，数组保序，`null` 显式输出，不允许非 safe integer 的数值。Java 直接复用该类；ts 新增 `src/core/canonical-json.ts`，从 aster-cloud `src/lib/canonical-json.ts` 移植，并共用 `CanonicalJsonParityTest` 的 golden 夹具。凡是给持久化、哈希或 parity 用的 IR，一律经这个出口产出。
 
@@ -145,7 +145,7 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 3. 两侧做同一个**比较投影**：删除全部 `origin.start.col` / `origin.end.col`（全局投影，不属于豁免类别，不参与 stale 统计）；再把**当前仍在豁免期**的值层位置替换为 `{"$exempt":"<类别>"}`；
 4. 逐字节比较，不等即失败。失败分两类：键集合、`kind` 或数组长度不同的报 `shape-diff`，其余报 `value-diff`；两类都输出第一个不同的 JSON 路径及两侧的值。
 
-`ir-normalize.ts` 及其 `scripts/lib/ir-normalize-parity.mjs`、`IR-DIVERGENCE-LEDGER.md` 退役。packages/js 删除 `normalizeIr` 导出（该包 major bump）。ADR 0037 的 contentHash 改为对「删除 origin 之后的规范 IR 字节」取 sha256。
+`ir-normalize.ts` 及其 `scripts/lib/ir-normalize-parity.mjs`、`IR-DIVERGENCE-LEDGER.md` 退役。packages/js 删除 `normalizeIr` 导出（该包 major bump）。ADR 0037 的 contentHash 改为：从规范 IR 中删除**整个** `origin` 对象（含 `written` / `role`），再按规范序列化取 sha256。它是语义哈希，位置变化（例如在规则前插入一行注释）不改变哈希。这与 parity 只投影掉 col 的做法不同，是有意为之：parity 要守住行号，哈希不应受排版影响。例如 `{"kind":"Name","name":"x","origin":{…}}` 的哈希输入是 `{"kind":"Name","name":"x"}`。
 
 **排除 `origin.*.col` 的理由**：ts 的 `end.col` 多为占位值，ts 尚未计算真实的结束位置（ADR 0037 §2.2.1 记录在案）。另外，本次调研中三轮 `CoreIrFingerprintCli` 里有一轮，Java 在 4 个 vocab-zh 样本上的 col 偏移了 1 列，说明 Java 的列号也不确定。把 col 纳入 v2 首发门禁，会让门禁卡在与形状无关的问题上。col 收紧另立工作（见 §7）：等 ts 能算出真实的结束位置、Java 列号也确定之后，门禁加 `--origin-col=strict` 并删掉这一投影。
 
