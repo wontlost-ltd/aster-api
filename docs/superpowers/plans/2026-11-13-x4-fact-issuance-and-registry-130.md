@@ -336,7 +336,7 @@ export const FACT_TTL_MS = 600_000;
 
 **Interfaces:**
 - `export-profile-impact.sql`（READ ONLY 事务，末行 `{"_count":N}`）：cloud 变量下每行 `{"id":"cloud:<policyId>"|"cloudv:<versionId>","tenant":"<teamId 或 userId>","gatedExecutions30d":<近 30 天 decision in ('require_approval','escalate') 的执行数>}`；无 cloud 变量（aster_api 库）下每行 `{"tenant","issuer","kid","enabled","notAfter"}`（`guard_fact_issuers`）。
-- **空导出不放行**：新旗标 `--allow-empty-api-db` 只允许 aster_api 库导出 0 行（生产 `policy_versions` 今天为 0 行）；cloud 库导出 0 行一律退出码 3。`input-refs` 子命令只接受 `--allow-empty-api-db`，传旧的 `--allow-empty-db` → 用法错误（退出码 2）；常规 diff 扫描的 `--allow-empty-db` 保持原义（向后兼容），但 README 与本计划 G5 一律改用 `--allow-empty-api-db`。
+- **空导出不放行**：新旗标 `--allow-empty-api-db` 只允许 aster_api 库导出 0 行（生产 `policy_versions` 今天为 0 行）；cloud 库导出 0 行一律退出码 3。`--allow-empty-api-db` 在 `input-refs` 子命令与常规 diff 扫描（缺省一体化、`scan` 分步）**都**可用，`gate-scan.sh` 的参数解析与 `scan.mjs` 的空导出判定同步实现；`input-refs` 子命令拒绝旧的 `--allow-empty-db`（用法错误，退出码 2）；常规 diff 扫描保留 `--allow-empty-db` 原义（向后兼容），但 README 与本计划 G5 一律改用 `--allow-empty-api-db`。测试另加 `diffScanAcceptsAllowEmptyApiDb`（api 0 行 + 旗标 → 正常）与 `diffScanCloudEmptyIsExit3WithApiFlag`。
 - **源计数**：`scan.mjs` 与 `input-refs.mjs` 开头都打印 `sources: cloud-policy=<N> cloud-policy-version=<M> api-policy-version=<K>`；`cloud-policy + cloud-policy-version == 0` → 退出码 3。
 - `export-profile-ids.sql`（cloud 库，READ ONLY，末行 `{"_count":N}`）：独立于编译器的对账集合，每行 `{"id":"cloud:<policyId>"|"cloudv:<versionId>"}`，选取条件与 `export-policy-sources.sql` 相同（`Policy` 未删除且 `content` 非空；`PolicyVersion` `content` 非空）再加 `content ~ '(^|\n)[ \t]*(Profile|Profil|档案|प्रोफ़ाइल)[ \t]*["“「]'`（四个 lexicon 的档案关键字，取自 ts `src/config/lexicons/*.ts` 的 `SemanticTokenKind.PROFILE`；生产源码形如 `Profile "eu-ai-act-high-risk".` / `档案 "eu-ai-act-high-risk"。`）。
 - **对账**（`--profile-ids` 给出时）：`input-refs.mjs` 计算「任一 lexicon 编译成功且 Core IR `profile` 非空」的 id 集合，与 SQL 集合逐 id 比较；打印 `reconcile: sql=<n> scan=<m> onlyInSql=[ids] onlyInScan=[ids]`；两集合不等 → 退出码 4（G3 不通过）。不等的常见原因：源码用了自定义关键词别名（ADR 0022）写 `Profile`，或源码编译失败；两者都要在台账里逐 id 说明后**修正对账集合重跑**，不得口头放行。P2 / G3 必须带 `--profile-ids`。
@@ -402,7 +402,7 @@ scripts/gate-scan/gate-scan.sh input-refs --ts v1.5.0 --profile eu-ai-act-high-r
 
 ### 回滚
 
-- **两侧不一致窗口的行为**（决定回滚顺序）：编辑器保存按钮在浏览器编译有 error 时禁用（`policy-form/index.tsx:704` `disabled={isSaving || compileErrorCount > 0}`），服务端保存门读 aster-api `/compile` 的 error 级。
+- **两侧不一致窗口的行为**（决定回滚顺序）：编辑器保存按钮在浏览器编译有 error 时禁用（aster-cloud `origin/main` 的 `src/components/policy/policy-form/index.tsx:704` `disabled={isSaving || compileErrorCount > 0}`），服务端保存门读 aster-api `/compile` 的 error 级。
   - cloud 1.2.0 + aster-api 1.3.0（正向发布的窗口，也是本计划回滚时允许的窗口）：编辑器不报 E708、允许点保存，服务端 400 `compile_error`（消息为 E708 英文 / 本地化模板）。用户看得到原因，不会存进不合规源码。
   - cloud 1.3.0 + aster-api 1.2.0（必须避免）：编辑器对 `*` 规则报 E708 并**禁用保存**，而服务端其实允许——用户无法保存且无路可走。
 - **回滚顺序（固定）：先 cloud，后 aster-api**；E1 尚未合并时跳过第 1–2 步。
@@ -449,6 +449,7 @@ scripts/gate-scan/gate-scan.sh input-refs --ts v1.5.0 --profile eu-ai-act-high-r
 
 ## 8. 自审记录
 
+- Codex 第 3 轮（d5d766e3，88/100 approve-with-changes）已处理：Important「G5 用了常规 diff 模式不支持的旗标」→ `--allow-empty-api-db` 明确两种模式都支持并加测试；Minor 行号核对为 `origin/main` 的 704（Codex 读的是落后 74 个提交的本地 checkout），引用改为显式标注 `origin/main`。
 - Codex 第 2 轮（4ddf3cc4，退回）已处理：Critical「P2 可在空 / 错误导出上通过」→ P1 新增 `--allow-empty-api-db`（cloud 永不允许为空）、按 kind 源计数、`export-profile-ids.sql` 独立对账（逐 id 相等否则退出码 4），G3 / G5 均以此为前提；Important「回滚缺 API↔cloud 顺序」→ 回滚固定为先 cloud 后 aster-api，写明各自完成检查与两种不一致窗口的行为；aster-api#493 引用更正并升为 G6。
 - Codex 第 1 轮（2026-11-13，68/100 退回）已处理：Critical「翻转门没有证明生产输入可验证」→ G3 改为逐模块可验证性台账，新增 G0；Critical「ADR 范围变更未经批准即执行」→ PR 0 升为全部实现 PR 的硬门，§6 写明确认方式；Important「业务角色来源未指明」→ 指名 `src/lib/business-roles.ts` 的 `loadBusinessRoles`；Important「未附事实即消耗证据的恢复路径无验收」→ G2 增加 DENY → 重新登记仍 DENY → 重新执行得 PENDING；Minor「须对真实 verifier 验收」→ C9 Step 5 与 G2 明确走真实 aster-api。
 
