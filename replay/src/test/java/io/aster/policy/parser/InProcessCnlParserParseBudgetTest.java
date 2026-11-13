@@ -86,8 +86,10 @@ class InProcessCnlParserParseBudgetTest {
         assertEquals(InProcessCnlParser.BudgetExceededFailure.REASON, d.params().get("reason"));
         assertEquals(String.valueOf(budgetMs), d.params().get("budgetMs"));
         assertEquals(String.valueOf(InProcessCnlParser.NESTING_DEPTH_LIMIT), d.params().get("limit"),
-            "limit 照旧填嵌套上限，E054 文案模板只引用它");
-        assertEquals("Nesting is too deep (limit " + InProcessCnlParser.NESTING_DEPTH_LIMIT + ")", d.message());
+            "limit 照旧填嵌套上限（按码模板引用它），码与参数对客户端不变");
+        assertEquals("Parsing took too long (budget " + budgetMs + " ms); simplify the policy", d.message(),
+            "文案按 reason 取超时句型，不再是误导的「嵌套过深」（aster-lang-core#259）");
+        assertTrue(e.getMessage().contains(d.message()), "异常摘要（getSummary）沿用同一条超时文案，实际: " + e.getMessage());
         assertEquals(3, d.line(), "位置取中止时的当前 token（类型所在的第 3 行）");
     }
 

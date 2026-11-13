@@ -117,6 +117,8 @@ public class PolicyCompileParseBudgetTest {
                 + "' }", hasSize(0))
             .body("diagnostics.findAll { it.code == 'E054' && it.params.reason == 'time-budget' }", hasSize(1))
             .body("diagnostics.find { it.code == 'E054' }.params.budgetMs", is("2000"))
+            .body("diagnostics.find { it.code == 'E054' }.message",
+                is("Parsing took too long (budget 2000 ms); simplify the policy"))
             .body("diagnostics.find { it.code == 'E054' }.blocking", is(true));
         long elapsed = millisSince(t0);
 
