@@ -123,6 +123,7 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 
 | 位置 | 现状 |
 |---|---|
+| aster-api `DynamicCnlExecutor.executeCoreIrJson`（`/evaluate-json`，replay / runner 共用；`ReplayMappers.DEFAULT` 已拒收未知字段，但不做 schema 与不变式校验） | 严格但不完整 |
 | aster-api `JacksonMappers.LENIENT`（`PolicyEvaluationService.parseCoreModule`、`CedarExportService.readModule` 读 `core_json`） | 宽松 |
 | aster-api `StabilityEnforcement.LENIENT_MAPPER` | 宽松 |
 | aster-lang-truffle `Loader.mapper` | 宽松 |
