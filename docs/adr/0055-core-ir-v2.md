@@ -71,7 +71,8 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 
 **schema 规则**：
 - 每个节点类型一个 `$defs`，用 `kind` 的 `const` 区分；`properties` 全部列入 `required`，`additionalProperties: false`。
-- 可空字段写成 `"type": ["string","null"]`，列表字段不允许 `null`。
+- 可空字段写成 `"type": ["string","null"]`。列表字段不允许 `null`，唯一例外是 `Func.inputRefs`（#12）。
+- 所有 JSON 整数（`schemaVersion`、`origin` 行列号、`Int` 字面量、`PatInt.value`、`Import.version`、重试与超时参数、注解整数参数）引用同一个 `$defs/SafeInt`（`integer`，范围 ±9007199254740991），与 `CanonicalJson` 只接受 safe integer 的规则一致。`Long` 已经用字符串承载。
 - schema 表达不了的约束（注解参数名唯一、`effects` 里的变量必须已在 `effectParams` 中声明）由两引擎各自实现的 `validateCoreIrInvariants` 补齐，两种实现共用 locales `core-ir/test-fixtures/` 的 `bad-*.json` 负例与 `expected-problems.json`（同 controls 做法）。
 
 **合规检查**：
@@ -98,14 +99,14 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 | 9 | `Param.typeInferred` / `Field.typeInferred` / `Func.retTypeInferred` | 恒输出布尔 | 读方需要知道类型只是占位（ADR 0051 R2），值层分期也以这三个标记划定豁免子树（§6 V1）。Java 去掉 `@JsonIgnore` 和 `NON_DEFAULT` | 两侧 |
 | 10 | `Func.typeParams` | 只列源码声明的类型参数 | ts 在推断返回类型时补的 `"Unknown"` 是 lowering 产物，不是源码内容 | ts |
 | 11 | `annotations`（Func / Field / Param）、`Func.retAnnotations` | 恒输出数组 | 统一按「恒输出」处理 | ts（ts 目前根本没有 `retAnnotations`：AST 若支持返回类型注解就降级它，否则输出 `[]`，并补语料样本） |
-| 12 | `Module.profile`、`Func.inputRefs` | 恒输出，不适用时为 `null` | 恒输出 | 两侧 |
+| 12 | `Module.profile`、`Func.inputRefs` | 恒输出。`profile` 未声明时为 `null`。`inputRefs` 是 v2 **唯一的可空列表**：`null` 表示未计算（非档案模块，或不返回 Verdict 的规则），`[]` 表示已计算且不读任何输入（ADR 0046 §11 D2） | 「未计算」与「什么都不读」语义不同，`[]` 无法同时表达两者 | 两侧 |
 | 13 | `Lambda` 返回类型 | `ret` | 与 `Func.ret` 一致 | ts；Java 删除 `@JsonAlias("retType")` |
 | 14 | `Lambda.captures` | 恒输出 | 值层分期（§6 V3） | 无形状变化 |
 | 15 | `PatCtor` | `typeName` + `args: Pattern[]`（嵌套模式）；**删除 `names`** | `args` 的表达力严格大于 `names` | ts（lowering 改为输出 `args`）；Java 与 Truffle 删除 `names` |
 | 16 | 0 参枚举变体模式 | `PatCtor{typeName, args:[]}`；`PatName` 只用于绑定 | ts 靠「首字母大写」判断变体，对中文、印地文标识符失效，因为它们没有大小写；名称解析已经知道它是变体，应当显式表达。Truffle 的大写启发式随之删除 | ts、Truffle |
 | 17 | `origin` | **每个节点都必带**（含 `Module`、所有类型节点、`FuncType`）：`{file: string\|null, start:{line,col}, end:{line,col}, written: string\|null, role: string\|null}` | 恒输出；ts 现在在 `TypeName` / `FuncType` 上缺 origin | ts（补 origin）；两侧（`written` / `role` 改为恒输出） |
 | 18 | `Double.value` | 规范十进制串（§5），从源码字面量精确得出 | core `CanonicalJson` 只允许 safe integer（跨引擎浮点格式不一致）；`Long` 已经是字符串 | 两侧（Java `DoubleE.value` 改为 `String`，Truffle 读方跟着改） |
-| 19 | 空值 / 缺省 | **全部恒输出**：标量与对象用 `null`，列表用 `[]`，布尔用 `false` | 只有一条规则，没有例外，schema 才能「全部必填」，逐字节比较才简单。代价是 IR 体积变大（每个 origin 多两个键），见 §8 待确认 3 | 两侧，主要是 ts |
+| 19 | 空值 / 缺省 | **全部恒输出**：标量与对象用 `null`，列表用 `[]`，布尔用 `false` | 只有一条规则，没有例外，schema 才能「全部必填」，逐字节比较才简单。代价是 IR 体积变大（每个 origin 多两个键）。唯一例外是 `inputRefs` 可为 `null`（#12），见 §8 待确认 3 | 两侧，主要是 ts |
 
 ---
 
