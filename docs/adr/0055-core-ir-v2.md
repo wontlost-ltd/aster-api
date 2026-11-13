@@ -129,7 +129,7 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 | aster-lang-truffle `Loader.mapper` | 宽松 |
 | aster-lang-core `TypeCheckCli.MAPPER` | 宽松 |
 
-另有两处以 `readTree` 读 `core_json` 的路径，同样属于 IR 读方：`PolicyEvaluationResource.parseCoreJson`（编译响应里抽取模块信息、档案与 `inputRefs`）和 `PolicyEvaluationService` 中的 `mapper.readTree(coreJson)`。`JacksonMappers.LENIENT` 若还有非 IR 用途，只把 IR 读方迁走。所有 IR 读方，不论是读成模型还是读成树，统一走 core 新增的 `CoreIrJson.read` / `CoreIrJson.readTree`（版本检查 + schema 校验 + 不变式检查）。
+另有两处以 `readTree` 读 `core_json` 的路径，同样属于 IR 读方：`PolicyEvaluationResource.parseCoreJson`（编译响应里抽取模块信息、档案与 `inputRefs`）和 `PolicyEvaluationService.extractParametersFromCoreJson`（新建 `ObjectMapper` 后执行 `readTree(coreJson)`，读出 decls 与形参）。`JacksonMappers.LENIENT` 若还有非 IR 用途，只把 IR 读方迁走。所有 IR 读方，不论是读成模型还是读成树，统一走 core 新增的 `CoreIrJson.read` / `CoreIrJson.readTree`（版本检查 + schema 校验 + 不变式检查）。
 
 **规范十进制串**（`Double.value`、`Range.min`、`Range.max`）：语法为 `^(0|-?[1-9][0-9]*(\.[0-9]*[1-9])?|-?0\.[0-9]*[1-9])$`（全串锚定），即没有指数、没有前导零、没有尾随零，小数部分全零时省略小数点。IR 中**不存在** `"-0"`，schema 的 pattern 会拒收它；源码字面量 `-0`、`-0.0` 在 lowering 时归一为 `"0"`。schema 用 `pattern` 强制以上规则。值取自**源码字面量的原文**，这需要在词法 / AST 层保留字面量：Java 的 `Expr.Double` 新增 `String lexeme`，`AstBuilder` 从 token 文本填入；ts lexer 的数值 token 新增 `raw`（`lexer.ts` 目前在 `parseFloat(num)` 处就丢掉了原文），AST 数值节点同样带上 `raw`；`between` 的两端同理。随后lowering 时按字面量构造任意精度十进制数（Java `BigDecimal`，ts `decimal.js`），去掉尾随零后输出无指数形式，不经二进制浮点。因此 `1e-7` 得到 `0.0000001`，`0.30000000000000004` 原样保留，`1.50` 得到 `1.5`，`1E3` 得到 `1000`，`123456789012345678901.5` 原样保留。如果中途经过 double，最后一例会变成 `123456789012345680000`，回归测试靠它来区分。运行时需要浮点数时，再由读方把字符串解析为 double。`CanonicalJson` 只负责转义这些字符串，规范化由 lowering 负责，校验由 schema 负责。
 
