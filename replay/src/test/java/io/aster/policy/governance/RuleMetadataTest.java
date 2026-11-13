@@ -41,16 +41,17 @@ class RuleMetadataTest {
     assertEquals(new RuleMetadata("G-1", List.of(), "governed"), RuleMetadata.of(mod, "decide"));
     assertEquals(new RuleMetadata(null, List.of(), "governed"), RuleMetadata.of(mod, "nope"));
   }
-  @Test void 无函数体的档案Verdict外函数无inputRefs且默认注册表不要求verifiedInputs() {
+  @Test void 无函数体的档案Verdict外函数无inputRefs且默认注册表要求verifiedInputs() {
     var mod = new CoreModel.Module(); mod.profile = "eu-ai-act-high-risk";
     mod.decls = List.of(func("decide", ann("id", "G-1")));
     var meta = RuleMetadata.of(mod, "decide");
-    // 未声明返回 Verdict：不在 inputRefs 写入范围（与引擎同口径）
+    // 未声明返回 Verdict：不在 inputRefs 写入范围（与引擎同口径）；要求项只看档案（registry 1.3.0 起高风险要求），
+    // 来源门对「要求却无 inputRefs」按 input_refs_unavailable 处理，不放行
     assertNull(meta.inputRefs());
-    assertFalse(meta.verifiedInputsRequired());
+    assertTrue(meta.verifiedInputsRequired());
     assertNull(RuleMetadata.NONE.inputRefs());
     assertFalse(RuleMetadata.NONE.verifiedInputsRequired());
-    assertEquals(new RuleMetadata("G-1", List.of(), "eu-ai-act-high-risk", null, false), meta);
+    assertEquals(new RuleMetadata("G-1", List.of(), "eu-ai-act-high-risk", null, true), meta);
   }
 
   // ---- Task 16b：inputRefs 与 verifiedInputs（ADR 0046 §11 D1/D2、§11.6 第 19 条） ----
@@ -143,12 +144,13 @@ class RuleMetadataTest {
     assertTrue(ProfileRequirementsLookup.verifiedInputsRequired(registry("other", true), "other"));
   }
 
-  /** 默认注册表（1.2.0 起有 verifiedInputs 键，全部为 false）下任何档案都不要求。 */
-  @Test void defaultRegistryRequiresNothing() {
+  /** 默认注册表 1.3.0（ADR 0046 §11.4 ⑦）只有 eu-ai-act-high-risk 要求 verifiedInputs，governed 不要求。 */
+  @Test void defaultRegistryRequiresVerifiedInputsOnlyForHighRisk() {
     ControlRegistry reg = ControlRegistry.loadDefault();
+    assertEquals("1.3.0", reg.version());
     assertNotNull(reg.profile("eu-ai-act-high-risk").orElse(null));
-    reg.profiles().keySet().forEach(id ->
-        assertFalse(ProfileRequirementsLookup.verifiedInputsRequired(reg, id), id));
-    assertFalse(RuleMetadata.of(compiled(PROFILED_SOURCE), "decide").verifiedInputsRequired());
+    assertTrue(ProfileRequirementsLookup.verifiedInputsRequired(reg, "eu-ai-act-high-risk"));
+    assertFalse(ProfileRequirementsLookup.verifiedInputsRequired(reg, "governed"));
+    assertTrue(RuleMetadata.of(compiled(PROFILED_SOURCE), "decide").verifiedInputsRequired());
   }
 }

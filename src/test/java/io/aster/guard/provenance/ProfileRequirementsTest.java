@@ -10,19 +10,20 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 当前引擎 pin（1.0.44，registry 1.2.0）下没有任何档案要求 verifiedInputs：
- * from-evidence 关闭 fail-open 之后也不会因此拒绝任何请求。
+ * 引擎 pin 1.0.45（registry 1.3.0，ADR 0046 §11.4 ⑦）起只有 {@code eu-ai-act-high-risk} 要求 verifiedInputs：
+ * 声明该档案的模块，from-evidence 与 guard 决策对未经签名事实证实的被引用输入一律 DENY；{@code governed} 不受影响。
  */
 class ProfileRequirementsTest {
 
   @Test
-  void noProfileInBundledRegistryRequiresVerifiedInputs() {
+  void bundledRegistryRequiresVerifiedInputsOnlyForHighRisk() {
     ControlRegistry registry = ControlRegistry.loadDefault();
     ProfileRequirements requirements = new ProfileRequirements();
 
-    assertThat(registry.profiles()).containsKeys("governed", "eu-ai-act-high-risk");
-    assertThat(registry.profiles().keySet()).allSatisfy(id ->
-        assertThat(requirements.verifiedInputsRequired(id)).as(id).isFalse());
+    assertThat(registry.version()).isEqualTo("1.3.0");
+    assertThat(registry.profiles().keySet()).containsExactlyInAnyOrder("governed", "eu-ai-act-high-risk");
+    assertThat(requirements.verifiedInputsRequired("governed")).isFalse();
+    assertThat(requirements.verifiedInputsRequired("eu-ai-act-high-risk")).isTrue();
   }
 
   @Test

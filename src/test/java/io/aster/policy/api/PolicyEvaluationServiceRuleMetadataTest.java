@@ -1,6 +1,7 @@
 package io.aster.policy.api;
 
 import io.aster.guard.DeployedMapParamProbeTest;
+import io.aster.guard.GuardReasonCode;
 import io.aster.guard.api.GuardActionRequest.Action;
 import io.aster.guard.api.GuardActionRequest.ActionName;
 import io.aster.guard.api.GuardActionRequest.Principal;
@@ -159,11 +160,12 @@ class PolicyEvaluationServiceRuleMetadataTest {
   }
 
   /**
-   * 今天没有档案要求 verifiedInputs：声明高风险档案的已部署模块，真实元数据也是「不要求」，
-   * 来源门对全 declared 的请求不拒绝（Task 16a 不改变任何决策）。
+   * registry 1.3.0 起高风险档案要求 verifiedInputs：声明该档案的已部署模块，真实元数据为「要求」，
+   * 来源门对全 declared 的请求返回 {@code unverified_input}，未证实字段即规则读取的 {@code req.action}
+   * 映射到的请求路径 {@code action.name}（ADR 0046 §11.6 第 3 条）。
    */
   @Test
-  void highRiskProfileModuleIsNotGatedToday() {
+  void highRiskProfileModuleIsGatedAfter130() {
     String src = source("HR-001")
         .replace("Module guard.meta.", "Module guard.meta.\nProfile \"eu-ai-act-high-risk\".")
         .replace("@id(\"HR-001\")", "@id(\"HR-001\")\n@control(\"EU_AI_ACT:ART14\")");
@@ -173,10 +175,13 @@ class PolicyEvaluationServiceRuleMetadataTest {
 
     assertThat(meta.profile()).isEqualTo("eu-ai-act-high-risk");
     assertThat(meta.ruleId()).isEqualTo("HR-001");
-    assertThat(meta.verifiedInputsRequired()).isFalse();
+    assertThat(meta.verifiedInputsRequired()).isTrue();
     Action action = new Action(new Principal("agent-42", null, List.of("ops-bot")),
         new ActionName("delete_customer_record"), null, Map.of("amount", 250000), null);
-    assertThat(VerifiedInputsGate.check(meta, InputSources.NONE, VerifiedInputsGate.presentLeafPaths(action))).isEmpty();
+    VerifiedInputsGate.GateDenial denial = VerifiedInputsGate
+        .check(meta, InputSources.NONE, VerifiedInputsGate.presentLeafPaths(action)).orElseThrow();
+    assertThat(denial.code()).isEqualTo(GuardReasonCode.UNVERIFIED_INPUT);
+    assertThat(denial.unverifiedFields()).containsExactly("action.name");
   }
 
   /** 租户隔离：别的租户的 versionId 交给本租户的按版本入口，按「不存在」拒绝，不加载他人的产物。 */

@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * E708（ADR 0046 §11 D2 第 2 条）在编译通道的严重级：与 E705/E706 同为档案码，error 且不阻断编译（cloud 保存门据此拒绝）。
- * 默认注册表（1.2.0）下没有档案要求 verifiedInputs、不会出现 E708，所以构造检查器时注入要求它的注册表。
+ * 构造检查器时注入要求 verifiedInputs 的注册表，使用例不随内置注册表版本（1.3.0 起高风险档案要求）变化。
  */
 class GovernanceDiagnosticsTest {
 

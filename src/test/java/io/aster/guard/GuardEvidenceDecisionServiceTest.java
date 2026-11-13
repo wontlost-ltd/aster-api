@@ -187,7 +187,7 @@ class GuardEvidenceDecisionServiceTest {
     assertThat(unavailableCount()).isZero();
   }
 
-  /** 今天（registry 1.1.0 / 1.2.0）没有档案要求 verifiedInputs：真实元数据下门不改变任何草稿。 */
+  /** 元数据显示不要求 verifiedInputs（如 registry 1.2.0 之前写下的版本元数据）且注册表未被模拟为要求时，门不改变草稿。 */
   @Test
   void notRequiredMetadataLeavesDraftUnchanged() {
     when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION, "7")).thenReturn(
@@ -273,9 +273,9 @@ class GuardEvidenceDecisionServiceTest {
     assertThat(gated.outcome()).isEqualTo("DENY");
     assertThat(gated.reasonCode()).isEqualTo(GuardReasonCode.INPUT_REFS_UNAVAILABLE);
     assertThat(unavailableCount()).isEqualTo(1.0);
-    // 默认注册表（1.2.0，全部不要求）下同一事件放行
+    // 档案不要求 verifiedInputs 的注册表（如 1.2.0）下同一事件放行；默认注册表 1.3.0 起高风险档案要求，见上一断言
     GuardDecisionDraft draft = pending();
-    assertThat(serviceWith(ControlRegistry.loadDefault()).gate(draft, action(), event(null, "eu-ai-act-high-risk")))
+    assertThat(serviceWith(registryRequiring(false)).gate(draft, action(), event(null, "eu-ai-act-high-risk")))
         .isEqualTo(draft);
   }
 

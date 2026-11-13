@@ -397,7 +397,8 @@ public class GuardFromEvidenceResourceTest {
     String esc = "\u0001".repeat(AgentIdentity.MAX_TEXT);
     EvaluationEvidence evidence = new EvaluationEvidence(cid, "REQUIRE_APPROVAL", "CUST-DEL-001",
         List.of("GDPR:ART17"), 1730890123456L, new AgentIdentity(esc, esc, esc, esc), DPO,
-        "1.1.1.1 ".repeat(32).substring(0, AgentIdentity.MAX_TEXT), "eu-ai-act-high-risk")
+        // 用 governed：本例只验证降级后的事件仍可审批；registry 1.3.0 起高风险档案无签名事实即 DENY（另有用例覆盖）
+        "1.1.1.1 ".repeat(32).substring(0, AgentIdentity.MAX_TEXT), "governed")
         .withInputRefs(List.of("context.amount"), false);
     Map<String, Object> raw = new HashMap<>(Map.of("contextSize", 1, "applicantId", "a@b.cc ".repeat(2_000)));
     raw.putAll(evidence.toMetadata());
@@ -412,6 +413,34 @@ public class GuardFromEvidenceResourceTest {
     assertThat(opened.jsonPath().getString("effectiveOutcome")).isEqualTo("PENDING");
     assertThat(opened.jsonPath().getString("approval.requiredRole")).isEqualTo(DPO);
     assertThat(opened.jsonPath().getString("ruleId")).isEqualTo("CUST-DEL-001");
+  }
+
+  /**
+   * registry 1.3.0（ADR 0046 §11.4 ⑦）：不注入任何元数据或注册表，事件声明 {@code eu-ai-act-high-risk}、
+   * 自带已映射的 {@code inputRefs}，且写事件时的要求项快照为 false。from-evidence 按事件档案与内置注册表重算
+   * → 要求 verifiedInputs；请求未附事实，被引用的 context.amount 为 declared → DENY unverified_input，不建待审批。
+   */
+  @Test
+  void 默认注册表下高风险档案事件未附事实即拒绝() {
+    String cid = newCid();
+    EvaluationEvidence evidence = new EvaluationEvidence(cid, "REQUIRE_APPROVAL", "CUST-DEL-001",
+        List.of("GDPR:ART17"), null, null, DPO, "删除客户记录需 DPO 复核", "eu-ai-act-high-risk")
+        .withVersion(null, PolicyVersion.computeSourceHash("Module guard.customer."), null)
+        .withInputRefs(List.of("context.amount"), false);
+    append(TENANT, new HashMap<>(evidence.toMetadata()));
+
+    Response resp = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+
+    assertThat(resp.statusCode()).as(resp.asString()).isEqualTo(200);
+    assertThat(resp.jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
+    assertThat(resp.jsonPath().getString("reasonCode")).isEqualTo("unverified_input");
+    assertThat(resp.jsonPath().getString("approval")).isNull();
+    String decisionId = resp.jsonPath().getString("decisionId");
+    UUID id = UUID.fromString(decisionId);
+    assertThat(QuarkusTransaction.requiringNew().call(() -> GuardApprovalEntity.count("decisionId", id))).isZero();
+    Response receipts = signedGet(RECEIPTS, "decisionIds=" + decisionId, TENANT, "u-export");
+    assertThat(receipts.statusCode()).as(receipts.asString()).isEqualTo(200);
+    assertThat(receipts.jsonPath().getList("receipts[0].metadata.unverifiedFields")).containsExactly("context.amount");
   }
 
   /** 结论键本身超预算时只剩最小键集（无 outcome）：from-evidence 按不可审批 409，不会开出缺所需角色的待审批。 */
