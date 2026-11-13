@@ -417,25 +417,25 @@ scripts/gate-scan/gate-scan.sh input-refs --ts v1.5.0 --profile eu-ai-act-high-r
 
 ---
 
-## 6. 待用户确认（状态均为「**proposed — pending user confirmation**」）
+## 6. 用户裁定（状态均为「**accepted 2026-11-13**」）
 
-确认方式：用户合并 PR 0（ADR §11.7）。第 2、3、8、9 条偏离 ADR 原文，PR 0 合并前不得合并任何实现 PR；其余各条确认前可按 proposed 开发，随 PR 0 定稿。
+用户 2026-11-13 按下列 proposed 全部确认；裁定原文写入 ADR 0046 §11.7（PR 0，`docs/x4-adr-clarify`）。第 2、3、8、9 条偏离 ADR 原文，PR 0 合并前仍不得合并任何实现 PR。
 
-1. **编辑器 `inputRefs` 取浏览器 Core IR，不调 `/compile`**（更正第 2 条）——proposed：采用。代价：编辑器显示的是 ts 分析器结果，运行期判定用 Java 分析器重算；两者 parity 由 aster-lang-test 锁定。
-2. **`catalog.piiMark` 推迟到 #460**（更正第 3 条）——proposed：推迟，第一期清单三项。备选是现在登记但不自动附，那是无消费方的死代码。
-3. **证据包 v6 `factSources` 展示随 #460**（更正第 4 条）——proposed：不进 X4，也不是翻转门。
-4. **cloud 签发方用一把平台级 Ed25519 密钥（Worker secret），由各租户在设置页显式启用**——proposed：采用。备选是每租户一把密钥（需新表与加密存储，ADR 未要求，且违背「不新增安全设计」的仓库准则）。`audience = tenantId` 已在签名内，跨租户重放不成立。
-5. **试点密钥由 `pnpm fact-key:gen` 生成、seed 只登记公钥**（更正第 5 条）——proposed：采用。
-6. **附事实前查 `listFactIssuers()`，不可用则不附；`invalid_fact` 不自动去掉事实重试**——proposed：采用。代价：每次 require_approval / escalate 登记多一次 HMAC GET（8 s 超时内）；自动重试会在翻转后用一次 DENY 消耗证据（§11.6 第 11 条），得不偿失。
-7. **`hmac.userId` / `idp.businessRoles` 照样签**（aster-api 对 from-evidence 已能服务端判定这两项为 verified）——proposed：签，作用是让收据 `factSources` 记录 cloud 的来源；`principal.roles` 只在与真实业务角色完全相等时签。备选：只签 `fixture.creditPilot`。
-8. **外部签发方事实的透传（执行 API 接受调用方带来的 `facts`）不在 X4**——proposed：不做；外部签发方在 X4 中只服务直接调 `POST /api/v1/guard/decisions` 的接入方。这意味着翻转后，生产里经 cloud 执行的高风险模块的 from-evidence 一律 DENY，除非输入只引用 `principal.*`（更正第 7 条）。
-9. **翻转后生产信贷试点 DENY 是预期**（更正第 7 条）——proposed：接受，ADR 0046 D5 第 2 项原文要求 `fixture.creditPilot` 不进生产；生产演示改用本地栈。
-10. **1.0.45 只含翻转与 runtime#77，core#245 另排**（更正第 8 条）——proposed：采用。
-11. **ts 1.6.0（minor）**——proposed：采用，因为默认注册表变化会让既有源码出现新的 error 级诊断。
-12. **aster-lang-test 的 `*` 语料按需改为 `governed`**（R4 判定规则）——proposed：采用；只在实测失败时改。
-13. **§11.6 第 16 条（`Int.toString` 标量叶子豁免）由 P2 的 `whole-input-serialized` 命中数决定**——proposed：命中数为 0 则维持现状直接翻转；非 0 由用户在 G3 逐条裁定，豁免需要改两引擎，届时翻转推迟。
-14. **个人租户也提供签发方设置子页**（ADR 0040 §11 D3「个人租户同样可配」）——proposed：做，子页 `/settings/fact-issuers` 与团队卡片共用 `FactIssuersPanel`。
-15. **签发方吊销导致的过期不发 `guard.approval_decided` 通知**——proposed：X4 只在收件箱显示原因；aster-api DELETE 不返回受影响的审批，cloud 无从逐条通知，通知另案（需 aster-api 回传 `affectedDecisionIds`）。
+1. **编辑器 `inputRefs` 取浏览器 Core IR，不调 `/compile`**（更正第 2 条）——accepted 2026-11-13：采用。代价：编辑器显示的是 ts 分析器结果，运行期判定用 Java 分析器重算；两者 parity 由 aster-lang-test 锁定。
+2. **`catalog.piiMark` 推迟到 #460**（更正第 3 条）——accepted 2026-11-13：推迟，第一期清单三项。备选是现在登记但不自动附，那是无消费方的死代码。
+3. **证据包 v6 `factSources` 展示随 #460**（更正第 4 条）——accepted 2026-11-13：不进 X4，也不是翻转门。
+4. **cloud 签发方用一把平台级 Ed25519 密钥（Worker secret），由各租户在设置页显式启用**——accepted 2026-11-13：采用。备选是每租户一把密钥（需新表与加密存储，ADR 未要求，且违背「不新增安全设计」的仓库准则）。`audience = tenantId` 已在签名内，跨租户重放不成立。
+5. **试点密钥由 `pnpm fact-key:gen` 生成、seed 只登记公钥**（更正第 5 条）——accepted 2026-11-13：采用。
+6. **附事实前查 `listFactIssuers()`，不可用则不附；`invalid_fact` 不自动去掉事实重试**——accepted 2026-11-13：采用。代价：每次 require_approval / escalate 登记多一次 HMAC GET（8 s 超时内）；自动重试会在翻转后用一次 DENY 消耗证据（§11.6 第 11 条），得不偿失。
+7. **`hmac.userId` / `idp.businessRoles` 照样签**（aster-api 对 from-evidence 已能服务端判定这两项为 verified）——accepted 2026-11-13：签，作用是让收据 `factSources` 记录 cloud 的来源；`principal.roles` 只在与真实业务角色完全相等时签。备选：只签 `fixture.creditPilot`。
+8. **外部签发方事实的透传（执行 API 接受调用方带来的 `facts`）不在 X4**——accepted 2026-11-13：不做；外部签发方在 X4 中只服务直接调 `POST /api/v1/guard/decisions` 的接入方。这意味着翻转后，生产里经 cloud 执行的高风险模块的 from-evidence 一律 DENY，除非输入只引用 `principal.*`（更正第 7 条）。
+9. **翻转后生产信贷试点 DENY 是预期**（更正第 7 条）——accepted 2026-11-13：接受，ADR 0046 D5 第 2 项原文要求 `fixture.creditPilot` 不进生产；生产演示改用本地栈。
+10. **1.0.45 只含翻转与 runtime#77，core#245 另排**（更正第 8 条）——accepted 2026-11-13：采用。
+11. **ts 1.6.0（minor）**——accepted 2026-11-13：采用，因为默认注册表变化会让既有源码出现新的 error 级诊断。
+12. **aster-lang-test 的 `*` 语料按需改为 `governed`**（R4 判定规则）——accepted 2026-11-13：采用；只在实测失败时改。
+13. **§11.6 第 16 条（`Int.toString` 标量叶子豁免）由 P2 的 `whole-input-serialized` 命中数决定**——accepted 2026-11-13：命中数为 0 则维持现状直接翻转；非 0 由用户在 G3 逐条裁定，豁免需要改两引擎，届时翻转推迟。
+14. **个人租户也提供签发方设置子页**（ADR 0040 §11 D3「个人租户同样可配」）——accepted 2026-11-13：做，子页 `/settings/fact-issuers` 与团队卡片共用 `FactIssuersPanel`。
+15. **签发方吊销导致的过期不发 `guard.approval_decided` 通知**——accepted 2026-11-13：X4 只在收件箱显示原因；aster-api DELETE 不返回受影响的审批，cloud 无从逐条通知，通知另案（需 aster-api 回传 `affectedDecisionIds`）。
 
 ---
 
