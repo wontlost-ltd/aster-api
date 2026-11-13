@@ -78,9 +78,11 @@ class AuditIdentifierRedactionTest {
         // ★performedBy **保持脱敏**：它可能是 email（AuditLogComplianceTest
         //   testPIIRedactionInDatabase 钉死了 "***@***.***" 契约），是真实 PII。
         //   它不是链的分区键，脱敏不会造成读写失配。
+        //   列宽截断（aster-api#498）经 redactAndClip：先脱敏、后截断。
         assertTrue(
-                src.contains("log.performedBy = redact("),
-                "performedBy 必须继续脱敏——它可能是 email，且不是链分区键");
+                src.contains("log.performedBy = redactAndClip(")
+                        && src.contains("return clip(redact(value), columnMaxLength);"),
+                "performedBy 必须继续脱敏（先脱敏后截断）——它可能是 email，且不是链分区键");
     }
 
     @Test

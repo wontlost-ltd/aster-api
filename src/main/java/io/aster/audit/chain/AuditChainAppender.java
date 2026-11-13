@@ -47,8 +47,21 @@ public class AuditChainAppender {
      * {@link #oversizedPlaceholder 合法 JSON 占位}；写事件方应先按 {@link AuditMetadataSize} 预检降级，占位只是最后防线。
      */
     public static final int MAX_METADATA_SIZE = 4096;
-    /** audit_logs.reason 列宽：脱敏会让文本变长，投影按列宽截断，避免整条事件写入失败。 */
+    /*
+     * audit_logs 有界文本列的列宽（与 V2/V3 迁移、AuditLog 实体一致）。这些列的取值来自未限长输入
+     * （请求体、X-User-Id、throwable.getMessage()），且脱敏会让文本变长；一律先脱敏、后按列宽截断
+     * （aster-api#493 / #498），避免整条事件写入失败。截断发生在映射阶段，哈希按落库值计算，验链不受影响。
+     * tenant_id 不在此列：它是哈希链分区键，截断会让链查不到，超宽时宁可整条失败（见 toAuditLog）。
+     */
+    /** audit_logs.reason 列宽。 */
     private static final int REASON_COLUMN_MAX_LENGTH = 500;
+    /** audit_logs.error_message 列宽。 */
+    private static final int ERROR_MESSAGE_COLUMN_MAX_LENGTH = 1000;
+    /** audit_logs.performed_by / policy_id 列宽。 */
+    private static final int PERFORMED_BY_COLUMN_MAX_LENGTH = 100;
+    private static final int POLICY_ID_COLUMN_MAX_LENGTH = 100;
+    /** audit_logs.policy_module / policy_function 列宽。 */
+    private static final int POLICY_NAME_COLUMN_MAX_LENGTH = 200;
     /** correlation_id / decision_id 列宽。 */
     private static final int COLUMN_ID_MAX_LENGTH = 64;
     /**
@@ -136,15 +149,15 @@ public class AuditChainAppender {
         //   形如 `…-1234-5678-9012-3456` 的 UUID 尾部被替成 `****-****-****-****`。
         //   生产 3430 条中已有 1272 条（37%）键被改写。
         log.tenantId = tenant;
-        log.policyModule = redact(event.policyModule());
-        log.policyFunction = redact(event.policyFunction());
-        log.policyId = redact(event.policyId());
+        log.policyModule = redactAndClip(event.policyModule(), POLICY_NAME_COLUMN_MAX_LENGTH);
+        log.policyFunction = redactAndClip(event.policyFunction(), POLICY_NAME_COLUMN_MAX_LENGTH);
+        log.policyId = redactAndClip(event.policyId(), POLICY_ID_COLUMN_MAX_LENGTH);
         log.fromVersion = event.fromVersion();
         log.toVersion = event.toVersion();
-        log.performedBy = redact(event.performedBy());
+        log.performedBy = redactAndClip(event.performedBy(), PERFORMED_BY_COLUMN_MAX_LENGTH);
         log.success = event.success();
         log.executionTimeMs = event.executionTimeMs();
-        log.errorMessage = event.errorMessage();
+        log.errorMessage = redactAndClip(event.errorMessage(), ERROR_MESSAGE_COLUMN_MAX_LENGTH);
         log.reason = extractReason(event.metadata());
         log.metadata = serializeMetadata(event.metadata());
         log.correlationId = stringValue(event.metadata(), "correlationId");
@@ -197,12 +210,17 @@ public class AuditChainAppender {
         return piiRedactor.redact(value);
     }
 
+    /** 有界文本列的统一投影：先脱敏（可能变长），再按列宽截断；顺序不可颠倒，否则脱敏后仍可能超宽。 */
+    private String redactAndClip(String value, int columnMaxLength) {
+        return clip(redact(value), columnMaxLength);
+    }
+
     private String extractReason(Map<String, Object> metadata) {
         if (metadata == null || metadata.isEmpty()) {
             return null;
         }
         Object reason = metadata.get("reason");
-        return reason != null ? clip(redact(reason.toString()), REASON_COLUMN_MAX_LENGTH) : null;
+        return reason != null ? redactAndClip(reason.toString(), REASON_COLUMN_MAX_LENGTH) : null;
     }
 
     private String serializeMetadata(Map<String, Object> metadata) {
