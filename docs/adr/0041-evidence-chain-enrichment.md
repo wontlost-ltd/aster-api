@@ -288,6 +288,8 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 
 与 ADR 0040 §11.4 同：aster-api 先（收据键与查询接口）→ cloud（证据包 v6）。不需要引擎发版。
 
+补注（2026-11-13，ADR 0046 §11.7 第 2、3 条）：D4 的证据包 v6（含 `guardInputSources.factSources` 展示）与 ADR 0042 §11（#460）一次升版，不随 ADR 0046 §11.4 ⑥（X4）交付，也不是 registry 1.3.0 翻转的前置条件；X4 期间 `factSources` 只在链上决策收据中（D1），经 `GET /api/v1/audit/receipts` 可核验。签发端来源函数 `catalog.piiMark` 同样随 #460 再定义。
+
 ## 12. 2026-11 修订：执行收据的消耗与结果事件入链（R64）
 
 状态：**ACCEPTED**（2026-11-08 用户确认；实施计划 docs/superpowers/plans/2026-11-08-guard-receipts-and-input-provenance.md）。定稿后与正文冲突时以本节为准。
