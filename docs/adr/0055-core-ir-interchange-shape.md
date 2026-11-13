@@ -16,7 +16,7 @@
 | 决定 | 内容 | 不做什么 |
 |---|---|---|
 | D1 规范形状 | **Java `CoreModel`（`CoreIrSchemaVersion.V1`）的基础形状 + 登记在案的可选扩展字段**是规范交换形状；持久化、`/evaluate-json`、Truffle 都以它为准 | 不改 Java 的输出（逐字节不变） |
-| D2 读方接受 TS 方言 | core `CoreModel` 用**显式**别名 / 折叠 / 校验吸收 5 处 TS 方言（§5.2 表），约 30 行；效应多态（`effectParams` / `EffectVar`）**明确拒收** | 不加 `@JsonIgnoreProperties(ignoreUnknown = true)`，不在 `/evaluate-json` 改用宽松 mapper |
+| D2 读方接受 TS 方言 | core `CoreModel` 用**显式**别名 / 折叠 / 校验吸收 5 处 TS 方言（§5.2 表），约 80 行（含两个属性式构造器与约束类型）；效应多态（`effectParams` / `EffectVar`）**明确拒收** | 不加 `@JsonIgnoreProperties(ignoreUnknown = true)`，不在 `/evaluate-json` 改用宽松 mapper |
 | D3 公开入口保持严格 | `/evaluate-json` 继续拒收未知字段 | 不为「新版本生产者 → 旧读方」静默降级 |
 | D4 修订 V1 契约措辞 | 「新增可选字段不算 breaking」改为「对已识别该字段的读方不 breaking；严格读方会拒收」 | 不 bump schema major |
 | D5 新 parity 门 | aster-lang-test 增 `--mode=ir-interop`：ts IR 经 Java 严格读入、再序列化后，与 Java 自产 IR 归一等价，且不经归一器逐字段核对别名字段与约束未丢；再加交叉执行 | 不替代既有 `--mode=ir --full` |
@@ -71,10 +71,12 @@ ADR 0016 D1 明确选了「**归一比较，而非强行对齐字段名**」：p
 
 **A 类：严格读方直接拒收（阻断 `/evaluate-json`）**
 
+计数口径：「TS / Java」两列里的「x/y」是节点统计，基于两侧都成功的 425 份；「出现」列是反序列化时登记的未知字段次数，基于 ts 成功的全部 459 份（含 Java 拒收的 34 份），所以两者数值不同。
+
 | # | 节点 | TS | Java | 出现 | 语义 |
 |---|---|---|---|---|---|
-| A1 | `Param`（Func 与 Lambda 形参） | 恒有 `constraints`（920 个形参中 919 为 `[]`） | 无此字段 | 938 处 / 323 份 | 形参约束（`given score between 300 and 850`） |
-| A2 | `Field`（Data 字段） | 恒有 `constraints`（999 个中 989 为 `[]`，10 个为 `Range{min,max}` / `Required`） | 无此字段；**Java 解析器接受约束语法但不入 IR** | 1013 处 / 130 份 | 字段约束（仅元数据，两侧运行时都不执行） |
+| A1 | `Param`（Func 与 Lambda 形参） | 恒有 `constraints`（425 份中 920 个 Func 形参，919 个为 `[]`） | 无此字段 | 938 处 / 323 份 | 形参约束（`given score between 300 and 850`） |
+| A2 | `Field`（Data 字段） | 恒有 `constraints`（425 份中 999 个字段，989 个为 `[]`，10 个为 `Range{min,max}` / `Required`） | 无此字段；**Java 解析器接受约束语法但不入 IR** | 1013 处 / 130 份 | 字段约束（仅元数据，两侧运行时都不执行） |
 | A3 | `Func` | `declaredEffects`（与 `effects` 同内容，另可含 `EffectVar`） | 无 | 137 处 / 98 份 | 与 `effects` 冗余 |
 | A4 | `Annotation` | `args: [{name:"$0", value:"R-1"}]`；无参时省略 | `params: {"$0":"R-1"}`；无参时 `{}` | 119 处 / 60 份 | **`@id` / `@control` 规则元数据**（ADR 0039 §3） |
 | A5 | `Import` | `name` / `asName`；省略 `version` | `path` / `alias` / `version:null` | 12 处 / 10 份 | 导入路径与别名 |
@@ -114,7 +116,7 @@ C 类不阻断反序列化，也不属于「形状」；列出是因为它们决
 
 ### 2.4 原型验证（只改 core 读方，未提交）
 
-在 core 的一次性 worktree 里给 `CoreModel` 加 §5.2 的别名 / 折叠 / `constraints` 字段（简化版：`declaredEffects` 直接忽略、`args` 不做校验，约 15 行；语料无 A6 样本，校验与拒收分支不影响下表），重跑：
+在 core 的一次性 worktree 里给 `CoreModel` 加 §5.2 的别名 / 折叠 / `constraints` 字段（简化版：`Import` 用 `@JsonAlias`、`constraints` 用 `Map`、`declaredEffects` 直接忽略、`args` 不做校验，约 15 行；语料无 A6 样本，校验与拒收分支不影响下表），重跑：
 
 | 检查 | 结果 |
 |---|---|
@@ -165,7 +167,7 @@ C 类不阻断反序列化，也不属于「形状」；列出是因为它们决
 
 理由：V1 契约挂在 core；唯一持久化的 IR（`core_json`）是 Java 形状；`/evaluate-json`、Cedar 导出、规则元数据、Truffle 执行链全部以 `CoreModel` 为入口；parity 归一的目标命名本来就是 Java 名。选 TS 为规范则要么重写 Java 输出（违反约束 1、3，且要迁移 `core_json`），要么所有 Java 读方都得懂 TS 名——等于没有规范。
 
-规范形状 = `aster.core.ir.CoreModel` 的 Jackson 序列化结果（**基础形状**），加本 ADR 登记的**可选扩展字段**。扩展字段的含义是：读方必须接受并在回写时保留，Java 生产者可以不输出。目前只有一项：`Field.constraints` / `Param.constraints`（来源 TS，Java lowering 暂不产出，见 §10）。新增扩展字段须修订本 ADR。本 ADR 不另写 JSON Schema（见 §10 未决）。
+规范形状 = `aster.core.ir.CoreModel` 的 Jackson 序列化结果（**基础形状**），加本 ADR 登记的**可选扩展字段**。扩展字段的含义是：读方必须接受并在回写时保留，Java 生产者可以不输出。目前只有一项：`Field.constraints` / `Param.constraints`（来源 TS，Java lowering 暂不产出，见 §10）。其值域照搬 ts `Core.Constraint`（`types.ts`）：数组元素为 `{kind:"Required"}`、`{kind:"Range", min?:number, max?:number}`（至少有其一）或 `{kind:"Pattern", regexp:string}`；其它 `kind` 或多余字段一律拒收。Java 侧建模为与 `Type` 同样的 `@JsonTypeInfo` 多态类型，而不是 `Map<String,Object>`。新增扩展字段须修订本 ADR。本 ADR 不另写 JSON Schema（见 §10 未决）。
 
 注意「Java 能读入 ts IR」不等于「两侧产出相同的规范输出」：ts 仍产出 TS 方言，只是它被规范读方接受。
 
@@ -175,12 +177,14 @@ C 类不阻断反序列化，也不属于「形状」；列出是因为它们决
 
 | 分岔 | 读方处理 | 理由 |
 |---|---|---|
-| A5 `Import.name` / `asName` | `path` 加 `@JsonAlias("name")`，`alias` 加 `@JsonAlias("asName")` | 与既有 `Lambda` 的 `@JsonAlias("retType")` 同一做法 |
-| A4 `Annotation.args` | 加 `@JsonSetter("args")`，把 `[{name,value}]` **按原顺序**折叠进 `params`（`LinkedHashMap`）；只改容器形状、不改值。每项必须有字符串 `name` 且带 `value` 键，否则抛 `JsonMappingException`；同名参数重复即拒收（不做静默覆盖）；同一注解同时出现 `args` 与 `params` 也拒收 | 与 `ir-normalize.ts` 的 `foldAnnotationArgs` 同一规则；丢掉它会丢规则元数据 |
+| A5 `Import.name` / `asName` | 用属性式 `@JsonCreator` 同时接收 `path` / `name`、`alias` / `asName`：只出现一个则取它；**规范名与别名同时出现即拒收**（值相同也拒收） | `@JsonAlias` 会让后出现者覆盖前者，结果取决于 JSON 属性顺序，不能用 |
+| A4 `Annotation.args` | 加 `@JsonSetter("args")`，把 `[{name,value}]` **按原顺序**折叠进 `params`（`LinkedHashMap`）；只改容器形状、不改值。每项必须有字符串 `name` 且带 `value` 键，否则抛 `JsonMappingException`；同名参数重复即拒收（不做静默覆盖）；同一注解同时出现 `args` 与 `params` 也拒收（含显式 `params:{}`）。实现用属性式 `@JsonCreator`，参数缺省为 null，因而能区分「没写 `params`」与「写了空 `params`」，且与属性顺序无关 | 与 `ir-normalize.ts` 的 `foldAnnotationArgs` 同一规则；丢掉它会丢规则元数据 |
 | A1/A2 `constraints` | `Field` / `Param` 增可选字段 `constraints`（`@JsonInclude(NON_EMPTY)`，缺省 null） | 约束是源码语义而非推断噪声，读入后经 `executeCoreIrJson` 回写时应保留；Java 自身不填，输出逐字节不变 |
 | A3 `Func.declaredEffects` | 加 `@JsonSetter("declaredEffects")`：元素全为字符串时丢弃（TS lowering 中它就是 `effects` 加效应变量，无效应变量时内容与 `effects` 相同）；出现任何 `EffectVar` 对象即抛错 | 只对 Java 反序列化 / 执行路径成立，不承诺回写给 TS 读方时保真 |
 | A6 `Func.effectParams` / `EffectVar` | 不加别名，保持未知字段 → 严格读方拒收（错误信息写明「效应多态不受 Java 执行路径支持」） | Java 与 Truffle 都没有效应变量；忽略它会把多态函数当作只有具体效应执行，属于静默改语义 |
-| C1 `effects` 大小写 | 可选：`effects` 的 setter 规范为小写 | Java 自产已是小写；读入 ts IR 后与 Java 自产同形，下游无需各自小写化 |
+| C1 `effects` 大小写 | `effects` 的 setter 规范为小写（`Locale.ROOT`） | Java 自产已是小写，输出不变；读入 ts IR 后与 Java 自产同形，下游无需各自小写化。§8 第 5 步依赖此行为 |
+
+通则：同一语义字段的规范名与别名**不得同时出现**（`path`/`name`、`alias`/`asName`、`params`/`args`），一律拒收；冲突判定必须与 JSON 属性顺序无关。
 
 A3 / A6 的接受范围因此是：**不含效应多态的 ts IR**。这与 Java 前端的能力边界一致（Java 解析器不接受效应参数），不是新增限制。
 
@@ -245,7 +249,7 @@ TS 的内存 Core 模型被类型检查、治理检查、效应推断、解释�
 3. 判定：读入失败 = `interop-reject`（失败）；`normalizeForParity(roundTrip)` 与 `normalizeForParity(javaIr)` 用既有 `walkDiff`（键序无关）比较，不等 = `interop-lossy`（失败，列出路径）；
 4. 额外断言 `normalizeForParity(roundTrip)` 等于 `normalizeForParity(tsIr)`——这条把「读方别名表」与「归一器别名表」钉在一起（D2 末段），任一侧单独改动都会变红；
 5. **不经归一器的保留断言**（`interop-dropped`，单独计数）：归一器把 `constraints` 当推断层剥离，第 3、4 步看不到它，所以对 roundTrip 与原始 ts IR 直接逐项核对——每个 `Field` / `Param` 的 `constraints` 深度相等（缺省视同 `[]`，覆盖 `Range` 与 `Required`）；每个注解的 `params` 等于其 `args` 的有序折叠；每个 `Import` 的 `path` / `alias` 等于 `name` / `asName`；`effects` 小写化后相等。
-6. 负例夹具（随 core 单测，不进语料）：带 `effectParams` / `EffectVar`、`args` 项缺 `name`、`args` 重名、同时含 `args` 与 `params`、任意未知字段——都必须被严格读方拒收。另向语料补一个带 `Range` / `Required` 形参约束的样本（现有 `loan.aster` 只有 1 处形参约束）。
+6. 负例夹具（随 core 单测，不进语料）：带 `effectParams` / `EffectVar`；`args` 项缺 `name` 或缺 `value`；`args` 重名；同时含 `args` 与 `params`（两种属性顺序各一条，且含 `params:{}`）；Import 同时含 `path`+`name` 或 `alias`+`asName`（两种顺序）；`constraints` 含未知 `kind` 或多余字段；任意未知字段——都必须被严格读方拒收。正例另含大小写混合的 `effects`（读入后为小写，Java 自产 IR 序列化不变）。另向语料补一个带 `Range` / `Required` 形参约束的样本（现有 `loan.aster` 只有 1 处形参约束）。
 
 **交叉执行**（第二阶段）：对带 eval 用例的样本，把 ts IR 走 aster-api 同款路径（`CoreModel` 严格读入 → 回写 → Truffle）执行，结果与 golden 比较。覆盖 C2/C3/C5：形状能读入不等于语义等价，`NamedContextMapper` 依赖形参 `TypeName` 映射上下文，而两侧对未标注形参的推断不同。
 
