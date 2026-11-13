@@ -12,11 +12,12 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 治理诊断（W700/E701/E702/W704/E705/E706/E707）→ 编译诊断。
+ * 治理诊断（W700/E701/E702/W704/E705/E706/E707/E708）→ 编译诊断。
  *
  * <p>编译端点此前不跑治理检查；ADR 0045 起与稳定性（W600）、规则冲突（W601）诊断
  * 走同一 diagnostics 通道合流。治理诊断 blocking 恒 false，不改变编译成功与否；
- * 档案违规（E705/E706，ADR 0046 §4）保留 error 严重级，由 cloud 保存门据此拒绝保存。
+ * 档案违规（E705/E706，ADR 0046 §4；E708 规则输入引用无法静态确定，ADR 0046 §11 D2 第 2 条）保留 error 严重级，
+ * 由 cloud 保存门据此拒绝保存。
  * 只调用 {@link GovernanceChecker#checkModule}，不跑完整类型检查。
  * 检查器抛出运行时异常时不改变编译成功与否（与 RuleConflictDiagnostics 同构）：
  * 该路径同时服务 /validate 与求值的缓存编译，治理检查绝不能把成功编译变成失败。
@@ -69,7 +70,7 @@ public final class GovernanceDiagnostics {
         CoreModel.Origin origin = d.span().orElse(null);
         CoreModel.Position start = origin == null ? null : origin.start;
         CoreModel.Position end = origin == null || origin.end == null ? start : origin.end;
-        // ADR 0046：档案违规（E705/E706）是模块作者自愿声明的约束，须阻止保存，保留 error；
+        // ADR 0046：档案违规（E705/E706/E708）是模块作者自愿声明的约束，须阻止保存，保留 error；
         // 其余治理码按 ADR 0045 在编译通道恒为 warning
         String severity = isProfileCode(d.code()) ? "error" : "warning";
         return new CompilationResult.Diagnostic(
@@ -82,7 +83,8 @@ public final class GovernanceDiagnostics {
     }
 
     private static boolean isProfileCode(ErrorCode code) {
-        return code == ErrorCode.GOV_PROFILE_UNKNOWN || code == ErrorCode.GOV_PROFILE_VIOLATION;
+        return code == ErrorCode.GOV_PROFILE_UNKNOWN || code == ErrorCode.GOV_PROFILE_VIOLATION
+            || code == ErrorCode.GOV_PROFILE_INPUT_UNRESOLVABLE;
     }
 
     private static int lineOf(CoreModel.Position p) {

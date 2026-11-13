@@ -1,5 +1,8 @@
 package io.aster.policy.evidence;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,10 +19,16 @@ import java.util.UUID;
  * /evaluate-source 没有已保存版本，只写即时源码的 {@code sourceHash}。{@code sourceEnvelopeSha256} 是完整编译
  * 输入的信封哈希（ADR 0022 §11.5），有则写，旧版本与即时源码为 null。三键由 {@link #withVersion} 在评估
  * 结束后附加，correlationId 不变。
+ *
+ * <p>{@code inputRefs} / {@code verifiedInputsRequired}（ADR 0046 §11.6 第 4 条，ADR 0041 §11 D2 登记）只在模块声明档案时
+ * 写入，无档案事件的 metadata 逐字节不变。{@code inputRefs} 是写事件时已映射好的证据形状请求路径
+ * （{@code context.<实际匹配键>.<path>}），由 {@link #withInputRefs} 附加；null 表示 IR 没有引用集，不写键。
+ * {@code verifiedInputsRequired} 只是写事件时的快照、供审计：消费方一律按事件 {@code profile} 加当前注册表重算，不读它。
  */
 public record EvaluationEvidence(String correlationId, String outcome, String ruleId, List<String> controls,
                                  Long policyVersionId, AgentIdentity agent, String role, String reason,
-                                 String profile, String sourceHash, String sourceEnvelopeSha256) {
+                                 String profile, String sourceHash, String sourceEnvelopeSha256,
+                                 List<String> inputRefs, Boolean verifiedInputsRequired) {
   public static final int MAX_CONTROLS = 16;
   public static final int MAX_CONTROL_LENGTH = 64;
   public static final String SOURCE_DECLARED = "declared";
@@ -41,6 +50,30 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
   public static final String KEY_POLICY_VERSION_ID = "policyVersionId";
   public static final String KEY_SOURCE_HASH = "sourceHash";
   public static final String KEY_SOURCE_ENVELOPE_SHA256 = "sourceEnvelopeSha256";
+  public static final String KEY_INPUT_REFS = "inputRefs";
+  public static final String KEY_VERIFIED_INPUTS_REQUIRED = "verifiedInputsRequired";
+  /**
+   * 事件 {@code inputRefs} 的上限：映射后不超过 32 项，且 JSON 数组的 UTF-8 字节数不超过 512；超过任一上限整体写
+   * {@code ["*"]}。审计链 metadata 超过 4096 字符会被截断成非法 JSON（from-evidence 随之 409），把其余各键撑到校验上限
+   * 后只剩约 570 字符（{@code EvaluationEvidenceSizeTest}），所以字节上限取 512 而不是计划初稿的 1024。
+   * 写 {@code ["*"]} 在没有档案要求 verifiedInputs 时无害，要求之后是 fail-closed。
+   */
+  public static final int MAX_INPUT_REFS = 32;
+  public static final int MAX_INPUT_REFS_BYTES = 512;
+  private static final List<String> ALL_INPUTS = List.of("*");
+  private static final ObjectMapper JSON = new ObjectMapper();
+
+  public EvaluationEvidence {
+    inputRefs = inputRefs == null ? null : List.copyOf(inputRefs);
+  }
+
+  /** 无输入引用的构造（两键经 {@link #withInputRefs} 附加）。 */
+  public EvaluationEvidence(String correlationId, String outcome, String ruleId, List<String> controls,
+                            Long policyVersionId, AgentIdentity agent, String role, String reason,
+                            String profile, String sourceHash, String sourceEnvelopeSha256) {
+    this(correlationId, outcome, ruleId, controls, policyVersionId, agent, role, reason, profile, sourceHash,
+        sourceEnvelopeSha256, null, null);
+  }
 
   /** 无版本哈希的构造（版本键经 {@link #withVersion} 附加）。 */
   public EvaluationEvidence(String correlationId, String outcome, String ruleId, List<String> controls,
@@ -80,7 +113,35 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
    */
   public EvaluationEvidence withVersion(Long policyVersionId, String sourceHash, String sourceEnvelopeSha256) {
     return new EvaluationEvidence(correlationId, outcome, ruleId, controls, policyVersionId, agent, role, reason,
-        profile, sourceHash, sourceEnvelopeSha256);
+        profile, sourceHash, sourceEnvelopeSha256, inputRefs, verifiedInputsRequired);
+  }
+
+  /**
+   * 附加规则输入引用（已映射为证据形状）与要求项快照：同一 correlationId。只在声明档案时写入（{@link #toMetadata}）。
+   *
+   * @param mappedRefs 证据形状路径；null 表示 IR 没有引用集，不写键
+   * @param required   写事件时的要求项快照；null 不写键
+   */
+  public EvaluationEvidence withInputRefs(List<String> mappedRefs, Boolean required) {
+    return new EvaluationEvidence(correlationId, outcome, ruleId, controls, policyVersionId, agent, role, reason,
+        profile, sourceHash, sourceEnvelopeSha256, mappedRefs, required);
+  }
+
+  /** 超过 {@link #MAX_INPUT_REFS} 项或 {@link #MAX_INPUT_REFS_BYTES} 字节时整体为 {@code ["*"]}，否则原样。 */
+  public static List<String> capInputRefs(List<String> refs) {
+    if (refs.size() > MAX_INPUT_REFS || inputRefsJsonBytes(refs) > MAX_INPUT_REFS_BYTES) {
+      return ALL_INPUTS;
+    }
+    return List.copyOf(refs);
+  }
+
+  /** 引用集序列化为 JSON 数组后的 UTF-8 字节数。 */
+  public static int inputRefsJsonBytes(List<String> refs) {
+    try {
+      return JSON.writeValueAsBytes(refs).length;
+    } catch (JsonProcessingException e) {
+      throw new IllegalStateException("字符串列表序列化失败", e);
+    }
   }
 
   /** 扁平键而非嵌套对象：追加器的脱敏与 guard 的预算收缩只处理顶层 String/List；null/空不写键。 */
@@ -97,7 +158,12 @@ public record EvaluationEvidence(String correlationId, String outcome, String ru
     put(m, KEY_SOURCE_ENVELOPE_SHA256, clip(sourceEnvelopeSha256));
     put(m, KEY_ROLE, clip(role));
     put(m, KEY_REASON, clip(reason));
-    put(m, KEY_PROFILE, clip(profile));
+    String p = clip(profile);
+    put(m, KEY_PROFILE, p);
+    if (p != null && !p.isEmpty()) {
+      if (inputRefs != null) m.put(KEY_INPUT_REFS, capInputRefs(inputRefs));
+      if (verifiedInputsRequired != null) m.put(KEY_VERIFIED_INPUTS_REQUIRED, verifiedInputsRequired);
+    }
     if (agent != null) {
       put(m, KEY_AGENT_PROVIDER, clip(agent.provider()));
       put(m, KEY_AGENT_MODEL, clip(agent.model()));

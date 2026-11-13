@@ -7,6 +7,7 @@ import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.api.model.BatchRequest;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.evidence.AgentIdentity;
+import io.aster.guard.provenance.EvidenceInputRefPaths;
 import io.aster.policy.evidence.EvaluationEvidence;
 import io.aster.policy.metrics.PolicyMetrics;
 import io.aster.policy.api.convert.NamedContextMapper;
@@ -276,7 +277,8 @@ public class PolicyEvaluationResource {
             EvaluationEvidence evidence = EvaluationEvidence.of(
                 outcomeOf(result.getDecision()), result.getRuleId(), result.getControls(), null, agent,
                 roleOf(result.getDecision()), reasonOf(result.getDecision()), result.getProfile())
-                .withVersion(result.getPolicyVersionId(), result.getSourceHash(), result.getSourceEnvelopeSha256());
+                .withVersion(result.getPolicyVersionId(), result.getSourceHash(), result.getSourceEnvelopeSha256())
+                .withInputRefs(result.getInputRefs(), result.getVerifiedInputsRequired());
             publishPolicyEvaluationEvent(
                 tenantId,
                 request,
@@ -402,9 +404,10 @@ public class PolicyEvaluationResource {
 
                 // correlationId（ADR 0041 §2.2）：链上事件与响应共用同一个键
                 VerdictView decision = VerdictView.from(result.result()).orElse(null);
-                EvaluationEvidence evidence = EvaluationEvidence.of(
+                EvaluationEvidence evidence = withInputRefs(EvaluationEvidence.of(
                     outcomeOf(decision), result.ruleId(), result.controls(), null, agent,
-                    roleOf(decision), reasonOf(decision), result.profile());
+                    roleOf(decision), reasonOf(decision), result.profile()),
+                    result.profile(), result.inputRefs(), result.verifiedInputsRequired(), result.inputKey());
                 publishPolicyEvaluationEvent(
                     tenantId,
                     new EvaluationRequest(policyModule, policyFunction, contextArray, agent),
@@ -685,11 +688,13 @@ public class PolicyEvaluationResource {
 
                     // 即时源码没有已保存版本（id、信封哈希为 null），但写与封存同算法的源码内容哈希（aster-api#459），
                     // 与 guard 收据 / 版本 sourceHash 同口径，证据包可直接比对。
-                    evidence = EvaluationEvidence.of(
+                    var exec = phase.execResult();
+                    evidence = withInputRefs(EvaluationEvidence.of(
                         outcomeOf(decision),
-                        phase.execResult().ruleId(), phase.execResult().controls(), null, agent,
-                        roleOf(decision), reasonOf(decision), phase.execResult().profile())
-                        .withVersion(null, io.aster.policy.entity.PolicyVersion.computeSourceHash(request.source()), null);
+                        exec.ruleId(), exec.controls(), null, agent,
+                        roleOf(decision), reasonOf(decision), exec.profile())
+                        .withVersion(null, io.aster.policy.entity.PolicyVersion.computeSourceHash(request.source()), null),
+                        exec.profile(), exec.inputRefs(), exec.verifiedInputsRequired(), exec.inputKey());
                     publishPolicyEvaluationEvent(
                         tenantId,
                         new EvaluationRequest(phase.execResult().moduleName(), phase.execResult().functionName(), new Object[]{request.context()}, agent),
@@ -1025,7 +1030,7 @@ public class PolicyEvaluationResource {
                 .map(CompileDiagnostic::from)
                 .toList();
             com.fasterxml.jackson.databind.JsonNode core = parseCoreJson(result.getCoreJson());
-            return CompileResponse.ok(extractModuleInfo(core), warnings, extractProfile(core));
+            return CompileResponse.ok(extractModuleInfo(core), warnings, extractProfile(core), extractInputRefs(core));
         }
         // 结构化诊断优先（含 1-based 行列 + W600 code/severity）；无位置信息的失败回退到
         // 行列=1 的兜底诊断，保证前端总能拿到至少一条标记。
@@ -1059,6 +1064,24 @@ public class PolicyEvaluationResource {
     /** 从 Core IR 读模块声明的治理档案 id（ADR 0046 §6；未声明返回 null）。 */
     private static String extractProfile(com.fasterxml.jackson.databind.JsonNode core) {
         return core.path("profile").asText(null);
+    }
+
+    /**
+     * 从 Core IR 读各函数的 {@code inputRefs}（ADR 0046 §11 D2，引擎原样路径）：函数名 → 路径，按声明顺序；
+     * 只收 IR 带该数组的 Func。此 IR 出自本端点刚做的编译，可直接采信（展示用，不参与任何判定）。
+     */
+    private static Map<String, List<String>> extractInputRefs(com.fasterxml.jackson.databind.JsonNode core) {
+        Map<String, List<String>> out = new java.util.LinkedHashMap<>();
+        for (com.fasterxml.jackson.databind.JsonNode decl : core.path("decls")) {
+            com.fasterxml.jackson.databind.JsonNode refs = decl.path("inputRefs");
+            if (!"Func".equals(decl.path("kind").asText()) || !refs.isArray() || !decl.path("name").isTextual()) {
+                continue;
+            }
+            List<String> paths = new ArrayList<>();
+            refs.forEach(r -> paths.add(r.asText()));
+            out.put(decl.path("name").asText(), List.copyOf(paths));
+        }
+        return out;
     }
 
     /**
@@ -1463,6 +1486,18 @@ public class PolicyEvaluationResource {
     private String requestLanguage(String bodyLocale) {
         String acceptLanguage = jaxrsCtx == null ? null : jaxrsCtx.getHeaderString("Accept-Language");
         return EvaluationDiagnostics.language(bodyLocale, acceptLanguage);
+    }
+
+    /**
+     * 档案模块的评估事件附上输入引用（ADR 0046 §11.6 第 4 条）：引擎源码路径在写事件处按第一个参数实际匹配的输入键
+     * 映射为证据形状（{@link EvidenceInputRefPaths}），连同要求项快照一起写；无档案模块原样返回，事件逐字节不变。
+     */
+    private static EvaluationEvidence withInputRefs(EvaluationEvidence evidence, String profile, List<String> engineRefs,
+                                                    boolean verifiedInputsRequired, String inputKey) {
+        if (profile == null) {
+            return evidence;
+        }
+        return evidence.withInputRefs(EvidenceInputRefPaths.evidenceShape(engineRefs, inputKey), verifiedInputsRequired);
     }
 
     private static String outcomeOf(VerdictView decision) {

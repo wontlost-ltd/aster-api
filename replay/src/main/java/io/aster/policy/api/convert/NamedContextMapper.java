@@ -41,20 +41,31 @@ public class NamedContextMapper {
         /** 错误信息（如缺少必需参数） */
         String error,
         /** 命名格式下调用方未提供的参数名（按参数声明顺序）；其它情形为空 */
-        List<String> missingParams
+        List<String> missingParams,
+        /**
+         * 第一个参数实际匹配到的输入键（调用方给出的原样写法，可能是本地化或未规范化的形式）；只在命名格式下、
+         * 第一个参数由某个键匹配时非 null。位置数组、单参数整 Map 传入等情形为 null。
+         * 用途：写评估事件时把规则的引擎路径映射为证据形状 {@code context.<键>.<path>}（ADR 0046 §11.6 第 3 条）。
+         */
+        String firstParamKey
     ) {
         public static MappingResult success(Object[] args, boolean named, List<String> warnings) {
-            return new MappingResult(args, named, warnings, null, List.of());
+            return new MappingResult(args, named, warnings, null, List.of(), null);
+        }
+
+        /** 命名格式映射成功，带第一个参数实际匹配到的输入键。 */
+        public static MappingResult named(Object[] args, List<String> warnings, String firstParamKey) {
+            return new MappingResult(args, true, warnings, null, List.of(), firstParamKey);
         }
 
         public static MappingResult error(String errorMessage) {
-            return new MappingResult(new Object[0], false, List.of(), errorMessage, List.of());
+            return new MappingResult(new Object[0], false, List.of(), errorMessage, List.of(), null);
         }
 
         /** 命名格式缺少参数：错误信息与缺失参数名一并带出，供执行器归因为输入缺字段。 */
         public static MappingResult missing(List<String> missingParams) {
             return new MappingResult(new Object[0], true, List.of(),
-                "缺少必需参数: " + String.join(", ", missingParams), List.copyOf(missingParams));
+                "缺少必需参数: " + String.join(", ", missingParams), List.copyOf(missingParams), null);
         }
 
         public boolean hasError() {
@@ -249,7 +260,7 @@ public class NamedContextMapper {
             return missing;
         }
 
-        return MappingResult.success(positionalArgs, true, warnings);
+        return MappingResult.named(positionalArgs, warnings, paramToKeyMapping.get(params.get(0).name));
     }
 
     /**

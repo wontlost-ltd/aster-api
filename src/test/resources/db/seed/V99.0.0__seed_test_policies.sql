@@ -74,7 +74,7 @@ SELECT
         {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -171,7 +171,7 @@ SELECT
         {"name": "service", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "ServiceEligibilityResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -254,7 +254,7 @@ SELECT
       "name": "determineInterestRateBps",
       "params": [],
       "ret": {"kind": "TypeName", "name": "Int"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -330,7 +330,7 @@ SELECT
         {"name": "term", "type": {"kind": "TypeName", "name": "Int"}}
       ],
       "ret": {"kind": "TypeName", "name": "Bool"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -417,7 +417,7 @@ SELECT
         {"name": "request", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "LifeQuoteResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -502,7 +502,7 @@ SELECT
         {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "Int"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -590,7 +590,7 @@ SELECT
         {"name": "coverageType", "type": {"kind": "TypeName", "name": "Text"}}
       ],
       "ret": {"kind": "TypeName", "name": "AutoQuoteResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -688,7 +688,7 @@ SELECT
         {"name": "patientCoverage", "type": {"kind": "TypeName", "name": "Int"}}
       ],
       "ret": {"kind": "TypeName", "name": "ClaimDecisionResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -789,7 +789,7 @@ SELECT
         {"name": "product", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "CreditCardResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -875,7 +875,7 @@ SELECT
       "name": "calculateUtilizationPenalty",
       "params": [],
       "ret": {"kind": "TypeName", "name": "Int"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -948,7 +948,7 @@ SELECT
       "name": "determineStandardCoverage",
       "params": [],
       "ret": {"kind": "TypeName", "name": "Int"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -1021,7 +1021,7 @@ SELECT
       "name": "calculatePatientCost",
       "params": [],
       "ret": {"kind": "TypeName", "name": "Int"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -1114,7 +1114,7 @@ SELECT
         {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "PersonalLoanResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -1218,7 +1218,7 @@ SELECT
         {"name": "company", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "EnterpriseLoanResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -1316,7 +1316,7 @@ SELECT
         {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -1413,7 +1413,7 @@ SELECT
         {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -1514,7 +1514,7 @@ SELECT
         {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -1611,7 +1611,7 @@ SELECT
         {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -1708,7 +1708,7 @@ SELECT
         {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -1805,7 +1805,7 @@ SELECT
         {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -1902,7 +1902,7 @@ SELECT
         {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
       ],
       "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {
+      "body": {"kind": "Block", 
         "statements": [
           {
             "kind": "Return",
@@ -1957,7 +1957,7 @@ WHERE module_name = 'aster.finance.loan' AND function_name = 'evaluateLoanEligib
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
 SELECT 'b0000000-0000-0000-0000-000000000022'::uuid, pv.id, 'CORE_JSON',
-E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test tenant-cache"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 65000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 450}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 180}}]}}]}}]}'::bytea,
+E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test tenant-cache"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 65000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 450}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 180}}]}}]}}]}'::bytea,
 'test-sha256-tc', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache' AND pv.tenant_id = 'tenant-cache' ON CONFLICT DO NOTHING;
 
@@ -1975,7 +1975,7 @@ WHERE module_name = 'aster.finance.loan' AND function_name = 'evaluateLoanEligib
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
 SELECT 'b0000000-0000-0000-0000-000000000023'::uuid, pv.id, 'CORE_JSON',
-E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp null"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 500}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 60}}]}}]}}]}'::bytea,
+E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp null"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 500}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 60}}]}}]}}]}'::bytea,
 'test-sha256-tcn', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-composition-null' AND pv.tenant_id = 'tenant-composition-null' ON CONFLICT DO NOTHING;
 
@@ -1993,7 +1993,7 @@ WHERE module_name = 'aster.finance.loan' AND function_name = 'evaluateLoanEligib
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
 SELECT 'b0000000-0000-0000-0000-000000000024'::uuid, pv.id, 'CORE_JSON',
-E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp empty"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 45000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 520}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 48}}]}}]}}]}'::bytea,
+E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp empty"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 45000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 520}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 48}}]}}]}}]}'::bytea,
 'test-sha256-tce', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-composition-empty' AND pv.tenant_id = 'tenant-composition-empty' ON CONFLICT DO NOTHING;
 
@@ -2011,7 +2011,7 @@ WHERE module_name = 'aster.finance.loan' AND function_name = 'evaluateLoanEligib
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
 SELECT 'b0000000-0000-0000-0000-000000000025'::uuid, pv.id, 'CORE_JSON',
-E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp order"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 55000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 480}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 72}}]}}]}}]}'::bytea,
+E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp order"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 55000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 480}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 72}}]}}]}}]}'::bytea,
 'test-sha256-tco', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-composition-order' AND pv.tenant_id = 'tenant-composition-order' ON CONFLICT DO NOTHING;
 
@@ -2029,7 +2029,7 @@ WHERE module_name = 'aster.finance.loan' AND function_name = 'evaluateLoanEligib
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
 SELECT 'b0000000-0000-0000-0000-000000000026'::uuid, pv.id, 'CORE_JSON',
-E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp deep"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 60000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 460}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 84}}]}}]}}]}'::bytea,
+E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp deep"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 60000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 460}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 84}}]}}]}}]}'::bytea,
 'test-sha256-tcd', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-composition-deep' AND pv.tenant_id = 'tenant-composition-deep' ON CONFLICT DO NOTHING;
 
@@ -2046,7 +2046,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-cache-create', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-cache-create', 'test-hash-27', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-create' AND tenant_id = 'tenant-cache-create' LIMIT 1) WHERE tenant_id = 'tenant-cache-create' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000027'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-27', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000027'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-27', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-create' ON CONFLICT DO NOTHING;
 
 -- 28. tenant-cache-update
@@ -2057,7 +2057,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-cache-update', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-cache-update', 'test-hash-28', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-update' AND tenant_id = 'tenant-cache-update' LIMIT 1) WHERE tenant_id = 'tenant-cache-update' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000028'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-28', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000028'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-28', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-update' ON CONFLICT DO NOTHING;
 
 -- 29. tenant-cache-delete
@@ -2068,7 +2068,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-cache-delete', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-cache-delete', 'test-hash-29', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-delete' AND tenant_id = 'tenant-cache-delete' LIMIT 1) WHERE tenant_id = 'tenant-cache-delete' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000029'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-29', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000029'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-29', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-delete' ON CONFLICT DO NOTHING;
 
 -- 30. tenant-cache-multi
@@ -2079,7 +2079,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-cache-multi', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-cache-multi', 'test-hash-30', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-multi' AND tenant_id = 'tenant-cache-multi' LIMIT 1) WHERE tenant_id = 'tenant-cache-multi' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000030'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-30', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000030'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-30', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-multi' ON CONFLICT DO NOTHING;
 
 -- 31. tenant-invalidate-a
@@ -2090,7 +2090,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-a', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-invalidate-a', 'test-hash-31', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-a' AND tenant_id = 'tenant-invalidate-a' LIMIT 1) WHERE tenant_id = 'tenant-invalidate-a' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000031'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-31', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000031'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-31', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-a' ON CONFLICT DO NOTHING;
 
 -- 32. tenant-invalidate-b
@@ -2101,7 +2101,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-b', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-invalidate-b', 'test-hash-32', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-b' AND tenant_id = 'tenant-invalidate-b' LIMIT 1) WHERE tenant_id = 'tenant-invalidate-b' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000032'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-32', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000032'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-32', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-b' ON CONFLICT DO NOTHING;
 
 -- 33-40. 更多租户 (tenant-flag-accuracy, tenant-flag-miss, tenant-flag-hit, tenant-ttl-expire, tenant-concurrent, tenant-eviction-clean)
@@ -2131,17 +2131,17 @@ UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions W
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-eviction-clean' LIMIT 1) WHERE tenant_id = 'tenant-eviction-clean' AND module_name = 'aster.finance.loan';
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000033'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-33', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-accuracy' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000033'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-33', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-accuracy' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000034'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-34', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-miss' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000034'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-34', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-miss' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000035'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-35', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-hit' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000035'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-35', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-hit' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000036'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-36', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-ttl-expire' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000036'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-36', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-ttl-expire' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000037'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-37', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-concurrent' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000037'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-37', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-concurrent' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000038'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-38', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-eviction-clean' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000038'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-38', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-eviction-clean' ON CONFLICT DO NOTHING;
 
 -- ================================================================================
 -- 组合策略函数 - Composition Test Functions
@@ -2155,7 +2155,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.healthcare.eligibility.determineStandardCoverage.tenant-composition-null', 1, 'aster.healthcare.eligibility', 'determineStandardCoverage', '// Test', true, 'APPROVED', 'tenant-composition-null', 'test-hash-39', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.healthcare.eligibility.determineStandardCoverage.tenant-composition-null' LIMIT 1) WHERE tenant_id = 'tenant-composition-null' AND module_name = 'aster.healthcare.eligibility';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000039'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.healthcare.eligibility", "decls": [{"kind": "Func", "name": "determineStandardCoverage", "params": [], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 50}}]}}]}'::bytea, 'test-sha256-39', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000039'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.healthcare.eligibility", "decls": [{"kind": "Func", "name": "determineStandardCoverage", "params": [], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 50}}]}}]}'::bytea, 'test-sha256-39', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.healthcare.eligibility.determineStandardCoverage.tenant-composition-null' ON CONFLICT DO NOTHING;
 
 -- 40. tenant-composition-empty: aster.healthcare.eligibility.calculatePatientCost (返回0)
@@ -2166,7 +2166,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.healthcare.eligibility.calculatePatientCost.tenant-composition-empty', 1, 'aster.healthcare.eligibility', 'calculatePatientCost', '// Test', true, 'APPROVED', 'tenant-composition-empty', 'test-hash-40', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.healthcare.eligibility.calculatePatientCost.tenant-composition-empty' LIMIT 1) WHERE tenant_id = 'tenant-composition-empty' AND module_name = 'aster.healthcare.eligibility';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000040'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.healthcare.eligibility", "decls": [{"kind": "Func", "name": "calculatePatientCost", "params": [], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 0}}]}}]}'::bytea, 'test-sha256-40', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000040'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.healthcare.eligibility", "decls": [{"kind": "Func", "name": "calculatePatientCost", "params": [], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 0}}]}}]}'::bytea, 'test-sha256-40', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.healthcare.eligibility.calculatePatientCost.tenant-composition-empty' ON CONFLICT DO NOTHING;
 
 -- 41. tenant-composition-order: aster.finance.loan.determineInterestRateBps (固定返回425)
@@ -2177,7 +2177,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.determineInterestRateBps.tenant-composition-order', 1, 'aster.finance.loan', 'determineInterestRateBps', '// Test', true, 'APPROVED', 'tenant-composition-order', 'test-hash-41', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.determineInterestRateBps.tenant-composition-order' LIMIT 1) WHERE tenant_id = 'tenant-composition-order' AND module_name = 'aster.finance.loan' AND function_name = 'determineInterestRateBps';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000041'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Func", "name": "determineInterestRateBps", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 425}}]}}]}'::bytea, 'test-sha256-41', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000041'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Func", "name": "determineInterestRateBps", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 425}}]}}]}'::bytea, 'test-sha256-41', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.determineInterestRateBps.tenant-composition-order' ON CONFLICT DO NOTHING;
 
 -- 42. tenant-composition-order: aster.finance.creditcard.calculateUtilizationPenalty (始终返回100)
@@ -2188,7 +2188,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-order', 1, 'aster.finance.creditcard', 'calculateUtilizationPenalty', '// Test', true, 'APPROVED', 'tenant-composition-order', 'test-hash-42', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-order' LIMIT 1) WHERE tenant_id = 'tenant-composition-order' AND module_name = 'aster.finance.creditcard';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000042'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Func", "name": "calculateUtilizationPenalty", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 100}}]}}]}'::bytea, 'test-sha256-42', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000042'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Func", "name": "calculateUtilizationPenalty", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 100}}]}}]}'::bytea, 'test-sha256-42', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-order' ON CONFLICT DO NOTHING;
 
 -- 43. tenant-composition-deep: aster.finance.loan.determineInterestRateBps (固定返回425)
@@ -2199,7 +2199,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.determineInterestRateBps.tenant-composition-deep', 1, 'aster.finance.loan', 'determineInterestRateBps', '// Test', true, 'APPROVED', 'tenant-composition-deep', 'test-hash-43', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.determineInterestRateBps.tenant-composition-deep' LIMIT 1) WHERE tenant_id = 'tenant-composition-deep' AND module_name = 'aster.finance.loan' AND function_name = 'determineInterestRateBps';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000043'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Func", "name": "determineInterestRateBps", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 425}}]}}]}'::bytea, 'test-sha256-43', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000043'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Func", "name": "determineInterestRateBps", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 425}}]}}]}'::bytea, 'test-sha256-43', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.determineInterestRateBps.tenant-composition-deep' ON CONFLICT DO NOTHING;
 
 -- 44. tenant-composition-deep: aster.finance.creditcard.calculateUtilizationPenalty (同上)
@@ -2210,7 +2210,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-deep', 1, 'aster.finance.creditcard', 'calculateUtilizationPenalty', '// Test', true, 'APPROVED', 'tenant-composition-deep', 'test-hash-44', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-deep' LIMIT 1) WHERE tenant_id = 'tenant-composition-deep' AND module_name = 'aster.finance.creditcard';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000044'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Func", "name": "calculateUtilizationPenalty", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 100}}]}}]}'::bytea, 'test-sha256-44', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000044'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Func", "name": "calculateUtilizationPenalty", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 100}}]}}]}'::bytea, 'test-sha256-44', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-deep' ON CONFLICT DO NOTHING;
 
 -- 45. tenant-composition-deep-fail: aster.test.failure.failingPolicy (抛出异常)
@@ -2224,7 +2224,7 @@ UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions W
 -- 用真运行时错误而非畸形 IR：早先此处误写 Err 用 "value" 键（规范字段是 "expr"）→
 -- 反序列化成 Err null → 仅靠 interop 契约 crash（-ea 下）伪装成失败，掩盖真实意图。
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000045'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.failure", "decls": [{"kind": "Func", "name": "failingPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Call", "target": {"kind": "Name", "name": "div"}, "args": [{"kind": "Name", "name": "input"}, {"kind": "Int", "value": 0}]}}]}}]}'::bytea, 'test-sha256-45', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000045'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.failure", "decls": [{"kind": "Func", "name": "failingPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Call", "target": {"kind": "Name", "name": "div"}, "args": [{"kind": "Name", "name": "input"}, {"kind": "Int", "value": 0}]}}]}}]}'::bytea, 'test-sha256-45', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.failure.failingPolicy.tenant-composition-deep-fail' ON CONFLICT DO NOTHING;
 
 -- 46-47. tenant-composition-deep-fail 还需要 determineInterestRateBps 和 calculateUtilizationPenalty
@@ -2242,10 +2242,10 @@ UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions W
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-deep-fail' LIMIT 1) WHERE tenant_id = 'tenant-composition-deep-fail' AND module_name = 'aster.finance.creditcard';
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000046'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Func", "name": "determineInterestRateBps", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 425}}]}}]}'::bytea, 'test-sha256-46', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000046'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Func", "name": "determineInterestRateBps", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 425}}]}}]}'::bytea, 'test-sha256-46', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.determineInterestRateBps.tenant-composition-deep-fail' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000047'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Func", "name": "calculateUtilizationPenalty", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 100}}]}}]}'::bytea, 'test-sha256-47', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000047'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Func", "name": "calculateUtilizationPenalty", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 100}}]}}]}'::bytea, 'test-sha256-47', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-deep-fail' ON CONFLICT DO NOTHING;
 
 -- 48-51. aster.test.batch.slowPolicy 用于批量测试 (返回输入值)
@@ -2257,7 +2257,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.test.batch.slowPolicy.tenant-batch-parallel', 1, 'aster.test.batch', 'slowPolicy', '// Test', true, 'APPROVED', 'tenant-batch-parallel', 'test-hash-48', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.test.batch.slowPolicy.tenant-batch-parallel' LIMIT 1) WHERE tenant_id = 'tenant-batch-parallel' AND module_name = 'aster.test.batch';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000048'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.batch", "decls": [{"kind": "Func", "name": "slowPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Name", "name": "input"}}]}}]}'::bytea, 'test-sha256-48', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000048'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.batch", "decls": [{"kind": "Func", "name": "slowPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Name", "name": "input"}}]}}]}'::bytea, 'test-sha256-48', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.batch.slowPolicy.tenant-batch-parallel' ON CONFLICT DO NOTHING;
 
 -- tenant-batch-partial
@@ -2268,7 +2268,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.test.batch.slowPolicy.tenant-batch-partial', 1, 'aster.test.batch', 'slowPolicy', '// Test', true, 'APPROVED', 'tenant-batch-partial', 'test-hash-49', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.test.batch.slowPolicy.tenant-batch-partial' LIMIT 1) WHERE tenant_id = 'tenant-batch-partial' AND module_name = 'aster.test.batch';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000049'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.batch", "decls": [{"kind": "Func", "name": "slowPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Name", "name": "input"}}]}}]}'::bytea, 'test-sha256-49', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000049'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.batch", "decls": [{"kind": "Func", "name": "slowPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Name", "name": "input"}}]}}]}'::bytea, 'test-sha256-49', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.batch.slowPolicy.tenant-batch-partial' ON CONFLICT DO NOTHING;
 
 -- tenant-batch-volume
@@ -2279,7 +2279,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.test.batch.slowPolicy.tenant-batch-volume', 1, 'aster.test.batch', 'slowPolicy', '// Test', true, 'APPROVED', 'tenant-batch-volume', 'test-hash-50', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.test.batch.slowPolicy.tenant-batch-volume' LIMIT 1) WHERE tenant_id = 'tenant-batch-volume' AND module_name = 'aster.test.batch';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000050'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.batch", "decls": [{"kind": "Func", "name": "slowPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Name", "name": "input"}}]}}]}'::bytea, 'test-sha256-50', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000050'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.batch", "decls": [{"kind": "Func", "name": "slowPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Name", "name": "input"}}]}}]}'::bytea, 'test-sha256-50', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.batch.slowPolicy.tenant-batch-volume' ON CONFLICT DO NOTHING;
 
 -- 51-52. aster.test.failure.failingPolicy 用于失败测试 (使用 Err 表达式抛出异常)
@@ -2291,7 +2291,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.test.failure.failingPolicy.tenant-execution-failure', 1, 'aster.test.failure', 'failingPolicy', '// Test', true, 'APPROVED', 'tenant-execution-failure', 'test-hash-51', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.test.failure.failingPolicy.tenant-execution-failure' LIMIT 1) WHERE tenant_id = 'tenant-execution-failure' AND module_name = 'aster.test.failure';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000051'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.failure", "decls": [{"kind": "Func", "name": "failingPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Call", "target": {"kind": "Name", "name": "div"}, "args": [{"kind": "Name", "name": "input"}, {"kind": "Int", "value": 0}]}}]}}]}'::bytea, 'test-sha256-51', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000051'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.failure", "decls": [{"kind": "Func", "name": "failingPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Call", "target": {"kind": "Name", "name": "div"}, "args": [{"kind": "Name", "name": "input"}, {"kind": "Int", "value": 0}]}}]}}]}'::bytea, 'test-sha256-51', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.failure.failingPolicy.tenant-execution-failure' ON CONFLICT DO NOTHING;
 
 -- tenant-batch-partial
@@ -2302,7 +2302,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.test.failure.failingPolicy.tenant-batch-partial', 1, 'aster.test.failure', 'failingPolicy', '// Test', true, 'APPROVED', 'tenant-batch-partial', 'test-hash-52', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.test.failure.failingPolicy.tenant-batch-partial' LIMIT 1) WHERE tenant_id = 'tenant-batch-partial' AND module_name = 'aster.test.failure';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000052'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.failure", "decls": [{"kind": "Func", "name": "failingPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Call", "target": {"kind": "Name", "name": "div"}, "args": [{"kind": "Name", "name": "input"}, {"kind": "Int", "value": 0}]}}]}}]}'::bytea, 'test-sha256-52', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000052'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.failure", "decls": [{"kind": "Func", "name": "failingPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Call", "target": {"kind": "Name", "name": "div"}, "args": [{"kind": "Name", "name": "input"}, {"kind": "Int", "value": 0}]}}]}}]}'::bytea, 'test-sha256-52', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.failure.failingPolicy.tenant-batch-partial' ON CONFLICT DO NOTHING;
 
 -- 53. 信用卡策略 for tenant-cache-multi (用于 testCacheInvalidationAcrossMultiplePolicies)
@@ -2313,5 +2313,5 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.creditcard.evaluateCreditCardApplication.tenant-cache-multi', 1, 'aster.finance.creditcard', 'evaluateCreditCardApplication', '// Test credit card policy for tenant-cache-multi', true, 'APPROVED', 'tenant-cache-multi', 'test-hash-cc-multi', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.creditcard.evaluateCreditCardApplication.tenant-cache-multi' AND tenant_id = 'tenant-cache-multi' LIMIT 1) WHERE tenant_id = 'tenant-cache-multi' AND module_name = 'aster.finance.creditcard';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000053'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Data", "name": "CreditCardResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedLimit", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateAPR", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "monthlyFee", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "creditLine", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "requiresDeposit", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "depositAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateCreditCardApplication", "params": [{"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "creditHistory", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "product", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "CreditCardResult"}, "body": {"statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "CreditCardResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test credit card approval for cache-multi"}}, {"name": "approvedLimit", "expr": {"kind": "Int", "value": 50000}}, {"name": "interestRateAPR", "expr": {"kind": "Int", "value": 1899}}, {"name": "monthlyFee", "expr": {"kind": "Int", "value": 0}}, {"name": "creditLine", "expr": {"kind": "Int", "value": 50000}}, {"name": "requiresDeposit", "expr": {"kind": "Bool", "value": false}}, {"name": "depositAmount", "expr": {"kind": "Int", "value": 0}}]}}]}}]}'::bytea, 'test-sha256-cc-multi', '{"functionSignature": "evaluateCreditCardApplication(applicant: Object, creditHistory: Object, product: Object): CreditCardResult"}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000053'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Data", "name": "CreditCardResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedLimit", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateAPR", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "monthlyFee", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "creditLine", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "requiresDeposit", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "depositAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateCreditCardApplication", "params": [{"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "creditHistory", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "product", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "CreditCardResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "CreditCardResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test credit card approval for cache-multi"}}, {"name": "approvedLimit", "expr": {"kind": "Int", "value": 50000}}, {"name": "interestRateAPR", "expr": {"kind": "Int", "value": 1899}}, {"name": "monthlyFee", "expr": {"kind": "Int", "value": 0}}, {"name": "creditLine", "expr": {"kind": "Int", "value": 50000}}, {"name": "requiresDeposit", "expr": {"kind": "Bool", "value": false}}, {"name": "depositAmount", "expr": {"kind": "Int", "value": 0}}]}}]}}]}'::bytea, 'test-sha256-cc-multi', '{"functionSignature": "evaluateCreditCardApplication(applicant: Object, creditHistory: Object, product: Object): CreditCardResult"}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.creditcard.evaluateCreditCardApplication.tenant-cache-multi' AND pv.tenant_id = 'tenant-cache-multi' ON CONFLICT DO NOTHING;

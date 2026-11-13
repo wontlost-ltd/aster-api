@@ -94,4 +94,22 @@ class PolicyEvaluationResultJacksonTest {
         assertThat(mapper.writeValueAsString(none)).doesNotContain("profile");
         assertThat(mapper.readValue(REDIS_JSON, PolicyEvaluationResult.class).getProfile()).isNull();
     }
+
+    /**
+     * Task 16b：缓存里的旧结果缺 inputRefs / verifiedInputsRequired 两键，读回为 null（按「旧事件」处理）；
+     * 带两键的结果往返相等；无档案的结果序列化不出现两键（NON_NULL）。
+     */
+    @Test
+    void 缺两新键的旧JSON读回为null且带键时往返相等() throws Exception {
+        PolicyEvaluationResult old = mapper.readValue(REDIS_JSON, PolicyEvaluationResult.class);
+        assertThat(old.getInputRefs()).isNull();
+        assertThat(old.getVerifiedInputsRequired()).isNull();
+        assertThat(mapper.writeValueAsString(old)).doesNotContain("inputRefs").doesNotContain("verifiedInputsRequired");
+
+        PolicyEvaluationResult governed = new PolicyEvaluationResult(true, 1.5, false, null, "R-1", List.of(),
+            "governed", 42L, "ab".repeat(32), null, List.of("*"), false);
+        String json = mapper.writeValueAsString(governed);
+        assertThat(json).contains("\"inputRefs\":[\"*\"]").contains("\"verifiedInputsRequired\":false");
+        assertThat(mapper.readValue(json, PolicyEvaluationResult.class)).isEqualTo(governed);
+    }
 }

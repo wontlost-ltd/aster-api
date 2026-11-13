@@ -354,4 +354,40 @@ class NamedContextMapperTest {
 
         assertTrue(r.success(), "无声明表时不得改变原有行为");
     }
+
+    // ---- Task 16b：第一个参数实际匹配到的输入键（ADR 0046 §11.6 第 3 条，证据形状映射用） ----
+
+    private static List<CoreModel.Param> params(String... names) {
+        List<CoreModel.Param> out = new java.util.ArrayList<>();
+        for (String n : names) {
+            CoreModel.Param p = new CoreModel.Param();
+            p.name = n;
+            out.add(p);
+        }
+        return out;
+    }
+
+    @Test
+    void firstParamKey_exactMatch() {
+        var r = NamedContextMapper.mapContext(Map.of("req", Map.of(), "n", 1), params("req", "n"));
+        assertTrue(r.success());
+        assertEquals("req", r.firstParamKey());
+    }
+
+    /** 模糊匹配（参数名是规范化后的写法）：记调用方实际给出的键，而不是参数名。 */
+    @Test
+    void firstParamKey_fuzzyMatchKeepsCallerKey() {
+        var r = NamedContextMapper.mapContext(Map.of("Antrag", Map.of()), params("antrag"));
+        assertTrue(r.success());
+        assertEquals("Antrag", r.firstParamKey());
+    }
+
+    @Test
+    void firstParamKey_nullForPositionalAndWholeMap() {
+        assertNull(NamedContextMapper.mapContext(List.of(Map.of()), params("req")).firstParamKey());
+        assertNull(NamedContextMapper.mapContext(new Object[] {1}, params("req")).firstParamKey());
+        // 单参数、键不匹配：整个 Map 作为该参数，没有「匹配键」
+        assertNull(NamedContextMapper.mapContext(Map.of("amount", 1), params("req")).firstParamKey());
+        assertNull(NamedContextMapper.mapContext(null, params("req")).firstParamKey());
+    }
 }
