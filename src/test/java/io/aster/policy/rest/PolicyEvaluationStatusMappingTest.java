@@ -132,13 +132,59 @@ class PolicyEvaluationStatusMappingTest {
             .body("error", notNullValue());
     }
 
+    /** 没有声明的 Core IR v2 模块：形状合法，但没有可执行函数。 */
+    private static final String EMPTY_V2_MODULE = "{\"kind\":\"Module\",\"schemaVersion\":2,\"name\":\"demo.empty\","
+        + "\"profile\":null,\"decls\":[],\"origin\":{\"file\":null,\"start\":{\"line\":1,\"col\":1},"
+        + "\"end\":{\"line\":1,\"col\":1},\"written\":null,\"role\":null}}";
+
     @Test
     void evaluate_json_没有可执行函数_404_function_not_found() {
-        given().header("X-Tenant-Id", TENANT).contentType(ContentType.JSON)
-            .body("{\"policy\": \"{\\\"name\\\":\\\"demo.empty\\\",\\\"decls\\\":[]}\", \"context\": {}}")
-            .when().post("/api/v1/policies/evaluate-json")
+        evaluateJson(EMPTY_V2_MODULE)
             .then().statusCode(404)
             .body("code", equalTo("function_not_found"));
+    }
+
+    // ---- ADR 0055 §5：/evaluate-json 严格读入 Core IR v2 ----
+
+    /** v1 形状（没有 schemaVersion）：400 unsupported_schema_version，不能 500，也不能执行。 */
+    @Test
+    void v1_ir_rejected_with_400() {
+        evaluateJson("{\"name\":\"demo.v1\",\"decls\":[{\"kind\":\"Func\",\"name\":\"main\",\"params\":[],"
+                + "\"ret\":{\"kind\":\"TypeName\",\"name\":\"Int\"},\"body\":{\"kind\":\"Block\",\"statements\":"
+                + "[{\"kind\":\"Return\",\"expr\":{\"kind\":\"Int\",\"value\":1}}]}}]}")
+            .then().statusCode(400)
+            .body("code", equalTo("unsupported_schema_version"))
+            .body("error", notNullValue());
+    }
+
+    /** schemaVersion 是字符串 "2"（类型错误）或整数 1：同样按版本错误拒收。 */
+    @Test
+    void schema_version_string_or_other_int_rejected_with_400() {
+        for (String version : java.util.List.of("\"2\"", "1")) {
+            evaluateJson(EMPTY_V2_MODULE.replace("\"schemaVersion\":2", "\"schemaVersion\":" + version))
+                .then().statusCode(400)
+                .body("code", equalTo("unsupported_schema_version"));
+        }
+    }
+
+    @Test
+    void unknown_field_rejected_with_400() {
+        evaluateJson(EMPTY_V2_MODULE.replace("\"profile\":null", "\"profile\":null,\"extra\":1"))
+            .then().statusCode(400)
+            .body("code", equalTo("invalid_request"));
+    }
+
+    @Test
+    void missing_field_rejected_with_400_invalid_request() {
+        evaluateJson(EMPTY_V2_MODULE.replace("\"profile\":null,", ""))
+            .then().statusCode(400)
+            .body("code", equalTo("invalid_request"));
+    }
+
+    private static io.restassured.response.Response evaluateJson(String coreIr) {
+        return given().header("X-Tenant-Id", TENANT).contentType(ContentType.JSON)
+            .body(java.util.Map.of("policy", coreIr, "context", java.util.Map.of()))
+            .when().post("/api/v1/policies/evaluate-json");
     }
 
     @Test

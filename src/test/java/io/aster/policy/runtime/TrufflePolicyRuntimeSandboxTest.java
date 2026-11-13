@@ -181,30 +181,14 @@ class TrufflePolicyRuntimeSandboxTest {
             runtime.execute(bogus, new Object[0], CompilationMetadata.empty());
         }
 
-        // ★与 shouldExecuteArithmeticUnderLockdown 用**同一份** IR：
-        //   那条是既有的绿测，能保证这里的失败只可能来自池问题，
-        //   而不是我又把 Core IR 的形状写错了（第一版就栽在这上面两次：
-        //   先写成 "functions" 数组报 "No function in module"，
-        //   再把字面量写成 IntLiteral，实际类型 id 是 Int）。
-        String simple = """
-            {
-              "name": "test",
-              "decls": [{
-                "kind": "Func",
-                "name": "evaluate",
-                "params": [],
-                "ret": { "kind": "TypeName", "name": "Int" },
-                "effects": [],
-                "body": {
-                  "kind": "Block",
-                  "statements": [{
-                    "kind": "Return",
-                    "expr": { "kind": "Int", "value": 42 }
-                  }]
-                }
-              }]
-            }
-            """;
+        // 正常执行用名称解析后的 Core IR v2 规范字节（与客户端提交的一致），
+        // 保证这里的失败只可能来自池问题，而不是手写 IR 的形状不合 v2 schema。
+        String simple = aster.core.ir.CoreIrJson.serialize(io.aster.policy.parser.InProcessCnlParser.parse("""
+            Module test.
+
+            Rule evaluate, produce Int:
+              Return 42.
+            """, null, null).core());
         CompilationMetadata okMeta = new CompilationMetadata("evaluate", "[]", "Int");
         for (int i = 0; i < Runtime.getRuntime().availableProcessors() + 1; i++) {
             ExecutionResult ok = runtime.execute(simple, new Object[0], okMeta);

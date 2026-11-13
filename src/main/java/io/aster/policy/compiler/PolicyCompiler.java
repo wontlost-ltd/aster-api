@@ -1,6 +1,7 @@
 package io.aster.policy.compiler;
 
 import aster.core.ast.Module;
+import aster.core.ir.CoreIrJson;
 import aster.core.ir.CoreModel;
 import aster.core.typecheck.governance.GovernanceChecker;
 import aster.core.typecheck.TypeChecker;
@@ -151,8 +152,8 @@ public class PolicyCompiler {
                 .map(d -> typecheckError(d))
                 .toList();
 
-            // 3. 序列化 Core IR → JSON
-            String coreJson = MAPPER.writeValueAsString(coreModule);
+            // 3. 序列化 Core IR → 规范字节（ADR 0055 §5：持久化、哈希用的 IR 一律经 CoreIrJson.serialize）
+            String coreJson = CoreIrJson.serialize(coreModule);
             LOG.debugf("Core JSON 长度: %d 字符", coreJson.length());
 
             // 3b. P0-C 稳定性扫描（ADR 0031）：裸 compile 是 playground/dev surface = warn 默认，

@@ -191,6 +191,19 @@ public class CnlErrorListener extends BaseErrorListener {
     /** 期望集合最多列出的项数，其余以「, …」省略。 */
     private static final int MAX_EXPECTED = 3;
 
+    /** 语法目录里 E054「时间预算超时」变体的句型 key（aster-lang-core#259）。 */
+    static final String TIME_BUDGET_KEY = "parseTimeBudget";
+
+    /**
+     * 是否为语法分析超出时间预算的 E054（{@link InProcessCnlParser} 带 {@code reason=time-budget}）。
+     * 它与嵌套过深同码、参数不变，只是文案按 {@code reason} 换成超时句型，不再显示误导的「嵌套过深」。
+     */
+    private static boolean isTimeBudget(ErrorCode code, Map<String, String> params) {
+        return code == ErrorCode.PARSE_NESTING_TOO_DEEP
+            && InProcessCnlParser.BudgetExceededFailure.REASON.equals(params.get("reason"))
+            && params.get("budgetMs") != null;
+    }
+
     /** 按码渲染（无 no viable 片段）。 */
     static String render(ErrorCode code, Map<String, String> params, KeywordLocalizer localizer) {
         return render(code, params, localizer, null);
@@ -200,7 +213,8 @@ public class CnlErrorListener extends BaseErrorListener {
      * 按码取 {@code localizer} 语言的模板并填参数。
      *
      * <p>带 {@code hint} 参数的 E063（`is` 后直接跟符号、未识别的比较词）直接给出提示句：提示本身就指明了
-     * 原因与改法，比「无法解析 … 附近的语法」更可操作（与改码前对外文案一致）。
+     * 原因与改法，比「无法解析 … 附近的语法」更可操作（与改码前对外文案一致）。同理，{@code reason=time-budget}
+     * 的 E054 取语法目录的 {@link #TIME_BUDGET_KEY} 句型；目录未收录该 key（locales 尚未升级）时照旧按码渲染。
      *
      * @param viableInput no viable alternative 的出错片段（按源码间隔重排、关键词已回译）；null 时用 {@code token} 参数
      */
@@ -209,6 +223,9 @@ public class CnlErrorListener extends BaseErrorListener {
         String hint = params.get("hint");
         if (hint != null && hint.startsWith("hint.") && text.has(hint.substring("hint.".length()))) {
             return text.text(hint.substring("hint.".length()));
+        }
+        if (isTimeBudget(code, params) && text.has(TIME_BUDGET_KEY)) {
+            return text.text(TIME_BUDGET_KEY, "budgetMs", params.get("budgetMs"));
         }
         List<String> args = new ArrayList<>();
         for (Map.Entry<String, String> p : params.entrySet()) {

@@ -1,6 +1,6 @@
 -- 策略种子数据（仅用于测试）
 -- 创建测试用的策略目录和版本，使用预编译的 Core JSON
--- Core JSON 格式遵循 aster-lang-truffle 的 CoreModel.java 定义
+-- Core JSON 为 Core IR v2（ADR 0055）：schemaVersion=2、所有字段恒输出，读方按 schema 严格拒收其它形状
 
 -- 1. 贷款评估策略 (aster.finance.loan.evaluateLoanEligibility)
 INSERT INTO policy_catalog (id, tenant_id, module_name, function_name, domain, tags, created_at, updated_at)
@@ -45,56 +45,14 @@ AND function_name = 'evaluateLoanEligibility'
 AND tenant_id = 'default';
 
 -- 插入预编译的 Core JSON 作为 artifact
--- 使用 CoreModel.Module 格式: { name, decls: [Func] }
+-- Core IR v2 模块（规范字节）：{ kind:"Module", schemaVersion:2, name, profile, decls, origin }
 -- Func 需要 kind="Func", 返回类型使用 Data + Construct
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
 SELECT
     'b0000000-0000-0000-0000-000000000001'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.loan",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "LoanEligibilityResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "evaluateLoanEligibility",
-      "params": [
-        {"name": "application", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "LoanEligibilityResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test approval"}},
-                {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}},
-                {"name": "interestRateBps", "expr": {"kind": "Int", "value": 450}},
-                {"name": "termMonths", "expr": {"kind": "Int", "value": 360}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test approval"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":450},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":360},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-loan-001',
     '{"functionSignature": "evaluateLoanEligibility(application: Object, applicant: Object): LoanEligibilityResult"}',
     CURRENT_TIMESTAMP
@@ -149,49 +107,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000002'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.healthcare.eligibility",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "ServiceEligibilityResult",
-      "fields": [
-        {"name": "eligible", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "coveragePercent", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "estimatedCost", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "requiresPreAuth", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "checkServiceEligibility",
-      "params": [
-        {"name": "patient", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "service", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "ServiceEligibilityResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "ServiceEligibilityResult",
-              "fields": [
-                {"name": "eligible", "expr": {"kind": "Bool", "value": true}},
-                {"name": "coveragePercent", "expr": {"kind": "Int", "value": 80}},
-                {"name": "estimatedCost", "expr": {"kind": "Int", "value": 300}},
-                {"name": "requiresPreAuth", "expr": {"kind": "Bool", "value": false}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test eligibility check"}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"eligible","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"coveragePercent","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"estimatedCost","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"requiresPreAuth","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"ServiceEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"eligible"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":80},"name":"coveragePercent"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":300},"name":"estimatedCost"},{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":false},"name":"requiresPreAuth"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test eligibility check"},"name":"reason"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"ServiceEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"checkServiceEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"patient","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"service","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"ServiceEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.healthcare.eligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-healthcare-001',
     '{"functionSignature": "checkServiceEligibility(patient: Object, service: Object): ServiceEligibilityResult"}',
     CURRENT_TIMESTAMP
@@ -246,25 +162,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000003'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.loan",
-  "decls": [
-    {
-      "kind": "Func",
-      "name": "determineInterestRateBps",
-      "params": [],
-      "ret": {"kind": "TypeName", "name": "Int"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {"kind": "Int", "value": 450}
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":450},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"determineInterestRateBps","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-interest-001',
     '{"functionSignature": "determineInterestRateBps(): Int"}',
     CURRENT_TIMESTAMP
@@ -319,28 +217,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000004'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.test.sample",
-  "decls": [
-    {
-      "kind": "Func",
-      "name": "testFunction",
-      "params": [
-        {"name": "amount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "term", "type": {"kind": "TypeName", "name": "Int"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "Bool"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {"kind": "Bool", "value": true}
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"testFunction","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"amount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"term","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.test.sample","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-sample-001',
     '{"functionSignature": "testFunction(amount: Int, term: Int): Bool"}',
     CURRENT_TIMESTAMP
@@ -395,49 +272,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000005'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.insurance.life",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "LifeQuoteResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "monthlyPremium", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "coverageAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "termYears", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "generateLifeQuote",
-      "params": [
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "request", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "LifeQuoteResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "LifeQuoteResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test life quote"}},
-                {"name": "monthlyPremium", "expr": {"kind": "Int", "value": 150}},
-                {"name": "coverageAmount", "expr": {"kind": "Int", "value": 500000}},
-                {"name": "termYears", "expr": {"kind": "Int", "value": 20}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"monthlyPremium","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"coverageAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termYears","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LifeQuoteResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test life quote"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":150},"name":"monthlyPremium"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":500000},"name":"coverageAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":20},"name":"termYears"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LifeQuoteResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"generateLifeQuote","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"request","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LifeQuoteResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.insurance.life","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-life-001',
     '{"functionSignature": "generateLifeQuote(applicant: Object, request: Object): LifeQuoteResult"}',
     CURRENT_TIMESTAMP
@@ -492,27 +327,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000006'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.insurance.life",
-  "decls": [
-    {
-      "kind": "Func",
-      "name": "calculateRiskScore",
-      "params": [
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "Int"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {"kind": "Int", "value": 75}
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":75},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"calculateRiskScore","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.insurance.life","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-risk-001',
     '{"functionSignature": "calculateRiskScore(applicant: Object): Int"}',
     CURRENT_TIMESTAMP
@@ -567,50 +382,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000007'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.insurance.auto",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "AutoQuoteResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "monthlyPremium", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "deductible", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "coverageLimit", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "generateAutoQuote",
-      "params": [
-        {"name": "driver", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "vehicle", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "coverageType", "type": {"kind": "TypeName", "name": "Text"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "AutoQuoteResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "AutoQuoteResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test auto quote"}},
-                {"name": "monthlyPremium", "expr": {"kind": "Int", "value": 120}},
-                {"name": "deductible", "expr": {"kind": "Int", "value": 500}},
-                {"name": "coverageLimit", "expr": {"kind": "Int", "value": 100000}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"monthlyPremium","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"deductible","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"coverageLimit","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"AutoQuoteResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test auto quote"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":120},"name":"monthlyPremium"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":500},"name":"deductible"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":100000},"name":"coverageLimit"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"AutoQuoteResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"generateAutoQuote","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"driver","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"vehicle","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"coverageType","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"AutoQuoteResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.insurance.auto","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-auto-001',
     '{"functionSignature": "generateAutoQuote(driver: Object, vehicle: Object, coverageType: Text): AutoQuoteResult"}',
     CURRENT_TIMESTAMP
@@ -665,50 +437,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000008'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.healthcare.claims",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "ClaimDecisionResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "requiresReview", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "denialCode", "type": {"kind": "TypeName", "name": "Text"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "processClaim",
-      "params": [
-        {"name": "claim", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "provider", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "patientCoverage", "type": {"kind": "TypeName", "name": "Int"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "ClaimDecisionResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "ClaimDecisionResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test claim approved"}},
-                {"name": "approvedAmount", "expr": {"kind": "Int", "value": 800}},
-                {"name": "requiresReview", "expr": {"kind": "Bool", "value": false}},
-                {"name": "denialCode", "expr": {"kind": "String", "value": "NONE"}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"requiresReview","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"denialCode","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"ClaimDecisionResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test claim approved"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":800},"name":"approvedAmount"},{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":false},"name":"requiresReview"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"NONE"},"name":"denialCode"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"ClaimDecisionResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"processClaim","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"claim","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"provider","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"patientCoverage","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"ClaimDecisionResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.healthcare.claims","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-claim-001',
     '{"functionSignature": "processClaim(claim: Object, provider: Object, patientCoverage: Int): ClaimDecisionResult"}',
     CURRENT_TIMESTAMP
@@ -763,56 +492,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000009'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.creditcard",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "CreditCardResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "approvedLimit", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "interestRateAPR", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "monthlyFee", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "creditLine", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "requiresDeposit", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "depositAmount", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "evaluateCreditCardApplication",
-      "params": [
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "creditHistory", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "product", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "CreditCardResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "CreditCardResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test credit card approval"}},
-                {"name": "approvedLimit", "expr": {"kind": "Int", "value": 50000}},
-                {"name": "interestRateAPR", "expr": {"kind": "Int", "value": 1899}},
-                {"name": "monthlyFee", "expr": {"kind": "Int", "value": 0}},
-                {"name": "creditLine", "expr": {"kind": "Int", "value": 50000}},
-                {"name": "requiresDeposit", "expr": {"kind": "Bool", "value": false}},
-                {"name": "depositAmount", "expr": {"kind": "Int", "value": 0}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedLimit","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateAPR","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"monthlyFee","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"creditLine","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"requiresDeposit","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"depositAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"CreditCardResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test credit card approval"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedLimit"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":1899},"name":"interestRateAPR"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":0},"name":"monthlyFee"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"creditLine"},{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":false},"name":"requiresDeposit"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":0},"name":"depositAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"CreditCardResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateCreditCardApplication","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"creditHistory","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"product","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"CreditCardResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.creditcard","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-cc-001',
     '{"functionSignature": "evaluateCreditCardApplication(applicant: Object, creditHistory: Object, product: Object): CreditCardResult"}',
     CURRENT_TIMESTAMP
@@ -867,25 +547,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000010'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.creditcard",
-  "decls": [
-    {
-      "kind": "Func",
-      "name": "calculateUtilizationPenalty",
-      "params": [],
-      "ret": {"kind": "TypeName", "name": "Int"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {"kind": "Int", "value": 50}
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"calculateUtilizationPenalty","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.creditcard","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-cc-util-001',
     '{"functionSignature": "calculateUtilizationPenalty(): Int"}',
     CURRENT_TIMESTAMP
@@ -940,25 +602,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000011'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.healthcare.eligibility",
-  "decls": [
-    {
-      "kind": "Func",
-      "name": "determineStandardCoverage",
-      "params": [],
-      "ret": {"kind": "TypeName", "name": "Int"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {"kind": "Int", "value": 80}
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":80},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"determineStandardCoverage","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.healthcare.eligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-coverage-001',
     '{"functionSignature": "determineStandardCoverage(): Int"}',
     CURRENT_TIMESTAMP
@@ -1013,25 +657,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000012'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.healthcare.eligibility",
-  "decls": [
-    {
-      "kind": "Func",
-      "name": "calculatePatientCost",
-      "params": [],
-      "ret": {"kind": "TypeName", "name": "Int"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {"kind": "Int", "value": 200}
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":200},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"calculatePatientCost","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.healthcare.eligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-cost-001',
     '{"functionSignature": "calculatePatientCost(): Int"}',
     CURRENT_TIMESTAMP
@@ -1086,61 +712,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000013'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.personal_lending",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "PersonalLoanResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "monthlyPayment", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "downPaymentRequired", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "conditions", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "riskLevel", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "decisionScore", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "reasonCode", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "recommendations", "type": {"kind": "TypeName", "name": "Text"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "evaluatePersonalLoan",
-      "params": [
-        {"name": "application", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "PersonalLoanResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "PersonalLoanResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "approvedAmount", "expr": {"kind": "Int", "value": 30000}},
-                {"name": "interestRateBps", "expr": {"kind": "Int", "value": 850}},
-                {"name": "termMonths", "expr": {"kind": "Int", "value": 36}},
-                {"name": "monthlyPayment", "expr": {"kind": "Int", "value": 925}},
-                {"name": "downPaymentRequired", "expr": {"kind": "Int", "value": 3000}},
-                {"name": "conditions", "expr": {"kind": "String", "value": "Standard terms apply"}},
-                {"name": "riskLevel", "expr": {"kind": "String", "value": "LOW"}},
-                {"name": "decisionScore", "expr": {"kind": "Int", "value": 85}},
-                {"name": "reasonCode", "expr": {"kind": "String", "value": "TEST_APPROVAL"}},
-                {"name": "recommendations", "expr": {"kind": "String", "value": "Consider credit protection"}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"monthlyPayment","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"downPaymentRequired","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"conditions","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"riskLevel","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"decisionScore","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reasonCode","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"recommendations","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"PersonalLoanResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":30000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":850},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":36},"name":"termMonths"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":925},"name":"monthlyPayment"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":3000},"name":"downPaymentRequired"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Standard terms apply"},"name":"conditions"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"LOW"},"name":"riskLevel"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":85},"name":"decisionScore"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"TEST_APPROVAL"},"name":"reasonCode"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Consider credit protection"},"name":"recommendations"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"PersonalLoanResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluatePersonalLoan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"PersonalLoanResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.personal_lending","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-personal-001',
     '{"functionSignature": "evaluatePersonalLoan(application: Object, applicant: Object): PersonalLoanResult"}',
     CURRENT_TIMESTAMP
@@ -1195,51 +767,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000014'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.enterprise_lending",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "EnterpriseLoanResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "collateralRequired", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "evaluateEnterpriseLoan",
-      "params": [
-        {"name": "application", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "company", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "EnterpriseLoanResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "EnterpriseLoanResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test enterprise loan approval"}},
-                {"name": "approvedAmount", "expr": {"kind": "Int", "value": 1000000}},
-                {"name": "interestRateBps", "expr": {"kind": "Int", "value": 500}},
-                {"name": "collateralRequired", "expr": {"kind": "Bool", "value": false}},
-                {"name": "termMonths", "expr": {"kind": "Int", "value": 60}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"collateralRequired","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"EnterpriseLoanResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test enterprise loan approval"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":1000000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":500},"name":"interestRateBps"},{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":false},"name":"collateralRequired"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":60},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"EnterpriseLoanResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateEnterpriseLoan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"company","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"EnterpriseLoanResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.enterprise_lending","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-enterprise-001',
     '{"functionSignature": "evaluateEnterpriseLoan(application: Object, company: Object): EnterpriseLoanResult"}',
     CURRENT_TIMESTAMP
@@ -1294,49 +822,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000015'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.loan",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "LoanEligibilityResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "evaluateLoanEligibility",
-      "params": [
-        {"name": "application", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "LoanEligibilityResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test approval tenant1"}},
-                {"name": "approvedAmount", "expr": {"kind": "Int", "value": 300000}},
-                {"name": "interestRateBps", "expr": {"kind": "Int", "value": 400}},
-                {"name": "termMonths", "expr": {"kind": "Int", "value": 120}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test approval tenant1"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":300000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":400},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":120},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-loan-t1-001',
     '{"functionSignature": "evaluateLoanEligibility(application: Object, applicant: Object): LoanEligibilityResult"}',
     CURRENT_TIMESTAMP
@@ -1391,49 +877,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000016'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.loan",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "LoanEligibilityResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "evaluateLoanEligibility",
-      "params": [
-        {"name": "application", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "LoanEligibilityResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test approval tenant2"}},
-                {"name": "approvedAmount", "expr": {"kind": "Int", "value": 300000}},
-                {"name": "interestRateBps", "expr": {"kind": "Int", "value": 420}},
-                {"name": "termMonths", "expr": {"kind": "Int", "value": 120}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test approval tenant2"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":300000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":420},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":120},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-loan-t2-001',
     '{"functionSignature": "evaluateLoanEligibility(application: Object, applicant: Object): LoanEligibilityResult"}',
     CURRENT_TIMESTAMP
@@ -1492,49 +936,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000017'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.loan",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "LoanEligibilityResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "evaluateLoanEligibility",
-      "params": [
-        {"name": "application", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "LoanEligibilityResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test approval tenant-a"}},
-                {"name": "approvedAmount", "expr": {"kind": "Int", "value": 75000}},
-                {"name": "interestRateBps", "expr": {"kind": "Int", "value": 450}},
-                {"name": "termMonths", "expr": {"kind": "Int", "value": 240}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test approval tenant-a"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":75000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":450},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":240},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-loan-ta-001',
     '{"functionSignature": "evaluateLoanEligibility(application: Object, applicant: Object): LoanEligibilityResult"}',
     CURRENT_TIMESTAMP
@@ -1589,49 +991,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000018'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.loan",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "LoanEligibilityResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "evaluateLoanEligibility",
-      "params": [
-        {"name": "application", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "LoanEligibilityResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test approval tenant-b"}},
-                {"name": "approvedAmount", "expr": {"kind": "Int", "value": 70000}},
-                {"name": "interestRateBps", "expr": {"kind": "Int", "value": 480}},
-                {"name": "termMonths", "expr": {"kind": "Int", "value": 180}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test approval tenant-b"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":70000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":480},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":180},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-loan-tb-001',
     '{"functionSignature": "evaluateLoanEligibility(application: Object, applicant: Object): LoanEligibilityResult"}',
     CURRENT_TIMESTAMP
@@ -1686,49 +1046,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000019'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.loan",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "LoanEligibilityResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "evaluateLoanEligibility",
-      "params": [
-        {"name": "application", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "LoanEligibilityResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test batch parallel"}},
-                {"name": "approvedAmount", "expr": {"kind": "Int", "value": 60000}},
-                {"name": "interestRateBps", "expr": {"kind": "Int", "value": 500}},
-                {"name": "termMonths", "expr": {"kind": "Int", "value": 60}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test batch parallel"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":60000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":500},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":60},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-loan-tbp-001',
     '{"functionSignature": "evaluateLoanEligibility(application: Object, applicant: Object): LoanEligibilityResult"}',
     CURRENT_TIMESTAMP
@@ -1783,49 +1101,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000020'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.loan",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "LoanEligibilityResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "evaluateLoanEligibility",
-      "params": [
-        {"name": "application", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "LoanEligibilityResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test batch partial"}},
-                {"name": "approvedAmount", "expr": {"kind": "Int", "value": 55000}},
-                {"name": "interestRateBps", "expr": {"kind": "Int", "value": 520}},
-                {"name": "termMonths", "expr": {"kind": "Int", "value": 48}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test batch partial"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":55000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":520},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":48},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-loan-tbpa-001',
     '{"functionSignature": "evaluateLoanEligibility(application: Object, applicant: Object): LoanEligibilityResult"}',
     CURRENT_TIMESTAMP
@@ -1880,49 +1156,7 @@ SELECT
     'b0000000-0000-0000-0000-000000000021'::uuid,
     pv.id,
     'CORE_JSON',
-    E'{
-  "name": "aster.finance.loan",
-  "decls": [
-    {
-      "kind": "Data",
-      "name": "LoanEligibilityResult",
-      "fields": [
-        {"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}},
-        {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}},
-        {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}},
-        {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}
-      ]
-    },
-    {
-      "kind": "Func",
-      "name": "evaluateLoanEligibility",
-      "params": [
-        {"name": "application", "type": {"kind": "TypeName", "name": "Object"}},
-        {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}
-      ],
-      "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"},
-      "body": {"kind": "Block", 
-        "statements": [
-          {
-            "kind": "Return",
-            "expr": {
-              "kind": "Construct",
-              "typeName": "LoanEligibilityResult",
-              "fields": [
-                {"name": "approved", "expr": {"kind": "Bool", "value": true}},
-                {"name": "reason", "expr": {"kind": "String", "value": "Test batch volume"}},
-                {"name": "approvedAmount", "expr": {"kind": "Int", "value": 80000}},
-                {"name": "interestRateBps", "expr": {"kind": "Int", "value": 490}},
-                {"name": "termMonths", "expr": {"kind": "Int", "value": 72}}
-              ]
-            }
-          }
-        ]
-      }
-    }
-  ]
-}'::bytea,
+    E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test batch volume"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":80000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":490},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":72},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
     'test-sha256-loan-tbv-001',
     '{"functionSignature": "evaluateLoanEligibility(application: Object, applicant: Object): LoanEligibilityResult"}',
     CURRENT_TIMESTAMP
@@ -1957,7 +1191,7 @@ WHERE module_name = 'aster.finance.loan' AND function_name = 'evaluateLoanEligib
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
 SELECT 'b0000000-0000-0000-0000-000000000022'::uuid, pv.id, 'CORE_JSON',
-E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test tenant-cache"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 65000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 450}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 180}}]}}]}}]}'::bytea,
+E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test tenant-cache"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":65000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":450},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":180},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
 'test-sha256-tc', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache' AND pv.tenant_id = 'tenant-cache' ON CONFLICT DO NOTHING;
 
@@ -1975,7 +1209,7 @@ WHERE module_name = 'aster.finance.loan' AND function_name = 'evaluateLoanEligib
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
 SELECT 'b0000000-0000-0000-0000-000000000023'::uuid, pv.id, 'CORE_JSON',
-E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp null"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 500}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 60}}]}}]}}]}'::bytea,
+E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test comp null"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":500},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":60},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
 'test-sha256-tcn', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-composition-null' AND pv.tenant_id = 'tenant-composition-null' ON CONFLICT DO NOTHING;
 
@@ -1993,7 +1227,7 @@ WHERE module_name = 'aster.finance.loan' AND function_name = 'evaluateLoanEligib
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
 SELECT 'b0000000-0000-0000-0000-000000000024'::uuid, pv.id, 'CORE_JSON',
-E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp empty"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 45000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 520}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 48}}]}}]}}]}'::bytea,
+E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test comp empty"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":45000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":520},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":48},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
 'test-sha256-tce', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-composition-empty' AND pv.tenant_id = 'tenant-composition-empty' ON CONFLICT DO NOTHING;
 
@@ -2011,7 +1245,7 @@ WHERE module_name = 'aster.finance.loan' AND function_name = 'evaluateLoanEligib
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
 SELECT 'b0000000-0000-0000-0000-000000000025'::uuid, pv.id, 'CORE_JSON',
-E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp order"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 55000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 480}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 72}}]}}]}}]}'::bytea,
+E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test comp order"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":55000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":480},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":72},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
 'test-sha256-tco', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-composition-order' AND pv.tenant_id = 'tenant-composition-order' ON CONFLICT DO NOTHING;
 
@@ -2029,7 +1263,7 @@ WHERE module_name = 'aster.finance.loan' AND function_name = 'evaluateLoanEligib
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
 SELECT 'b0000000-0000-0000-0000-000000000026'::uuid, pv.id, 'CORE_JSON',
-E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateBps", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "termMonths", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test comp deep"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 60000}}, {"name": "interestRateBps", "expr": {"kind": "Int", "value": 460}}, {"name": "termMonths", "expr": {"kind": "Int", "value": 84}}]}}]}}]}'::bytea,
+E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateBps","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"termMonths","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test comp deep"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":60000},"name":"approvedAmount"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":460},"name":"interestRateBps"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":84},"name":"termMonths"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea,
 'test-sha256-tcd', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-composition-deep' AND pv.tenant_id = 'tenant-composition-deep' ON CONFLICT DO NOTHING;
 
@@ -2046,7 +1280,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-cache-create', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-cache-create', 'test-hash-27', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-create' AND tenant_id = 'tenant-cache-create' LIMIT 1) WHERE tenant_id = 'tenant-cache-create' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000027'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-27', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000027'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-27', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-create' ON CONFLICT DO NOTHING;
 
 -- 28. tenant-cache-update
@@ -2057,7 +1291,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-cache-update', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-cache-update', 'test-hash-28', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-update' AND tenant_id = 'tenant-cache-update' LIMIT 1) WHERE tenant_id = 'tenant-cache-update' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000028'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-28', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000028'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-28', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-update' ON CONFLICT DO NOTHING;
 
 -- 29. tenant-cache-delete
@@ -2068,7 +1302,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-cache-delete', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-cache-delete', 'test-hash-29', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-delete' AND tenant_id = 'tenant-cache-delete' LIMIT 1) WHERE tenant_id = 'tenant-cache-delete' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000029'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-29', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000029'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-29', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-delete' ON CONFLICT DO NOTHING;
 
 -- 30. tenant-cache-multi
@@ -2079,7 +1313,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-cache-multi', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-cache-multi', 'test-hash-30', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-multi' AND tenant_id = 'tenant-cache-multi' LIMIT 1) WHERE tenant_id = 'tenant-cache-multi' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000030'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-30', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000030'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-30', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-cache-multi' ON CONFLICT DO NOTHING;
 
 -- 31. tenant-invalidate-a
@@ -2090,7 +1324,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-a', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-invalidate-a', 'test-hash-31', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-a' AND tenant_id = 'tenant-invalidate-a' LIMIT 1) WHERE tenant_id = 'tenant-invalidate-a' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000031'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-31', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000031'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-31', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-a' ON CONFLICT DO NOTHING;
 
 -- 32. tenant-invalidate-b
@@ -2101,7 +1335,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-b', 1, 'aster.finance.loan', 'evaluateLoanEligibility', '// Test', true, 'APPROVED', 'tenant-invalidate-b', 'test-hash-32', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-b' AND tenant_id = 'tenant-invalidate-b' LIMIT 1) WHERE tenant_id = 'tenant-invalidate-b' AND module_name = 'aster.finance.loan';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000032'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-32', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000032'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-32', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-invalidate-b' ON CONFLICT DO NOTHING;
 
 -- 33-40. 更多租户 (tenant-flag-accuracy, tenant-flag-miss, tenant-flag-hit, tenant-ttl-expire, tenant-concurrent, tenant-eviction-clean)
@@ -2131,17 +1365,17 @@ UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions W
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.evaluateLoanEligibility.tenant-eviction-clean' LIMIT 1) WHERE tenant_id = 'tenant-eviction-clean' AND module_name = 'aster.finance.loan';
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000033'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-33', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-accuracy' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000033'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-33', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-accuracy' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000034'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-34', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-miss' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000034'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-34', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-miss' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000035'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-35', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-hit' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000035'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-35', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-flag-hit' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000036'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-36', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-ttl-expire' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000036'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-36', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-ttl-expire' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000037'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-37', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-concurrent' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000037'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-37', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-concurrent' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000038'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Data", "name": "LoanEligibilityResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateLoanEligibility", "params": [{"name": "application", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "LoanEligibilityResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "LoanEligibilityResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test"}}, {"name": "approvedAmount", "expr": {"kind": "Int", "value": 50000}}]}}]}}]}'::bytea, 'test-sha256-38', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-eviction-clean' ON CONFLICT DO NOTHING;
+SELECT 'b0000000-0000-0000-0000-000000000038'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"LoanEligibilityResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateLoanEligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"application","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"LoanEligibilityResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-38', '{}', CURRENT_TIMESTAMP FROM policy_versions pv WHERE pv.tenant_id = 'tenant-eviction-clean' ON CONFLICT DO NOTHING;
 
 -- ================================================================================
 -- 组合策略函数 - Composition Test Functions
@@ -2155,7 +1389,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.healthcare.eligibility.determineStandardCoverage.tenant-composition-null', 1, 'aster.healthcare.eligibility', 'determineStandardCoverage', '// Test', true, 'APPROVED', 'tenant-composition-null', 'test-hash-39', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.healthcare.eligibility.determineStandardCoverage.tenant-composition-null' LIMIT 1) WHERE tenant_id = 'tenant-composition-null' AND module_name = 'aster.healthcare.eligibility';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000039'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.healthcare.eligibility", "decls": [{"kind": "Func", "name": "determineStandardCoverage", "params": [], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 50}}]}}]}'::bytea, 'test-sha256-39', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000039'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"determineStandardCoverage","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.healthcare.eligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-39', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.healthcare.eligibility.determineStandardCoverage.tenant-composition-null' ON CONFLICT DO NOTHING;
 
 -- 40. tenant-composition-empty: aster.healthcare.eligibility.calculatePatientCost (返回0)
@@ -2166,7 +1400,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.healthcare.eligibility.calculatePatientCost.tenant-composition-empty', 1, 'aster.healthcare.eligibility', 'calculatePatientCost', '// Test', true, 'APPROVED', 'tenant-composition-empty', 'test-hash-40', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.healthcare.eligibility.calculatePatientCost.tenant-composition-empty' LIMIT 1) WHERE tenant_id = 'tenant-composition-empty' AND module_name = 'aster.healthcare.eligibility';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000040'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.healthcare.eligibility", "decls": [{"kind": "Func", "name": "calculatePatientCost", "params": [], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 0}}]}}]}'::bytea, 'test-sha256-40', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000040'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":0},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"calculatePatientCost","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.healthcare.eligibility","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-40', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.healthcare.eligibility.calculatePatientCost.tenant-composition-empty' ON CONFLICT DO NOTHING;
 
 -- 41. tenant-composition-order: aster.finance.loan.determineInterestRateBps (固定返回425)
@@ -2177,7 +1411,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.determineInterestRateBps.tenant-composition-order', 1, 'aster.finance.loan', 'determineInterestRateBps', '// Test', true, 'APPROVED', 'tenant-composition-order', 'test-hash-41', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.determineInterestRateBps.tenant-composition-order' LIMIT 1) WHERE tenant_id = 'tenant-composition-order' AND module_name = 'aster.finance.loan' AND function_name = 'determineInterestRateBps';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000041'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Func", "name": "determineInterestRateBps", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 425}}]}}]}'::bytea, 'test-sha256-41', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000041'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":425},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"determineInterestRateBps","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-41', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.determineInterestRateBps.tenant-composition-order' ON CONFLICT DO NOTHING;
 
 -- 42. tenant-composition-order: aster.finance.creditcard.calculateUtilizationPenalty (始终返回100)
@@ -2188,7 +1422,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-order', 1, 'aster.finance.creditcard', 'calculateUtilizationPenalty', '// Test', true, 'APPROVED', 'tenant-composition-order', 'test-hash-42', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-order' LIMIT 1) WHERE tenant_id = 'tenant-composition-order' AND module_name = 'aster.finance.creditcard';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000042'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Func", "name": "calculateUtilizationPenalty", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 100}}]}}]}'::bytea, 'test-sha256-42', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000042'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":100},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"calculateUtilizationPenalty","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.creditcard","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-42', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-order' ON CONFLICT DO NOTHING;
 
 -- 43. tenant-composition-deep: aster.finance.loan.determineInterestRateBps (固定返回425)
@@ -2199,7 +1433,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.loan.determineInterestRateBps.tenant-composition-deep', 1, 'aster.finance.loan', 'determineInterestRateBps', '// Test', true, 'APPROVED', 'tenant-composition-deep', 'test-hash-43', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.loan.determineInterestRateBps.tenant-composition-deep' LIMIT 1) WHERE tenant_id = 'tenant-composition-deep' AND module_name = 'aster.finance.loan' AND function_name = 'determineInterestRateBps';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000043'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Func", "name": "determineInterestRateBps", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 425}}]}}]}'::bytea, 'test-sha256-43', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000043'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":425},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"determineInterestRateBps","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-43', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.determineInterestRateBps.tenant-composition-deep' ON CONFLICT DO NOTHING;
 
 -- 44. tenant-composition-deep: aster.finance.creditcard.calculateUtilizationPenalty (同上)
@@ -2210,7 +1444,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-deep', 1, 'aster.finance.creditcard', 'calculateUtilizationPenalty', '// Test', true, 'APPROVED', 'tenant-composition-deep', 'test-hash-44', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-deep' LIMIT 1) WHERE tenant_id = 'tenant-composition-deep' AND module_name = 'aster.finance.creditcard';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000044'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Func", "name": "calculateUtilizationPenalty", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 100}}]}}]}'::bytea, 'test-sha256-44', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000044'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":100},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"calculateUtilizationPenalty","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.creditcard","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-44', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-deep' ON CONFLICT DO NOTHING;
 
 -- 45. tenant-composition-deep-fail: aster.test.failure.failingPolicy (抛出异常)
@@ -2224,7 +1458,7 @@ UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions W
 -- 用真运行时错误而非畸形 IR：早先此处误写 Err 用 "value" 键（规范字段是 "expr"）→
 -- 反序列化成 Err null → 仅靠 interop 契约 crash（-ea 下）伪装成失败，掩盖真实意图。
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000045'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.failure", "decls": [{"kind": "Func", "name": "failingPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Call", "target": {"kind": "Name", "name": "div"}, "args": [{"kind": "Name", "name": "input"}, {"kind": "Int", "value": 0}]}}]}}]}'::bytea, 'test-sha256-45', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000045'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"args":[{"kind":"Name","name":"input","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":0}],"kind":"Call","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"target":{"kind":"Name","name":"div","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"failingPolicy","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.test.failure","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-45', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.failure.failingPolicy.tenant-composition-deep-fail' ON CONFLICT DO NOTHING;
 
 -- 46-47. tenant-composition-deep-fail 还需要 determineInterestRateBps 和 calculateUtilizationPenalty
@@ -2242,10 +1476,10 @@ UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions W
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-deep-fail' LIMIT 1) WHERE tenant_id = 'tenant-composition-deep-fail' AND module_name = 'aster.finance.creditcard';
 
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000046'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.loan", "decls": [{"kind": "Func", "name": "determineInterestRateBps", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 425}}]}}]}'::bytea, 'test-sha256-46', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000046'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":425},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"determineInterestRateBps","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.loan","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-46', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.loan.determineInterestRateBps.tenant-composition-deep-fail' ON CONFLICT DO NOTHING;
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000047'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Func", "name": "calculateUtilizationPenalty", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Int", "value": 100}}]}}]}'::bytea, 'test-sha256-47', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000047'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":100},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"calculateUtilizationPenalty","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.creditcard","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-47', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.creditcard.calculateUtilizationPenalty.tenant-composition-deep-fail' ON CONFLICT DO NOTHING;
 
 -- 48-51. aster.test.batch.slowPolicy 用于批量测试 (返回输入值)
@@ -2257,7 +1491,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.test.batch.slowPolicy.tenant-batch-parallel', 1, 'aster.test.batch', 'slowPolicy', '// Test', true, 'APPROVED', 'tenant-batch-parallel', 'test-hash-48', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.test.batch.slowPolicy.tenant-batch-parallel' LIMIT 1) WHERE tenant_id = 'tenant-batch-parallel' AND module_name = 'aster.test.batch';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000048'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.batch", "decls": [{"kind": "Func", "name": "slowPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Name", "name": "input"}}]}}]}'::bytea, 'test-sha256-48', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000048'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Name","name":"input","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"slowPolicy","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.test.batch","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-48', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.batch.slowPolicy.tenant-batch-parallel' ON CONFLICT DO NOTHING;
 
 -- tenant-batch-partial
@@ -2268,7 +1502,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.test.batch.slowPolicy.tenant-batch-partial', 1, 'aster.test.batch', 'slowPolicy', '// Test', true, 'APPROVED', 'tenant-batch-partial', 'test-hash-49', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.test.batch.slowPolicy.tenant-batch-partial' LIMIT 1) WHERE tenant_id = 'tenant-batch-partial' AND module_name = 'aster.test.batch';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000049'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.batch", "decls": [{"kind": "Func", "name": "slowPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Name", "name": "input"}}]}}]}'::bytea, 'test-sha256-49', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000049'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Name","name":"input","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"slowPolicy","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.test.batch","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-49', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.batch.slowPolicy.tenant-batch-partial' ON CONFLICT DO NOTHING;
 
 -- tenant-batch-volume
@@ -2279,7 +1513,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.test.batch.slowPolicy.tenant-batch-volume', 1, 'aster.test.batch', 'slowPolicy', '// Test', true, 'APPROVED', 'tenant-batch-volume', 'test-hash-50', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.test.batch.slowPolicy.tenant-batch-volume' LIMIT 1) WHERE tenant_id = 'tenant-batch-volume' AND module_name = 'aster.test.batch';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000050'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.batch", "decls": [{"kind": "Func", "name": "slowPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Name", "name": "input"}}]}}]}'::bytea, 'test-sha256-50', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000050'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"kind":"Name","name":"input","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"slowPolicy","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.test.batch","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-50', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.batch.slowPolicy.tenant-batch-volume' ON CONFLICT DO NOTHING;
 
 -- 51-52. aster.test.failure.failingPolicy 用于失败测试 (使用 Err 表达式抛出异常)
@@ -2291,7 +1525,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.test.failure.failingPolicy.tenant-execution-failure', 1, 'aster.test.failure', 'failingPolicy', '// Test', true, 'APPROVED', 'tenant-execution-failure', 'test-hash-51', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.test.failure.failingPolicy.tenant-execution-failure' LIMIT 1) WHERE tenant_id = 'tenant-execution-failure' AND module_name = 'aster.test.failure';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000051'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.failure", "decls": [{"kind": "Func", "name": "failingPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Call", "target": {"kind": "Name", "name": "div"}, "args": [{"kind": "Name", "name": "input"}, {"kind": "Int", "value": 0}]}}]}}]}'::bytea, 'test-sha256-51', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000051'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"args":[{"kind":"Name","name":"input","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":0}],"kind":"Call","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"target":{"kind":"Name","name":"div","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"failingPolicy","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.test.failure","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-51', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.failure.failingPolicy.tenant-execution-failure' ON CONFLICT DO NOTHING;
 
 -- tenant-batch-partial
@@ -2302,7 +1536,7 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.test.failure.failingPolicy.tenant-batch-partial', 1, 'aster.test.failure', 'failingPolicy', '// Test', true, 'APPROVED', 'tenant-batch-partial', 'test-hash-52', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.test.failure.failingPolicy.tenant-batch-partial' LIMIT 1) WHERE tenant_id = 'tenant-batch-partial' AND module_name = 'aster.test.failure';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000052'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.test.failure", "decls": [{"kind": "Func", "name": "failingPolicy", "params": [{"name": "input", "type": {"kind": "TypeName", "name": "Int"}}], "ret": {"kind": "TypeName", "name": "Int"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Call", "target": {"kind": "Name", "name": "div"}, "args": [{"kind": "Name", "name": "input"}, {"kind": "Int", "value": 0}]}}]}}]}'::bytea, 'test-sha256-52', '{}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000052'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"args":[{"kind":"Name","name":"input","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":0}],"kind":"Call","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"target":{"kind":"Name","name":"div","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"failingPolicy","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"input","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.test.failure","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-52', '{}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.test.failure.failingPolicy.tenant-batch-partial' ON CONFLICT DO NOTHING;
 
 -- 53. 信用卡策略 for tenant-cache-multi (用于 testCacheInvalidationAcrossMultiplePolicies)
@@ -2313,5 +1547,5 @@ INSERT INTO policy_versions (policy_id, version, module_name, function_name, con
 VALUES ('aster.finance.creditcard.evaluateCreditCardApplication.tenant-cache-multi', 1, 'aster.finance.creditcard', 'evaluateCreditCardApplication', '// Test credit card policy for tenant-cache-multi', true, 'APPROVED', 'tenant-cache-multi', 'test-hash-cc-multi', 'zh-CN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'system') ON CONFLICT DO NOTHING;
 UPDATE policy_catalog SET default_version_id = (SELECT id FROM policy_versions WHERE policy_id = 'aster.finance.creditcard.evaluateCreditCardApplication.tenant-cache-multi' AND tenant_id = 'tenant-cache-multi' LIMIT 1) WHERE tenant_id = 'tenant-cache-multi' AND module_name = 'aster.finance.creditcard';
 INSERT INTO policy_artifacts (id, policy_version_id, artifact_type, content, content_sha256, compiler_opts, created_at)
-SELECT 'b0000000-0000-0000-0000-000000000053'::uuid, pv.id, 'CORE_JSON', E'{"name": "aster.finance.creditcard", "decls": [{"kind": "Data", "name": "CreditCardResult", "fields": [{"name": "approved", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "reason", "type": {"kind": "TypeName", "name": "Text"}}, {"name": "approvedLimit", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "interestRateAPR", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "monthlyFee", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "creditLine", "type": {"kind": "TypeName", "name": "Int"}}, {"name": "requiresDeposit", "type": {"kind": "TypeName", "name": "Bool"}}, {"name": "depositAmount", "type": {"kind": "TypeName", "name": "Int"}}]}, {"kind": "Func", "name": "evaluateCreditCardApplication", "params": [{"name": "applicant", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "creditHistory", "type": {"kind": "TypeName", "name": "Object"}}, {"name": "product", "type": {"kind": "TypeName", "name": "Object"}}], "ret": {"kind": "TypeName", "name": "CreditCardResult"}, "body": {"kind": "Block", "statements": [{"kind": "Return", "expr": {"kind": "Construct", "typeName": "CreditCardResult", "fields": [{"name": "approved", "expr": {"kind": "Bool", "value": true}}, {"name": "reason", "expr": {"kind": "String", "value": "Test credit card approval for cache-multi"}}, {"name": "approvedLimit", "expr": {"kind": "Int", "value": 50000}}, {"name": "interestRateAPR", "expr": {"kind": "Int", "value": 1899}}, {"name": "monthlyFee", "expr": {"kind": "Int", "value": 0}}, {"name": "creditLine", "expr": {"kind": "Int", "value": 50000}}, {"name": "requiresDeposit", "expr": {"kind": "Bool", "value": false}}, {"name": "depositAmount", "expr": {"kind": "Int", "value": 0}}]}}]}}]}'::bytea, 'test-sha256-cc-multi', '{"functionSignature": "evaluateCreditCardApplication(applicant: Object, creditHistory: Object, product: Object): CreditCardResult"}', CURRENT_TIMESTAMP
+SELECT 'b0000000-0000-0000-0000-000000000053'::uuid, pv.id, 'CORE_JSON', E'{"decls":[{"fields":[{"annotations":[],"constraints":[],"name":"approved","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"reason","type":{"kind":"TypeName","name":"Text","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"approvedLimit","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"interestRateAPR","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"monthlyFee","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"creditLine","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"requiresDeposit","type":{"kind":"TypeName","name":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"depositAmount","type":{"kind":"TypeName","name":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"kind":"Data","name":"CreditCardResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},{"annotations":[],"body":{"kind":"Block","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"statements":[{"expr":{"fields":[{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":true},"name":"approved"},{"expr":{"kind":"String","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":"Test credit card approval for cache-multi"},"name":"reason"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"approvedLimit"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":1899},"name":"interestRateAPR"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":0},"name":"monthlyFee"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":50000},"name":"creditLine"},{"expr":{"kind":"Bool","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":false},"name":"requiresDeposit"},{"expr":{"kind":"Int","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"value":0},"name":"depositAmount"}],"kind":"Construct","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"typeName":"CreditCardResult"},"kind":"Return","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}}]},"effectCaps":[],"effectCapsExplicit":false,"effectParams":[],"effects":[],"inputRefs":null,"kind":"Func","name":"evaluateCreditCardApplication","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"params":[{"annotations":[],"constraints":[],"name":"applicant","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"creditHistory","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false},{"annotations":[],"constraints":[],"name":"product","type":{"kind":"TypeName","name":"Object","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"typeInferred":false}],"ret":{"kind":"TypeName","name":"CreditCardResult","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null}},"retAnnotations":[],"retTypeInferred":false,"typeParams":[]}],"kind":"Module","name":"aster.finance.creditcard","origin":{"end":{"col":1,"line":1},"file":null,"role":null,"start":{"col":1,"line":1},"written":null},"profile":null,"schemaVersion":2}'::bytea, 'test-sha256-cc-multi', '{"functionSignature": "evaluateCreditCardApplication(applicant: Object, creditHistory: Object, product: Object): CreditCardResult"}', CURRENT_TIMESTAMP
 FROM policy_versions pv WHERE pv.policy_id = 'aster.finance.creditcard.evaluateCreditCardApplication.tenant-cache-multi' AND pv.tenant_id = 'tenant-cache-multi' ON CONFLICT DO NOTHING;

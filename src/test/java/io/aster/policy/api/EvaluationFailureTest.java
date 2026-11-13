@@ -54,6 +54,17 @@ class EvaluationFailureTest {
             DynamicExecutionException.Kind.FUNCTION_NOT_FOUND)).status()).isEqualTo(404);
     }
 
+    /** ADR 0055 §5：Core IR 读方给出的细分码（版本错误）原样进响应，其余输入错误仍为 invalid_request。 */
+    @Test
+    void Core_IR_版本错误_400_unsupported_schema_version() {
+        Throwable wrapped = new CompletionException(new DynamicExecutionException("Core IR JSON 解析失败: v1",
+            null, DynamicExecutionException.Kind.INVALID_INPUT, "unsupported_schema_version"));
+        assertThat(EvaluationFailure.classify(wrapped))
+            .isEqualTo(new EvaluationFailure(400, "unsupported_schema_version", "Core IR JSON 解析失败: v1"));
+        assertThat(EvaluationFailure.classify(new DynamicExecutionException("Core IR JSON 解析失败: extra",
+            null, DynamicExecutionException.Kind.INVALID_INPUT, "invalid_request")).code()).isEqualTo("invalid_request");
+    }
+
     @Test
     void 看门狗超时_422_execution_timeout_被包装也能识别() {
         Throwable wrapped = new CompletionException(new RuntimeException("x",

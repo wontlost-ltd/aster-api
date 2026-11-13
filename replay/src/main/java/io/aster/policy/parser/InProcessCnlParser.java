@@ -322,9 +322,10 @@ public class InProcessCnlParser {
 
     /**
      * 语法分析超出时间预算（core#254）：复用 E054 而不新增码——码表由 core / ts / locales 三方共享，
-     * 新码需三仓同车发版；已知能耗尽预算的输入全是深层类型嵌套，E054「嵌套过深，拆成更小的具名部分」
-     * 的文案与改法都适用。{@code limit} 照旧填嵌套上限（模板只引用它），另带 {@code reason=time-budget}
-     * 与 {@code budgetMs} 供客户端与日志区分「超层数」和「超时」。
+     * 新码需三仓同车发版；已知能耗尽预算的输入全是深层类型嵌套，E054 的改法（拆成更小的具名部分）适用。
+     * {@code limit} 照旧填嵌套上限（按码模板引用它），另带 {@code reason=time-budget} 与 {@code budgetMs}
+     * 供客户端与日志区分「超层数」和「超时」；文案按 {@code reason} 取语法目录的超时句型
+     * （{@link CnlErrorListener#TIME_BUDGET_KEY}，aster-lang-core#259），不显示「嵌套过深」。
      */
     private static BudgetExceededFailure budgetExceeded(CnlErrorListener listener, ParseBudget budget,
                                                         org.antlr.v4.runtime.Token at, int sourceLength) {

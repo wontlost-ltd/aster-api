@@ -41,6 +41,7 @@ public final class MissingInputFieldException extends DynamicExecutionException 
     }
 
     /** 稳定错误码 {@value #CODE}。 */
+    @Override
     public String code() {
         return CODE;
     }

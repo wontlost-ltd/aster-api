@@ -1,7 +1,6 @@
 package io.aster.policy.parser;
 
-import aster.core.ir.CoreModel;
-import aster.core.lowering.CoreLowering;
+import aster.core.ir.CoreIrJson;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.parser.DynamicCnlExecutor.ExecutionResult;
 import io.aster.replay.core.parser.ReplayMappers;
@@ -23,11 +22,9 @@ class DynamicCnlExecutorCoreIrJsonTest {
 
     private static final ObjectMapper MAPPER = ReplayMappers.DEFAULT;
 
-    /** 把 CNL 编译成 Core IR JSON —— 模拟客户端提交的 policy 载荷。 */
-    private static String coreIrJsonOf(String cnl) throws Exception {
-        var parseResult = InProcessCnlParser.parse(cnl, null, null);
-        CoreModel.Module coreModule = new CoreLowering().lowerModule(parseResult.module());
-        return MAPPER.writeValueAsString(coreModule);
+    /** 把 CNL 编译成 Core IR v2 规范字节 —— 模拟客户端提交的 policy 载荷（名称解析后的 IR）。 */
+    private static String coreIrJsonOf(String cnl) {
+        return CoreIrJson.serialize(InProcessCnlParser.parse(cnl, null, null).core());
     }
 
     private static final String SOURCE = """
@@ -109,18 +106,55 @@ class DynamicCnlExecutorCoreIrJsonTest {
 
     @Test
     void rejectsMalformedCoreIrJson() {
-        assertThatThrownBy(() -> DynamicCnlExecutor.executeCoreIrJson(
-                "{ not valid json", Map.of(), null))
-            .isInstanceOf(DynamicCnlExecutor.DynamicExecutionException.class)
-            .hasMessageContaining("Core IR JSON 解析失败");
+        assertRejected("{ not valid json", "invalid_request");
+    }
+
+    // ---- ADR 0055 §5：/evaluate-json 严格读入 Core IR v2（版本预检 → schema → 严格绑定 → 不变式） ----
+
+    /** v1 形状（没有 schemaVersion）：按版本错误拒收，不执行。 */
+    @Test
+    void v1IrWithoutSchemaVersionIsRejectedAsUnsupportedSchemaVersion() {
+        assertRejected(V1_IR, "unsupported_schema_version");
+        assertRejected("{\"name\":\"empty\"}", "unsupported_schema_version");
+    }
+
+    /** schemaVersion 必须是 JSON 整数 2：字符串 "2"、整数 1 都是版本错误。 */
+    @Test
+    void schemaVersionOtherThanInteger2IsRejected() throws Exception {
+        assertRejected(withField("schemaVersion", "2"), "unsupported_schema_version");
+        assertRejected(withField("schemaVersion", 1), "unsupported_schema_version");
     }
 
     @Test
-    void rejectsCoreIrWithoutDeclarations() {
-        assertThatThrownBy(() -> DynamicCnlExecutor.executeCoreIrJson(
-                "{\"name\":\"empty\"}", Map.of(), null))
-            .isInstanceOf(DynamicCnlExecutor.DynamicExecutionException.class)
-            .hasMessageContaining("不含任何声明");
+    void unknownFieldIsRejectedAsInvalidRequest() throws Exception {
+        assertRejected(withField("extra", true), "invalid_request");
+    }
+
+    @Test
+    void missingFieldIsRejectedAsInvalidRequest() throws Exception {
+        var tree = (com.fasterxml.jackson.databind.node.ObjectNode) MAPPER.readTree(coreIrJsonOf(SOURCE));
+        tree.remove("profile");
+        assertRejected(MAPPER.writeValueAsString(tree), "invalid_request");
+    }
+
+    /** 手写的 v1 IR：没有 schemaVersion、origin 与 v2 恒输出字段，1.0.45 之前的读方能执行它。 */
+    static final String V1_IR = "{\"name\":\"json.v1\",\"decls\":[{\"kind\":\"Func\",\"name\":\"main\","
+        + "\"params\":[],\"ret\":{\"kind\":\"TypeName\",\"name\":\"Int\"},\"body\":{\"kind\":\"Block\","
+        + "\"statements\":[{\"kind\":\"Return\",\"expr\":{\"kind\":\"Int\",\"value\":1}}]}}]}";
+
+    private static String withField(String name, Object value) throws Exception {
+        var tree = (com.fasterxml.jackson.databind.node.ObjectNode) MAPPER.readTree(coreIrJsonOf(SOURCE));
+        tree.set(name, MAPPER.valueToTree(value));
+        return MAPPER.writeValueAsString(tree);
+    }
+
+    private static void assertRejected(String coreIr, String code) {
+        assertThatThrownBy(() -> DynamicCnlExecutor.executeCoreIrJson(coreIr, Map.of("driver", Map.of("age", 1)), null))
+            .isInstanceOfSatisfying(DynamicCnlExecutor.DynamicExecutionException.class, e -> {
+                assertThat(e.kind()).isEqualTo(DynamicCnlExecutor.DynamicExecutionException.Kind.INVALID_INPUT);
+                assertThat(e.code()).isEqualTo(code);
+            })
+            .hasMessageContaining("Core IR JSON 解析失败");
     }
 
     @Test

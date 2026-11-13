@@ -19,7 +19,7 @@ class RuleMetadataTest {
     var f = new CoreModel.Func(); f.name = name; f.annotations = List.of(anns); return f;
   }
   private static CoreModel.Annotation ann(String name, String value) {
-    var a = new CoreModel.Annotation(); a.name = name; a.params = Map.of("$0", value); return a;
+    var a = new CoreModel.Annotation(); a.name = name; a.args = List.of(new CoreModel.AnnotationArg("$0", value)); return a;
   }
   @Test void 读取被执行函数的id与controls() {
     var mod = new CoreModel.Module();

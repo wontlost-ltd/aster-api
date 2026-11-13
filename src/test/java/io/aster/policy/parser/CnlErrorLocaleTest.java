@@ -172,6 +172,36 @@ class CnlErrorLocaleTest {
     }
 
     @Test
+    void render_timeBudgetE054_usesTimeoutSentence_perLanguage() {
+        // aster-lang-core#259：超时与嵌套过深同为 E054、参数不变，文案按 reason=time-budget 取超时句型
+        Map<String, String> p = Map.of("limit", "64", "reason", "time-budget", "budgetMs", "2000");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_NESTING_TOO_DEEP, p, KeywordLocalizer.IDENTITY))
+            .isEqualTo("Parsing took too long (budget 2000 ms); simplify the policy");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_NESTING_TOO_DEEP, p, localizer("zh-CN")))
+            .isEqualTo("语法分析耗时过长（预算 2000 毫秒）；请简化策略");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_NESTING_TOO_DEEP, p, localizer("de-DE")))
+            .isEqualTo("Die Syntaxanalyse hat zu lange gedauert (Zeitbudget 2000 ms); vereinfachen Sie die Richtlinie");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_NESTING_TOO_DEEP, p, localizer("hi-IN")))
+            .isEqualTo("पार्सिंग में बहुत अधिक समय लगा (समय-बजट 2000 ms); नीति को सरल बनाएँ");
+    }
+
+    @Test
+    void render_nestingE054_withoutTimeBudgetReason_keepsNestingSentence() {
+        // 反向护栏：没有 reason（真正的嵌套过深）或 reason 不是 time-budget 时仍按码模板渲染
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_NESTING_TOO_DEEP, Map.of("limit", "64"), KeywordLocalizer.IDENTITY))
+            .isEqualTo("Nesting is too deep (limit 64)");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_NESTING_TOO_DEEP, Map.of("limit", "64"), localizer("zh-CN")))
+            .isEqualTo("嵌套层级过深（上限 64）");
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_NESTING_TOO_DEEP,
+                Map.of("limit", "64", "reason", "stack"), KeywordLocalizer.IDENTITY))
+            .isEqualTo("Nesting is too deep (limit 64)");
+        // 缺 budgetMs 时不渲染半截句子，退回按码模板
+        assertThat(CnlErrorListener.render(ErrorCode.PARSE_NESTING_TOO_DEEP,
+                Map.of("limit", "64", "reason", "time-budget"), KeywordLocalizer.IDENTITY))
+            .isEqualTo("Nesting is too deep (limit 64)");
+    }
+
+    @Test
     void render_expectedBefore_perLanguage() {
         Map<String, String> p = Map.of("token", "':'", "before", "'x'");
         assertThat(CnlErrorListener.render(ErrorCode.PARSE_EXPECTED_BEFORE, p, KeywordLocalizer.IDENTITY))
