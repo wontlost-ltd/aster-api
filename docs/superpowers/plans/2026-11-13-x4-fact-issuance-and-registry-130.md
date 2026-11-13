@@ -72,7 +72,7 @@
 - **签发方名字段**（cloud 本地，比 aster-api 更严，使 HMAC 签名路径与 api 解码后的路径一致）：`^[A-Za-z0-9._~-]+$`，且不等于 `.` 或 `..`；issuer ≤ 255、kid ≤ 64。不合规 → cloud 400 `invalid_issuer_name`，不发请求。
 - **权限**：读签发方 = 个人租户本人或团队 `TEAM_VIEW`；写 / 吊销 = 个人租户本人或团队 `MEMBER_UPDATE_ROLE`（ADR 0040 §11 D3，不新增权限常量）。
 - **注册表四份副本同值**：locales `controls/registry.json`（真相源）、core `src/main/resources/governance/controls-registry.json`、ts `src/governance/controls-registry.data.ts`、cloud `src/config/controls-registry.json`。版本号 1.3.0 唯一变化：`eu-ai-act-high-risk.requires.verifiedInputs: true`，`governed` 保持 `false`。
-- **1.3.0 翻转的硬前置（全部满足才可开列车）**：G0 PR 0（ADR §11.7）已由用户合并；G1 ⑥ 全部 PR 已合并并部署；G2 本地栈以 1.3.0 注册表跑通信贷试点（九款状态不变、`reviewers[]` 含 Credit Officer、require_approval 那条为 PENDING），并跑通「未附事实 → DENY 消耗证据 → 重新执行得新证据 → PENDING」的恢复路径；G3 **生产可验证性台账**：P2 报告中每个声明 `eu-ai-act-high-risk` 的生产模块（含近 30 天无执行量的）都有用户写下的一条裁定，且只能是三种之一——(a) 可验证：列出覆盖其全部 `inputRefs` 的 `issuer#kid` 与来源函数，且该租户签发方已启用；(b) 接受翻转后 DENY：须引用 PR 0 中批准该口径的条款；(c) 阻塞翻转。存在任一 (c) 或无裁定的模块 → 不开列车；G4 aster-api `origin/main` 含 #487 与 #492；G5 列车前常规 gate scan 的差异只有 G3 台账里列出的 E708。
+- **1.3.0 翻转的硬前置（全部满足才可开列车）**：G0 PR 0（ADR §11.7）已由用户合并；G1 ⑥ 全部 PR 已合并并部署；G2 本地栈以 1.3.0 注册表跑通信贷试点（九款状态不变、`reviewers[]` 含 Credit Officer、require_approval 那条为 PENDING），并跑通「未附事实 → DENY 消耗证据 → 重新执行得新证据 → PENDING」的恢复路径；G3 **生产可验证性台账**：P2 报告中每个声明 `eu-ai-act-high-risk` 的生产模块（含近 30 天无执行量的）都有用户写下的一条裁定，且只能是三种之一——(a) 可验证：列出覆盖其全部 `inputRefs` 的 `issuer#kid` 与来源函数，且该租户签发方已启用；(b) 接受翻转后 DENY：须引用 PR 0 中批准该口径的条款；(c) 阻塞翻转。存在任一 (c) 或无裁定的模块 → 不开列车；G3 的前提是**扫描输入可信**：P2 打印的 cloud 导出行数 > 0、按 kind 的源计数与导出一致，且 P1 的独立对账（只读 SQL 选出的「源码头部声明了档案」的 cloud id 集合）与扫描得到的「Core IR 带 `profile` 的模块」id 集合**逐 id 相等**——任一不等即 G3 不通过；G4 aster-api `origin/main` 含 #487 与 #492；G5 列车前常规 gate scan 在同样非空、已对账的源集合上进行（cloud 行数 > 0 并打印），差异只有 G3 台账里列出的 E708；G6 aster-api#493（评估事件 metadata 超 4096 字符被截断 → from-evidence 409 `evidence_not_approvable`）已修复并部署——翻转后高风险模块的 from-evidence 是用户可见路径，这个 409 会被误读成签发失败。
 - 不新增依赖（cloud 不引 `canonicalize` / `@noble/ed25519`；platform 脚本只用 Node 内建）。代码注释、提交信息简体中文；提交末尾空行后 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`；PR 描述末尾 `🤖 Generated with [Claude Code](https://claude.com/claude-code)`，`Refs #461`。
 - 不读取 k8s Secret、不连生产库、不执行 `wrangler secret put`；需要用户执行的步骤逐字写进 PR 描述。跨仓联合验证的 PR 用同名分支，合并后立即删除分支（platform#114 教训）。
 - cloud 每个 PR 的本地验证：`pnpm lint && pnpm exec tsc --noEmit && pnpm test:run`，加本 PR 列出的定向用例；涉及 local-stack 的按 memory「Aster local verification env」配方起栈后跑 Playwright。
@@ -117,8 +117,8 @@
 | A | 3 | aster-cloud `feat/x4-fact-signer` | Task C6、C7、C8、C9 | PR 0、2 之后；用户先 `wrangler secret put ASTER_FACT_SIGNING_KEY` |
 | B | 4 | aster-lang-platform `feat/gate-scan-input-refs` | Task P1 | 本地 `gate-scan.test.sh` 通过 |
 | B | — | （用户执行） | Task P2：生产只读扫描与影响报告 | G3 |
-| C | 5 | `feat/registry-130` 同名分支组：locales #5a → core #5b → ts #5c → test #5d（按需） | Task R1–R4 | 一次性连续合并；G1–G4 |
-| D | 6 | aster-lang-platform `chore/release-1.0.45` + 各引擎 pin bump | Task T1 | G5 |
+| C | 5 | `feat/registry-130` 同名分支组：locales #5a → core #5b → ts #5c → test #5d（按需） | Task R1–R4 | 一次性连续合并；G0–G4、G6 |
+| D | 6 | aster-lang-platform `chore/release-1.0.45` + 各引擎 pin bump | Task T1 | G0–G6 |
 | D | 7 | aster-api `chore/release-1.0.45` | Task T2（pin + 两处测试） | 随列车 |
 | E | 8 | aster-cloud `chore/ts-160-registry-130` | Task E1 | 列车完成后当天 |
 
@@ -331,14 +331,18 @@ export const FACT_TTL_MS = 600_000;
 ### Task P1：gate-scan 增 `input-refs` 子命令
 
 **Files（aster-lang-platform）:**
-- Create: `scripts/gate-scan/input-refs.mjs`、`scripts/gate-scan/export-profile-impact.sql`
-- Modify: `scripts/gate-scan/gate-scan.sh`（子命令 `input-refs`，参数 `--ts <ref|path:dir> --profile <id> [--sources <dir>] [--impact <jsonl>]`，导出 / 清理沿用现有 `export` 逻辑）、`scripts/gate-scan/gate-scan.test.sh`、`scripts/gate-scan/README.md`
+- Create: `scripts/gate-scan/input-refs.mjs`、`scripts/gate-scan/export-profile-impact.sql`、`scripts/gate-scan/export-profile-ids.sql`
+- Modify: `scripts/gate-scan/gate-scan.sh`（子命令 `input-refs`，参数 `--ts <ref|path:dir> --profile <id> [--sources <dir>] [--impact <jsonl>] [--profile-ids <jsonl>]`，导出 / 清理沿用现有 `export` 逻辑；新旗标 `--allow-empty-api-db`）、`scripts/gate-scan/scan.mjs`（打印按 kind 的源计数）、`scripts/gate-scan/gate-scan.test.sh`、`scripts/gate-scan/README.md`
 
 **Interfaces:**
 - `export-profile-impact.sql`（READ ONLY 事务，末行 `{"_count":N}`）：cloud 变量下每行 `{"id":"cloud:<policyId>"|"cloudv:<versionId>","tenant":"<teamId 或 userId>","gatedExecutions30d":<近 30 天 decision in ('require_approval','escalate') 的执行数>}`；无 cloud 变量（aster_api 库）下每行 `{"tenant","issuer","kid","enabled","notAfter"}`（`guard_fact_issuers`）。
-- `input-refs.mjs`：对每份源依 en-US → zh-CN → de-DE → 其余的顺序找第一个编译成功的 lexicon，用 `compileAndTypecheck(source, { lexicon, controls })` 编译，`controls = controlRegistryFrom(把 --profile 的 verifiedInputs 置 true 的 CONTROLS_REGISTRY 副本)`；只处理 Core IR `profile === --profile` 的模块。每个带 `inputRefs` 的 Func 输出一行：`id kind lexicon module rule inputRefs flags construct tenant gatedExecutions30d tenantHasEnabledIssuer`；`flags` ∈ `STAR`（含 `*`）/ `ROOT`（含 `""`）；`construct` 取同一规则 E708 诊断的 `construct` 参数。末尾汇总：模块数、规则数、`STAR` 规则数（按 construct 分组，单列 `whole-input-serialized`，供 ADR 0046 §11.6 第 16 条裁定）、`ROOT` 规则数、涉及租户数、其中无启用签发方的租户数。**绝不打印源码**；金丝雀：编译一份声明档案的已知模块，其 IR 无 `inputRefs` → 退出码 3（ts 构建低于 1.5.0）。退出码：0 = 无 `STAR`；1 = 有 `STAR`；2 = 用法错误；3 = 输入或构建不可信。
+- **空导出不放行**：新旗标 `--allow-empty-api-db` 只允许 aster_api 库导出 0 行（生产 `policy_versions` 今天为 0 行）；cloud 库导出 0 行一律退出码 3。`input-refs` 子命令只接受 `--allow-empty-api-db`，传旧的 `--allow-empty-db` → 用法错误（退出码 2）；常规 diff 扫描的 `--allow-empty-db` 保持原义（向后兼容），但 README 与本计划 G5 一律改用 `--allow-empty-api-db`。
+- **源计数**：`scan.mjs` 与 `input-refs.mjs` 开头都打印 `sources: cloud-policy=<N> cloud-policy-version=<M> api-policy-version=<K>`；`cloud-policy + cloud-policy-version == 0` → 退出码 3。
+- `export-profile-ids.sql`（cloud 库，READ ONLY，末行 `{"_count":N}`）：独立于编译器的对账集合，每行 `{"id":"cloud:<policyId>"|"cloudv:<versionId>"}`，选取条件与 `export-policy-sources.sql` 相同（`Policy` 未删除且 `content` 非空；`PolicyVersion` `content` 非空）再加 `content ~ '(^|\n)[ \t]*(Profile|Profil|档案|प्रोफ़ाइल)[ \t]*["“「]'`（四个 lexicon 的档案关键字，取自 ts `src/config/lexicons/*.ts` 的 `SemanticTokenKind.PROFILE`；生产源码形如 `Profile "eu-ai-act-high-risk".` / `档案 "eu-ai-act-high-risk"。`）。
+- **对账**（`--profile-ids` 给出时）：`input-refs.mjs` 计算「任一 lexicon 编译成功且 Core IR `profile` 非空」的 id 集合，与 SQL 集合逐 id 比较；打印 `reconcile: sql=<n> scan=<m> onlyInSql=[ids] onlyInScan=[ids]`；两集合不等 → 退出码 4（G3 不通过）。不等的常见原因：源码用了自定义关键词别名（ADR 0022）写 `Profile`，或源码编译失败；两者都要在台账里逐 id 说明后**修正对账集合重跑**，不得口头放行。P2 / G3 必须带 `--profile-ids`。
+- `input-refs.mjs`：对每份源依 en-US → zh-CN → de-DE → 其余的顺序找第一个编译成功的 lexicon，用 `compileAndTypecheck(source, { lexicon, controls })` 编译，`controls = controlRegistryFrom(把 --profile 的 verifiedInputs 置 true 的 CONTROLS_REGISTRY 副本)`；只处理 Core IR `profile === --profile` 的模块。每个带 `inputRefs` 的 Func 输出一行：`id kind lexicon module rule inputRefs flags construct tenant gatedExecutions30d tenantHasEnabledIssuer`；`flags` ∈ `STAR`（含 `*`）/ `ROOT`（含 `""`）；`construct` 取同一规则 E708 诊断的 `construct` 参数。末尾汇总：模块数、规则数、`STAR` 规则数（按 construct 分组，单列 `whole-input-serialized`，供 ADR 0046 §11.6 第 16 条裁定）、`ROOT` 规则数、涉及租户数、其中无启用签发方的租户数。**绝不打印源码**；金丝雀：编译一份声明档案的已知模块，其 IR 无 `inputRefs` → 退出码 3（ts 构建低于 1.5.0）。退出码：0 = 无 `STAR`；1 = 有 `STAR`；2 = 用法错误；3 = 输入或构建不可信（含 cloud 导出为空）；4 = 对账不等。
 
-- [ ] **Step 1: 写失败测试**（`gate-scan.test.sh`，假 kubectl + 本地 ts 1.5.0 构建）：三份夹具源——字面路径规则、动态 Map 键规则、`Profile "governed"` 规则——断言输出恰两行（第三份被按档案过滤），动态键行 `flags=STAR construct=dynamic-map-key`，退出码 1；`--impact` 合入租户与执行数；源码中的哨兵串不出现在 stdout / stderr；ts 1.4.0 构建 → 退出码 3。
+- [ ] **Step 1: 写失败测试**（`gate-scan.test.sh`，假 kubectl + 本地 ts 1.5.0 构建）：三份夹具源——字面路径规则、动态 Map 键规则、`Profile "governed"` 规则——断言输出恰两行（第三份被按档案过滤），动态键行 `flags=STAR construct=dynamic-map-key`，退出码 1；`--impact` 合入租户与执行数；源码中的哨兵串不出现在 stdout / stderr；ts 1.4.0 构建 → 退出码 3；`cloudExportEmptyIsExit3`（假 kubectl 让 cloud 导出 0 行，带 `--allow-empty-api-db` 仍为 3）；`apiExportEmptyAllowedWithFlag`（api 0 行 + 旗标 → 正常）；`legacyAllowEmptyDbRejectedForInputRefs`（退出码 2）；`sourceCountsPrinted`（输出含 `sources: cloud-policy=2 cloud-policy-version=1 api-policy-version=0`）；`reconcileMismatchIsExit4`（SQL 集合多一个 id → 4，`onlyInSql` 列出该 id）；`reconcileMatchPasses`；`scan.mjs` 的 `diffScanPrintsSourceCounts`。
 - [ ] **Step 2:** `bash scripts/gate-scan/gate-scan.test.sh` FAIL。 **Step 3:** 实现。 **Step 4:** PASS（现有用例不变）。
 - [ ] **Step 5: 提交** `feat(gate-scan): input-refs 子命令列出档案模块的规则输入引用（ADR 0046 §11.4 ⑦ 前置扫描）`
 
@@ -349,10 +353,11 @@ PR 4 描述逐字给出：
 ```bash
 export PATH=/opt/homebrew/opt/node@24/bin:$PATH
 export ASTER_TS_REPO=~/IdeaProjects/aster-lang-ts KUBECONFIG=~/.kube/k3s-config
-scripts/gate-scan/gate-scan.sh input-refs --ts v1.5.0 --profile eu-ai-act-high-risk --allow-empty-db
+scripts/gate-scan/gate-scan.sh input-refs --ts v1.5.0 --profile eu-ai-act-high-risk --allow-empty-api-db
+# 子命令内部依次导出 export-policy-sources / export-profile-impact / export-profile-ids，并自动传 --impact 与 --profile-ids
 ```
 
-产出只贴进 PR 5a（locales）描述，不入库。用户按 Global Constraints 的 G3 台账格式逐模块裁定（(a) 可验证 / (b) 接受 DENY / (c) 阻塞），`STAR` 规则另须裁定「先改源码」或归入 (b)/(c)。台账写在 PR 5a 描述里；**G3 = 台账覆盖报告中全部模块且无 (c)。** ADR 0046 D5 第 3 项要求的「逐一确认有签发方配置」由 (a) 满足；(b) 是对该要求的显式例外，只在 PR 0 批准该口径后可用。 另由 `STAR` 中 `whole-input-serialized` 的命中数决定 §11.6 第 16 条（`Int.toString` 标量叶子豁免）是否需要先改引擎；若用户要求豁免，翻转推迟，豁免另开列车（不进本计划）。
+产出（含 `sources:` 计数行与 `reconcile:` 行）只贴进 PR 5a（locales）描述，不入库。退出码 3 或 4 → 不进入台账，先修导出或对账。用户按 Global Constraints 的 G3 台账格式逐模块裁定（(a) 可验证 / (b) 接受 DENY / (c) 阻塞），`STAR` 规则另须裁定「先改源码」或归入 (b)/(c)。台账写在 PR 5a 描述里；**G3 = 台账覆盖报告中全部模块且无 (c)。** ADR 0046 D5 第 3 项要求的「逐一确认有签发方配置」由 (a) 满足；(b) 是对该要求的显式例外，只在 PR 0 批准该口径后可用。 另由 `STAR` 中 `whole-input-serialized` 的命中数决定 §11.6 第 16 条（`Int.toString` 标量叶子豁免）是否需要先改引擎；若用户要求豁免，翻转推迟，豁免另开列车（不进本计划）。
 
 ---
 
@@ -370,7 +375,7 @@ scripts/gate-scan/gate-scan.sh input-refs --ts v1.5.0 --profile eu-ai-act-high-r
 
 - `release-plan.json`：`platformVersion` / `ecosystemVersion` → `1.0.45`，`tsNpmVersion` → `1.6.0`，`uiMessagesNpmVersion` `1.0.30`、hi npm、test npm 不变（R4 只动语料不动 `packages/js`）；`artifacts[]` 同列车计划 PR 13 的改法。PR 描述列出本列车全部内容：R1–R4 与 runtime#77；开跑前在各引擎仓执行 `git log v1.0.44..origin/main --oneline`，出现清单之外的提交即停车。
 - 各引擎 `chore/release-1.0.45` pin bump（同 1.0.44 的 13′），ts `package.json` → `1.6.0`。
-- **列车前 gate scan（G5）**：`gate-scan.sh --old-ts v1.5.0 --new-ts feat/registry-130 --allow-empty-db`。期望 `newly-failing` / `newly-passing` 为空；`changed-codes` **只**含 E708，且每个 id 都在 P2 报告的 `STAR` 清单里。其他任何差异 → 停车。
+- **列车前 gate scan（G5）**：`gate-scan.sh --old-ts v1.5.0 --new-ts feat/registry-130 --allow-empty-api-db`；输出的 `sources:` 行 cloud 计数 > 0，且与 P2 的计数一致或差异可由 P2 之后新建 / 删除的策略逐 id 解释（重跑 `export-profile-ids.sql` 对比），否则停车。期望 `newly-failing` / `newly-passing` 为空；`changed-codes` **只**含 E708，且每个 id 都在 P2 报告的 `STAR` 清单里。其他任何差异 → 停车。
 - 运行：ADR 0053 `run-train.sh`，trainId `eco-1.0.45`，层序 L0 platform → L1 core / runtime / validation / test → L2 locales / hi → L3 truffle → L4 ts npm 1.6.0 + aster-api 部署。**L4 部署即生产翻转。**
 
 ### Task T2：aster-api pin 与测试（`chore/release-1.0.45`，随列车）
@@ -397,8 +402,16 @@ scripts/gate-scan/gate-scan.sh input-refs --ts v1.5.0 --profile eu-ai-act-high-r
 
 ### 回滚
 
-- **生产翻转回滚**：k3s 把 aster-api 镜像 pin 回退到 1.0.44 的 digest（用户提 revert PR，Argo 同步）。注册表随 core jar 回到 1.2.0；1.3.0 期间写下的事件 `verifiedInputsRequired: true` 只是审计快照，消费时按当前注册表重算 → 不再要求；期间已作出的 DENY 决策不变（链不可改）。不需要回滚引擎制品（已发布的 1.0.45 / ts 1.6.0 无人引用即无害）。
-- **cloud**：E1 若已合并，revert 即可（只影响编辑器提示与标题）；PR 1–3 不随翻转回滚（对 1.2.0 无行为影响）。
+- **两侧不一致窗口的行为**（决定回滚顺序）：编辑器保存按钮在浏览器编译有 error 时禁用（`policy-form/index.tsx:704` `disabled={isSaving || compileErrorCount > 0}`），服务端保存门读 aster-api `/compile` 的 error 级。
+  - cloud 1.2.0 + aster-api 1.3.0（正向发布的窗口，也是本计划回滚时允许的窗口）：编辑器不报 E708、允许点保存，服务端 400 `compile_error`（消息为 E708 英文 / 本地化模板）。用户看得到原因，不会存进不合规源码。
+  - cloud 1.3.0 + aster-api 1.2.0（必须避免）：编辑器对 `*` 规则报 E708 并**禁用保存**，而服务端其实允许——用户无法保存且无路可走。
+- **回滚顺序（固定）：先 cloud，后 aster-api**；E1 尚未合并时跳过第 1–2 步。
+  1. cloud：revert E1（ts 1.6.0 / 副本 1.3.0 → ts 1.5.0 / 副本 1.2.0），`deploy-worker.yml` 发布。
+  2. cloud 完成检查：该 revert 提交的 `deploy-worker.yml` 运行成功；生产编辑器打开一个已知含 `*` 规则的高风险模块（G3 台账中任一 `STAR` 模块，或冒烟用的动态键源码）→ Decision 页签无 E708、保存按钮可用；main 上 `control-registry-ts-parity.test.ts` 绿（版本 1.2.0）。
+  3. aster-api：k3s 把镜像 pin 回退到 1.0.44 的 digest（用户提 revert PR，Argo 同步）。cloud 部署通常在 10 分钟内完成；若 1.3.0 正在造成生产事故，可以与第 1 步同时提 PR，但**合并**仍等第 2 步通过。
+  4. aster-api 完成检查：运行中的 Pod 镜像 digest 等于 1.0.44 的 digest（`kubectl -n aster-cloud get deploy aster-api -o jsonpath='{.spec.template.spec.containers[0].image}'`，用户执行）；`POST /api/v1/policies/compile` 的动态键高风险源码 → `controlsRegistryVersion: "1.2.0"` 且无 E708；一次高风险 from-evidence（本地栈或已知生产模块）不再 DENY `unverified_input`。
+  - 语义：注册表随 core jar 回到 1.2.0；1.3.0 期间写下的事件 `verifiedInputsRequired: true` 只是审计快照，消费时按当前注册表重算 → 不再要求；期间已作出的 DENY 决策不变（链不可改）。不需要回滚引擎制品（已发布的 1.0.45 / ts 1.6.0 无人引用即无害）。PR 1–3 不随翻转回滚（对 1.2.0 无行为影响）。
+- **正向发布顺序同理**：aster-api 先（L4），cloud E1 后（同日），窗口为上面允许的那一种；E1 不得早于列车 L4 合并。
 - **签发失误**（错误公钥 / 密钥泄露）：设置页吊销对应 `issuer#kid`（aster-api 联动过期依赖它的待审批），换 kid 重新登记；Worker secret 按 runbook 轮换。
 - **列车中途失败**：按 1.0.41 恢复流程（合入修复 → 删除相关仓 `v1.0.45` tag → `fromLayer` 续跑）；L4 之前失败对生产无影响。
 
@@ -428,7 +441,7 @@ scripts/gate-scan/gate-scan.sh input-refs --ts v1.5.0 --profile eu-ai-act-high-r
 
 ## 7. 风险
 
-- **评估事件 metadata 超 4096 被截断**（16b 冒烟时记下的未立案问题：`applicantId` / PII 键较长时）：截断后 from-evidence 解析失败 → 409 `evidence_not_approvable`，与事实无关但会在翻转后被误读成签发问题。缓解：P2 之前先把它立案；翻转后冒烟第 3 条若出现 409，按此排查。
+- **评估事件 metadata 超 4096 被截断**（aster-api#493：`applicantId` 无长度上限、PII 脱敏使文本变长）：截断后 from-evidence 解析失败 → 409 `evidence_not_approvable`。翻转后高风险模块的 from-evidence 是用户可见路径，因此列为硬门 **G6**（#493 修复并部署后才开列车），不只是排查提示。
 - **harness 对 E708 的处理未知**（R4）：可能需要改语料，已给出判定规则。
 - **cloud 签发方启用依赖租户管理员手动操作**：翻转后未启用的租户其 `principal.*` 事实不附，但这只影响 `principal.*` 引用（`context.*` 在生产本来就无法签，见待确认第 8 条）。
 - **Workers 的 WebCrypto Ed25519 / `String.prototype.isWellFormed`**：现有 `ai-workspace-handoff.ts` 已在 Workers 上用 Ed25519；`isWellFormed` 若在 Workers 运行时缺失，Task C6 用等价的代理项正则替代（单测覆盖两条 `invalid_string` 向量）。
@@ -436,7 +449,8 @@ scripts/gate-scan/gate-scan.sh input-refs --ts v1.5.0 --profile eu-ai-act-high-r
 
 ## 8. 自审记录
 
-- Codex 审查（2026-11-13，68/100 退回）已处理：Critical「翻转门没有证明生产输入可验证」→ G3 改为逐模块可验证性台账，新增 G0；Critical「ADR 范围变更未经批准即执行」→ PR 0 升为全部实现 PR 的硬门，§6 写明确认方式；Important「业务角色来源未指明」→ 指名 `src/lib/business-roles.ts` 的 `loadBusinessRoles`；Important「未附事实即消耗证据的恢复路径无验收」→ G2 增加 DENY → 重新登记仍 DENY → 重新执行得 PENDING；Minor「须对真实 verifier 验收」→ C9 Step 5 与 G2 明确走真实 aster-api。
+- Codex 第 2 轮（4ddf3cc4，退回）已处理：Critical「P2 可在空 / 错误导出上通过」→ P1 新增 `--allow-empty-api-db`（cloud 永不允许为空）、按 kind 源计数、`export-profile-ids.sql` 独立对账（逐 id 相等否则退出码 4），G3 / G5 均以此为前提；Important「回滚缺 API↔cloud 顺序」→ 回滚固定为先 cloud 后 aster-api，写明各自完成检查与两种不一致窗口的行为；aster-api#493 引用更正并升为 G6。
+- Codex 第 1 轮（2026-11-13，68/100 退回）已处理：Critical「翻转门没有证明生产输入可验证」→ G3 改为逐模块可验证性台账，新增 G0；Critical「ADR 范围变更未经批准即执行」→ PR 0 升为全部实现 PR 的硬门，§6 写明确认方式；Important「业务角色来源未指明」→ 指名 `src/lib/business-roles.ts` 的 `loadBusinessRoles`；Important「未附事实即消耗证据的恢复路径无验收」→ G2 增加 DENY → 重新登记仍 DENY → 重新执行得 PENDING；Minor「须对真实 verifier 验收」→ C9 Step 5 与 G2 明确走真实 aster-api。
 
 - 规格覆盖：ADR 0046 D5 第 2 项 (a) 设置页 → C3–C5；(b) fact-signer、来源函数清单、`sources`、验收四条 → C6–C8（`catalog.piiMark` 与 v6 展示按待确认 2、3 推迟）；(c) 试点测试签发方 → C9；D5 第 3 项（扫描、引擎列车、aster-api pin、cloud 副本）→ P1/P2、R1–R4、T1/T2、E1；§11.4 ⑥ 编辑器 `inputRefs` → C2，`RegistryProfile.requires.verifiedInputs` → C1；§11.6 第 11 条 → C8；第 16 条 → P2；第 17、19 条 → G4；ADR 0040 §11 D3 权限 / 错误码 → C3/C4，D4 第 4 项收件箱 → C5；列车计划阶段 C 第 3 条 X4 输入清单 → P1/P2；PR 16 → C1/C2；runtime#77 → T1。
 - 类型一致性：`GuardFact`（C7）在 C8 的 `GuardAction.facts` 复用；`FactSigningKey`（C4）在 C7 / C8 / C9 复用；`isFactIssuerSegment`（C3）在 C4 的密钥校验复用；`requiresVerifiedInputs`（C1）在 C2 复用。
