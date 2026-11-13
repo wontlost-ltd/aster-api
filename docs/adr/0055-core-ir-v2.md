@@ -152,20 +152,20 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 
 **值层分期类别**（显式清单；每修完一类就从豁免中删除，此后必须一致）：
 
-| 类别 | 豁免子树 | 当前计数 | 收紧条件 |
-|---|---|---|---|
-| V1 类型推断 | **仅类型节点**：`retTypeInferred:true` 的 `Func.ret` 整棵类型子树；`typeInferred:true` 的 `Param.type` / `Field.type` 整棵类型子树。类型子树里全部是推断输出，没有需要硬比较的字段；匹配器若命中的不是类型节点，直接报错 | 686 + 118 | 两引擎推断规则统一（另立 ADR） |
-| V2 能力推断 | `effectCapsExplicit:false` 的 `Func.effectCaps` 这一个数组值（`effectCapsExplicit` 本身仍硬比较） | 56 | 统一 stdlib 能力预置规则 |
-| V3 闭包捕获 | `Lambda.captures` 这一个数组值 | 1 | 统一为「只列引用到的外层名」 |
-| V4 origin 行号 | **逐项登记**的 `(语料文件, JSON 路径)` 列表，只豁免该位置的 `origin.end.line` 标量：声明尾部（Java 错）、多行续行（未定）、`TypeName` 结束行。不在列表里的行号差异一律失败 | 15 + 17 | 修 Java `AstBuilder.spanFrom` 并定续行规则 |
+| 类别 | 豁免子树 | 当前计数 | 收紧条件 | owner 角色 | 截止 |
+|---|---|---|---|---|---|
+| V1 类型推断 | **仅类型节点**：`retTypeInferred:true` 的 `Func.ret` 整棵类型子树；`typeInferred:true` 的 `Param.type` / `Field.type` 整棵类型子树。类型子树里全部是推断输出，没有需要硬比较的字段；匹配器若命中的不是类型节点，直接报错 | 686 + 118 | 两引擎推断规则统一（另立 ADR） | 两引擎类型检查维护者 | 2027-01-31 |
+| V2 能力推断 | `effectCapsExplicit:false` 的 `Func.effectCaps` 这一个数组值（`effectCapsExplicit` 本身仍硬比较） | 56 | 统一 stdlib 能力预置规则 | 效应 / 能力检查维护者 | 2027-01-31 |
+| V3 闭包捕获 | `Lambda.captures` 这一个数组值 | 1 | 统一为「只列引用到的外层名」 | ts lowering 维护者 | 2027-01-31 |
+| V4 origin 行号 | **逐项登记**的 `(语料文件, JSON 路径)` 列表，只豁免该位置的 `origin.end.line` 标量：声明尾部（Java 错）、多行续行（未定）、`TypeName` 结束行。不在列表里的行号差异一律失败 | 15 + 17 | 修 Java `AstBuilder.spanFrom` 并定续行规则 | Java parser 维护者 | 2027-01-31 |
 
-豁免清单作为代码常量放在 `parity-tier1.mjs`，每一项都附 issue 链接。豁免只能覆盖上表列出的值位置，不能覆盖字段名、`kind` 或字段是否出现。`origin` 在 v2 中对每个节点必填且非 null，所以第 3 步删除 col 不依赖节点形状。**stale 判定**：V1 / V2 / V3 按类别判定，一轮全语料运行中该类别一处差异都没有被豁免掉，即报 `stale-exemption`；V4 按登记项判定，某个 `(文件, 路径)` 不再有差异即报。两种情况都使门禁失败，要求删掉该项，以防豁免永久残留。
+豁免清单作为代码常量放在 `parity-tier1.mjs`，每一项都附 issue 链接。豁免只能覆盖上表列出的值位置，不能覆盖字段名、`kind` 或字段是否出现。`origin` 在 v2 中对每个节点必填且非 null，所以第 3 步删除 col 不依赖节点形状。**stale 判定**：V1 / V2 / V3 按类别判定，一轮全语料运行中该类别一处差异都没有被豁免掉，即报 `stale-exemption`；V4 按登记项判定，某个 `(文件, 路径)` 不再有差异即报。两种情况都使门禁失败，要求删掉该项，以防豁免永久残留。**到期**：每个类别都有 tracking issue、owner 角色和截止日（上线之前，最晚 2027-01-31），截止日以 `expires` 写在豁免表里。运行日期晚于 `expires` 时，门禁报 `expired-exemption` 并失败，即使差异仍在。go-live 要求豁免表为空。
 
 ---
 
 ## 7. D7：发布与范围
 
-- **列车**：同名分支组 `feat/core-ir-v2`。PR 合并顺序与制品发布顺序以实施计划「PR 清单」「Task P1」为准，ADR 不重复列出，以免两处不一致。
+- **列车**：引擎仓与 aster-lang-test 使用同名分支组 `feat/core-ir-v2`，CI 同名分支优先。aster-api 不用同名分支：它的 CI 只认与 catalog pin 一致的单一 `sibling-ref` tag（`scripts/ci/verify-sibling-ref-pin.sh`），所以沿用列车先例（#476 / #491 / #499，#501 同样处理），在本地组合构建下验证，PR 的 CI 在 `v1.0.46` 发布前为红，等引擎制品发布后与 pin bump 一起合入。合并顺序、制品时序与组合构建配方见实施计划。
 - **数据**：上线前清空。prod `policy_versions` 为 0 行（用户确认），本地栈与测试库按既有流程重建（reseed），不写迁移脚本。
 - **aster-api#501**（E054 时间预算文案）：独立小改动，排进同一列车的 aster-api 发布，与 v2 互不依赖。
 - **范围内**：Truffle 效应名改成小写比较（`Builtins.requireEffect("IO.print","IO")` 等改为 `"io"`），否则 v2 的小写 `effects` 会让内建效应检查失效。
@@ -177,7 +177,7 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 
 **已定（用户指示）**：两引擎都支持效应变量（#5，Java 补语法、AST、lowering 和类型检查接线）；schema 放在 aster-lang-locales，理由见 §3；不做兼容、不做迁移。
 
-**待用户确认**（在 core PR 开工前由用户决定；未决定时，实施计划按下列默认推进，不阻塞）：
+**待用户确认**（截至 2026-11-14 用户**尚未答复**以下三项；在 core PR 开工前由用户决定，未答复时实施计划按默认推进，不阻塞）：
 
 1. **效应名大小写与枚举变体模式提前到第一天**：指示把它们列为分期类别，本 ADR 认为它们改的是 `kind` 或字段内容，而且一行就能修，所以第一天强制一致。默认：第一天。
 2. **恒输出的体积代价**：每个 origin 多 `written:null, role:null`，每个函数多若干空数组；粗估规范 IR 体积增加 15–25%（未实测，core PR 合并前在语料上实测）。默认：接受。备选是让 origin 里这两个键成为唯一的「缺省即省略」例外。
