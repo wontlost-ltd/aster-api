@@ -72,7 +72,7 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 **schema 规则**：
 - 每个节点类型一个 `$defs`，用 `kind` 的 `const` 区分；`properties` 全部列入 `required`，`additionalProperties: false`。
 - 可空字段写成 `"type": ["string","null"]`。列表字段不允许 `null`，唯一例外是 `Func.inputRefs`（#12）。
-- 所有 JSON 整数（`schemaVersion`、`origin` 行列号、`Int` 字面量、`PatInt.value`、`Import.version`、重试与超时参数、注解整数参数）引用同一个 `$defs/SafeInt`（`integer`，范围 ±9007199254740991），与 `CanonicalJson` 只接受 safe integer 的规则一致。`Long` 已经用字符串承载。
+- 所有 JSON 整数（`schemaVersion`、`origin` 行列号、`Int` 字面量、`PatInt.value`、`Import.version`、`RetryPolicy.maxAttempts`、注解整数参数）引用同一个 `$defs/Int32`（`integer`，范围 −2147483648 到 2147483647）。这与 Java 模型的承载类型（`int` / `Integer`）一致，也落在 `CanonicalJson` 的 safe integer 范围之内，所以 schema 接受的值一定能绑定、能序列化。超出 int32 的整数字面量本来就是 `Long`，用字符串承载。唯一例外是 `Timeout.milliseconds`：Java 是 `long`，schema 用 `$defs/SafeInt`（±9007199254740991），在 safe integer 范围内仍以 JSON number 承载。`Long` 已经用字符串承载。
 - schema 表达不了的约束（注解参数名唯一、`effects` 里的变量必须已在 `effectParams` 中声明）由两引擎各自实现的 `validateCoreIrInvariants` 补齐，两种实现共用 locales `core-ir/test-fixtures/` 的 `bad-*.json` 负例与 `expected-problems.json`（同 controls 做法）。
 
 **合规检查**：
@@ -90,7 +90,7 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 |---|---|---|---|---|
 | 1 | `Module` | 新增 `schemaVersion: 2`（整数 const） | D3 | 两侧 |
 | 2 | `Import` | `path`（点分模块路径）、`alias: string\|null`、`version: integer\|null` | `name` 与其它 decl 的 `name`（声明出的名字）含义冲突，Import 并不声明 `Http` 这个名字；`alias` 才是绑定名 | ts |
-| 3 | `Annotation` 参数 | `args: [{name, value}]`，**有序数组**，恒输出（无参为 `[]`）。位置参数按出现顺序命名为 `$0`、`$1`…（序号只在位置参数之间计数），具名参数用其名字，两引擎相同。`value` 只能是 string / safe integer / boolean | 规范序列化会对对象键排序，映射一旦排序就丢了源码顺序，而位置参数 `$0`、`$1` 的顺序有意义。同名参数在**解析阶段**报错（两引擎同一新诊断码，码号在 locales 分配），schema 不变式再兜底 | ts（`AnnotationValue` 去掉普通 number 与 null，对这两种写法给出解析期诊断）；Java（`CoreModel`、`CoreLowering.annotationValue`、`GovernanceChecker`、`BaseTypeChecker`、`PiiTypeChecker`、`TypeSystem`、`ModuleGraphLinker`、`DefaultCoreVisitor`） |
+| 3 | `Annotation` 参数 | `args: [{name, value}]`，**有序数组**，恒输出（无参为 `[]`）。位置参数按出现顺序命名为 `$0`、`$1`…（序号只在位置参数之间计数），具名参数用其名字，两引擎相同。`value` 只能是 string / Int32 / boolean | 规范序列化会对对象键排序，映射一旦排序就丢了源码顺序，而位置参数 `$0`、`$1` 的顺序有意义。同名参数在**解析阶段**报错（两引擎同一新诊断码，码号在 locales 分配），schema 不变式再兜底 | ts（`AnnotationValue` 去掉普通 number 与 null，对这两种写法给出解析期诊断）；Java（`CoreModel`、`CoreLowering.annotationValue`、`GovernanceChecker`、`BaseTypeChecker`、`PiiTypeChecker`、`TypeSystem`、`ModuleGraphLinker`、`DefaultCoreVisitor`） |
 | 4 | `Field.constraints` / `Param.constraints` | 恒输出数组，元素为 `{kind:"Required"}`、`{kind:"Range", min:string\|null, max:string\|null}`（至少一个非 null，规范十进制串，见 §5）、`{kind:"Pattern", regexp:string}` | 约束是源码语义。Java 现在接受 `required` / `between` 语法却把它丢掉（`AsterParser.g4` 注释写着「当前仅 parse 接受」），这是缺陷。`min` / `max` 用字符串，以满足 D5 不传浮点数的规则 | Java（语法补上 `matching`，`AstBuilder` 与 `CoreLowering` 带上约束）；ts（`Range` 改为字符串） |
 | 5 | `Func.effects` | **只有这一个字段**：`effects: string[]`，保持源码顺序；具体效应名一律小写；与 `effectParams` 中某个名字相等的条目就是效应变量，原样保留 | 消除 `effects` 与 `declaredEffects` 的冗余，同时保住效应变量。`effects` 在 Java 里仍是 `List<String>`，消费方类型不变。规则：效应参数名不得与内建效应名（大小写不敏感）相同，否则报诊断 | ts（删除 `declaredEffects`，具体效应名小写）；Java（语法、AST、lowering 支持 `<E>` 效应参数，并接入现有 E210 / E211）——**见 §8 待确认 1** |
 | 6 | `Func.effectParams` | 恒输出 `string[]` | 随 #5 | 两侧 |
@@ -130,7 +130,7 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 
 另有两处以 `readTree` 读 `core_json` 的路径，同样属于 IR 读方：`PolicyEvaluationResource.parseCoreJson`（编译响应里抽取模块信息、档案与 `inputRefs`）和 `PolicyEvaluationService` 中的 `mapper.readTree(coreJson)`。`JacksonMappers.LENIENT` 若还有非 IR 用途，只把 IR 读方迁走。所有 IR 读方，不论是读成模型还是读成树，统一走 core 新增的 `CoreIrJson.read` / `CoreIrJson.readTree`（版本检查 + schema 校验 + 不变式检查）。
 
-**规范十进制串**（`Double.value`、`Range.min`、`Range.max`）：语法为 `0|-?[1-9][0-9]*(\.[0-9]*[1-9])?|-?0\.[0-9]*[1-9]`，即没有指数、没有前导零、没有尾随零，小数部分全零时省略小数点，`-0` 写成 `0`；schema 用 `pattern` 强制。值取自**源码字面量的原文**，这需要在词法 / AST 层保留字面量：Java 的 `Expr.Double` 新增 `String lexeme`，`AstBuilder` 从 token 文本填入；ts lexer 的数值 token 新增 `raw`（`lexer.ts` 目前在 `parseFloat(num)` 处就丢掉了原文），AST 数值节点同样带上 `raw`；`between` 的两端同理。随后lowering 时按字面量构造任意精度十进制数（Java `BigDecimal`，ts `decimal.js`），去掉尾随零后输出无指数形式，不经二进制浮点。因此 `1e-7` 得到 `0.0000001`，`0.30000000000000004` 原样保留，`1.50` 得到 `1.5`，`1E3` 得到 `1000`，`123456789012345678901.5` 原样保留。如果中途经过 double，最后一例会变成 `123456789012345680000`，回归测试靠它来区分。运行时需要浮点数时，再由读方把字符串解析为 double。`CanonicalJson` 只负责转义这些字符串，规范化由 lowering 负责，校验由 schema 负责。
+**规范十进制串**（`Double.value`、`Range.min`、`Range.max`）：语法为 `^(0|-?[1-9][0-9]*(\.[0-9]*[1-9])?|-?0\.[0-9]*[1-9])$`（全串锚定），即没有指数、没有前导零、没有尾随零，小数部分全零时省略小数点，`-0` 写成 `0`；schema 用 `pattern` 强制。值取自**源码字面量的原文**，这需要在词法 / AST 层保留字面量：Java 的 `Expr.Double` 新增 `String lexeme`，`AstBuilder` 从 token 文本填入；ts lexer 的数值 token 新增 `raw`（`lexer.ts` 目前在 `parseFloat(num)` 处就丢掉了原文），AST 数值节点同样带上 `raw`；`between` 的两端同理。随后lowering 时按字面量构造任意精度十进制数（Java `BigDecimal`，ts `decimal.js`），去掉尾随零后输出无指数形式，不经二进制浮点。因此 `1e-7` 得到 `0.0000001`，`0.30000000000000004` 原样保留，`1.50` 得到 `1.5`，`1E3` 得到 `1000`，`123456789012345678901.5` 原样保留。如果中途经过 double，最后一例会变成 `123456789012345680000`，回归测试靠它来区分。运行时需要浮点数时，再由读方把字符串解析为 double。`CanonicalJson` 只负责转义这些字符串，规范化由 lowering 负责，校验由 schema 负责。
 
 **规范序列化**：两引擎各提供一个序列化出口——Java 为 `CoreIrJson.serialize(Module)`，ts 为 `serializeCoreIr(module)`，两者是同一契约的两种语言实现，输出 core `aster.core.canonical.CanonicalJson` 规则下的字节：键按码点升序，数组保序，`null` 显式输出，不允许非 safe integer 的数值。Java 直接复用该类；ts 新增 `src/core/canonical-json.ts`，从 aster-cloud `src/lib/canonical-json.ts` 移植，并共用 `CanonicalJsonParityTest` 的 golden 夹具。凡是给持久化、哈希或 parity 用的 IR，一律经这个出口产出。
 
@@ -182,7 +182,7 @@ ADR 0016 D1 选择「归一比较」，是为了不改任一引擎的 IR 契约�
 
 1. **效应名大小写与枚举变体模式提前到第一天**：指示把它们列为分期类别，本 ADR 认为它们改的是 `kind` 或字段内容，而且一行就能修，所以第一天强制一致。默认：第一天。
 2. **恒输出的体积代价**：每个 origin 多 `written:null, role:null`，每个函数多若干空数组；粗估规范 IR 体积增加 15–25%（未实测，core PR 合并前在语料上实测）。默认：接受。备选是让 origin 里这两个键成为唯一的「缺省即省略」例外。
-3. **注解参数值类型**限定为 string / safe integer / boolean（#3）；现有语料只用到 string。默认：如此。
+3. **注解参数值类型**限定为 string / Int32 / boolean（#3）；现有语料只用到 string。默认：如此。
 
 ## 9. 关联
 
