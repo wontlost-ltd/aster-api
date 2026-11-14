@@ -347,11 +347,11 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 ## 12. 2026-11 修订：R59 实施前定稿 —— 审批输入快照落地口径、`catalog.piiMark` 再定义、证据包 v6（#460）
 
 状态：**ACCEPTED**（2026-11-14 用户确认，§12.5 全部采用已选默认，见 §12.5 末段）。实施计划 `docs/superpowers/plans/2026-11-14-approval-input-snapshot.md`。定稿后与 §11 冲突时以本节为准；被取代的 §11 条款逐条列在 §12.3，未列出的 §11 条款不变。
-相关：wontlost-ltd/aster-api#460；ADR 0046 §11.7 第 2、3 条（`catalog.piiMark` 与证据包 v6 `factSources` 推迟到 #460）；ADR 0041 §11 D3/D4、§12 D3（证据包 v6 的其余内容）；ADR 0040 §3.3 / §5.2（决策行与审计链不存明文 context）、§11 D4（审批视图并列 `inputSources` 与 `factsStale`）；ADR 0044 §3.1 与 ADR 0045（Article 14 对照由控制注册表驱动）；aster-api ADR 0015「已锁决策」（租户隔离、visibility-safe 不泄露存在性）；ADR 0055（Core IR v2 保留 `PiiType`，只删 `Func.piiLevel / piiCategories`）。
+相关：wontlost-ltd/aster-api#460；ADR 0046 §11.7 第 2、3 条（`catalog.piiMark` 与证据包 v6 `factSources` 曾推迟到 #460；本节定稿：前者撤销（D3），后者并入 v6（D9））；ADR 0041 §11 D3/D4、§12 D3（证据包 v6 的其余内容）；ADR 0040 §3.3 / §5.2（决策行与审计链不存明文 context）、§11 D4（审批视图并列 `inputSources` 与 `factsStale`）；ADR 0044 §3.1 与 ADR 0045（Article 14 对照由控制注册表驱动）；aster-api ADR 0015「已锁决策」（租户隔离、visibility-safe 不泄露存在性）；ADR 0055（Core IR v2 保留 `PiiType`，只删 `Func.piiLevel / piiCategories`）。
 
 ### 12.0 为什么是本 ADR 的新节，而不是新 ADR
 
-#460 的设计主体（存什么、怎么打码、审批记录什么）已经是本 ADR §11（R59，用户 2026-11-08 确认），ADR 0041 / 0046 也都以「ADR 0042 §11（#460）」作为这几项的唯一指向。本节只做三件事：按今天的 main 复核 §11 并修正走不通的条款，给两项推迟事项（`catalog.piiMark`、证据包 v6）下定义，补上 §11 没写的尺寸、存储与 UI 细节。新开 ADR 会让同一个决策分在两份文档里，各方引用要全部改写；做法与 ADR 0046 §11.6 / §11.7 相同。
+#460 的设计主体（存什么、怎么打码、审批记录什么）已经是本 ADR §11（R59，用户 2026-11-08 确认），ADR 0041 / 0046 也都以「ADR 0042 §11（#460）」作为这几项的唯一指向。本节只做三件事：按今天的 main 复核 §11 并修正走不通的条款，给两项原推迟到 #460 的事项（`catalog.piiMark`、证据包 v6）下结论（定稿：前者撤销，后者一次升版装齐），补上 §11 没写的尺寸、存储与 UI 细节。新开 ADR 会让同一个决策分在两份文档里，各方引用要全部改写；做法与 ADR 0046 §11.6 / §11.7 相同。
 
 ### 12.1 复核结论（origin/main `749fa44d`）
 
