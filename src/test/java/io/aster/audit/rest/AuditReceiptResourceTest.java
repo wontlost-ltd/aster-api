@@ -295,4 +295,49 @@ class AuditReceiptResourceTest {
     assertThat(r.getList("consumes")).isNull();
     assertThat(r.getList("missing")).containsExactly(id.toString());
   }
+
+  // ---- ADR 0042 §12 D8：审批快照四键与解除记录 ----
+
+  @Test void approvalsCarrySnapshotKeys() {
+    Map<String, Object> approval = new LinkedHashMap<>();
+    approval.put("decisionId", "d2");
+    approval.put("outcome", "APPROVED");
+    approval.put("decidedBy", "u4");
+    approval.put("inputSnapshotHash", "a".repeat(64));
+    approval.put("inputSnapshotMatched", true);
+    approval.put("inputRevealed", false);
+    approval.put("inputStatus", "available");
+    appender.appendSync(event(TENANT, EventType.ACTION_GUARD_DECISION, Map.of("decisionId", "d2")));
+    appender.appendSync(event(TENANT, EventType.ACTION_GUARD_APPROVAL, approval));
+    JsonPath r = as(TENANT).queryParam("decisionIds", "d2")
+        .get("/api/v1/audit/receipts").then().statusCode(200).extract().jsonPath();
+    assertThat(r.getString("approvals[0].inputSnapshotHash")).isEqualTo("a".repeat(64));
+    assertThat(r.getBoolean("approvals[0].inputSnapshotMatched")).isTrue();
+    assertThat(r.getBoolean("approvals[0].inputRevealed")).isFalse();
+    assertThat(r.getString("approvals[0].inputStatus")).isEqualTo("available");
+    // 旧事件没有快照键：字段不输出
+    JsonPath legacy = as(TENANT).queryParam("decisionIds", "d1")
+        .get("/api/v1/audit/receipts").then().statusCode(200).extract().jsonPath();
+    assertThat(legacy.getMap("approvals[0]")).doesNotContainKeys("inputSnapshotHash", "inputStatus");
+  }
+
+  @Test void revealsListedByDecision() {
+    appender.appendSync(event(TENANT, EventType.ACTION_GUARD_INPUT_REVEAL,
+        Map.of("decisionId", "d1", "approvalId", "ap-1", "revealedFields", 2, "maskRules", "v1",
+            "inputSnapshotHash", "b".repeat(64))));
+    JsonPath r = as(TENANT).queryParam("decisionIds", "d1")
+        .get("/api/v1/audit/receipts").then().statusCode(200).extract().jsonPath();
+    assertThat(r.getList("reveals")).hasSize(1);
+    assertThat(r.getString("reveals[0].approvalId")).isEqualTo("ap-1");
+    assertThat(r.getString("reveals[0].decisionId")).isEqualTo("d1");
+    assertThat(r.getString("reveals[0].performedBy")).isEqualTo("u");
+    assertThat(r.getString("reveals[0].currentHash")).hasSize(64);
+    assertThat(r.getLong("reveals[0].auditId")).isPositive();
+  }
+
+  @Test void emptyRevealsOmitted() {
+    String body = as(TENANT).queryParam("decisionIds", "d1")
+        .get("/api/v1/audit/receipts").then().statusCode(200).extract().asString();
+    assertThat(body).doesNotContain("reveals");
+  }
 }
