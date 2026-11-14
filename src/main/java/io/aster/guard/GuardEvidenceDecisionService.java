@@ -74,7 +74,7 @@ public class GuardEvidenceDecisionService {
   /** 与 audit_logs.correlation_id / guard_decisions.evidence_correlation_id 列宽一致。 */
   static final int MAX_CORRELATION_ID = 64;
   /**
-   * ALLOW 等分类行的上限（次数 × 间隔）。分类行在评估事件发布之后才写，且在 IO 线程上评估时转到 worker 池异步写；
+   * ALLOW 等分类行的上限：最多读 {@code ROW_WAIT_ATTEMPTS} 次、相邻两次间隔 {@code ROW_WAIT_MILLIS}（共约 0.9 s）。分类行在评估事件发布之后才写，且在 IO 线程上评估时转到 worker 池异步写；
    * cloud 紧接着登记时行可能尚未落库。可审批结论缺行只是 unbound，ALLOW 缺行却是 DENY 并消耗证据，所以只为 ALLOW 等。
    */
   static final int ROW_WAIT_ATTEMPTS = 10;
@@ -285,7 +285,7 @@ public class GuardEvidenceDecisionService {
   }
 
   /**
-   * 最多等 {@link #ROW_WAIT_ATTEMPTS} × {@link #ROW_WAIT_MILLIS} 让分类行可读（见常量说明）；仍缺行即按缺行处理
+   * 最多读 {@link #ROW_WAIT_ATTEMPTS} 次（间隔 {@link #ROW_WAIT_MILLIS}）让分类行可读（见常量说明）；仍缺行即按缺行处理
    * （ALLOW → DENY，fail-closed）。线程被中断时立即按当前结果返回。
    */
   Optional<GuardEvaluationClassificationEntity> awaitClassificationRow(String tenantId, String correlationId) {
