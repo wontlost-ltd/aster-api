@@ -96,6 +96,7 @@ class FactIssuerRevocationTest {
     verifier.seedCacheForTest(OTHER_KEY,
         ApiKeyVerifyResult.valid("ak-rv-2", "u-req-other", tenantB, "pro", "active", "MEMBER"));
     QuarkusTransaction.requiringNew().run(() -> List.of(tenantA, tenantB).forEach(tenant -> {
+      io.aster.guard.snapshot.GuardDecisionInputEntity.delete("tenantId = ?1", tenant);
       GuardApprovalEntity.delete("tenantId = ?1", tenant);
       GuardReceiptEntity.delete("tenantId = ?1", tenant);
       GuardDecisionEntity.delete("tenantId = ?1", tenant);

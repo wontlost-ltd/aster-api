@@ -8,6 +8,7 @@ import io.aster.guard.api.GuardFromEvidenceRequest;
 import io.aster.guard.provenance.FactIssuerStore;
 import io.aster.guard.provenance.FactVerifier;
 import io.aster.guard.provenance.ProfileRequirements;
+import io.aster.guard.snapshot.EvaluationClassificationWriter;
 import io.aster.guard.api.GuardActionRequest.Action;
 import io.aster.guard.api.GuardActionRequest.ActionName;
 import io.aster.guard.api.GuardActionRequest.Principal;
@@ -33,6 +34,8 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -54,7 +57,7 @@ class GuardEvidenceDecisionServiceTest {
   private final GuardEvidenceDecisionService service = new GuardEvidenceDecisionService(store, decisionService,
       new GuardActionMapper(), mock(AuditChainAppender.class), mock(GuardReceiptBuilder.class), objectMapper,
       new FactVerifier(mock(FactIssuerStore.class), Clock.systemUTC()), evaluationService, profileRequirements, meters,
-      Duration.ofHours(24));
+      Duration.ofHours(24), mock(EvaluationClassificationWriter.class));
 
   private GuardDecisionEntity storedRow(GuardDecisionResponse response) throws Exception {
     GuardDecisionEntity e = new GuardDecisionEntity();
@@ -79,7 +82,7 @@ class GuardEvidenceDecisionServiceTest {
     when(decisionService.get(TENANT, row.id)).thenReturn(Optional.of(current));
 
     assertThat(service.createFromEvidence(TENANT, "u-req", Set.of(), new GuardFromEvidenceRequest(CID, null), null, null)).isEqualTo(current);
-    verify(store, never()).saveDecision(any(), any(), any());
+    verify(store, never()).saveDecision(any(), any(), any(), any());
   }
 
   @Test
@@ -90,7 +93,7 @@ class GuardEvidenceDecisionServiceTest {
     when(decisionService.get(TENANT, row.id)).thenReturn(Optional.empty());
 
     assertThat(service.createFromEvidence(TENANT, "u-req", Set.of(), new GuardFromEvidenceRequest(CID, null), null, null)).isEqualTo(stored);
-    verify(store, never()).saveDecision(any(), any(), any());
+    verify(store, never()).saveDecision(any(), any(), any(), any());
   }
 
   // ---- 档案来源门（ADR 0040 §11 D5 实施澄清；Task 16 carry-over 1/2/6） ----
@@ -250,7 +253,7 @@ class GuardEvidenceDecisionServiceTest {
     return new GuardEvidenceDecisionService(store, decisionService, new GuardActionMapper(),
         mock(AuditChainAppender.class), mock(GuardReceiptBuilder.class), objectMapper,
         new FactVerifier(mock(FactIssuerStore.class), Clock.systemUTC()), evaluationService,
-        new ProfileRequirements(registry), meters, Duration.ofHours(24));
+        new ProfileRequirements(registry), meters, Duration.ofHours(24), mock(EvaluationClassificationWriter.class));
   }
 
   private static Map<String, Object> eventWithRefs(Object inputRefs, Boolean snapshot) {
@@ -357,5 +360,76 @@ class GuardEvidenceDecisionServiceTest {
     assertThat(gated.outcome()).isEqualTo("DENY");
     assertThat(gated.reasonCode()).isEqualTo(GuardReasonCode.UNVERIFIED_INPUT);
     assertThat(gated.unverifiedFields()).containsExactly("*");
+  }
+
+  // ---- ADR 0042 §12 D1：from-evidence 输入绑定与输入快照行 ----
+
+  private static io.aster.guard.snapshot.GuardEvaluationClassificationEntity classificationRow(String inputHash,
+                                                                                              String classification) {
+    var row = new io.aster.guard.snapshot.GuardEvaluationClassificationEntity();
+    row.tenantId = TENANT;
+    row.correlationId = CID;
+    row.inputHash = inputHash;
+    row.classification = classification;
+    return row;
+  }
+
+  private static Action evidenceAction() {
+    return new Action(new Principal("agent-42", "agent", List.of()), new ActionName("approve_loan"), null,
+        Map.of("applicant", Map.of("amount", 1.10, "email", "a@b.cc")), null);
+  }
+
+  @Test
+  void mismatchedContextIs409() {
+    String hash = new GuardActionMapper().contextHash(evidenceAction().context());
+    Optional<io.aster.guard.snapshot.GuardEvaluationClassificationEntity> row =
+        Optional.of(classificationRow("0".repeat(64), null));
+    assertThatThrownBy(() -> GuardEvidenceDecisionService.requireBoundInput(row, hash))
+        .isInstanceOfSatisfying(GuardApprovalConflictException.class,
+            e -> assertThat(e.code()).isEqualTo("evidence_input_mismatch"));
+    assertThatCode(() -> GuardEvidenceDecisionService.requireBoundInput(Optional.of(classificationRow(hash, null)), hash))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void positionalEvaluationIsUnboundNotMismatch() {
+    var row = Optional.of(classificationRow(null, null));
+    assertThatCode(() -> GuardEvidenceDecisionService.requireBoundInput(row, "f".repeat(64)))
+        .doesNotThrowAnyException();
+    var input = io.aster.guard.snapshot.DecisionInputFactory.fromEvidence(UUID.randomUUID(), TENANT, evidenceAction(),
+        "f".repeat(64), row);
+    assertThat(input.inputBinding).isEqualTo("unbound");
+    assertThat(input.marksSource).isEqualTo("none");
+  }
+
+  @Test
+  void missingClassificationRowIsUnboundNone() {
+    assertThatCode(() -> GuardEvidenceDecisionService.requireBoundInput(Optional.empty(), "f".repeat(64)))
+        .doesNotThrowAnyException();
+    var input = io.aster.guard.snapshot.DecisionInputFactory.fromEvidence(UUID.randomUUID(), TENANT, evidenceAction(),
+        "f".repeat(64), Optional.empty());
+    assertThat(input.inputBinding).isEqualTo("unbound");
+    assertThat(input.marksSource).isEqualTo("none");
+    assertThat(input.classification).isNull();
+  }
+
+  @Test
+  void boundRowIsEvaluatedWithEvaluationMarks() throws Exception {
+    String hash = new GuardActionMapper().contextHash(evidenceAction().context());
+    String cls = "{\"declared\":[\"context.applicant.amount\"],\"marks\":[]}";
+    Action withFacts = new Action(evidenceAction().principal(), evidenceAction().action(), null,
+        evidenceAction().context(), null, List.of(new io.aster.guard.api.GuardActionRequest.Fact("iss", "k", "Ed25519",
+            TENANT, "2026-11-14T00:00:00Z", "2026-11-15T00:00:00Z", Map.of(), Map.of(), "sig")));
+    var input = io.aster.guard.snapshot.DecisionInputFactory.fromEvidence(UUID.randomUUID(), TENANT, withFacts, hash,
+        Optional.of(classificationRow(hash, cls)));
+    assertThat(input.inputBinding).isEqualTo("evaluated");
+    assertThat(input.marksSource).isEqualTo("evaluation");
+    assertThat(input.classification).isEqualTo(cls);
+    assertThat(input.contextHash).isEqualTo(hash);
+    // facts 不进输入快照；其余键原样，context 重新读回得同一哈希
+    assertThat(objectMapper.readTree(input.actionJson).has("facts")).isFalse();
+    Map<String, Object> ctx = objectMapper.convertValue(objectMapper.readTree(input.actionJson).get("context"),
+        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { });
+    assertThat(new GuardActionMapper().contextHash(ctx)).isEqualTo(hash);
   }
 }

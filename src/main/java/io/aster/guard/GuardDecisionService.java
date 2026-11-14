@@ -15,9 +15,12 @@ import io.aster.guard.provenance.InputSources;
 import io.aster.guard.provenance.VerifiedInputsGate;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
+import io.aster.guard.snapshot.DecisionInputFactory;
+import io.aster.guard.snapshot.GuardDecisionInputEntity;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.api.model.PolicyEvaluationResult;
 import io.aster.policy.entity.PolicyVersion;
+import io.aster.policy.governance.InputClassification;
 import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.repository.PolicySourceRepository;
@@ -196,9 +199,12 @@ public class GuardDecisionService {
     GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt,
         issued == null ? null : issued.receipt());
     GuardApprovalEntity approval = approvalId == null ? null : toApproval(approvalId, decisionId, draft, expiresAt);
+    // 输入快照只为真正建了审批行的决策写（ADR 0042 §12 D1）；门 DENY 与 receipt_unavailable 没有审批行，也不写
+    GuardDecisionInputEntity input = approval == null ? null
+        : DecisionInputFactory.direct(decisionId, tenantId, req.action(), draft.contextHash(), classificationOf(draft));
     try {
       store.saveDecision(assembler.toEntity(decisionId, draft, receipt, response, performedBy, apiKeyId), approval,
-          issued == null ? null : issued.row());
+          issued == null ? null : issued.row(), input);
     } catch (GuardIdempotencyRaceException race) {
       return findByIdempotencyKey(tenantId, idempotencyKey, fingerprint).orElseThrow(() -> race);
     }
@@ -330,6 +336,21 @@ public class GuardDecisionService {
     return VerifiedInputsGate.check(meta, base.inputSources(), VerifiedInputsGate.presentLeafPaths(action))
         .map(denial -> base.withRule(meta.ruleId(), meta.controls())
             .denyUnverified(denial.code(), denial.unverifiedFields()));
+  }
+
+  /**
+   * 决策所用版本的 guard 形状输入分类（ADR 0042 §12 D2，{@code marks_source = version}）：与 {@link #gate} 读元数据同一版本、
+   * 同一编译产物 memo。读不到只降级为 null（视图 {@code none}，全部 context 打码），不影响决策。
+   */
+  private InputClassification classificationOf(GuardDecisionDraft draft) {
+    try {
+      return evaluationService.guardInputClassification(draft.tenantId(), draft.policyModule(), draft.policyFunction(),
+          versionIdOf(draft), GuardActionMapper.FLAT_KEY_PATHS);
+    } catch (RuntimeException e) {
+      LOG.warnf("Action Guard 读取输入分类失败，审批视图按无标记处理: %s.%s: %s", draft.policyModule(),
+          draft.policyFunction(), e.toString());
+      return null;
+    }
   }
 
   /** 决策已解析的活跃版本 id（{@code String.valueOf(PolicyVersion.id)}，与编译缓存键同形）。 */

@@ -59,6 +59,7 @@ class GuardReceiptResourceTest {
   @BeforeEach
   void setUp() {
     QuarkusTransaction.requiringNew().run(() -> List.of(TENANT, OTHER_TENANT).forEach(tenant -> {
+      io.aster.guard.snapshot.GuardDecisionInputEntity.delete("tenantId = ?1", tenant);
       GuardApprovalEntity.delete("tenantId = ?1", tenant);
       GuardReceiptEntity.delete("tenantId = ?1", tenant);
       GuardDecisionEntity.delete("tenantId = ?1", tenant);

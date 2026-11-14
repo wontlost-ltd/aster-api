@@ -40,6 +40,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.lang.reflect.Parameter;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -213,6 +214,30 @@ public class PolicyEvaluationService {
             throw io.aster.policy.parser.EntryFunctionException.cached(compiled.getEntryFailure());
         }
         return ruleMetadataOf(compiled, policyFunction);
+    }
+
+    /**
+     * 读取指定版本中被执行规则的 guard 形状输入分类（ADR 0042 §12 D2，{@code POST /api/v1/guard/decisions}）：
+     * 与 {@link #ruleMetadata(String, String, String, String)} 同一编译产物、同一版本键，按函数 memo，每个产物只推导一次。
+     *
+     * @param flatKeyPaths 规则参数扁平键 → guard 请求路径（{@code GuardActionMapper.FlatField} 常量表）
+     * @return 分类；IR 解析失败、函数不存在、第一个参数不是记录或超上限时为 null
+     * @throws RuntimeException 与 {@link #ruleMetadata(String, String, String, String)} 相同
+     */
+    public io.aster.policy.governance.InputClassification guardInputClassification(String tenantId,
+            String policyModule, String policyFunction, String versionId, Map<String, String> flatKeyPaths) {
+        PolicyCacheKey cacheKey = new PolicyCacheKey(tenantId, policyModule, policyFunction,
+            dynamicLoadingEnabled ? versionId : null, new Object[0]);
+        io.aster.policy.cache.CompiledPolicy compiled = cachedCompiled(cacheKey);
+        if (compiled == null) {
+            compiled = compileOnce(cacheKey).await().atMost(RULE_METADATA_TIMEOUT);
+        }
+        if (compiled.getEntryFailure() != null) {
+            throw io.aster.policy.parser.EntryFunctionException.cached(compiled.getEntryFailure());
+        }
+        io.aster.policy.cache.CompiledPolicy artifact = compiled;
+        return artifact.guardClassification(policyFunction, fn -> io.aster.policy.governance.InputClassifier
+            .guardShape(parseCoreModule(artifact.getCoreJson()), fn, flatKeyPaths));
     }
 
     /** 产物上 memo 的规则元数据；IR 解析失败按无元数据处理（{@link #parseCoreModule}）。 */

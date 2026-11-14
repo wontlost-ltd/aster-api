@@ -64,6 +64,7 @@ class GuardDecisionResourceQuotaTest {
   @BeforeEach
   void setUp() {
     QuarkusTransaction.requiringNew().run(() -> {
+      io.aster.guard.snapshot.GuardDecisionInputEntity.delete("tenantId = ?1", TENANT);
       GuardApprovalEntity.delete("tenantId = ?1", TENANT);
       GuardReceiptEntity.delete("tenantId = ?1", TENANT);
       GuardDecisionEntity.delete("tenantId = ?1", TENANT);

@@ -1,6 +1,7 @@
 package io.aster.guard;
 
 import io.aster.guard.receipt.GuardReceiptEntity;
+import io.aster.guard.snapshot.GuardDecisionInputEntity;
 
 import java.time.Instant;
 import java.util.Collection;
@@ -36,7 +37,18 @@ public interface GuardDecisionStore {
    * @param approvalOrNull REQUIRE_APPROVAL / ESCALATE 时的待审批行，其余为 null
    * @param receiptOrNull  直接 ALLOW 时的执行收据行（ADR 0040 §12 D4），其余为 null
    */
-  void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull, GuardReceiptEntity receiptOrNull);
+  default void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull,
+                            GuardReceiptEntity receiptOrNull) {
+    saveDecision(decision, approvalOrNull, receiptOrNull, null);
+  }
+
+  /**
+   * 同上，并在同一事务内写入待审批决策的输入快照（ADR 0042 §12 D1）：输入行随决策行、审批行一起落库或一起回滚。
+   *
+   * @param inputOrNull 建了审批行时的输入快照，其余为 null
+   */
+  void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull, GuardReceiptEntity receiptOrNull,
+                    GuardDecisionInputEntity inputOrNull);
 
   /** 按租户限定查找审批；跨租户返回 empty。 */
   Optional<GuardApprovalEntity> findApproval(String tenantId, UUID approvalId);

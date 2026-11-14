@@ -3,6 +3,7 @@ package io.aster.guard;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.guard.provenance.GuardFactIssuerEntity;
 import io.aster.guard.receipt.GuardReceiptEntity;
+import io.aster.guard.snapshot.GuardDecisionInputEntity;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -70,9 +71,9 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
 
   @Override
   public void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull,
-                           GuardReceiptEntity receiptOrNull) {
+                           GuardReceiptEntity receiptOrNull, GuardDecisionInputEntity inputOrNull) {
     try {
-      QuarkusTransaction.requiringNew().run(() -> persist(decision, approvalOrNull, receiptOrNull));
+      QuarkusTransaction.requiringNew().run(() -> persist(decision, approvalOrNull, receiptOrNull, inputOrNull));
     } catch (RuntimeException e) {
       if (isIdempotencyViolation(e)) {
         throw new GuardIdempotencyRaceException(e);
@@ -201,13 +202,16 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
 
   /** 先决策后审批与收据（外键），flush 让约束错误在本事务内暴露。 */
   private static void persist(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull,
-                              GuardReceiptEntity receiptOrNull) {
+                              GuardReceiptEntity receiptOrNull, GuardDecisionInputEntity inputOrNull) {
     decision.persistAndFlush();
     if (approvalOrNull != null) {
       approvalOrNull.persistAndFlush();
     }
     if (receiptOrNull != null) {
       receiptOrNull.persistAndFlush();
+    }
+    if (inputOrNull != null) {
+      inputOrNull.persistAndFlush();
     }
   }
 

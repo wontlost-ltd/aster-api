@@ -85,6 +85,13 @@ public class GuardActionMapper {
     }
   }
 
+  /**
+   * 扁平键 → guard 请求路径（{@link FlatField} 常量表的只读视图）：输入分类的 guard 形状推导以此把规则参数字段名映射为
+   * 请求路径（ADR 0042 §12 D2，{@code InputClassifier.guardShape}）。
+   */
+  public static final Map<String, String> FLAT_KEY_PATHS = java.util.Arrays.stream(FlatField.values())
+      .collect(java.util.stream.Collectors.toUnmodifiableMap(FlatField::key, FlatField::requestPath));
+
   public Map<String, Object> flatten(GuardActionRequest.Action a) {
     if (a == null || a.principal() == null || isBlank(a.principal().id())) {
       throw new GuardInvalidActionException("principal.id 必填");

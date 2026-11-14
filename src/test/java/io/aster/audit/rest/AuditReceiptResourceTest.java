@@ -44,6 +44,7 @@ class AuditReceiptResourceTest {
   @BeforeEach void setUp() {
     QuarkusTransaction.requiringNew().run(() -> {
       GuardReceiptEntity.delete("tenantId", TENANT);
+      io.aster.guard.snapshot.GuardDecisionInputEntity.delete("tenantId", TENANT);
       GuardDecisionEntity.delete("tenantId", TENANT);
     });
     db.executeAsAuditMaintenance("DELETE FROM audit_logs WHERE tenant_id IN ('" + TENANT + "','" + OTHER_TENANT + "')");

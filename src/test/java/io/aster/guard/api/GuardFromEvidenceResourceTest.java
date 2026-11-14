@@ -75,6 +75,8 @@ public class GuardFromEvidenceResourceTest {
   private static final String DPO = "Data Protection Officer";
   private static final String BEARER_KEY = "ak_test_guard_evidence_member";
   private static final String HMAC_KEY = "s2-1a-0-characterization-key-32b!";
+  /** 共用本测试档案的其他测试类（如 EvaluateSourceClassificationTest）签名用。 */
+  public static final String HMAC_KEY_FOR_TESTS = HMAC_KEY;
   private static final ObjectMapper JSON = new ObjectMapper();
 
   @Inject AuditChainAppender appender;
@@ -658,5 +660,147 @@ public class GuardFromEvidenceResourceTest {
     // 版本元数据的 IR 引用无法映射到证据形状，按「*」比对（ADR 0040 §11 D5 实施澄清）
     assertThat(receipts.jsonPath().getList("receipts[0].metadata.unverifiedFields")).containsExactly("*");
     assertThat(receipts.jsonPath().getString("receipts[0].metadata.evidenceCorrelationId")).isEqualTo(cid);
+  }
+
+  // ---- ADR 0042 §12 D1 / D2：evaluate-source → from-evidence 的输入绑定与输入快照（真实 HTTP 两条路径） ----
+
+  private static final String EVALUATE_SOURCE = "/api/v1/policies/evaluate-source";
+
+  private static final String PII_SOURCE = String.join("\n",
+      "Module guard.cls460.", "",
+      "Define Applicant has amount as Int, email as @pii(L2, email) Text.", "",
+      "Rule decide given applicant as Applicant, produce Verdict:",
+      "  If applicant.amount greater than 10:",
+      "    Return Verdict.require_approval(\"Credit Officer\", \"large amount\").",
+      "  Return Verdict.allow().", "");
+
+  /**
+   * 同一段 context JSON 文本同时用于 evaluate-source 与 from-evidence：含小数 {@code 1.10}、I-JSON 上界整数 2^53−1
+   * （更大的整数 guard 请求本就按 invalid_action 拒绝）、长小数、null 叶子、嵌套对象与数组、非 ASCII 键。
+   * 两条反序列化路径若得到不同的数字类型或键序，哈希会不同。
+   */
+  private static final String CONTEXT_JSON = "{\"applicant\":{\"amount\":20,\"email\":\"a@b.cc\",\"rate\":1.10,"
+      + "\"big\":9007199254740991,\"neg\":-9007199254740991,\"long\":12345678901234.5678,\"nothing\":null,\"nested\":{\"k\":[1,{\"x\":\"y\"}],\"z\":true},\"名字\":\"张三\"}}";
+
+  private static String evaluateSourceBody(String source, String contextJson) {
+    return "{\"source\":" + JSON.valueToTree(source) + ",\"context\":" + contextJson
+        + ",\"locale\":\"en-US\",\"functionName\":\"decide\"}";
+  }
+
+  private static String fromEvidenceBody(String cid, String contextJson) {
+    return "{\"correlationId\":\"" + cid + "\",\"action\":{\"principal\":{\"id\":\"agent-42\",\"type\":\"agent\"},"
+        + "\"action\":{\"name\":\"approve_loan\"},\"resource\":{\"type\":\"loan\",\"id\":\"L-1\"},"
+        + "\"context\":" + contextJson + "}}";
+  }
+
+  /** 经 HMAC 调 evaluate-source，返回证据 correlationId，并等评估事件异步入链。 */
+  private static String evaluateSource(String tenant, String source, String contextJson) {
+    String body = evaluateSourceBody(source, contextJson);
+    Response r = signedPost(EVALUATE_SOURCE, body, tenant, "u-req", List.of());
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    String cid = r.jsonPath().getString("evidence.correlationId");
+    assertThat(cid).as(r.asString()).isNotBlank();
+    long deadline = System.currentTimeMillis() + 15_000;
+    while (QuarkusTransaction.requiringNew().call(() -> AuditLog.findByCorrelationIds(tenant, List.of(cid))).isEmpty()) {
+      assertThat(System.currentTimeMillis()).as("评估事件未在 15s 内入链").isLessThan(deadline);
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException(e);
+      }
+    }
+    return cid;
+  }
+
+  private static io.aster.guard.snapshot.GuardDecisionInputEntity inputRow(String tenant, String decisionId) {
+    return QuarkusTransaction.requiringNew().call(() -> io.aster.guard.snapshot.GuardDecisionInputEntity
+        .findByDecisionAndTenant(UUID.fromString(decisionId), tenant)).orElse(null);
+  }
+
+  @Test
+  void bindingHashEqualAcrossHttpPaths() {
+    String cid = evaluateSource(TENANT, PII_SOURCE, CONTEXT_JSON);
+    var classification = QuarkusTransaction.requiringNew().call(() ->
+        io.aster.guard.snapshot.GuardEvaluationClassificationEntity.findByKey(TENANT, cid)).orElseThrow();
+    assertThat(classification.inputHash).hasSize(64);
+
+    Response r = signedPost(FROM_EVIDENCE, fromEvidenceBody(cid, CONTEXT_JSON), TENANT, "u-req", List.of());
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    assertThat(r.jsonPath().getString("effectiveOutcome")).isEqualTo("PENDING");
+
+    var input = inputRow(TENANT, r.jsonPath().getString("decisionId"));
+    assertThat(input).isNotNull();
+    assertThat(input.inputBinding).isEqualTo("evaluated");
+    assertThat(input.marksSource).isEqualTo("evaluation");
+    assertThat(input.contextHash).isEqualTo(classification.inputHash);
+    assertThat(input.classification).contains("context.applicant.email").contains("\"L2\"");
+  }
+
+  @Test
+  void mismatchedContextIs409AndCreatesNothing() {
+    String cid = evaluateSource(TENANT, PII_SOURCE, CONTEXT_JSON);
+    String tampered = CONTEXT_JSON.replace("\"amount\":20", "\"amount\":5");
+
+    Response bad = signedPost(FROM_EVIDENCE, fromEvidenceBody(cid, tampered), TENANT, "u-req", List.of());
+    assertThat(bad.statusCode()).as(bad.asString()).isEqualTo(409);
+    assertThat(bad.jsonPath().getString("error")).isEqualTo("evidence_input_mismatch");
+    assertThat(QuarkusTransaction.requiringNew().call(() ->
+        GuardDecisionEntity.count("tenantId = ?1 and evidenceCorrelationId = ?2", TENANT, cid))).isZero();
+
+    // 证据未被消耗：同一 correlationId 带被评估的输入重试成功
+    Response ok = signedPost(FROM_EVIDENCE, fromEvidenceBody(cid, CONTEXT_JSON), TENANT, "u-req", List.of());
+    assertThat(ok.statusCode()).as(ok.asString()).isEqualTo(200);
+    assertThat(inputRow(TENANT, ok.jsonPath().getString("decisionId")).inputBinding).isEqualTo("evaluated");
+  }
+
+  @Test
+  void missingClassificationRowIsUnboundNone() {
+    String cid = newCid();
+    appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+    Response r = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    var input = inputRow(TENANT, r.jsonPath().getString("decisionId"));
+    assertThat(input).isNotNull();
+    assertThat(input.inputBinding).isEqualTo("unbound");
+    assertThat(input.marksSource).isEqualTo("none");
+    assertThat(input.classification).isNull();
+    assertThat(input.actionJson).contains("250000").doesNotContain("facts");
+  }
+
+  @Test
+  void positionalEvaluationIsUnboundNotMismatch() {
+    String body = "{\"source\":" + JSON.valueToTree(PII_SOURCE) + ",\"context\":[{\"amount\":20,\"email\":\"a@b.cc\"}]"
+        + ",\"locale\":\"en-US\",\"functionName\":\"decide\"}";
+    Response ev = signedPost(EVALUATE_SOURCE, body, TENANT, "u-req", List.of());
+    assertThat(ev.statusCode()).as(ev.asString()).isEqualTo(200);
+    String cid = ev.jsonPath().getString("evidence.correlationId");
+    long deadline = System.currentTimeMillis() + 15_000;
+    while (QuarkusTransaction.requiringNew().call(() -> AuditLog.findByCorrelationIds(TENANT, List.of(cid))).isEmpty()) {
+      assertThat(System.currentTimeMillis()).isLessThan(deadline);
+      Thread.onSpinWait();
+    }
+    var row = QuarkusTransaction.requiringNew().call(() ->
+        io.aster.guard.snapshot.GuardEvaluationClassificationEntity.findByKey(TENANT, cid)).orElseThrow();
+    assertThat(row.inputHash).isNull();
+
+    Response r = signedPost(FROM_EVIDENCE, fromEvidenceBody(cid, "{\"anything\":1}"), TENANT, "u-req", List.of());
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    var input = inputRow(TENANT, r.jsonPath().getString("decisionId"));
+    assertThat(input.inputBinding).isEqualTo("unbound");
+    assertThat(input.marksSource).isEqualTo("none");
+  }
+
+  @Test
+  void gateDenyWritesNoInputRow() {
+    String cid = newCid();
+    Map<String, Object> metadata = new HashMap<>(Map.of("correlationId", cid, "outcome", "REQUIRE_APPROVAL",
+        "role", DPO, "profile", "eu-ai-act-high-risk", "inputRefs", List.of("context.amount")));
+    append(TENANT, metadata);
+    Response r = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    assertThat(r.jsonPath().getString("outcome")).isEqualTo("DENY");
+    assertThat(r.jsonPath().getString("approval")).isNull();
+    assertThat(inputRow(TENANT, r.jsonPath().getString("decisionId"))).isNull();
   }
 }

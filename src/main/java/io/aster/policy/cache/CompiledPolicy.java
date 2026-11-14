@@ -29,6 +29,12 @@ public class CompiledPolicy {
      * 不另设容量上限；元数据只取决于不可变的 coreJson 与随 jar 固定的注册表，所以不需要失效。
      */
     private final ConcurrentHashMap<String, RuleMetadata> ruleMetadataByFunction = new ConcurrentHashMap<>();
+    /**
+     * 按函数名缓存的 guard 形状输入分类（ADR 0042 §12 D2）：与 {@link #ruleMetadataByFunction} 同一生命周期与理由。
+     * 推导结果可为 null（超上限 / 非记录参数），以 Optional 存放（ConcurrentHashMap 不收 null 值）。
+     */
+    private final ConcurrentHashMap<String, java.util.Optional<io.aster.policy.governance.InputClassification>>
+        guardClassificationByFunction = new ConcurrentHashMap<>();
 
     public CompiledPolicy(
         String versionId,
@@ -72,6 +78,14 @@ public class CompiledPolicy {
      */
     public static CompiledPolicy entryFailure(String versionId, String sourceHash, String message) {
         return new CompiledPolicy(versionId, sourceHash, null, null, null, message);
+    }
+
+    /** 取该产物中函数 {@code function} 的 guard 形状输入分类；首次调用时用 {@code compute} 算出并记住（可为 null）。 */
+    public io.aster.policy.governance.InputClassification guardClassification(String function,
+            Function<String, io.aster.policy.governance.InputClassification> compute) {
+        return guardClassificationByFunction
+            .computeIfAbsent(function, fn -> java.util.Optional.ofNullable(compute.apply(fn)))
+            .orElse(null);
     }
 
     /**
