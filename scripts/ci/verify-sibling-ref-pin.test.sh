@@ -15,7 +15,7 @@ ROOT="$(mktemp -d)"
 trap 'rm -rf "$ROOT"' EXIT
 FAILED=0
 # runner 识别 workflow command 的形状：trim 后以 :: 开头
-ANNOTATION_RE='^[[:space:]]*::[a-z-]+( [^:]*)?::'
+ANNOTATION_RE='^[[:space:]]*::[A-Za-z-]+( |::)'
 
 # 生成一对夹具：settings.gradle 的 platform 版本 $2、sibling-ref 默认值 $3
 fixture() {
