@@ -91,4 +91,12 @@ public class PolicyCatalog extends PanacheEntityBase {
      */
     @Column(name = "updated_at", nullable = false)
     public Instant updatedAt;
+
+    /** 外部归属（cloud 策略 id，ADR 0054 §11 D1）；null = aster-api 原生策略。 */
+    @Column(name = "external_ref", length = 100)
+    public String externalRef;
+
+    /** 最近一次被接受的 cloud 部署代际；更小的代际按 {@code stale_generation} 拒绝。 */
+    @Column(name = "external_generation")
+    public Long externalGeneration;
 }

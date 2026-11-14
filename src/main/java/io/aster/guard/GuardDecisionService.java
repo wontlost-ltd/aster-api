@@ -233,6 +233,14 @@ public class GuardDecisionService {
     return store.findDecision(tenantId, decisionId).map(this::currentResponse);
   }
 
+  /** 决策评估的策略地址（ADR 0054 §11 D12）；跨租户或不存在为 empty。 */
+  public Optional<PolicyAddress> address(String tenantId, UUID decisionId) {
+    return store.findDecision(tenantId, decisionId).map(d -> new PolicyAddress(d.policyModule, d.policyFunction));
+  }
+
+  /** 策略地址。 */
+  public record PolicyAddress(String module, String function) {}
+
   /** null 与负数为 0（不等待），超过上限按 {@link #MAX_WAIT_SECONDS}。 */
   static int clampWaitSeconds(Integer waitSeconds) {
     return waitSeconds == null ? 0 : Math.max(0, Math.min(MAX_WAIT_SECONDS, waitSeconds));

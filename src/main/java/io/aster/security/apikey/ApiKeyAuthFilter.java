@@ -60,7 +60,8 @@ public class ApiKeyAuthFilter {
         "/api/v1/guard/decisions/",
         "/api/v1/guard/receipts/",
         InternalCallerFilter.GUARD_FACT_ISSUERS_PATH + "/",
-        InternalCallerFilter.GUARD_RECONCILIATION_PATH + "/");
+        InternalCallerFilter.GUARD_RECONCILIATION_PATH + "/",
+        InternalCallerFilter.GUARD_POLICY_DEPLOYMENTS_PATH + "/");
 
     @ConfigProperty(name = "aster.security.apikey.enabled", defaultValue = "true")
     boolean enabled;

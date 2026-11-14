@@ -34,6 +34,9 @@ import java.util.UUID;
 @ApplicationScoped
 public class PolicyVersionService {
 
+    /** cloud 部署的版本来源（ADR 0054 §11 D1）。 */
+    public static final String CLOUD_DEPLOY_SOURCE_KIND = "cloud-deploy";
+
     private static final Logger LOG = Logger.getLogger(PolicyVersionService.class);
 
     @Inject
@@ -108,7 +111,7 @@ public class PolicyVersionService {
      *
      * @param aliasSet        结构化别名集，null/空=无用户别名
      * @param scopes          领域词汇作用域，只用于别名↔标识符碰撞校验，可为 null；不进 envelope——
-     *                        版本不冻结词汇、按版本编译也不用词汇（见 {@link PolicyVersion#compileScopesJson()}）
+     *                        本入口不冻结词汇；需冻结词汇（cloud 部署）用带 vocabularyJson 的重载（见 {@link PolicyVersion#compileScopesJson()}）
      */
     @Transactional
     public PolicyVersion createVersion(UUID catalogId, String sourceCnl, String locale,
@@ -155,6 +158,23 @@ public class PolicyVersionService {
     @Transactional
     public PolicyVersion createVersion(UUID catalogId, String sourceCnl, String locale,
                                        String sourceKind, String authorRole, String aliasSetJson) {
+        return createVersion(catalogId, sourceCnl, locale, sourceKind, authorRole, aliasSetJson, null, null);
+    }
+
+    /**
+     * 创建版本并冻结别名集与领域词汇（ADR 0054 §11 D1，cloud 部署入口）。
+     *
+     * <p>词汇快照在 envelope 计算<b>之前</b>写入版本，{@code sourceEnvelopeSha256} 由同一快照算出，不事后补列。
+     * {@code coreJson} 为调用方已用同一（源码、别名、词汇）编译出的 Core IR：写入版本后，按版本执行与
+     * 稳定性门禁都直接读它，不再按无词汇的口径现编译。
+     *
+     * @param vocabularyJson DomainVocabulary JSON，null = 无词汇
+     * @param coreJson       已编译的 Core IR，null = 由按版本编译路径按需现编译
+     */
+    @Transactional
+    public PolicyVersion createVersion(UUID catalogId, String sourceCnl, String locale,
+                                       String sourceKind, String authorRole, String aliasSetJson,
+                                       String vocabularyJson, String coreJson) {
         PolicyCatalog catalog = PolicyCatalog.findById(catalogId);
         if (catalog == null) {
             throw new IllegalArgumentException("策略目录不存在: catalogId=" + catalogId);
@@ -178,6 +198,8 @@ public class PolicyVersionService {
         version.sourceKind = normalizeSourceKind(sourceKind);
         version.authorRole = normalizeAuthorRole(authorRole);
         version.active = false;
+        version.vocabularyJson = vocabularyJson == null || vocabularyJson.isBlank() ? null : vocabularyJson;
+        version.coreJson = coreJson;
         // 方案 D：冻结规范化别名集 + 计算覆盖完整编译输入的信封哈希 + 记录工具链身份。
         version.aliasSet = normalizedAliasJson;
         String toolchain = toolchainIdentityProvider.currentToolchainId();
@@ -190,7 +212,7 @@ public class PolicyVersionService {
         // P0-C 稳定性门禁（ADR 0031 M3）：保存 surface——regulated tenant strict（命中白名单才可存
         // Experimental），普通 tenant warn（不阻断）。tenantId 来自 catalog 归属（非 body 自报）。
         stabilityEnforcement.enforceVersion(null, policyId, catalog.tenantId,
-            null, sourceCnl, locale, normalizedAliasJson,
+            coreJson, sourceCnl, locale, normalizedAliasJson,
             io.aster.policy.stability.StabilityEnforcement.Surface.SAVE, version.createdBy);
 
         version.persist();
@@ -251,7 +273,7 @@ public class PolicyVersionService {
         }
         String s = sourceKind.trim().toLowerCase();
         return switch (s) {
-            case "manual", "ai_draft", "ai_draft_edited", "imported" -> s;
+            case "manual", "ai_draft", "ai_draft_edited", "imported", CLOUD_DEPLOY_SOURCE_KIND -> s;
             default -> "manual";
         };
     }
@@ -353,6 +375,66 @@ public class PolicyVersionService {
         version.rejectedAt = null;
         version.persist();
         return version;
+    }
+
+    /**
+     * cloud 部署的版本直接从草稿转为已批准（ADR 0054 §11 D1 / D9）。
+     *
+     * <p>跳过 aster-api 的套餐 reviewer 校验与 SUBMITTED 前置：该版本已在 aster-cloud 经四眼审批并被设为
+     * 默认版本，cloud 审批即权威，aster-api 不再重复走自己的 submit / approve 流程。<b>保留</b>与
+     * {@link #approveVersion} 同一的 ADR 0031 稳定性门禁（APPROVE 面）——批准即托付生产，
+     * Experimental 特性不因来源不同而无声进入批准链。只接受 {@link #CLOUD_DEPLOY_SOURCE_KIND} 版本。
+     */
+    @Transactional
+    public PolicyVersion approveFromCloud(Long versionId, String approvedBy) {
+        PolicyVersion version = requireVersion(versionId);
+        if (!CLOUD_DEPLOY_SOURCE_KIND.equals(version.sourceKind)) {
+            throw new IllegalStateException("仅 cloud 部署的版本可直接批准: versionId=" + versionId);
+        }
+        if (version.status != VersionStatus.DRAFT) {
+            throw new IllegalStateException(
+                String.format("仅草稿版本可直接批准: versionId=%d, status=%s", versionId, version.status));
+        }
+        stabilityEnforcement.enforceVersion(versionId, version.policyId, version.tenantId,
+            version.coreJson, version.content, version.locale, version.aliasSet,
+            io.aster.policy.stability.StabilityEnforcement.Surface.APPROVE, approvedBy);
+        version.status = VersionStatus.APPROVED;
+        version.approvedBy = approvedBy;
+        version.approvedAt = Instant.now();
+        version.persist();
+        return version;
+    }
+
+    /**
+     * 重新激活一个已批准的部署版本（cloud 把默认版本切回旧版本，ADR 0054 §11 D1）。
+     *
+     * <p>与 {@link #activateVersion} 同一门禁与并发保护，但不发 DRAFT_PUBLISHED 埋点（同回滚：恢复旧版本不是新发布）。
+     */
+    @Transactional
+    public void reactivateVersion(Long versionId, String activatedBy) {
+        activateVersionInternal(versionId, activatedBy, false);
+    }
+
+    /**
+     * 撤回一个策略地址：停用其全部版本并清空目录默认版本指针，之后按该地址的决策得到 {@code policy_not_found}。
+     * 发出与激活同一通道的通知，让按地址缓存的组件刷新。
+     *
+     * @return 撤回前是否有活跃版本
+     */
+    @Transactional
+    public boolean withdrawCatalog(PolicyCatalog catalog) {
+        Long previous = catalog.defaultVersionId;
+        String policyId = catalog.moduleName + "." + catalog.functionName;
+        PolicyVersion active = PolicyVersion.<PolicyVersion>find(
+            "policyId = ?1 and tenantId = ?2 and active = true", policyId, catalog.tenantId).firstResult();
+        PolicyVersion.deactivateAllVersions(policyId, catalog.tenantId);
+        catalog.defaultVersionId = null;
+        catalog.updatedAt = Instant.now();
+        catalog.persist();
+        if (active != null) {
+            emitActivationNotification(active, catalog);
+        }
+        return previous != null || active != null;
     }
 
     /**

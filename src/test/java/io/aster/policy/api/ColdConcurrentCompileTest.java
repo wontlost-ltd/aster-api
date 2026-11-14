@@ -105,6 +105,9 @@ class ColdConcurrentCompileTest {
         compileTxStatuses.clear();
         Mockito.doAnswer(inv -> recordAndSlow(inv)).when(policyCompiler).typecheckVersion(any());
         Mockito.doAnswer(inv -> recordAndSlow(inv)).when(policyCompiler).compile(anyString(), any(), any());
+        // 按版本类型检查经带词汇作用域的 5 参重载编译（ADR 0054 §11 D1：编译与 envelope 读同一冻结词汇）。
+        Mockito.doAnswer(inv -> recordAndSlow(inv)).when(policyCompiler)
+            .compile(anyString(), any(), any(), any(), Mockito.anyBoolean());
     }
 
     private Object recordAndSlow(org.mockito.invocation.InvocationOnMock inv) throws Throwable {

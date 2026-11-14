@@ -786,6 +786,21 @@ class InternalCallerFilterTest {
         assertEquals("internal_only", InternalCallerFilter.missingCredentialReason("/api/v1/guard/fact-issuers"));
     }
 
+    // ADR 0054 §11 D1：cloud 策略部署端点同签发方管理，只接受 HMAC。
+    @Test
+    void guardPolicyDeploymentsAlwaysRequireHmac() {
+        for (String p : List.of("/api/v1/guard/policy-deployments", "/api/v1/guard/policy-deployments/cp-1",
+                "/api/v1/guard/policy-deployments/a/b")) {
+            assertEquals(Classification.REQUIRE_HMAC,
+                InternalCallerFilter.classify(p, false, false, false, false, false), p);
+            assertEquals(Classification.REQUIRE_HMAC,
+                InternalCallerFilter.classify(p, true, true, true, true, true), p);
+        }
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/guard/policy-deploymentsX", false, false, false, false, false));
+        assertEquals("internal_only", InternalCallerFilter.missingCredentialReason("/api/v1/guard/policy-deployments/cp-1"));
+    }
+
     @Test
     void guardApprovalPathsRequireHmacOnlyWithInternalCallerHeaders() {
         String id = "3f1c2a4e-0000-4000-8000-000000000001";

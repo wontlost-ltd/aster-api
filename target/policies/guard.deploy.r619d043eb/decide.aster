@@ -1,0 +1,7 @@
+Module guard.deploy.r619d043eb.
+
+Define GuardRequest has principal_id, principal_type, principal_roles, action, resource_type, resource_id, context, agent_model.
+
+@id("R-2")
+Rule decide given req as GuardRequest, produce Verdict:
+  Return Verdict.allow().

@@ -193,6 +193,8 @@ public class InternalCallerFilter {
         if (normalizedPath.equals(GUARD_FROM_EVIDENCE_PATH)) return Classification.REQUIRE_HMAC;
         // 签名事实签发方管理（ADR 0040 §11 D3）：同 from-evidence，只对 cloud 开放，恒要求 HMAC。
         if (isGuardFactIssuers(normalizedPath)) return Classification.REQUIRE_HMAC;
+        // cloud 策略部署（ADR 0054 §11 D1）：同签发方管理，只对 cloud 开放，恒要求 HMAC。
+        if (isGuardPolicyDeployments(normalizedPath)) return Classification.REQUIRE_HMAC;
         // guard 审批、决策回读与执行收据（ADR 0042 §4.2、ADR 0040 §12 D5）：cloud 走 HMAC，SDK 走 Bearer，同收据先例。
         if (isAuditReceipts || isReplayItems || isCedarExport || isCompile
             || isGuardDualChannel(normalizedPath)) {
@@ -223,6 +225,13 @@ public class InternalCallerFilter {
     static final String GUARD_RECONCILIATION_PATH = "/api/v1/guard/reconciliation";
     static final String CEDAR_EXPORT_PATH = "/api/v1/policies/export/cedar";
     static final String COMPILE_PATH = "/api/v1/policies/compile";
+
+    static final String GUARD_POLICY_DEPLOYMENTS_PATH = "/api/v1/guard/policy-deployments";
+
+    /** 策略部署及其全部子路径：只接受 HMAC，前缀匹配（未知子路径同样不对 Bearer 开放）。 */
+    private static boolean isGuardPolicyDeployments(String p) {
+        return p.equals(GUARD_POLICY_DEPLOYMENTS_PATH) || p.startsWith(GUARD_POLICY_DEPLOYMENTS_PATH + "/");
+    }
 
     /** 签发方列表及其全部子路径：只接受 HMAC，子路径一律按前缀匹配（未知子路径同样不对 Bearer 开放）。 */
     private static boolean isGuardFactIssuers(String p) {

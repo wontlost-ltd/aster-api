@@ -296,6 +296,18 @@ public class PolicyVersion extends PanacheEntityBase {
     public String sourceKind = "manual";
 
     /**
+     * 版本冻结的领域词汇（DomainVocabulary JSON，ADR 0054 §11 D1）：只有 cloud 部署的版本才有；
+     * 编译（{@link #vocabularyScopes()}）与 envelope 第 5 段（{@link #compileScopesJson()}）读同一快照。
+     */
+    @Column(name = "vocabulary_json", columnDefinition = "JSONB")
+    @JdbcTypeCode(SqlTypes.JSON)
+    public String vocabularyJson;
+
+    /** 外部来源版本标识（cloud 版本 id，ADR 0054 §11 D1）；同租户唯一，部署重放据此幂等。 */
+    @Column(name = "external_ref", length = 100)
+    public String externalRef;
+
+    /**
      * 作者业务角色（v1.2）
      * 取值：business_expert / compliance_officer / risk_analyst / engineer / admin / unknown
      * WAADR 视图仅统计业务三角色（前三者），与 PM 02-NSM 精确定义对齐
@@ -472,12 +484,51 @@ public class PolicyVersion extends PanacheEntityBase {
     /**
      * 本版本 envelope 的词汇段（ADR 0051 §7 第 5 段）。
      *
-     * <p>api 侧版本不存词汇，按版本编译（{@code PolicyCompiler#compile(Long)}）也不传词汇，
-     * 实际编译输入里没有词汇，故恒为空串。创建与校验都取这里，二者不会分叉；
-     * 若将来 api 版本要冻结词汇，须同时加列并让编译与本方法读同一快照。
+     * <p>不变式：编译与 envelope 读同一快照。按版本编译（{@code PolicyCompiler#compile(Long)}、
+     * {@code typecheckVersion}、存量重编译）一律用 {@link #vocabularyScopes()}，本方法对同一快照序列化；
+     * 无冻结词汇的版本（存量与 aster-api 原生版本）恒为空串，envelope 不变。
      */
     public String compileScopesJson() {
-        return io.aster.policy.parser.CompileIdentity.scopesJson(null);
+        return io.aster.policy.parser.CompileIdentity.scopesJson(vocabularyScopes());
+    }
+
+    /**
+     * 由冻结词汇构建编译用的作用域；无词汇（null / 空 / 没有任何条目）为 null。
+     *
+     * <p>fail-closed：已冻结的词汇解析失败即抛 {@link IllegalStateException}，绝不退化为无词汇——
+     * 否则带词汇的版本会被静默按另一份编译输入重解释（同 aliasSet 的 C2-a 口径）。部署时已校验可解析。
+     */
+    public aster.core.identifier.VocabularyScopes vocabularyScopes() {
+        return scopesOf(vocabularyJson);
+    }
+
+    /** 把 DomainVocabulary JSON 文本解析为作用域；null / 空 / 无条目为 null，非法抛 {@link IllegalStateException}。 */
+    public static aster.core.identifier.VocabularyScopes scopesOf(String vocabularyJson) {
+        if (vocabularyJson == null || vocabularyJson.isBlank()) {
+            return null;
+        }
+        try {
+            java.util.Map<String, Object> map = new com.fasterxml.jackson.databind.ObjectMapper().readValue(
+                vocabularyJson, new com.fasterxml.jackson.core.type.TypeReference<java.util.Map<String, Object>>() {});
+            return scopesOf(map);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException("冻结词汇不是合法 JSON: " + e.getOriginalMessage(), e);
+        }
+    }
+
+    /** 同 {@link #scopesOf(String)}，输入为已解析的词汇对象。 */
+    public static aster.core.identifier.VocabularyScopes scopesOf(java.util.Map<String, Object> vocabulary) {
+        if (vocabulary == null || vocabulary.isEmpty()) {
+            return null;
+        }
+        aster.core.identifier.VocabularyScopes scopes;
+        try {
+            scopes = aster.core.identifier.VocabularyScopes.build(
+                aster.core.identifier.VocabularyLoader.loadFromMap(vocabulary));
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("冻结词汇无法解析: " + e.getMessage(), e);
+        }
+        return io.aster.policy.parser.CompileIdentity.hasEntries(scopes) ? scopes : null;
     }
 
     /**

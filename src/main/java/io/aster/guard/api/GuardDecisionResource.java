@@ -162,7 +162,7 @@ public class GuardDecisionResource {
 
   /**
    * 回读决策；非法 UUID 与跨租户一律 404，不泄露决策是否存在。响应在存储的决策之外附执行状态
-   * （{@code actionHash / consumedBy / result}，ADR 0054 §3.3），见 {@link GuardDecisionReadResponse}。
+   * （{@code actionHash / consumedBy / result}，ADR 0054 §3.3）与策略地址（§11 D12），见 {@link GuardDecisionReadResponse}。
    */
   @GET
   @Path("/{id}")
@@ -173,7 +173,9 @@ public class GuardDecisionResource {
     } catch (IllegalArgumentException e) {
       return Response.status(Response.Status.NOT_FOUND).build();
     }
-    return receiptService.decisionView(identityResolver.tenantId(), decisionId)
+    String tenantId = identityResolver.tenantId();
+    return receiptService.decisionView(tenantId, decisionId)
+        .map(r -> service.address(tenantId, decisionId).map(a -> r.withPolicy(a.module(), a.function())).orElse(r))
         .map(r -> Response.ok(r).build())
         .orElse(Response.status(Response.Status.NOT_FOUND).build());
   }

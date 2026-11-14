@@ -93,6 +93,8 @@ class NonDeterminismSourceTest {
         // - EvaluationEvidence: 生成 /evaluate* 的 correlationId（ADR 0041 §2.2）——
         //   每次评估请求一个随机相关键，同时写进审计哈希链事件与响应 evidence，
         //   供证据包按键回查链收据；它是账本关联键而非重放状态，随机性只用于区分两次请求。
+        // - PolicyDeploymentService: cloud 策略首次部署时生成 policy_catalog 主键（ADR 0054 §11 D1）——
+        //   目录行的业务主键；部署幂等靠 (tenant, external_ref) 与 generation 而不是 id，不入 workflow 重放状态。
         Assertions.assertThat(uuidMatches.keySet())
                 .containsExactlyInAnyOrder(
                         "src/main/java/io/aster/policy/service/PolicyStorageService.java",
@@ -107,7 +109,8 @@ class NonDeterminismSourceTest {
                         "src/main/java/io/aster/policy/security/RateLimiter.java",
                         "src/main/java/io/aster/guard/GuardDecisionService.java",
                         "src/main/java/io/aster/guard/GuardEvidenceDecisionService.java",
-                        "src/main/java/io/aster/policy/evidence/EvaluationEvidence.java"
+                        "src/main/java/io/aster/policy/evidence/EvaluationEvidence.java",
+                        "src/main/java/io/aster/guard/deploy/PolicyDeploymentService.java"
                 );
 
         Map<String, List<Integer>> nanoMatches = scanPattern(

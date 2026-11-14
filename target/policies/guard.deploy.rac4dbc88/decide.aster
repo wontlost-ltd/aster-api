@@ -1,0 +1,7 @@
+Module guard.deploy.rac4dbc88.
+
+Define GuardRequest has principal_id, principal_type, principal_roles, action, resource_type, resource_id, context, agent_model.
+
+@id("R-1")
+Rule decide given req as GuardRequest, produce Verdict:
+  Return Verdict.allow().

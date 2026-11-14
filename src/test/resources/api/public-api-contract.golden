@@ -4,6 +4,7 @@
 DELETE /api/v1/admin/lexicons/{fileName}
 DELETE /api/v1/admin/messages/{locale}
 DELETE /api/v1/guard/fact-issuers/{issuer}/{kid}
+DELETE /api/v1/guard/policy-deployments/{cloudPolicyId}
 DELETE /api/v1/policies/cache
 GET /api/v1/admin/byok-allowlist
 GET /api/v1/admin/policy-versions/source-hashes
@@ -80,3 +81,4 @@ POST /api/v1/policies/{policyId}/rollback
 POST /api/v1/policies/{policyId}/whatif-batches
 PUT /api/v1/admin/messages/{locale}
 PUT /api/v1/guard/fact-issuers/{issuer}/{kid}
+PUT /api/v1/guard/policy-deployments/{cloudPolicyId}
