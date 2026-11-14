@@ -81,6 +81,10 @@ CREATE INDEX guard_orphan_actions_side_effect_ix ON guard_orphan_actions (side_e
 
 -- allow_unconsumed 扫描：按租户找未消耗且已过期的收据。
 CREATE INDEX guard_receipts_unconsumed_expiry_ix ON guard_receipts (tenant_id, expires_at) WHERE consume_audit_id IS NULL;
+-- 候选租户枚举：窗口内有决策的租户（含只有待审批决策、没有收据行的租户——orphan_receipt 要扫它们）。
+CREATE INDEX guard_decisions_created_ix ON guard_decisions (created_at);
+-- orphan_receipt 扫描（#522）：按租户、时间取决策事件，不扫同租户的评估等其他事件。
+CREATE INDEX audit_logs_guard_decision_time_ix ON audit_logs (tenant_id, timestamp) WHERE event_type = 'ACTION_GUARD_DECISION';
 
 COMMENT ON TABLE guard_side_effects IS 'Guard 对账：副作用落地方上报（ADR 0054 §10.2）';
 COMMENT ON TABLE guard_reconciliation_runs IS 'Guard 对账：每租户每次对账记录（ADR 0054 §10）';
