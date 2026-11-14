@@ -73,6 +73,12 @@ public class GuardEvidenceDecisionService {
   static final Set<String> APPROVABLE = Set.of(GuardDecisionDraft.REQUIRE_APPROVAL, GuardDecisionDraft.ESCALATE);
   /** 与 audit_logs.correlation_id / guard_decisions.evidence_correlation_id 列宽一致。 */
   static final int MAX_CORRELATION_ID = 64;
+  /**
+   * ALLOW 等分类行的上限（次数 × 间隔）。分类行在评估事件发布之后才写，且在 IO 线程上评估时转到 worker 池异步写；
+   * cloud 紧接着登记时行可能尚未落库。可审批结论缺行只是 unbound，ALLOW 缺行却是 DENY 并消耗证据，所以只为 ALLOW 等。
+   */
+  static final int ROW_WAIT_ATTEMPTS = 10;
+  static final long ROW_WAIT_MILLIS = 100;
   private static final TypeReference<Map<String, Object>> METADATA_TYPE = new TypeReference<>() { };
   private static final Logger LOG = Logger.getLogger(GuardEvidenceDecisionService.class);
 
@@ -155,7 +161,9 @@ public class GuardEvidenceDecisionService {
     }
     GuardDecisionDraft evaluated = draftOf(tenantId, event, req, actionHash, metadata, outcome);
     // 输入绑定（ADR 0042 §12 D1）：受理判定之后、来源门之前。不一致即 409，不建决策、不写收据、不消耗该证据
-    Optional<GuardEvaluationClassificationEntity> classification = classificationRow(tenantId, correlationId);
+    Optional<GuardEvaluationClassificationEntity> classification = evaluated.allowed()
+        ? awaitClassificationRow(tenantId, correlationId)
+        : classificationRow(tenantId, correlationId);
     requireBoundInput(classification, evaluated.contextHash());
     GuardDecisionDraft sourced = evaluated
         .withInputSources(InputSourceResolver.resolve(req.action(), facts, performedBy, businessRoles));
@@ -274,6 +282,24 @@ public class GuardEvidenceDecisionService {
           e.toString());
       return Optional.empty();
     }
+  }
+
+  /**
+   * 最多等 {@link #ROW_WAIT_ATTEMPTS} × {@link #ROW_WAIT_MILLIS} 让分类行可读（见常量说明）；仍缺行即按缺行处理
+   * （ALLOW → DENY，fail-closed）。线程被中断时立即按当前结果返回。
+   */
+  Optional<GuardEvaluationClassificationEntity> awaitClassificationRow(String tenantId, String correlationId) {
+    Optional<GuardEvaluationClassificationEntity> row = classificationRow(tenantId, correlationId);
+    for (int i = 1; row.isEmpty() && i < ROW_WAIT_ATTEMPTS; i++) {
+      try {
+        Thread.sleep(ROW_WAIT_MILLIS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return row;
+      }
+      row = classificationRow(tenantId, correlationId);
+    }
+    return row;
   }
 
   /**

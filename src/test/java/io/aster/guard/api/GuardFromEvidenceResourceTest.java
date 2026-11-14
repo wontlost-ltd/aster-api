@@ -931,6 +931,28 @@ public class GuardFromEvidenceResourceTest {
     assertThat(receipts.jsonPath().getList("receipts[0].metadata.unverifiedFields")).containsExactly("*");
   }
 
+  /** 过门后执行收据签发失败 → DENY receipt_unavailable：不留收据行、不建审批（与 POST /decisions 同一失败语义）。 */
+  @Test
+  void highRiskAllowReceiptSigningFailureIsDenyReceiptUnavailable() {
+    io.aster.guard.receipt.ExecutionReceiptIssuer issuer = Mockito.mock(io.aster.guard.receipt.ExecutionReceiptIssuer.class);
+    Mockito.when(issuer.issueNow(Mockito.any(), Mockito.any(), Mockito.any(), Mockito.any()))
+        .thenThrow(new io.aster.guard.receipt.ExecutionReceiptUnavailableException("signer down", null));
+    QuarkusMock.installMockForType(issuer, io.aster.guard.receipt.ExecutionReceiptIssuer.class);
+    TestFactSigner signer = registeredSigner(newKid());
+    String cid = evaluateSource(TENANT, HIGH_RISK_SOURCE, SMALL_AMOUNT);
+
+    Response r = signedPost(FROM_EVIDENCE, withFacts(fromEvidenceBody(cid, SMALL_AMOUNT), smallAmountFact(signer)),
+        TENANT, "u-req", List.of());
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    assertThat(r.jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
+    assertThat(r.jsonPath().getString("reasonCode")).isEqualTo("receipt_unavailable");
+    assertThat(r.asString()).doesNotContain("executionReceipt");
+    String decisionId = r.jsonPath().getString("decisionId");
+    assertThat(receiptRows(decisionId)).isZero();
+    assertThat(approvalRows(decisionId)).isZero();
+  }
+
   /** 档案不要求 verifiedInputs 的 ALLOW 不受影响：仍 409 evidence_not_approvable，不开决策。 */
   @Test
   void allowEvidenceUnderNonRequiringProfileStill409() {
