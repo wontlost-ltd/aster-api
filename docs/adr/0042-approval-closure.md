@@ -1,6 +1,6 @@
 # ADR 0042：审批闭环 —— 经验证的业务角色、从证据开决策、cloud 审批收件箱（AI 治理方向·子项目 3b）
 
-- 状态：**ACCEPTED**（2026-10-09）；§11 R59 ACCEPTED（2026-11-08）；§12（R59 实施前定稿修订，#460）**PROPOSED**（2026-11-14）
+- 状态：**ACCEPTED**（2026-10-09）；§11 R59 ACCEPTED（2026-11-08）；§12（R59 实施前定稿修订，#460）**ACCEPTED**（2026-11-14）
 - 提出：2026-10-09；实施计划 `docs/superpowers/plans/2026-10-09-approval-closure.md`；栈验收见 §9.1
 - 决策者：用户已拍板「业务角色挂在团队成员上由 owner/admin 授予；cloud 以证据链收据为锚开决策，不重复评估；收件箱走内部 HMAC v3 通道并签正用户与角色；角色持有者可审、管理员只读、站内通知不发邮件」
 - 相关：ADR 0040（Action Guard：决策、待审批、四眼、§10 开放问题第一条）、ADR 0041（证据链补齐：correlationId 列、收据接口、复核者 `guard-approval`）、aster-cloud ADR 0015（团队作用域 API key 身份：verify 响应与快照）、ADR 0039（Verdict 四态与 `role`）
@@ -346,7 +346,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 
 ## 12. 2026-11 修订：R59 实施前定稿 —— 审批输入快照落地口径、`catalog.piiMark` 再定义、证据包 v6（#460）
 
-状态：**PROPOSED**（2026-11-14）。实施计划 `docs/superpowers/plans/2026-11-14-approval-input-snapshot.md`。定稿后与 §11 冲突时以本节为准；被取代的 §11 条款逐条列在 §12.3，未列出的 §11 条款不变。
+状态：**ACCEPTED**（2026-11-14 用户确认，§12.5 全部采用已选默认，见 §12.5 末段）。实施计划 `docs/superpowers/plans/2026-11-14-approval-input-snapshot.md`。定稿后与 §11 冲突时以本节为准；被取代的 §11 条款逐条列在 §12.3，未列出的 §11 条款不变。
 相关：wontlost-ltd/aster-api#460；ADR 0046 §11.7 第 2、3 条（`catalog.piiMark` 与证据包 v6 `factSources` 推迟到 #460）；ADR 0041 §11 D3/D4、§12 D3（证据包 v6 的其余内容）；ADR 0040 §3.3 / §5.2（决策行与审计链不存明文 context）、§11 D4（审批视图并列 `inputSources` 与 `factsStale`）；ADR 0044 §3.1 与 ADR 0045（Article 14 对照由控制注册表驱动）；aster-api ADR 0015「已锁决策」（租户隔离、visibility-safe 不泄露存在性）；ADR 0055（Core IR v2 保留 `PiiType`，只删 `Func.piiLevel / piiCategories`）。
 
 ### 12.0 为什么是本 ADR 的新节，而不是新 ADR
@@ -480,7 +480,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 - 纯增量：两张新表、两张表的新列、两个新端点、一种新事件类型、若干可选字段，既有响应形状不变。迁移取合并时的下一个可用号（`V6.37.0` 起，#464 / #465 若先合则顺延），`migration-checksums.golden` 追加。
 - 发布顺序：aster-api → aster-guard SDK → aster-cloud，反序也不坏：旧 cloud 不读新字段；新 cloud 遇到旧 api 的 404 显示「不可用」；旧 cloud 的 from-evidence 不带新东西，只会多出 409 `evidence_input_mismatch`——只有 cloud 传入的 `context` 与评估时不同才会触发，按现有映射（`toGuardAction` 的 `context: input` 与 evaluate-source 的输入同一对象）不应发生。计划 Task A4 以测试钉住，并在上线后统计该错误码。
 - 注册表 1.4.0（14(4)(a)）在 #460 之后，随下一次列车。
-- **验收边界（F9）。** 「无权限角色看不到 PII 原值」本节只对审批面兑现：aster-api 视图、aster-guard SDK、cloud 收件箱。cloud 执行日志页对策略可见者明文展示 `Execution.input`，属于 cloud 侧的数据展示策略，另开 issue（计划「后续」），不在 #460 内修。
+- **验收边界（F9）。** 「无权限角色看不到 PII 原值」本节只对审批面兑现：aster-api 视图、aster-guard SDK、cloud 收件箱。cloud 执行日志页对策略可见者明文展示 `Execution.input`，属于 cloud 侧的数据展示策略，另开 issue（wontlost-ltd/aster-cloud#754），不在 #460 内修。
 - 回滚：cloud 先回滚（隐藏面板）、api 后回滚（删端点与写入路径）；新表、新列、新事件留存无害。
 
 ### 12.3 被本节取代的 §11 条款
@@ -519,7 +519,9 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 | 解除留痕粒度 | 每人每审批首次一条事件 | 每次解除一条 | 链上事件数随查看次数增长 |
 | 14(4)(a) 改判 | 随注册表 1.4.0（下一次列车），条件 `matched === true` | 不改判（仍 partial） | 不改则注册表无需升版 |
 | ESCALATE 解除 | 不可解除（§11） | 允许任一成员解除 | 扩大原值可见范围 |
-| 执行日志页明文输入（F9） | 另开 issue，不在 #460 | 并入 #460，日志页用同一打码 | cloud 需复刻打码规则或改调 api 视图 |
+| 执行日志页明文输入（F9） | 另开 issue（wontlost-ltd/aster-cloud#754），不在 #460 | 并入 #460，日志页用同一打码 | cloud 需复刻打码规则或改调 api 视图 |
 | 视图上限 | 1 MiB → `too_large` | 更大 / 更小 | 仅影响极端输入的展示 |
 
 定稿时回写：ADR 0040 §3.3 / §5.2 脚注（§11 末段已约定）；ADR 0041 §11 D3 键名 `inputSnapshotAttested` → `inputSnapshotMatched`，§11 D4 / §12 D3 注明 v6 一次升版；ADR 0046 §11.7 第 2 条注明「撤销（ADR 0042 §12 D3）」。
+
+定稿裁定（2026-11-14，用户确认）：上表「已选默认」一列全部采用，无改动项——撤销 `catalog.piiMark`；from-evidence 输入不一致 409 `evidence_input_mismatch`、不消耗证据；证据包 v6 一并装入 ADR 0041 §12 D3 的 `execution`；14(4)(a) 改判推迟到注册表 1.4.0 列车（计划阶段 R）；执行日志页明文输入另开 issue（wontlost-ltd/aster-cloud#754）；解除留痕每人每审批首次一条事件；分类行保留 `P7D`、视图上限 1 MiB；ESCALATE 不可解除。上述回写已在同一 PR 完成。

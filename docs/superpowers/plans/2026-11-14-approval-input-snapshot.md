@@ -38,7 +38,7 @@
 
 ## Global Constraints
 
-- **ADR 状态门（硬门）**：ADR 0042 §12 为 PROPOSED。Task 0 的状态翻转 PR 由用户审阅并合并；合并前任何实现 PR 不得合并。
+- **ADR 状态门（硬门）**：ADR 0042 §12 已于 2026-11-14 由用户确认为 ACCEPTED（§9 全部采用默认）。Task 0 的状态翻转 PR 由用户审阅并合并；合并前任何实现 PR 不得合并。
 - 迁移号：合并时取下一个可用号，起点 `V6.37.0__guard_approval_input_snapshot.sql`；#464 / #465 若先合则顺延。`src/test/resources/db/migration-checksums.golden` 追加 `文件名=sha256`（`shasum -a 256`，LF）。
 - 哈希配方：`context_hash`、分类行 `input_hash`、视图 `inputSnapshotHash` 一律 `sha256-sorted-json/v1`（`GuardActionMapper.contextHash` 同一实现），**不用** `jcs-sha256/v1`。
 - 输入快照只为 `outcome ∈ {REQUIRE_APPROVAL, ESCALATE}` 且真正建了审批行的决策写；ALLOW / DENY / 门 DENY / `receipt_unavailable` 不写。
@@ -362,7 +362,7 @@ podman 全栈（aster-api PR 2 分支 + cloud PR 4/5 分支 + aster-guard PR 3�
 
 ## 8. 后续 issue（本计划只负责开 issue）
 
-- aster-cloud：执行日志页对策略可见者明文展示 `Execution.input`（ADR 0042 §12 F9），与审批面的打码口径不一致。
+- aster-cloud：执行日志页对策略可见者明文展示 `Execution.input`（ADR 0042 §12 F9），与审批面的打码口径不一致。已开：wontlost-ltd/aster-cloud#754。
 - aster-api：from-evidence `evidence_input_mismatch` 的线上计数（上线后一周看 0 次即关）。
 
 ## 9. 待用户裁定（Task 0 前）
