@@ -136,6 +136,11 @@ public class InputSnapshotService {
             Map.of("status", s.status()));
       }
       InputViewRenderer.RenderedView revealed = render(s, true);
+      // 上限同样作用于解除视图：短的 $pii 占位可能掩盖很长的原值
+      if (revealed.sizeBytes() > MAX_VIEW_BYTES) {
+        throw new GuardApprovalConflictException("input_not_available", "解除后的输入视图超过 1 MiB",
+            Map.of("status", TOO_LARGE));
+      }
       if (!hasRevealed(a, user)) {
         record(a, user, revealed);
       }

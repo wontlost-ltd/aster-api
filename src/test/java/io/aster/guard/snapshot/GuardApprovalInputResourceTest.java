@@ -353,4 +353,18 @@ class GuardApprovalInputResourceTest {
     assertThat(r.statusCode()).isEqualTo(200);
     assertThat(r.asString()).contains("applicant@example.com");
   }
+
+  @Test
+  void oversizeRevealedViewIsNotReturned() {
+    Map<String, Object> ctx = context();
+    ctx.put("email", "e".repeat((1 << 20) + 16) + "@example.com");
+    GuardApprovalEntity a = seed(DPO, true, ctx);
+    assertThat(get(TENANT, a.id.toString(), "u").jsonPath().getString("status")).isEqualTo("available");
+    Response r = reveal(TENANT, a.id.toString(), "u-dpo", DPO);
+    assertThat(r.statusCode()).isEqualTo(409);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("input_not_available");
+    assertThat(r.jsonPath().getString("status")).isEqualTo("too_large");
+    assertThat(r.asString()).doesNotContain("eeeeeeeeee");
+    assertThat(revealEvents(a.id)).isZero();
+  }
 }
