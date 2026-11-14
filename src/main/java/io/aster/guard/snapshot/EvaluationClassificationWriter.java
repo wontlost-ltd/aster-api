@@ -16,9 +16,10 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * 可审批评估的分类行写入（ADR 0042 §12 D1）：三条 {@code /evaluate*} 路径在评估事件发布之后调用。
+ * 可审批评估（及要求 verifiedInputs 的 ALLOW，ADR 0046 §11.8）的分类行写入（ADR 0042 §12 D1）：三条 {@code /evaluate*} 路径在评估事件发布之后调用。
  *
- * <p>只为非 simulate、结论 ∈ {REQUIRE_APPROVAL, ESCALATE} 的评估写。{@code input_hash} 只对命名格式（JSON 对象）
+ * <p>只为非 simulate、结论 ∈ {REQUIRE_APPROVAL, ESCALATE} 的评估写；结论为 ALLOW 且本次评估要求 verifiedInputs 时同样写
+ * （ADR 0046 §11.8：这类 ALLOW 经 from-evidence 过来源门，没有审批人兜底，输入绑定必须成立）。{@code input_hash} 只对命名格式（JSON 对象）
  * 输入计算，与 guard 决策的 {@code context_hash} 同一配方（{@link GuardActionMapper#contextHash}）；位置格式为 null，
  * 分类也随之为 null（无从按参数取路径）。
  *
@@ -29,6 +30,7 @@ import java.util.Set;
 public class EvaluationClassificationWriter {
   static final String WRITE_FAILED = "aster.guard.classification.write.failed";
   private static final Set<String> APPROVABLE = Set.of("REQUIRE_APPROVAL", "ESCALATE");
+  private static final String ALLOW = "ALLOW";
   private static final Logger LOG = Logger.getLogger(EvaluationClassificationWriter.class);
 
   private ClassificationRowStore store;
@@ -52,10 +54,11 @@ public class EvaluationClassificationWriter {
    * @param requestContext 请求的 {@code context} 原值（命名格式为 Map，位置格式为数组 / 列表）
    * @param outcome        评估结论（Verdict outcome），非 Verdict 为 null
    * @param classification 本次评估执行 IR 推导的分类；null 表示推导失败或超上限
+   * @param verifiedInputsRequired 本次评估的模块档案是否要求 verifiedInputs（评估时的注册表判定）
    */
   public void record(String tenantId, String correlationId, Object requestContext, String outcome,
-                     InputClassification classification, boolean simulate) {
-    if (simulate || correlationId == null || outcome == null || !APPROVABLE.contains(outcome)) {
+                     InputClassification classification, boolean simulate, boolean verifiedInputsRequired) {
+    if (simulate || correlationId == null || !bindable(outcome, verifiedInputsRequired)) {
       return;
     }
     if (Context.isOnEventLoopThread()) {
@@ -70,6 +73,11 @@ public class EvaluationClassificationWriter {
       return;
     }
     write(tenantId, correlationId, requestContext, classification);
+  }
+
+  /** 会被 from-evidence 受理、因而需要输入绑定的结论。 */
+  private static boolean bindable(String outcome, boolean verifiedInputsRequired) {
+    return outcome != null && (APPROVABLE.contains(outcome) || verifiedInputsRequired && ALLOW.equals(outcome));
   }
 
   public Optional<GuardEvaluationClassificationEntity> find(String tenantId, String correlationId) {
