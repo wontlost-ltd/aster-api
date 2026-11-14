@@ -101,6 +101,8 @@ class GuardPolicyDeploymentResourceTest {
     assertThat(put.jsonPath().getString("cloudPolicyId")).isEqualTo("cp-1");
     assertThat(put.jsonPath().getString("moduleName")).isEqualTo(MODULE);
     long versionId = put.jsonPath().getLong("policyVersionId");
+    // version 是 aster-api 版本链的版本号（毫秒级时间戳），不得被截断成 int。
+    assertThat(put.jsonPath().getLong("version")).isPositive();
 
     Response decision = decide();
     assertThat(decision.statusCode()).as(decision.asString()).isEqualTo(200);

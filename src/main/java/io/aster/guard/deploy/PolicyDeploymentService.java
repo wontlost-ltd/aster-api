@@ -159,7 +159,7 @@ public class PolicyDeploymentService {
     m.put("sourceHash", version.sourceHash);
     appender.appendInCurrentTransaction(
         receiptBuilder.policyDeploymentEvent(EventType.POLICY_DEPLOYED, tenantId, performedBy, m));
-    return new Deployed(version.id, version.version.intValue(), version.sourceHash, existing.isEmpty());
+    return new Deployed(version.id, version.version, version.sourceHash, existing.isEmpty());
   }
 
   private DeployResult applyWithdraw(String tenantId, String performedBy, String cloudPolicyId, long generation) {

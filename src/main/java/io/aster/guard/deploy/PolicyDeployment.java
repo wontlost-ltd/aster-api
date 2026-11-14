@@ -39,7 +39,7 @@ public record PolicyDeployment(
    *
    * @param created 本次是否新建了版本行（false = 同 cloud 版本的重放或切回旧版本）
    */
-  public record Deployed(long policyVersionId, int version, String sourceHash, boolean created) implements DeployResult {}
+  public record Deployed(long policyVersionId, long version, String sourceHash, boolean created) implements DeployResult {}
 
   /** 撤回成功（含已撤回的幂等重放）。 */
   public record Withdrawn() implements DeployResult {}
