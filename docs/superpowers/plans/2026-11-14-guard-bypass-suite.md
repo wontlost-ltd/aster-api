@@ -26,7 +26,7 @@
 | 这些测试**按端点**断言，没有一处以「执行方」视角把验签 → consume → 副作用 → 回写串起来，也没有「副作用未发生」的断言对象；DENY / 过期 / 伪造收据的「执行方拒绝」只在 ADR 里 | 同上 |
 | 可复用夹具：`DeployedMapParamProbeTest.deploy(tenant, module, fn, source)`（public）、`ExecutionReceiptAssert`（**包私有**，`actionHashOf` / `assertVerifiable`）、`GuardApprovalResourceTest.MutableClock`（**包私有**）、`TestFactSigner`（public）、`FactIssuerStore.upsert`、`ApiKeyVerifierService.seedCacheForTest` | 各文件 |
 | 测试签名密钥 `test-a`（active）/ `test-b`，`revision` 必须保持 1（启动校验拒绝低于已持久化的 revision，见 `GuardReceiptResourceAuthTest` 类注释） | `src/test/resources/application.properties:117-118` |
-| CI：`ci.yml` → `ci-build.yml`（本地 runner 优先、托管回落）→ 汇总 `ci-result`；`test` 排除 `*IT` 与 `chaos` 标签，`integrationTest` 只跑 `*IT`；`build` 依赖 `integrationTest`；`deploy.yml` 的 `build-and-test` 跑 `./gradlew build` | `ci.yml`、`ci-build.yml:165-211`、`build.gradle:270-372`、`deploy.yml:218` |
+| CI：`ci.yml` → `ci-build.yml`（本地 runner 优先、托管回落）→ 汇总 `ci-result`；`test` 排除 `*IT` 与 `chaos` 标签，`integrationTest` 只跑 `*IT`；`check` 依赖 `integrationTest`（`build` 经 `check` 带上）；`deploy.yml` 的 `build-and-test` 跑 `./gradlew build` | `ci.yml`、`ci-build.yml:165-211`、`build.gradle:270-372`、`deploy.yml:218` |
 | **仓库没有任何必需状态检查**：唯一 ruleset `main-protect` 只有 `deletion` 与 `non_fast_forward`；`ci-result` 注释写「给分支保护用」但从未登记 | `gh api repos/wontlost-ltd/aster-api/rulesets/22982832` |
 | aster-cloud `7c4ae3a9`：Playwright `local-stack` 只在 `BASE_CLOUD` 含 `localhost` 时运行，**不在任何 CI 中跑**；`credit-pilot.spec.ts` 经 `CP_API_KEY` 执行 + 页面审批；cloud **尚无** consume / result 调用（ADR 0054 §8 ④ 未做）；`needsGuardDecision` 只对 `require_approval / escalate` 开 guard 决策 | `playwright.config.ts`、`local-stack/README.md`、`src/lib/guard-register.ts:158` |
 | cloud 信贷试点事实：`fixture.creditPilot` 只在执行输入与四组 fixture 之一 JCS 相等时签 `context.applicant`，否则不签（该字段 declared） | `src/config/fact-sources.ts:60-67` |
@@ -79,7 +79,7 @@
 | `src/test/java/io/aster/guard/bypass/BypassAssertions.java` | 三样断言 |
 | `src/test/java/io/aster/guard/bypass/B1…B7*BypassTest.java` | 每条 #466 场景一个类，`@Tag("guard-bypass")` |
 | `src/test/java/io/aster/guard/api/ExecutionReceiptAssert.java`、`GuardApprovalResourceTest.java` | 改：`ExecutionReceiptAssert` 与 `MutableClock` 改为 `public`（仅可见性） |
-| `build.gradle` | 新任务 `guardBypassTest`；`test` / `integrationTest` 排除标签；`build` 依赖它 |
+| `build.gradle` | 新任务 `guardBypassTest`；`test` / `integrationTest` 排除标签；`check` 依赖它（Task A1） |
 | `.github/workflows/ci-build.yml`、`.github/workflows/ci.yml`、`scripts/ci/guard-bypass-verdict.sh`（+ `.test.sh`） | 新步骤 + 作业输出 + 汇总作业 `Guard bypass suite (#466)` 及其判定脚本 |
 | `src/test/java/io/aster/guard/bypass/README.md` | 套件说明：场景表、启用状态、本地运行（随测试目录，非独立文档） |
 | aster-cloud `src/__tests__/e2e-browser/local-stack/guard-bypass.spec.ts` + `README.md` 一节 | 阶段 A cloud 场景 |
@@ -94,7 +94,7 @@
 
 **Files:**
 - Create: `src/test/java/io/aster/guard/bypass/{BypassProfile,BypassFixture,SideEffectLedger,ReferenceExecutor,BypassAssertions,B1ApiDirectCallBypassTest,ReferenceExecutorSelfTest}.java`
-- Modify: `src/test/java/io/aster/guard/api/ExecutionReceiptAssert.java`（类与 `tree / actionHashOf / assertVerifiable` 改 `public`）、`src/test/java/io/aster/guard/api/GuardApprovalResourceTest.java`（`MutableClock` 改 `public static`，构造器与 `set` 改 `public`）
+- Modify: `build.gradle`（Gradle 分流，见 Step 0）、`src/test/java/io/aster/guard/api/ExecutionReceiptAssert.java`（类与 `tree / actionHashOf / assertVerifiable` 改 `public`）、`src/test/java/io/aster/guard/api/GuardApprovalResourceTest.java`（`MutableClock` 改 `public static`，构造器与 `set` 改 `public`）
 
 **Interfaces:**
 - Produces:
@@ -106,6 +106,12 @@
     - `sealed interface Outcome permits Executed, Refused`；`record Executed(String decisionId, String attemptId)`；`record Refused(String stage, String code)`，`stage ∈ {"local", "consume"}`，`code` 为本地原因（`receipt_missing / kid_unknown / bad_signature / tenant_mismatch / decision_mismatch / not_allow / not_yet_valid / expired / action_mismatch`）或 consume 响应的 `error`。
     - 攻击者原语（跳过本地检查）：`Outcome attackConsume(String decisionId, String actionHash, String effect)`：直接 consume，**仅当 200** 时 `ledger.record`（Review Focus 第 2 条）。
   - `BypassAssertions`：`static void decisionRecorded(BypassFixture api, String key, String decisionId, String effectiveOutcome, String reasonCodeOrNull)`（`GET /decisions/{id}` 200 且字段相等）；`static void noSideEffect(SideEffectLedger ledger, String decisionId)`；`static void notConsumed(BypassFixture api, String key, String decisionId)`（Global Constraints 的「未消耗」定义）；`static void consumedExactlyOnce(BypassFixture api, String key, String decisionId, SideEffectLedger ledger)`（行 `consume_audit_id` 非空、`consumes[]` 恰一条 `authoritative: true` 且其 `attemptId` 等于账本唯一条目的 `attemptId`）。
+
+- [ ] **Step 0: Gradle 分流（先于任何套件代码，之后所有步骤都用 `guardBypassTest`）**
+  - `test` 与 `integrationTest` 的 `useJUnitPlatform { excludeTags 'chaos', 'guard-bypass' }`。
+  - 新任务 `guardBypassTest`（`Test`）：`testClassesDirs / classpath` 同 `integrationTest`；`useJUnitPlatform { includeTags 'guard-bypass' }`；`maxHeapSize = '2g'`；`maxParallelForks = 1`；系统属性与 `jvmArgs` 同 `integrationTest`；`retry { maxRetries = 0 }`；`shouldRunAfter 'test'`；**显式** `failOnNoDiscoveredTests = true`（Gradle 9.8.2 默认即 true，显式写出防止日后被全局改掉）。
+  - `tasks.named('check') { dependsOn 'integrationTest', 'guardBypassTest' }`（同一处现有块）。这是**有意**的：`deploy.yml` 的 `./gradlew build` 因而在发版构建里同样跑套件（#466「每次发版自动验证」）；该作业已有 Postgres service 与测试所需环境，增加约 1–2 分钟。复用路径（ADR 0053，跳过 build）复用的是已在 CI 跑过套件的同一提交制品。
+  - Run: `./gradlew guardBypassTest`，Expected: **FAIL**，`No tests found`/`no test discovered`（空套件必须红——这一步同时是反向自检）。
 
 - [ ] **Step 1: 写 `ReferenceExecutorSelfTest`（套件自检，`@Tag("guard-bypass")`）**
 
@@ -126,7 +132,7 @@
 
 - [ ] **Step 2: 运行确认失败**
 
-Run: `./gradlew test --tests 'io.aster.guard.bypass.ReferenceExecutorSelfTest'`
+Run: `./gradlew guardBypassTest --tests 'io.aster.guard.bypass.ReferenceExecutorSelfTest'`
 Expected: 编译失败（`ReferenceExecutor` 等未定义）。
 
 - [ ] **Step 3: 实现 `BypassProfile / BypassFixture / SideEffectLedger / ReferenceExecutor / BypassAssertions` 与两处可见性修改**
@@ -142,12 +148,12 @@ Ed25519 用 JDK `Signature.getInstance("Ed25519")` + `KeyFactory.getInstance("Ed
 @Test void resultWithoutConsumeIs409NotConsumed()              // 伪造执行记录 → 409 not_consumed；行 result_status 为空
 @Test void keysAndAuditReceiptsRequireBearer()                 // /guard/keys、/audit/receipts 无凭证 401
 ```
-每例最后 `BypassAssertions.noSideEffect` + `notConsumed`，并确认随后用 MEMBER key 的诚实执行仍 `Executed`（证明攻击未把收据「烧掉」）。
+每例的攻击对象是**攻击前**用 MEMBER key 开好的 ALLOW 决策（有收据行）；攻击请求只断言状态码与体，之后的 `noSideEffect` / `notConsumed` 一律用 MEMBER key（有读权限的身份）读决策、收据行与 `/audit/receipts`，最后诚实执行仍 `Executed`（证明攻击既没消耗也没「烧掉」收据）。
 
 - [ ] **Step 5: 运行通过**
 
-Run: `./gradlew test --tests 'io.aster.guard.bypass.*'`
-Expected: PASS（此时 `test` 尚未排除标签，Task A7 再分流）。
+Run: `./gradlew guardBypassTest`
+Expected: PASS；`./gradlew test --tests 'io.aster.guard.bypass.*'` 报 `No tests found`（已从 `test` 排除，该命令失败是期望结果）。
 
 - [ ] **Step 6: 提交** `test(guard-bypass): 套件骨架、参考执行方与 B1 直连执行面端点（#466）`
 
@@ -177,7 +183,7 @@ Expected: PASS（此时 `test` 尚未排除标签，Task A7 再分流）。
 @Test void denyThenOtherAllowedToolGetsIndependentDecision()       // ADR 0054 §7 2b：换动作重新申请得到新 decisionId；旧 DENY 仍不可 consume；账本只含新决策的一条
 ```
 
-- [ ] **Step 2: 运行确认失败**（`./gradlew test --tests '*B2ExecuteAfterDenyBypassTest'`，Expected: FAIL / 类不存在）
+- [ ] **Step 2: 运行确认失败**（`./gradlew guardBypassTest --tests '*B2ExecuteAfterDenyBypassTest'`，Expected: FAIL / 类不存在）
 - [ ] **Step 3: 补齐 `BypassFixture` 中 `approve / reject(String key, String approvalId)`（`POST /api/v1/guard/approvals/{id}/approve|reject`，体 `{"comment":"…"}`）**
 - [ ] **Step 4: 运行通过**（同上命令，Expected: PASS 6/6）
 - [ ] **Step 5: 提交** `test(guard-bypass): B2 DENY / 待审批 / 拒绝后执行均被拒（#466）`
@@ -206,7 +212,7 @@ Expected: PASS（此时 `test` 尚未排除标签，Task A7 再分流）。
 @Test void resultCannotBeRewrittenByAnotherAttempt()  // 他 attemptId 回写 → 409 attempt_mismatch；二次回写 → 409 result_recorded
 ```
 
-- [ ] **Step 3: 运行确认失败** → **Step 4: 运行通过**（`./gradlew test --tests '*B3*' --tests '*B4*'`，Expected: PASS）
+- [ ] **Step 3: 运行确认失败** → **Step 4: 运行通过**（`./gradlew guardBypassTest --tests '*B3*' --tests '*B4*'`，Expected: PASS）
 - [ ] **Step 5: 提交** `test(guard-bypass): B3 改参 409 action_mismatch、B4 重放与并发 consume（#466）`
 
 ### Task A4：B5 伪造 / 篡改 / 过期 / 错误 kid / 撤销 kid 收据
@@ -227,11 +233,11 @@ Expected: PASS（此时 `test` 尚未排除标签，Task A7 再分流）。
 }
 @Test void notYetValidIsRejectedLocally()           // 执行方时钟 = issuedAt − 61s → not_yet_valid（只测本地窗口）
 // B5RevokedKidBypassTest：
-@Test void revokedKidIs409AndNotExecuted()          // 收据行 kid 改 test-b（同 AuthTest 写法）→ attackConsume 409 kid_revoked，体 revision 1；noSideEffect
+@Test void revokedKidIs409AndNotExecuted()          // AuthProfile 中 test-b 为 revoked:true、active 为 test-a：先开 ALLOW（收据由 test-a 签），再把收据行 kid 改为 test-b（同 GuardReceiptResourceAuthTest.revokedKidIs409WithRevision）模拟「该收据由已撤销 kid 签发」；正确哈希 attackConsume → 409 {"error":"kid_revoked","kid":"test-b","revision":1}；notConsumed、noSideEffect
 ```
 服务端没有「提交收据」入口（ADR 0040 §12 D6 末段），所以「伪造签名被拒」的判定点是参考执行方；测试类注释写明这一点与对应的 aster-guard SDK 夹具层（#464）。
 
-- [ ] **Step 2: 运行确认失败** → **Step 3: 补齐 `ReferenceExecutor` 中被测试暴露的分支** → **Step 4: 运行通过**（`./gradlew test --tests '*B5*'`）
+- [ ] **Step 2: 运行确认失败** → **Step 3: 补齐 `ReferenceExecutor` 中被测试暴露的分支** → **Step 4: 运行通过**（`./gradlew guardBypassTest --tests '*B5*'`）
 - [ ] **Step 5: 提交** `test(guard-bypass): B5 伪造、篡改、过期、未知与撤销 kid 的收据不执行（#466）`
 
 ### Task A5：B7 自报输入篡改（高风险档案）
@@ -275,7 +281,7 @@ Rule decide given req as GuardRequest, produce Verdict:
 @Test void verifiedSmallAmountIsAllowAndExecutesOnce()                  // 正向对照：签发方证实 100 → ALLOW → 参考执行方 Executed；consumedExactlyOnce
 ```
 
-- [ ] **Step 3: 运行确认失败** → **Step 4: 运行通过**（`./gradlew test --tests '*B7*'`）
+- [ ] **Step 3: 运行确认失败** → **Step 4: 运行通过**（`./gradlew guardBypassTest --tests '*B7*'`）
 - [ ] **Step 5: 提交** `test(guard-bypass): B7 高风险档案下自报输入篡改 DENY unverified_input（#466）`
 
 ### Task A6：aster-cloud Playwright `guard-bypass.spec.ts`（本地栈）
@@ -318,12 +324,12 @@ Expected: C7a / C2 / C3-5 PASS，C7b 显示为 fixme（skipped）。若 C7b 的�
 ### Task A7：CI 必需检查 `Guard bypass suite (#466)` 与 skip 登记
 
 **Files:**
-- Modify: `build.gradle`（`test` 与 `integrationTest` 的 `useJUnitPlatform { excludeTags 'chaos', 'guard-bypass' }`；新任务 `guardBypassTest`；`tasks.named('build') { dependsOn 'guardBypassTest' }` 与 `integrationTest` 同处）
 - Modify: `.github/workflows/ci-build.yml`、`.github/workflows/ci.yml`
 - Create: `scripts/ci/guard-bypass-verdict.sh`、`scripts/ci/guard-bypass-verdict.test.sh`、`src/test/java/io/aster/guard/bypass/B6PromptInjectionBypassTest.java`（阶段 A：`@Disabled`）、`src/test/java/io/aster/guard/bypass/B1DirectConnectToolBypassTest.java`（`@Disabled`）、`src/test/java/io/aster/guard/bypass/README.md`
 
 **Interfaces:**
-- Produces: Gradle 任务 `guardBypassTest`（`Test` 类型；`testClassesDirs / classpath` 同 `integrationTest`；`useJUnitPlatform { includeTags 'guard-bypass' }`；`maxHeapSize '2g'`；`maxParallelForks 1`；`retry { maxRetries = 0 }`；`shouldRunAfter 'test'`；Gradle 9 无测试即失败的默认行为保留——空套件必须红）；`ci-build.yml` 作业输出 `guard-bypass`（= 步骤 `bypass` 的 `outcome`）。
+- Consumes: Task A1 Step 0 的 Gradle 任务 `guardBypassTest`。
+- Produces: `ci-build.yml` 作业输出 `guard-bypass`（= 步骤 `bypass` 的 `outcome`）；`scripts/ci/guard-bypass-verdict.sh <local> <hosted>`（退出码 0 / 1）。
 
 - [ ] **Step 1: `@Disabled` 登记**
 
@@ -334,14 +340,14 @@ class B6PromptInjectionBypassTest { @Test void injectedInstructionIsDeniedAndToo
 class B1DirectConnectToolBypassTest { @Test void directConnectFromModelNamespaceFails() {} }
 ```
 
-- [ ] **Step 2: Gradle 分流并本地验证**
+- [ ] **Step 2: 本地验证**
 
-Run: `./gradlew guardBypassTest`，Expected: 全部 `io.aster.guard.bypass.*` 类执行、两例 skipped、其余 PASS；
-Run: `./gradlew test --tests 'io.aster.guard.bypass.*'`，Expected: `No tests found`（证明已从 `test` 排除；该命令失败是期望结果）。
+Run: `./gradlew guardBypassTest`，Expected: 全部 `io.aster.guard.bypass.*` 类执行、两例 skipped、其余 PASS。
 
 - [ ] **Step 3: CI 接线**
   - `ci-build.yml` 的 `build` 作业：在「Unit Tests (fast feedback)」**之前**加步骤 `name: Guard bypass suite (#466)`、`id: bypass`、`run: ./gradlew guardBypassTest --build-cache`，`env` 同 Unit Tests 步骤（`DB_JDBC_URL` 等 5 项）；作业级 `outputs: guard-bypass: ${{ steps.bypass.outcome }}`；workflow 级 `on.workflow_call.outputs.guard-bypass: { value: ${{ jobs.build.outputs.guard-bypass }} }`；「Build (assemble + check)」改为 `-x test -x integrationTest -x guardBypassTest`（否则 `build` 的新依赖会让套件在同一作业里再跑一遍）；「Summarize failed tests」与「Upload Test Results」按 `build/test-results` 整目录收集，已覆盖 `guardBypassTest/`，不改。
-  - 时机说明：bypass 步骤失败会使 `build` 作业失败并触发托管回落（现有语义）；bypass 通过而后续步骤失败时，`Guard bypass suite (#466)` 为绿、`ci-result` 为红——两个检查各自说明各自的事实。
+  - 回落语义（裁定，见 O2）：bypass 步骤失败会使 `build-local` 失败并触发托管回落，托管通过则检查为绿——与 `ci-result` 同一语义（回落是为 runner 故障设计的）。套件无随机输入、作业内 `retry` 为 0，确定性失败在托管上同样失败；为不让「本地红、托管绿」悄悄消失，判定脚本在 `local=failure && hosted=success` 时输出 `::warning::Guard 绕过套件本地失败、托管通过，请查看 build-local 日志`，`.test.sh` 加第 6 例断言该告警行。
+  - 时机说明：bypass 通过而后续步骤失败时，`Guard bypass suite (#466)` 为绿、`ci-result` 为红——两个检查各自说明各自的事实。
   - `ci.yml` 新作业：
 
 ```yaml
@@ -364,7 +370,7 @@ Run: `./gradlew test --tests 'io.aster.guard.bypass.*'`，Expected: `No tests fo
   `ci-result` 的 `needs` 加 `guard-bypass` 并要求其 `result == 'success'`。
 - [ ] **Step 4: 本地验证 workflow 与「门禁能变红」**：
   - `actionlint -shellcheck= .github/workflows/ci.yml .github/workflows/ci-build.yml`（版本同 ci-build 的钉死版本），Expected: 无输出。
-  - 汇总脚本反向自检：把 `guard-bypass` 作业 `run` 段抽到 `scripts/ci/guard-bypass-verdict.sh`（作业先 `actions/checkout@v7`（`persist-credentials: false`）再 `bash scripts/ci/guard-bypass-verdict.sh "$LOCAL" "$HOSTED"`），新增 `scripts/ci/guard-bypass-verdict.test.sh` 表驱动 5 例：`success/""` → 0、`""/success` → 0、`failure/failure` → 1、`skipped/""` → 1、`""/""` → 1；在 `ci-build.yml` 的「image-pin merge gate tests」步骤里与其它 `*.test.sh` 一起执行。Run: `bash scripts/ci/guard-bypass-verdict.test.sh`，Expected: `5/5 通过`。
+  - 汇总脚本反向自检：把 `guard-bypass` 作业 `run` 段抽到 `scripts/ci/guard-bypass-verdict.sh`（作业先 `actions/checkout@v7`（`persist-credentials: false`）再 `bash scripts/ci/guard-bypass-verdict.sh "$LOCAL" "$HOSTED"`），新增 `scripts/ci/guard-bypass-verdict.test.sh` 表驱动 6 例：`success/""` → 0、`""/success` → 0、`failure/failure` → 1、`skipped/""` → 1、`""/""` → 1、`failure/success` → 0 且输出含 `::warning::`；在 `ci-build.yml` 的「image-pin merge gate tests」步骤里与其它 `*.test.sh` 一起执行。Run: `bash scripts/ci/guard-bypass-verdict.test.sh`，Expected: `6/6 通过`。
   - Gradle 反向自检：临时把 `B3TamperedParamsBypassTest.changedAmountIs409ActionMismatch` 的期望码改为 200，`./gradlew guardBypassTest` 退出码非 0 且报告该例失败；还原后再跑为 0。（只在本地做，不提交。）
 - [ ] **Step 5: 写 `bypass/README.md`**：§1 场景矩阵的启用状态列、本地命令 `./gradlew guardBypassTest`、「三样断言」定义、阶段 B/C 启用条件；在 #466 上评论同一张表（`gh issue comment 466`）。
 - [ ] **Step 6: 提交并开 PR**（aster-api，分支 `test/guard-bypass-466-phase-a`，含 A1–A5、A7），PR 描述列出用户动作 U1（见 §5）与 Step 4 的本地反向自检结果。CI 中确认作业 `Guard bypass suite (#466)` 出现、为绿，且其日志里 `guardBypassTest` 报告的测试数等于本地数。
@@ -379,7 +385,7 @@ Run: `./gradlew test --tests 'io.aster.guard.bypass.*'`，Expected: `No tests fo
 
 ### Task B1：代理拉起夹具
 
-**Files:** Create `e2e/guard-bypass/package.json`（`"private": true`，依赖 `@aster-cloud/aster-guard` 精确版本、`@modelcontextprotocol/sdk` 精确版本，`pnpm-lock.yaml` 提交）、`e2e/guard-bypass/upstream-recorder.mjs`（stdio MCP 上游：工具 `refund_customer`、`delete_customer_record`、`read_customer_record`，每次调用把 `{tool, arguments}` 追加到 `$BYPASS_LEDGER` 指向的 JSONL 文件）、`e2e/guard-bypass/injected-agent.mjs`（见 B2）、`src/test/java/io/aster/guard/bypass/ProxyHarness.java`
+**Files:** Create `e2e/guard-bypass/package.json`（`"private": true`，`"packageManager": "pnpm@<与 aster-guard 仓 package.json 相同的版本>"`，依赖 `@aster-cloud/aster-guard` 精确版本、`@modelcontextprotocol/sdk` 精确版本）、`e2e/guard-bypass/pnpm-lock.yaml`（在该目录内 `pnpm install` 生成并提交；本仓根目录没有 Node 工作区，不存在共享 lockfile）、`e2e/guard-bypass/upstream-recorder.mjs`（stdio MCP 上游：工具 `refund_customer`、`delete_customer_record`、`read_customer_record`，每次调用把 `{tool, arguments}` 追加到 `$BYPASS_LEDGER` 指向的 JSONL 文件）、`e2e/guard-bypass/injected-agent.mjs`（见 B2）、`src/test/java/io/aster/guard/bypass/ProxyHarness.java`
 
 **Interfaces:**
 - Produces: `ProxyHarness.start(String baseUrl, String apiKey, String policy, Path ledger) : ProxyHarness`（以 `ProcessBuilder` 运行 `node e2e/guard-bypass/injected-agent.mjs`，其内部以 stdio 拉起 `aster-guard-mcp --base-url … --policy … --tools refund_customer,delete_customer_record,read_customer_record --isolation network --upstream "node upstream-recorder.mjs"`；`ASTER_API_KEY` 走环境变量）；`AgentRun run(String scenario)` 读子进程 stdout 的单行 JSON `{calls: [{tool, arguments, isError, structuredContent}]}`；`List<LedgerLine> ledger()`。
@@ -408,12 +414,14 @@ Run: `./gradlew test --tests 'io.aster.guard.bypass.*'`，Expected: `No tests fo
 ```
 
 - [ ] Step 2–4：确认失败 → 实现 → `./gradlew guardBypassTest` 通过。
-- [ ] Step 5：CI：`ci-build.yml` 在 bypass 步骤前加 `actions/setup-node`（Node 24）与 `pnpm install --frozen-lockfile --dir e2e/guard-bypass`，bypass 步骤 `env` 加 `ASTER_GUARD_BYPASS_REQUIRE_NODE: "1"`；提交 `test(guard-bypass): 阶段 B 注入指令与代理层 DENY / 重放（#466）`，开 PR。
+- [ ] Step 5：CI：`ci-build.yml` 在 bypass 步骤前加 `pnpm/action-setup`（`package_json_file: aster-api/e2e/guard-bypass/package.json`，与 aster-guard 仓 CI 同法取 `packageManager` 版本）、`actions/setup-node`（Node 24）与 `pnpm install --frozen-lockfile`（`working-directory: aster-api/e2e/guard-bypass`）；本地先跑同一命令确认 lockfile 可冻结安装，bypass 步骤 `env` 加 `ASTER_GUARD_BYPASS_REQUIRE_NODE: "1"`；提交 `test(guard-bypass): 阶段 B 注入指令与代理层 DENY / 重放（#466）`，开 PR。
 - [ ] Step 6（可选，不进必需检查）：`nightly.yml` 加一个真实模型版本（同一 `injected-agent` 换成调用 BYOK 模型的 Agent，读 secret `GUARD_BYPASS_LLM_KEY`；缺失即 skip）。是否要做由用户决定（O3）。
 
 ---
 
 ## 阶段 C（部署层：k3s 直连必须失败）
+
+> **覆盖声明：** 阶段 A/B 的必需检查 `Guard bypass suite (#466)` **不覆盖** #466 第 1 条的部署层含义（模型触达不到原始工具）；`B1ApiDirectCallBypassTest` 只覆盖「绕过 Guard 直接打执行面 API」，`B1DirectConnectToolBypassTest` 在阶段 C 启用前恒为 skipped。阶段 C 启用前，#466 不得关闭，`bypass/README.md` 与 #466 评论中的矩阵把第 1 条标为「部署层未验证」。
 
 **前提：** 集群里存在「模型所在命名空间」与「受保护的 HTTP 工具端点」。今天两者都不存在：代理只有 stdio 形态（上游是子进程，天然满足 ADR 0054 §3.3 的 `network` 方式），HTTP 上游与 Streamable HTTP 代理属 ADR 0054 §8 ⑤。因此阶段 C 现在只能交付**探针与策略模板**，在第一个 HTTP 工具上线时随之启用。
 
@@ -432,7 +440,7 @@ Run: `./gradlew test --tests 'io.aster.guard.bypass.*'`，Expected: `No tests fo
 
 ### Task C2：首个 HTTP 工具上线时启用（登记，不在本计划实施）
 
-由 ADR 0054 §8 ⑤ 的实施计划承接：为工具命名空间加 `NetworkPolicy`（或工具侧 consume 票据，ADR 0054 §3.3 `auth`）、确定模型命名空间、把 `direct-connect-probe.sh` 接到部署后的 smoke（用户在本机以 `KUBECONFIG=~/.kube/k3s-config` 执行，或给 self-hosted runner 只读 + `pods/create` 于模型命名空间的 ServiceAccount），并把 `B1DirectConnectToolBypassTest` 的 `@Disabled` 原因改为指向该 smoke 的运行记录。
+由 ADR 0054 §8 ⑤ 的实施计划承接：为工具命名空间加 `NetworkPolicy`（或工具侧 consume 票据，ADR 0054 §3.3 `auth`）、确定模型命名空间、把 `direct-connect-probe.sh` 接到部署后的 smoke（用户在本机以 `KUBECONFIG=~/.kube/k3s-config` 执行，或给 self-hosted runner 只读 + `pods/create` 于模型命名空间的 ServiceAccount），并把 `B1DirectConnectToolBypassTest` 的 `@Disabled` 原因改为指向该 smoke 的运行记录；验收 = 一次用户执行的探针输出（退出码 0）贴在 #466，加上一次故意删掉 `NetworkPolicy`（或关闭票据核对）时探针退出 1 的反向记录。
 
 ---
 
@@ -450,7 +458,7 @@ Run: `./gradlew test --tests 'io.aster.guard.bypass.*'`，Expected: `No tests fo
 ## 4. 待裁定（不阻塞阶段 A）
 
 - **O1**：cloud 对高风险档案策略的 **ALLOW** 执行结论不开 guard 决策（`needsGuardDecision`），自报输入「填小」即绕过来源门。默认方案：把它记为新 issue（aster-cloud），在 A6 以 `test.fixme` 登记；可选方案：声明 `verifiedInputs` 档案的策略在 cloud 执行时对所有结论开 guard 决策（ALLOW 也需收据才可执行），影响 cloud 执行延迟与配额计量。
-- **O2**：A7 的绕过套件放在 `build` 作业内（默认，零重复 setup）还是独立作业（失败时更易定位、但本地 runner 串行多 ~5 分钟 setup）。
+- **O2**：A7 的绕过套件放在 `build` 作业内（默认，零重复 setup；回落语义同 `ci-result`，「本地红、托管绿」以 `::warning::` 显示）还是独立作业且不回落（失败即红、更易定位，但本地 runner 串行多 ~5 分钟 setup，且 runner 故障会直接卡住必需检查）。
 - **O3**：阶段 B Step 6 的真实模型 nightly 是否要做（成本：BYOK key 与每晚少量调用）。
 
 ## 5. 需要用户做的事
@@ -464,3 +472,4 @@ Run: `./gradlew test --tests 'io.aster.guard.bypass.*'`，Expected: `No tests fo
 - 规格覆盖：#466 七条 → §1 矩阵每行都有阶段 A 任务或 `@Disabled` / `fixme` 登记；「三样断言」→ `BypassAssertions`（决策记录 / 账本 / 收据行 + 链 `consumes[]`），对账（#465）尚未上线，以其将读取的同一数据（`consume_audit_id`、`consumes[].authoritative`）代替；ADR 0054 §7 第 2b 条 → A2 `denyThenOtherAllowedToolGetsIndependentDecision` 与 B2 `eachRetryGetsIndependentDecision`；第 7 条（向量一致）属 aster-guard 夹具层，不在本计划。
 - 与既有测试的关系：不复制 `GuardReceiptResourceTest` 的逐端点断言，套件的增量是鉴权打开、执行方视角、副作用账本与并发 / 挪用 / 嫁接等组合攻击。
 - 类型一致：`ReferenceExecutor.Outcome`（`Executed / Refused(stage, code)`）在 A1–A5、B2 中同名使用；Gradle 任务 `guardBypassTest`、标签 `guard-bypass`、作业名 `Guard bypass suite (#466)`、输出键 `guard-bypass` 全文一致。
+- Codex 审查（2026-11-14，82/100「需修改」）已处理：部署层覆盖声明与阶段 C 验收记录（Critical 1）；阶段 B 子目录 lockfile 与 pnpm 版本来源（Critical 2）；B1 攻击前建决策、事后用有权身份核对（I-1）；`check` 依赖套件并说明 deploy 影响（I-2）；撤销 kid 夹具写法（I-3）；Gradle 分流前移到 A1 Step 0、所有命令改用 `guardBypassTest`（I-4）；回落语义裁定 + `::warning::`（I-5，列 O2）；显式 `failOnNoDiscoveredTests` 与空套件反向自检（I-6）。
