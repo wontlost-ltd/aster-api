@@ -3,7 +3,7 @@
 - 状态：**ACCEPTED**（2026-11-08 用户确认；实施计划 docs/superpowers/plans/2026-11-08-guard-receipts-and-input-provenance.md）
 - 提出：2026-11-07；来源 wontlost-ltd/aster-api#464（「如何确认治理未被绕过」讨论第 2 项）
 - 相关：ADR 0040（Action Guard；§6 为 aster-guard 仓首版设计，本 ADR 细化并在冲突处取代之；§12 R63 执行收据与 consume）、ADR 0041 §12 R64（consume / result 事件）、ADR 0042 §3（from-evidence 执行路径）、#465（对账）、#466（绕过套件）
-- 实现仓：`aster-cloud/aster-guard`（本地 `/Users/rpang/IdeaProjects/aster-guard`，远程 `https://github.com/aster-cloud/aster-guard`，private，0.1.0 未发布）
+- 实现仓：`aster-cloud/aster-guard`（本地 `/Users/rpang/IdeaProjects/aster-guard`，远程 `https://github.com/aster-cloud/aster-guard`，**public**（2026-11-14 起，§11 D5），0.1.0 未发布）
 
 ---
 
@@ -141,7 +141,7 @@ const outcome = await guard.run(
 代理启动参数 `--isolation network|auth` **必填**，但它只是**配置自述**：代理无法自己证明隔离成立。隔离的验收是**部署级**的（§7 第二层），以 e2e 从模型所在网络命名空间直连原始工具端点**失败**为准；`--isolation` 的值只决定 e2e 用哪种断言（连接被拒 / 401）与从哪里读取配置：
 
 - `network`：e2e 读取部署仓（aster-deploy / k3s）中该上游工具的 `NetworkPolicy`（`podSelector` 指向工具 Pod，`ingress.from` 仅含代理 Pod 的标签选择器），并在模型所在命名空间启动一个一次性 Pod 对工具 Service 发起连接，期望超时 / 拒绝；策略对象缺失即判失败。
-- `auth`：工具侧要求 **consume 票据**——代理在 consume 200 后把 `{ decisionId, attemptId }` 以 `X-Aster-Guard-Consume` 头附在上游请求上，工具侧按下列规则核对，任一不满足 → 401 且**不执行**（fail-closed）；e2e 从模型所在网络不带头直连，期望 401。该方式要求工具可改；不可改的第三方工具只能用 `network`。
+- `auth`：工具侧要求 **consume 票据**——代理在 consume 200 后把 `{ decisionId, attemptId }` 以 `X-Aster-Guard-Consume` 头附在上游请求上（R66 改为 MCP 请求 `params._meta["io.aster/guard-consume"]` 并附 `envelope`，见 §11 D2），工具侧按下列规则核对，任一不满足 → 401 且**不执行**（fail-closed）；e2e 从模型所在网络不带头直连，期望 401。该方式要求工具可改；不可改的第三方工具只能用 `network`。
   1. **认证**：工具用**自己的** API key（不是代理的）调 `GET /api/v1/guard/decisions/{decisionId}`；该 key 所属租户必须与决策租户一致（跨租户 404，与 ADR 0040 §3.4 同口径），所以工具只能核对本租户的决策。R63 响应增 `consumedBy: { attemptId, executorId, consumedAt }` 与 `actionHash`（仅 ALLOW 且已消耗时写），已结果回写时另增 `result: { status, resultAt }`（未回写则缺省）；这些字段只出现在 `GET /decisions/{id}`，不进入 `response_json`，幂等重放不含。
   2. **绑定到当前请求**：工具对收到的参数按代理的同一映射（§3.2：工具知道自己的 `digestArgs` 配置，或由代理在头中附 `actionHash` 供工具**比对而非信任**）重算 `actionHash`，与响应 `actionHash` 相等；`consumedBy.attemptId` 等于票据 `attemptId`；`consumedAt` 在 `now − ttl` 之后（`ttl` = 工具侧配置，缺省同收据 TTL `PT5M`）；`effectiveOutcome == ALLOW`；未写 result（响应 `result` 缺省）。
   3. **fail-closed**：Guard 不可达、超时、非 200、字段缺失或不符 → 401 不执行，不做「查不到就放行」。工具侧不缓存核对结果（每请求一次 GET；成本可接受——它只对有副作用的调用发生）。
@@ -174,7 +174,7 @@ result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, f
 
 - 仓：`aster-cloud/aster-guard`（现状）；单包 `@aster-cloud/aster-guard`，入口 `.`（SDK）与 `./mcp`，bin `aster-guard-mcp`（现状 `package.json`）。
 - 语言：**TypeScript 先行**（0.2.0 实现本 ADR）；Java `GuardClient` 留作后续（aster-cloud 没有 Java 执行方，aster-api 自身是签发方不需要客户端；需求出现再立项）。
-- 发布：tag-push 触发 release workflow，npm trusted publisher + provenance（ADR 0040 §6；workflow 照 `aster-lang-ts/.github/workflows/release.yml`，发布前用户需在 npm 为 `@aster-cloud/aster-guard` 配置 Trusted Publisher——与 design-system v0.3.2 时同样的前置操作）。独立版本号，不进 ADR 0023 lockstep。首个发布版本 **0.2.0**（0.1.0 从未发布，直接跳过）。
+- 发布（R66 取代本段的 Trusted Publisher 部分，见 §11 D6）：tag-push 触发 release workflow，npm trusted publisher + provenance（ADR 0040 §6；workflow 照 `aster-lang-ts/.github/workflows/release.yml`，发布前用户需在 npm 为 `@aster-cloud/aster-guard` 配置 Trusted Publisher——与 design-system v0.3.2 时同样的前置操作）。独立版本号，不进 ADR 0023 lockstep。首个发布版本 **0.2.0**（0.1.0 从未发布，直接跳过）。
 - 容器镜像：Streamable HTTP 模式需要常驻进程，第二阶段随 `aster-deploy` 出镜像；stdio 模式只需 npm 包。
 
 ---
@@ -302,3 +302,62 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 - **I3 结果回写解除「执行侧丢失」**：代理 / SDK 的 `reportResult` 失败只记日志（§2.1 第 6 步）→ 对账在宽限后报 `consumed_without_result`，补写后自动解除；consume 响应丢失时报 `aborted`（ADR 0040 §12 D5）不会形成孤儿。
 - **I4 #466 部署层**：绕过套件第 1 条（直连原始工具）在隔离成立时直连失败、无副作用、对账零孤儿；用于证明「对账是第二道」（§7 末段）的反证场景是**故意关掉隔离**（去掉 `NetworkPolicy` 或关闭工具侧票据核对）后直连执行，此时工具按 §10.1 上报义务照报，下一轮对账必须出现 `side_effect_without_decision`，由 #466 断言。
 - **I5 旧代理 / 旧 SDK**：0.1.0 不 consume → 它放行的每个 ALLOW 都会成为 `allow_unconsumed`（info，不告警），治理页据此列出「未消耗 ALLOW」（ADR 0040 §12 D10）。
+
+## 11. 2026-11 修订：策略来源与 0.2.0 细化（R66，#464）
+
+- 状态：**PROPOSED**（2026-11-14；实施计划 docs/superpowers/plans/2026-11-14-guard-execution-point.md，计划中称「R65」——R65 / §10 已由 #465 对账契约（#523）占用，本修订顺延为 R66 / §11，内容不变）
+- 范围：#464 实施中与本 ADR 原文不同、或原文未定的决定。用户合并本修订即确认 D1–D12。
+
+### 11.1 D1 策略来源：cloud 发布即部署
+
+今天 aster-api 没有创建 / 部署版本的 REST 端点，prod `policy_versions` 为空，代理 / SDK 对任何 cloud 策略调 `POST /guard/decisions` 都得 404 `policy_not_found` → 客户端 DENY。候选：
+
+| 选项 | 做法 | 结论 |
+|---|---|---|
+| **(a) 发布即部署**（采纳） | cloud 某版本成为策略默认版本时，经 HMAC `PUT /api/v1/guard/policy-deployments/{cloudPolicyId}` 把源码 + 冻结别名 + 冻结词汇推给 aster-api，编译校验后建版本并激活；删除策略时 `DELETE` 撤回 | 不改 `/decisions` 与收据契约；收据带 `policyVersionId`；cloud 不进 Guard 热路径；复用 catalog / 版本 / 激活 / 审计 |
+| (b) 代理走 evaluate-source + from-evidence | 两端点只认 HMAC，HMAC 密钥不能发给 Agent 宿主；from-evidence 不为任意结论开决策 | 否决 |
+| (c) `/decisions` 按引用拉 cloud 默认版本 | 改 `/decisions` 契约；cloud 不可用时缓存过期后全部 DENY | 否决 |
+| (d) 代理带内联源码 | ADR 0040 §2.1 方案 C 已否决 | 否决 |
+
+(a) 的语义：
+
+- **触发**：以 cloud 实际执行的默认版本为准。只有 `setDefaultVersion` 改变默认版本 → 部署该版本；策略删除 → 撤回；审批、弃用、归档非默认版本 → 不同步。
+- **先部署、后提交**：Guard 不得落后于 cloud 默认版本（否则新版本想拒绝的动作被旧版本放行）。cloud 先在独立事务里把该策略的 `guardGeneration` 加一并记期望状态（`desired = { cloudVersionId } | { withdrawn: true }`），再同步调用 aster-api（PUT / DELETE 带 `generation`），成功后才提交默认版本变更 / 删除；提交事务锁策略行并核对 `guardGeneration` 仍是自己预留的值，否则 409 `default_changed_concurrently`。aster-api 不可用或拒绝 → cloud 操作失败（503 `guard_deploy_unavailable` / 原错误码），默认版本不变。崩溃窗口由 cron `guard-deploy-sync`（每 5 分钟）以 generation+1 重发**当前实际**默认版本 / 撤回来收敛。
+- **代际**：aster-api 在 catalog 上记 `external_generation`；`generation < 已存` → 409 `stale_generation`（cloud 视为已被取代），`=` → 幂等。
+- **地址**：`moduleName` = 源码 `Module` 头；`functionName` = cloud `/execute` 实际执行的入口规则（与 cloud 执行同一取法）；catalog 以 `(tenant_id, module_name, function_name)` 唯一，另记 `external_ref = cloudPolicyId`。同租户另一 cloud 策略占用同一地址 → 409 `address_conflict`（不覆盖）。
+- **版本**：`external_ref = cloudVersionId`；aster-api 自算源码 UTF-8 的 sha256 与 `sourceSha256` 比对，不等 → 400 `invalid_deployment`；同 `cloudVersionId` 重放 → 只做激活（幂等，也用于「切回旧版本」）；同 `cloudVersionId` 而源码不同 → 409 `deployment_mismatch`；编译失败 → 422 `compile_failed`；入口函数不存在 → 422 `function_not_found`；词汇超界 → 422 `vocabulary_invalid`。版本以 `sourceKind = "cloud-deploy"`、`approvedBy = <签名用户>` 经 DRAFT → APPROVED → ACTIVE 落库：跳过 aster-api 套餐 reviewer 校验与 SUBMITTED 前置（cloud 四眼即权威），**保留** ADR 0031 稳定性门禁（APPROVE / ACTIVATE 两面，422 `stability_blocked`）与激活乐观锁（409 `concurrent_activation`）；写审计事件 `POLICY_DEPLOYED` / `POLICY_WITHDRAWN`。
+- **冻结词汇**：版本新增 `vocabulary_json`；编译与 `sourceEnvelopeSha256` 读同一快照（`compileScopesJson()` 不再恒为空），无词汇的旧版本 envelope 不变。
+- **租户**：HMAC 签名的租户（团队策略为团队 id，个人策略为用户个人租户），与代理 API key 的租户一致才能解析到。
+- **回读策略地址**：`GET /api/v1/guard/decisions/{id}` 增 `policyModule / policyFunction`（只在回读端点，不进 `response_json`），供 `auth` 模式工具侧按 D12 核对。
+
+### 11.2 D2–D11
+
+| # | 决定 | 理由 | 偏离 |
+|---|---|---|---|
+| D2 | `auth` 模式票据载体为 MCP 请求 `params._meta["io.aster/guard-consume"] = { decisionId, attemptId, envelope }`，`envelope` = 被哈希 action 去掉 `context`；不是 `X-Aster-Guard-Consume` 头 | 0.2.0 只有 stdio 上游，没有 HTTP 头可带；工具不知道 principal / agent，须由票据带 envelope 才能重算整 action 哈希（envelope 不受信，被 `actionHash` 比对绑定） | §3.3 `auth` |
+| D3 | HTTP 上游（`--upstream-url` / `--upstream-auth-env`）推迟到 §8 ⑤；0.2.0 仅 stdio 上游 | 随 Streamable HTTP 服务端与镜像一起做 | §3.3 网络策略行 |
+| D4 | 拒绝 / 待审批 / 阻断载荷 `{ asterGuard }` **总在** `_meta`；上游工具未声明 `outputSchema` 时另放 `structuredContent` | MCP SDK Client 按 `outputSchema` 校验 `isError` 结果的 `structuredContent`，DENY 载荷会让下游 `callTool` 抛 `InvalidParams` 而看不到拒绝 | §2.2「structuredContent 是契约」 |
+| D5 | `aster-cloud/aster-guard` 已改为 **public**（2026-11-14，用户执行） | npm provenance 不支持私有仓 | §6、头部「private」 |
+| D6 | 发布用组织级 Actions secret `NPM_TOKEN`（visibility all，无仓库级同名 secret）：`release.yml` 的 publish job `permissions: id-token: write`、`NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}`、`npm publish --provenance --access public`；**不**配置 per-package Trusted Publisher、不做本机首发 | 用户决定（2026-11-14）；公开仓 + OIDC `id-token` 仍产出 provenance 证明；与组织其它包同一路径 | §6「npm trusted publisher」 |
+| D7 | cloud from-evidence 执行路径的 consume / 回写（§8 ④ 后半）不在 #464：cloud 没有审批后自动执行的执行方，无副作用可绑定；随「审批后执行」另立 | — | §8 ④ |
+| D8 | 代理 `--tenant-id` 必填（收据租户核对需要）；API key 环境变量沿用代码现状 `ASTER_GUARD_API_KEY` | 0.1.0 已用此名 | §3.1 写 `ASTER_API_KEY` |
+| D9 | 部署版本 DRAFT→APPROVED→ACTIVE、`approvedBy` = cloud 签名用户、只部署入口函数；设默认 / 删除「先部署后提交」，依赖 aster-api 可用 | cloud 四眼即权威；Guard 不得落后于 cloud | — |
+| D10 | 演示验收以脚本化对抗驱动为准，真实模型为用户执行的 runbook | 确定性、可重复 | — |
+| D11 | `auth` 模式工具侧核对 `verifyConsumeTicket` 必须带原子 `AttemptLedger`（首次认领 true，之后恒 false）：**at-most-once 放行**，不是 exactly-once 效果；认领后工具崩溃则动作不执行，须重新申请决策；要求恰好一次的工具把 `attemptId` 与业务副作用同事务落库或作业务幂等键 | §3.3 第 2 条「未写 result」只在首次执行回写之后生效，执行期间同一票据可被并发 / 连续重放 | 补强 §3.3 `auth` 第 2 条 |
+
+### 11.3 D12 收据须绑定期望策略（#517）
+
+`actionHash`（`jcs-sha256/v1`）只覆盖请求体的 `action`，**不含** `policyModule / policyFunction`。同租户持 `MEMBER` key 的直连调用方可把同一动作提交给另一个更宽松的已部署策略，得到同一 `actionHash` 的独立 ALLOW 收据。不改 `actionHash` 契约与共享向量（改即 `/v2`，破坏 SDK 与向量），改由执行方核对：
+
+- **SDK `run` / 代理**：验签通过后再核对 `payload.policyVersionId` **存在**且等于同一响应的 `policyVersion.id`；不符或缺失 → `blocked` `receipt_invalid`（`detail: policy_mismatch`），不 consume。`run` 的决策请求本就带执行方配置的 `policyModule / policyFunction`，这一步把收据钉在该请求解析出的版本上，防止响应与收据错配。
+- **工具侧（`auth`）**：`verifyConsumeTicket` 必填 `policy: { module, function }`，回读的 `policyModule / policyFunction`（D1 回读字段）不等 → 拒绝 `policy_mismatch`；回读缺这两项（旧 aster-api）→ `guard_unavailable`（fail-closed）。
+- 绕过套件（#466）加一例：换模块取得的 ALLOW 被工具侧拒绝。
+
+### 11.4 只有被消耗的收据才是授权（#510 / ADR 0046 §11.8）
+
+ADR 0046 §11.8 起，from-evidence 对 verified-input 档案也会开 ALLOW 决策并签发执行收据。执行点对授权的判定**只**看「本执行方对本请求的决策验签通过且 consume 200」：`effectiveOutcome == ALLOW`、持有收据、读到别处的 ALLOW（包括 from-evidence 的、审批后转 ALLOW 的、`guard_status` 查到的）都**不是**授权；SDK 与代理没有接受外来收据或决策 id 执行的入口。未被消耗的 ALLOW 在 #465 对账里是 `allow_unconsumed`（info）。
+
+### 11.5 与 #465（§10）的分工
+
+- 代理与 SDK 是**执行方**，不是副作用落地方：它们的执行记录就是 consume / result（§5），**不**调用 `POST /guard/side-effects`（§10.1 选项 B「不做」）。
+- SDK 另提供 `reportSideEffects(effects[])` 供**工具侧 / 业务系统**上报（§10.5 I2）；`executorId` 缺省值：代理 `aster-guard-mcp@<host>`、SDK `run` `aster-guard-sdk@<host>`（§10.5 I1）。
