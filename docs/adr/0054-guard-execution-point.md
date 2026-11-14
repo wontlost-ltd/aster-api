@@ -165,7 +165,7 @@ result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, f
 
 - `executorId` 形态：`<component>@<host-or-pod>[:<instance>]`，如 `aster-guard-mcp@agent-host-1`、`aster-cloud-exec@cloud-7f9c`；≤ 255 字符、无控制字符。它与 `attemptId` 都是**关联 / 审计用途**的自报值，不承担身份认证；身份是 API key（§3.1），对账里「谁执行的」以链事件 `performed_by` 与 `requested_api_key_id` 为准，`executorId` 只用来把 consume、result 与执行方日志对上。
 - `attemptId`：执行方生成的 UUID v4，每次 `run` 一个；同一 `decisionId` 只会有一个被 consume 接受。
-- 代理与 SDK 自身**无持久化**，它们的「执行侧记录」就是 consume / result 两次回写；对账任务（#465，aster-api 定时）只读 `guard_receipts` 与链事件，不需要执行方再上报。aster-cloud 自有执行方（策略执行、workflow runner）在自己的表里记 `decisionId`（`executions.metadata.guardDecisionId` 已存在，ADR 0041 §5.2），同时按本契约 consume / 回写；外部业务系统的批量上报端点是 #465 的范围。
+- 代理与 SDK 自身**无持久化**，它们的「执行侧记录」就是 consume / result 两次回写；对账任务（#465，aster-api 定时）只读 `guard_receipts` 与链事件，不需要执行方再上报。aster-cloud 自有执行方（策略执行、workflow runner）在自己的表里记 `decisionId`（`executions.metadata.guardDecisionId` 已存在，ADR 0041 §5.2），同时按本契约 consume / 回写；外部业务系统的批量上报端点是 #465 的范围（→ §10）。
 - 对账三类异常（#465）在本契约下的判定：无 `decisionId` 的副作用 → 孤儿；有 consume 无 result 超过 `result-grace` → 执行侧丢失；consume 的决策为 DENY → 不可能发生（consume 对非 ALLOW 409 `not_allowed`），若出现说明 aster-api 自身被绕过，严重告警。
 
 ---
@@ -219,3 +219,82 @@ result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, f
 | `digestArgs` | 显式列出 | 超过阈值（如 8 KB）自动摘要 | 哈希输入取决于大小阈值，跨实现更难一致 |
 | PENDING 超时返回 | `isError: true` + `status: pending` | `isError: false` 的「等待中」结果 | 模型更可能误以为成功 |
 | 回写失败 | 记日志，不影响结果 | 重试队列 | 代理需要本地状态 |
+
+---
+
+## 10. 对账契约（R65，#465）
+
+- 状态：**PROPOSED**（2026-11-14；实施计划 docs/superpowers/plans/2026-11-14-guard-reconciliation.md）
+- 范围：只记外部可见的契约（端点、类别、指标、告警、与 #464 的集成点）；SQL、类名等实现细节见实施计划。
+
+### 10.1 事实来源
+
+| 选项 | 能抓什么 | 抓不到 | 结论 |
+|---|---|---|---|
+| A. 只读账本（`guard_receipts` + 链事件） | 已消耗无结果、未消耗 ALLOW、对非 ALLOW 消耗、无消耗结果、链上有决策事件而决策未落库 | **绕过**（绕过者不留任何账本记录） | 必做，但不够 |
+| B. 执行方（代理 / SDK）自报执行记录 | 同 A（它的「执行记录」就是 consume / result，§5） | 绕过——被绕过的正是它 | 不做（与 A 重复） |
+| C. **副作用落地方上报**（工具服务、业务系统、cloud）批量端点 | 无 decisionId 的副作用、凭未消耗 / 非 ALLOW 决策落地的副作用、参数或尝试不符、一次决策多次落地 | 落地方本身不上报的副作用 | **选 A + C** |
+| D. aster-api 主动拉取业务系统（连接器） | 同 C | — | 不做：每个系统一个连接器，超出本期 |
+
+C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理，但副作用总要落在某个系统里，由那个系统上报。§3.3 `auth` 隔离模式下工具侧本就收到 `X-Aster-Guard-Consume: {decisionId, attemptId}`，是天然的上报方。
+
+「有效消耗」一律且只以 `guard_receipts.consume_audit_id IS NOT NULL` 判定（ADR 0041 §12 D1「读法」），`consumed_at` 只用作时间坐标；不数 `ACTION_GUARD_CONSUME_*` 事件、不看 `success` 列。迁移前（`V6.35.0` 之前）的决策没有收据行，账本自检不覆盖它们（不回填，ADR 0040 §12 D10）。
+
+### 10.2 上报端点
+
+`POST /api/v1/guard/side-effects`，请求：
+
+```
+{ "effects": [ { "effectId", "source", "occurredAt", "action": { "name" }, "resource"?: { "type", "id" },
+                 "decisionId"?, "attemptId"?, "actionHash"? } ] }
+```
+
+- 1–500 条；`effectId` 1–128 字符无控制字符；`source` 匹配 `[a-z0-9][a-z0-9._-]{0,63}`；`occurredAt` ISO-8601 且 `≤ now + PT5M`；`action.name` 1–255；`resource.type / id` 各 ≤ 255；`decisionId` / `attemptId` 为 UUID 形态；`actionHash` 64 位小写 hex。
+- 任一条不合法 → 400 `{ "error": "invalid_side_effect", "index": <i>, "field": "<name>" }`，整批不写；重复键 / 非法 JSON → 400 `invalid_side_effect`（无 `index`）。
+- 幂等键 `(tenant, source, effectId)`：重复上报计入 `duplicates`、不改原行。200 `{ "accepted": n, "duplicates": m }`。不计量配额（它是账本输入，不含评估）。
+- **上报粒度**：一个上报方（`source`）对一次受守卫动作（一个 `decisionId`）**恰好上报一条**；一个动作落地多处副作用时由上报方聚合成一条（`effectId` 取上报方自己的动作记录键）。不同 `source` 观测同一决策是正常的。据此同 `(decisionId, source)` 的第二条已匹配上报判 `side_effect_mismatch`（`reason = replayed`）。
+- 鉴权：Bearer API key（SDK、工具服务、业务系统）与 HMAC 内部调用（cloud）双通道，`MEMBER` 即可；租户取自已验证身份。
+
+查询与确认（类级 `MEMBER`，确认需 `ADMIN`；跨租户、不存在、非数字 id 一律 404 空体）：
+
+- `GET /api/v1/guard/reconciliation` → `{ "lastRun": { "runId", "finishedAt", "windowStart", "windowEnd", "newOrphans", "resolvedOrphans", "openOrphans" } | null, "open": { "<kind>": n }, "openTotal": n, "resultGrace": "PT15M", "lookback": "P7D" }`（`open` 只列非零）。
+- `GET /api/v1/guard/reconciliation/orphans?status=OPEN|RESOLVED|ACKNOWLEDGED&kind=<kind>&limit=1..200&before=<id>` → `{ "items": [ { "id", "kind", "severity", "status", "decisionId"?, "sideEffectId"?, "executor", "executorId"?, "detectedAt", "resolvedAt"?, "resolution"?, "acknowledgedBy"?, "detail" } ], "next"?: <id> }`；`id` 降序，`status` 缺省 `OPEN`，`limit` 缺省 50；非法参数 → 400 `invalid_query`。
+- `POST /api/v1/guard/reconciliation/orphans/{id}/ack`，体 `{ "comment": "<1–1000 字符>" }` → 200 同列表项；非 `OPEN` → 409 `{ "error": "not_open", "status": "<当前>" }`；`comment` 不合法 → 400 `invalid_ack`。确认写链事件 `GUARD_ORPHAN_ACKNOWLEDGED`。
+
+### 10.3 孤儿类别
+
+租户 `t`，`cutoff = now − aster.guard.result-grace`，`since = now − lookback`（缺省 `P7D`）。`kind` 是固定枚举（snake_case），`severity` 由 kind 决定：
+
+| kind | 判定 | severity | 自动解除 |
+|---|---|---|---|
+| `side_effect_without_decision` | 上报无 `decisionId`，或该 id 在本租户不存在（含他租户的真实 id——不泄露其存在） | critical | 否（只能确认） |
+| `side_effect_unconsumed` | 上报的决策存在，但无收据行或未有效消耗（含 DENY / PENDING / 迁移前旧 ALLOW / 未消耗 ALLOW） | critical | 否 |
+| `side_effect_mismatch` | 决策已消耗，但上报的 `attemptId` / `actionHash`（给了才比）与收据行不符；或同一 `(decisionId, source)` 已有更早的已匹配上报（`replayed`） | critical | 否 |
+| `consumed_without_result` | 已有效消耗、`consumed_at ∈ [since, cutoff)` 且无结果（执行侧丢失，ADR 0040 §12 D7） | warning | 是：补到结果 → `RESOLVED / late_result` |
+| `allow_unconsumed` | 未消耗、`expires_at < cutoff` 且 `issued_at ≥ since`（ADR 0040 §12 D10 治理缺口） | info | 是：检出满 `allow-unconsumed-ttl`（缺省 `P7D`）→ `RESOLVED / aged_out` |
+| `consume_on_non_allow` | 已有效消耗，但决策既非 `ALLOW` 也无 `APPROVED` 审批，或收据与决策租户不同（服务端本应 409，出现即 aster-api 自身被绕过） | critical | 否 |
+| `result_without_consume` | 有结果而未有效消耗（行级判定；复核失败的结果事件按 ADR 0041 §12 D1 读作未生效，是合法状态，不按事件判） | critical | 否 |
+| `orphan_receipt` | 链上有 `ACTION_GUARD_DECISION` 事件（`timestamp ∈ [since, cutoff)`），而本租户无对应决策行：同一幂等键 / 证据相关键并发登记的落败方已先把决策事件写入链、决策行随唯一约束冲突未落库（#522），或进程在两步之间崩溃 | info | 是：同 `allow_unconsumed` 以 `aged_out` 解除 |
+
+`orphan_receipt` 不可执行（无决策行即无收据行，consume 一律 404），只是链上噪声；单列一类是为了让它不混入任何 critical 类别、不触发绕过告警，也不被重复计数（同一决策事件只记一行）。根因修复（决策事件与决策行同事务写入）由 #522 承担。
+
+状态 `OPEN | RESOLVED | ACKNOWLEDGED`，解除方式 `late_result | aged_out | acknowledged`。同一事实（`tenant, kind, subject`）永远只有一行，跨多轮对账不重复；OPEN 孤儿不随保留期删除。某租户一次对账有新孤儿或有解除时写一条链事件 `GUARD_RECONCILIATION`（`performedBy=SYSTEM`；metadata `runId, windowStart, windowEnd, newOrphans, resolvedOrphans, openOrphans, newByKind, newOrphanIds[≤64]`，超出加 `newOrphansTruncated: true`）；无变化的对账不入链。
+
+### 10.4 指标与告警
+
+- `guard_orphan_actions{tenant,executor,kind}`（Gauge）：当前 `OPEN` 孤儿数，只发非零序列；每个副本定时从库重读（各副本同值，告警取 `max`）。`executor` 由 `executorId`（或上报 `source`）`@` 之前的组件名小写归一：在白名单 `ASTER_GUARD_RECONCILIATION_EXECUTOR_LABELS`（缺省 `aster-guard-mcp,aster-guard-sdk,aster-cloud-exec`）内取原值，否则 `other`，空为 `unknown`；`tenant` 至多 `ASTER_GUARD_RECONCILIATION_METRIC_MAX_TENANTS`（缺省 100）个，其余合并为 `_other`。原始 `executorId` 只进孤儿 `detail`。
+- `guard_orphan_actions_detected_total{kind}`（Counter）：新孤儿数（只由检出它的副本累加，`sum` 正确）。
+- `guard_reconciliation_runs_total{outcome}`（Counter，`ok | failed | skipped_locked | skipped_recent`）：按租户计。
+- `guard_reconciliation_last_success_seconds`（Gauge）：本副本最近一次完整跑完租户循环的 epoch 秒，告警取 `max`。
+
+告警（k3s `PrometheusRule`）：`AsterGuardBypassSuspected`（任一 critical kind > 0，`for: 0m`，critical）、`AsterGuardExecutionLost`（`consumed_without_result` ≥ 5 持续 30 m，warning）、`AsterGuardReconciliationStale`（`time() − max(last_success) > 1800` 持续 10 m，warning）。info 类（`allow_unconsumed`、`orphan_receipt`）不告警，只在治理页展示。
+
+对账每 5 分钟一轮（`ASTER_GUARD_RECONCILIATION_CRON`），每租户独立事务、多副本以租户 advisory 锁串行；账本类按 `[since, cutoff)` 滑动窗口重扫，上报类处理全部未对账的行（每租户每轮至多 `batch-limit`，超出顺延）。
+
+### 10.5 与 #464 的集成点
+
+- **I1 `executorId` 组件名**：代理用 `aster-guard-mcp@<host>[:<inst>]`，SDK `run` 缺省用 `aster-guard-sdk@<host>`，cloud 执行路径用 `aster-cloud-exec@<pod>`——三者正是 `executor-labels` 缺省白名单；改名须同时改 `ASTER_GUARD_RECONCILIATION_EXECUTOR_LABELS`。
+- **I2 工具侧上报**：§3.3 `auth` 隔离模式的工具在核对 consume 票据后落地副作用，是上报端点的首选上报方——建议 SDK 提供 `reportSideEffects(effects[])`（同一 API key，`source` = 工具名），README「工具侧接入」写明「执行后上报，带票据里的 `decisionId / attemptId`」。不提供该助手时工具可直接调 REST。
+- **I3 结果回写解除「执行侧丢失」**：代理 / SDK 的 `reportResult` 失败只记日志（§2.1 第 6 步）→ 对账在宽限后报 `consumed_without_result`，补写后自动解除；consume 响应丢失时报 `aborted`（ADR 0040 §12 D5）不会形成孤儿。
+- **I4 #466 部署层**：绕过套件第 1 条（直连原始工具）若工具侧照常上报，下一轮对账必须出现 `side_effect_without_decision`——这是「对账是第二道」（§7 末段）的端到端证据，由 #466 断言。
+- **I5 旧代理 / 旧 SDK**：0.1.0 不 consume → 它放行的每个 ALLOW 都会成为 `allow_unconsumed`（info，不告警），治理页据此列出「未消耗 ALLOW」（ADR 0040 §12 D10）。
