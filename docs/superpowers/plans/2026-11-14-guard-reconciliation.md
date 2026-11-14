@@ -34,20 +34,20 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 | kind | 判定（租户 `t`，`cutoff = now − result-grace`，`since = now − lookback`） | severity | 自动解除 |
 |---|---|---|---|
 | `side_effect_without_decision` | 上报无 `decisionId`，或该 id 在本租户 `guard_decisions` 不存在 | critical | 否（只能确认） |
-| `side_effect_unconsumed` | 上报的决策存在，但无收据行或 `consumed_at IS NULL`（含 DENY / PENDING / 迁移前旧 ALLOW / 未消耗 ALLOW） | critical | 否 |
+| `side_effect_unconsumed` | 上报的决策存在，但无收据行或未有效消耗（`consume_audit_id IS NULL`；含 DENY / PENDING / 迁移前旧 ALLOW / 未消耗 ALLOW） | critical | 否 |
 | `side_effect_mismatch` | 决策已消耗，但上报的 `attemptId` ≠ 行 `attempt_id`、或 `actionHash` ≠ 行 `action_hash`（上报方给了才比）；或同一 `(decision_id, source)` 已有更早的已匹配上报（`detail.reason = replayed`） | critical | 否 |
-| `consumed_without_result` | `consumed_at ∈ [since, cutoff)` 且 `result_status IS NULL`（「执行侧丢失」，ADR 0040 §12 D7） | warning | 是：之后补到结果 → `RESOLVED / late_result` |
-| `allow_unconsumed` | `consumed_at IS NULL` 且 `expires_at < cutoff` 且 `issued_at ≥ since`（ADR 0040 §12 D10 的治理缺口；无法区分「Agent 决定不做」与「旧 SDK 不 consume 照做」） | info | 是：`detected_at` 超过 `allow-unconsumed-ttl` → `RESOLVED / aged_out` |
-| `consume_on_non_allow` | `consumed_at IS NOT NULL` 且决策既非 `outcome='ALLOW'` 也无 `APPROVED` 审批，或收据行与决策行租户不同（服务端已 409 `not_allowed`，出现即 aster-api 自身被绕过） | critical | 否 |
-| `result_without_consume` | `result_status IS NOT NULL` 且 `consumed_at IS NULL`（行级；不按 `ACTION_GUARD_RESULT` 事件判：复核失败的结果事件按 ADR 0041 §12 D1 读作未生效，是合法状态） | critical | 否 |
+| `consumed_without_result` | 已有效消耗（`consume_audit_id IS NOT NULL`）、`consumed_at ∈ [since, cutoff)` 且 `result_status IS NULL`（「执行侧丢失」，ADR 0040 §12 D7） | warning | 是：之后补到结果 → `RESOLVED / late_result` |
+| `allow_unconsumed` | `consume_audit_id IS NULL` 且 `expires_at < cutoff` 且 `issued_at ≥ since`（ADR 0040 §12 D10 的治理缺口；无法区分「Agent 决定不做」与「旧 SDK 不 consume 照做」） | info | 是：`detected_at` 超过 `allow-unconsumed-ttl` → `RESOLVED / aged_out` |
+| `consume_on_non_allow` | `consume_audit_id IS NOT NULL` 且决策既非 `outcome='ALLOW'` 也无 `APPROVED` 审批，或收据行与决策行租户不同（服务端已 409 `not_allowed`，出现即 aster-api 自身被绕过） | critical | 否 |
+| `result_without_consume` | `result_status IS NOT NULL` 且 `consume_audit_id IS NULL`（行级；不按 `ACTION_GUARD_RESULT` 事件判：复核失败的结果事件按 ADR 0041 §12 D1 读作未生效，是合法状态） | critical | 否 |
 
-「有效消耗」一律以收据行（`consumed_at` / `consume_audit_id`）为准，不数 `ACTION_GUARD_CONSUME_*` 事件、不看 `success` 列（ADR 0041 §12 D1）。迁移前（`V6.35.0` 之前）的决策没有收据行，账本自检不覆盖它们（不回填，ADR 0040 §12 D10）；上报指向它们时归 `side_effect_unconsumed`。
+「有效消耗」一律且只以 `guard_receipts.consume_audit_id IS NOT NULL` 判定（ADR 0041 §12 D1「读法」），`consumed_at` 只用作时间坐标；不数 `ACTION_GUARD_CONSUME_*` 事件、不看 `success` 列。今天 `GuardReceiptJpaStore.consume` 在同一 UPDATE 里写这两列，二者不一致只可能来自直接改库——此时按 D1 读作「未消耗」（`consumed_at` 有值而指针为空的收据被上报引用 → `side_effect_unconsumed`），测试 `pointerIsAuthoritativeNotConsumedAt` 锁定。迁移前（`V6.35.0` 之前）的决策没有收据行，账本自检不覆盖它们（不回填，ADR 0040 §12 D10）；上报指向它们时归 `side_effect_unconsumed`。
 
 **D3 租户范围。** 每租户独立一次对账、独立事务、独立失败。候选租户 = `guard_receipts.issued_at ≥ since` ∪ `guard_side_effects.reconciled_at IS NULL` ∪ `guard_orphan_actions.status='OPEN'` 的去重租户。所有查询带 `tenant_id = :t`；端点租户取自 `RequestIdentityResolver`，跨租户一律 404 空体（ADR 0040 §3.4）。
 
 **D4 调度、窗口与回填。** `aster.guard.reconciliation.cron=${ASTER_GUARD_RECONCILIATION_CRON:0 */5 * * * ?}`（每 5 分钟）；账本类按 `[since, cutoff)` 滑动窗口重扫，`lookback=${ASTER_GUARD_RECONCILIATION_LOOKBACK:P7D}`——首次上线即回填 7 天，停机不超过 7 天无遗漏，窗口重叠由 D5 吸收；上报类不按时间窗，处理全部 `reconciled_at IS NULL` 的行（每租户每轮至多 `batch-limit=${ASTER_GUARD_RECONCILIATION_BATCH_LIMIT:5000}` 条，按 `id` 升序；超出留给下一轮并 warn）。上报不需要等宽限：协议上 consume 先于执行先于上报。
 
-**D5 幂等与多副本。** 每个副本都跑调度；每租户在一个 `QuarkusTransaction.requiringNew()` 里先 `SELECT pg_try_advisory_xact_lock(hashtextextended('guard-reconcile:' || :t, 0))`，拿不到即跳过（计 `skipped_locked`）；拿到后若该租户最近一次 run 的 `finished_at > now − min-interval`（`${ASTER_GUARD_RECONCILIATION_MIN_INTERVAL:PT2M}`）也跳过（计 `skipped_recent`）。孤儿写入是 `INSERT … ON CONFLICT (tenant_id, kind, subject_key) DO NOTHING RETURNING`，同一事实永远一行；上报行的 `reconciled_at` 与孤儿行、run 行、链事件在**同一事务**提交（`AuditChainAppender.appendInCurrentTransaction`），任一步失败整租户回滚、下轮重来。
+**D5 幂等与多副本。** 每个副本都跑调度；每租户在一个 `QuarkusTransaction.requiringNew()` 里先 `SELECT pg_try_advisory_xact_lock(hashtextextended('guard-reconcile:' || :t, 0))`，拿不到即跳过（计 `skipped_locked`）；拿到后若该租户最近一次 run 的 `finished_at > now − min-interval`（`${ASTER_GUARD_RECONCILIATION_MIN_INTERVAL:PT2M}`）也跳过（计 `skipped_recent`）。孤儿写入是 `INSERT … ON CONFLICT (tenant_id, kind, subject_key) DO NOTHING RETURNING`，同一事实永远一行；上报行的 `reconciled_at` 与孤儿行、run 行、链事件在**同一事务**提交（`AuditChainAppender.appendInCurrentTransaction`），任一步失败整租户回滚、下轮重来。**锁顺序约束**：对账事务先取对账 advisory 锁、再取孤儿 / 上报行锁，**租户链锁（`appendInCurrentTransaction` 内部的 `pg_advisory_xact_lock(tenantLockId)`）永远最后取**，且链追加之后只剩回填 run 行一条 UPDATE 即提交——其它链写入方只取链锁、从不取对账锁，确认端点同样「行锁 → 链锁」，因此不存在环；链锁持有时间与普通事件追加同量级。检测 SQL 全在链锁之前完成。
 
 **D6 指标（低基数）。**
 - `guard_orphan_actions{tenant,executor,kind}`（Micrometer `guard.orphan.actions`，MultiGauge）= 当前 `status='OPEN'` 行数，**只发非零序列**；每个副本每 60 s 从库里重读（所有副本报同值，告警用 `max`）。`kind` 7 值；`executor` 由 `ExecutorLabels.of` 归一：取 `executorId`（或上报 `source`）`@` 之前的组件名，小写，在白名单 `aster.guard.reconciliation.executor-labels=${ASTER_GUARD_RECONCILIATION_EXECUTOR_LABELS:aster-guard-mcp,aster-guard-sdk,aster-cloud-exec}` 内取原值，否则 `other`，空为 `unknown`；`tenant` 至多 `metric-max-tenants=${ASTER_GUARD_RECONCILIATION_METRIC_MAX_TENANTS:100}` 个（按 OPEN 总数降序），其余合并为 `tenant="_other"`。原始 `executorId` 只进行与 `detail`，不进标签。
@@ -84,7 +84,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
   宽限沿用既有 `aster.guard.result-grace`（`PT15M`），不另设。
 - **kind 字面量**（Java 枚举 `OrphanKind` 的 `wire()` 值、DB CHECK、指标标签、REST 字段、告警正则五处一致）：`side_effect_without_decision, side_effect_unconsumed, side_effect_mismatch, consumed_without_result, allow_unconsumed, consume_on_non_allow, result_without_consume`。severity：`critical`（`side_effect_*`、`consume_on_non_allow`、`result_without_consume`）/ `warning`（`consumed_without_result`）/ `info`（`allow_unconsumed`）。
 - **状态与解除**：`status ∈ OPEN | RESOLVED | ACKNOWLEDGED`；`resolution ∈ late_result | aged_out | acknowledged`。
-- **上报端点**：`POST /api/v1/guard/side-effects`，请求 `{ "effects": [ { "effectId", "source", "occurredAt", "action": { "name" }, "resource"?: { "type", "id" }, "decisionId"?, "attemptId"?, "actionHash"? } ] }`；1–500 条；`effectId` 1–128 字符无控制字符；`source` 匹配 `[a-z0-9][a-z0-9._-]{0,63}`；`occurredAt` ISO-8601 且 `≤ now + PT5M`；`action.name` 1–255；`resource.type/id` 各 ≤ 255；`decisionId` / `attemptId` 为 UUID 形态（同 `GuardReceiptService.UUID_SHAPE`）；`actionHash` 64 位小写 hex。任一条不合法 → 400 `{ "error": "invalid_side_effect", "index": <i>, "field": "<name>" }`，整批不写。重复键 / 非法 JSON → 400 `invalid_side_effect`（无 index）。幂等键 `(tenant_id, source, effect_id)`：重复上报计入 `duplicates`、不改原行。200 `{ "accepted": n, "duplicates": m }`。不计量配额（它是账本输入，不含评估）。
+- **上报端点**：`POST /api/v1/guard/side-effects`，请求 `{ "effects": [ { "effectId", "source", "occurredAt", "action": { "name" }, "resource"?: { "type", "id" }, "decisionId"?, "attemptId"?, "actionHash"? } ] }`；1–500 条；`effectId` 1–128 字符无控制字符；`source` 匹配 `[a-z0-9][a-z0-9._-]{0,63}`；`occurredAt` ISO-8601 且 `≤ now + PT5M`；`action.name` 1–255；`resource.type/id` 各 ≤ 255；`decisionId` / `attemptId` 为 UUID 形态（同 `GuardReceiptService.UUID_SHAPE`）；`actionHash` 64 位小写 hex。任一条不合法 → 400 `{ "error": "invalid_side_effect", "index": <i>, "field": "<name>" }`，整批不写。重复键 / 非法 JSON → 400 `invalid_side_effect`（无 index）。幂等键 `(tenant_id, source, effect_id)`：重复上报计入 `duplicates`、不改原行。**上报粒度契约**：一个上报方（`source`）对一次受守卫动作（一个 `decisionId`）**恰好上报一条**；一个动作落地多处副作用时由上报方聚合成一条（`effectId` 取上报方自己的动作记录键）。不同 `source` 观测同一决策（如工具与业务库各报一条）是正常的。据此同 `(decisionId, source)` 的第二条已匹配上报判 `side_effect_mismatch/replayed`（D2）。200 `{ "accepted": n, "duplicates": m }`。不计量配额（它是账本输入，不含评估）。
 - **查询 / 确认端点**：`GET /api/v1/guard/reconciliation`（摘要）、`GET /api/v1/guard/reconciliation/orphans`（列表）、`POST /api/v1/guard/reconciliation/orphans/{id}/ack`（`@RequireRole(Role.ADMIN)`）；形状见 Task 8。
 - **鉴权通道**：新路径都在 `/api/v1/guard/*`，`ApiKeyAuthFilter.shouldProtect` 已覆盖；cloud 走 HMAC，SDK / 工具服务 / 业务系统走 Bearer——加入 `InternalCallerFilter.isGuardDualChannel` 与 `ApiKeyAuthFilter.HMAC_BYPASS_PATHS`（`/api/v1/guard/side-effects`、`/api/v1/guard/reconciliation`）/ `HMAC_BYPASS_PREFIXES`（`/api/v1/guard/reconciliation/`）。
 - **时间**：服务注入 `java.time.Clock`（已有 `GuardClockProducer`）；对账入口签名带显式 `Instant now`，调度传 `clock.instant()`，测试直接传未来时刻——不新增 `Clock.system*` / `UUID.randomUUID` 使用点（三张表主键用 `BIGSERIAL`），`NonDeterminismSourceTest` 白名单不变。
@@ -223,9 +223,10 @@ CREATE TABLE guard_orphan_actions (
     CONSTRAINT guard_orphan_actions_resolution_ck CHECK (resolution IS NULL OR resolution IN ('late_result','aged_out','acknowledged'))
 );
 CREATE INDEX guard_orphan_actions_open_ix ON guard_orphan_actions (tenant_id, kind) WHERE status = 'OPEN';
-CREATE INDEX guard_receipts_unconsumed_expiry_ix ON guard_receipts (tenant_id, expires_at) WHERE consumed_at IS NULL;
+CREATE INDEX guard_receipts_unconsumed_expiry_ix ON guard_receipts (tenant_id, expires_at) WHERE consume_audit_id IS NULL;
 ```
 
+- [ ] **Step 0: 迁移编号门禁**：`git fetch origin && git ls-tree --name-only origin/main src/main/resources/db/migration/ | sort -V | tail -3`。若最大号是 `V6.37.0__…`（#460 已合并）→ 继续用 `V6.38.0`；若最大号仍是 `V6.36.0` → **停止并请用户裁定**「待用户裁定」第 1 条（等 #460，或互换编号），不得自行改号或开 `out-of-order`。开 PR 前、合并前各复查一次。
 - [ ] **Step 1: 写失败测试**
   - `OrphanKindTest.wireValuesMatchSpec`：`Arrays.stream(values()).map(OrphanKind::wire)` 等于 Global Constraints 的 7 个字面量（同序）；`severity()` 按 Global Constraints；`autoResolvable()` 仅 `CONSUMED_WITHOUT_RESULT`、`ALLOW_UNCONSUMED` 为 true；`fromWire("nope")` 为 empty。
   - `ExecutorLabelsTest.normalizes`：`of("aster-guard-mcp@agent-host-1")=="aster-guard-mcp"`、`of("ASTER-CLOUD-EXEC@cloud-7f9c")=="aster-cloud-exec"`、`of("my-bot@pod-7f9c:3")=="other"`、`of("billing-db")=="other"`、`of(null)==of("")==of("  ")=="unknown"`、`of("aster-guard-sdk")=="aster-guard-sdk"`（无 `@`）。
@@ -269,11 +270,11 @@ CREATE INDEX guard_receipts_unconsumed_expiry_ix ON guard_receipts (tenant_id, e
 
 **Interfaces:**
 - Produces:
-  - `record ReceiptSnapshot(boolean decisionExists, boolean hasReceipt, Instant consumedAt, String attemptId, String actionHash)`（决策在本租户不存在时 `decisionExists=false`，其余字段无意义）
+  - `record ReceiptSnapshot(boolean decisionExists, boolean hasReceipt, Long consumeAuditId, String attemptId, String actionHash)`（决策在本租户不存在时 `decisionExists=false`，其余字段无意义）
   - `record Classification(Optional<OrphanKind> kind, String reason)`（`reason ∈ no_decision_id | unknown_decision | not_consumed | attempt_mismatch | action_mismatch | replayed | matched`）
   - `static Classification classify(GuardSideEffectEntity e, ReceiptSnapshot s, boolean earlierMatchedSameSource)`
 
-判定顺序固定（第一条命中即返回）：`decisionId == null` → `WITHOUT_DECISION/no_decision_id`；`!decisionExists` → `WITHOUT_DECISION/unknown_decision`；`!hasReceipt || consumedAt == null` → `UNCONSUMED/not_consumed`；`e.attemptId != null && !e.attemptId.equals(s.attemptId)` → `MISMATCH/attempt_mismatch`；`e.actionHash != null && !e.actionHash.equals(s.actionHash)` → `MISMATCH/action_mismatch`；`earlierMatchedSameSource` → `MISMATCH/replayed`；否则 `empty/matched`。
+判定顺序固定（第一条命中即返回）：`decisionId == null` → `WITHOUT_DECISION/no_decision_id`；`!decisionExists` → `WITHOUT_DECISION/unknown_decision`；`!hasReceipt || consumeAuditId == null` → `UNCONSUMED/not_consumed`；`e.attemptId != null && !e.attemptId.equals(s.attemptId)` → `MISMATCH/attempt_mismatch`；`e.actionHash != null && !e.actionHash.equals(s.actionHash)` → `MISMATCH/action_mismatch`；`earlierMatchedSameSource` → `MISMATCH/replayed`；否则 `empty/matched`。
 
 - [ ] **Step 1: 写失败测试** `SideEffectClassifierTest`：上面 7 个分支各一例，断言 `kind` 与 `reason`；另 `attemptIdOmittedStillMatches`（上报不带 `attemptId / actionHash` 且已消耗 → matched）；`replayCheckedAfterMismatch`（`attemptId` 不符且 `earlierMatchedSameSource=true` → `attempt_mismatch`，不是 `replayed`）。
 - [ ] **Step 2:** 运行，FAIL。
@@ -292,8 +293,8 @@ CREATE INDEX guard_receipts_unconsumed_expiry_ix ON guard_receipts (tenant_id, e
 - Produces（全部要求调用方已开事务；不自开事务、不入链）：
   - `record Window(Instant now, Instant since, Instant cutoff)`；`static Window of(Instant now, Duration lookback, Duration grace)`
   - `record Detected(long orphanId, OrphanKind kind, String executorLabel)`
-  - `List<Detected> detectLedger(String tenantId, Window w, long runId)`：账本四类，每类一条 `INSERT INTO guard_orphan_actions (...) SELECT ... ON CONFLICT (tenant_id, kind, subject_key) DO NOTHING RETURNING id, kind, executor_label`，各带 `LIMIT :batchLimit`；`executor_label` 在 Java 侧算不了（INSERT…SELECT 内），因此 SQL 取 `split_part(lower(r.executor_id), '@', 1)` 后以 `CASE WHEN … = ANY(:labels) THEN … WHEN r.executor_id IS NULL OR btrim(r.executor_id) = '' THEN 'unknown' ELSE 'other' END` 归一——与 `ExecutorLabels.of` 同语义，由 `executorLabelSqlMatchesJava` 测试锁定。`detail` 写 `{decisionId, executorId?, attemptId?, consumedAt?, expiresAt?, outcome?, approvalStatus?}`。
-  - `SideEffectBatch detectSideEffects(String tenantId, Window w, long runId)` → `record SideEffectBatch(int checked, List<Detected> detected)`：取 `reconciled_at IS NULL` 的上报（`ORDER BY id LIMIT :batchLimit`），一条 SQL 带出每条的 `ReceiptSnapshot`（`LEFT JOIN guard_decisions d ON d.id = s.decision_id AND d.tenant_id = s.tenant_id LEFT JOIN guard_receipts r ON r.decision_id = d.id AND r.tenant_id = s.tenant_id`）与 `earlierMatchedSameSource`（`EXISTS` 同租户、同 `decision_id`、同 `source`、`id < s.id`、`reconcile_outcome = 'matched'`）；**同批内**按 `id` 升序逐条分类，前一条判 matched 后对后一条即生效（批内维护 `Set<(decisionId, source)>`）；孤儿 `INSERT … ON CONFLICT DO NOTHING`（`subject_key = 'se:' || id`，`executor_label = ExecutorLabels.of(source)`，`detail` 复制 `effectId, source, actionName, resourceType, resourceId, occurredAt, decisionId, attemptId, reason`）；每条写回 `reconciled_at = w.now, reconcile_outcome = kind.wire() 或 'matched'`。
+  - `List<Detected> detectLedger(String tenantId, Window w, long runId, int batchLimit)`：账本四类，每类一条 `INSERT INTO guard_orphan_actions (...) SELECT ... ON CONFLICT (tenant_id, kind, subject_key) DO NOTHING RETURNING id, kind, executor_label`；SELECT 带 `AND NOT EXISTS (SELECT 1 FROM guard_orphan_actions o WHERE o.tenant_id = :t AND o.kind = '<kind>' AND o.subject_key = r.decision_id::text)`、`ORDER BY r.issued_at, r.decision_id`、`LIMIT :batchLimit`——已记录的行不占批次名额，超限时下一轮从未记录的行继续，不会饿死；`executor_label` 在 Java 侧算不了（INSERT…SELECT 内），因此 SQL 取 `split_part(lower(r.executor_id), '@', 1)` 后以 `CASE WHEN … = ANY(:labels) THEN … WHEN r.executor_id IS NULL OR btrim(r.executor_id) = '' THEN 'unknown' ELSE 'other' END` 归一——与 `ExecutorLabels.of` 同语义，由 `executorLabelSqlMatchesJava` 测试锁定。`detail` 写 `{decisionId, executorId?, attemptId?, consumedAt?, expiresAt?, outcome?, approvalStatus?}`。
+  - `SideEffectBatch detectSideEffects(String tenantId, Window w, long runId, int batchLimit)` → `record SideEffectBatch(int checked, List<Detected> detected)`：取 `reconciled_at IS NULL` 的上报（`ORDER BY id LIMIT :batchLimit`），一条 SQL 带出每条的 `ReceiptSnapshot`（`LEFT JOIN guard_decisions d ON d.id = s.decision_id AND d.tenant_id = s.tenant_id LEFT JOIN guard_receipts r ON r.decision_id = d.id AND r.tenant_id = s.tenant_id`）与 `earlierMatchedSameSource`（`EXISTS` 同租户、同 `decision_id`、同 `source`、`id < s.id`、`reconcile_outcome = 'matched'`）；**同批内**按 `id` 升序逐条分类，前一条判 matched 后对后一条即生效（批内维护 `Set<(decisionId, source)>`）；孤儿 `INSERT … ON CONFLICT DO NOTHING`（`subject_key = 'se:' || id`，`executor_label = ExecutorLabels.of(source)`，`detail` 复制 `effectId, source, actionName, resourceType, resourceId, occurredAt, decisionId, attemptId, reason`）；每条写回 `reconciled_at = w.now, reconcile_outcome = kind.wire() 或 'matched'`。
   - `int autoResolve(String tenantId, Window w, Duration allowUnconsumedTtl)`：`consumed_without_result` 且收据行 `result_status IS NOT NULL` → `RESOLVED / late_result`；`allow_unconsumed` 且 `detected_at < now − ttl` → `RESOLVED / aged_out`；返回解除行数。
   - `int countOpen(String tenantId)`
 
@@ -301,19 +302,21 @@ CREATE INDEX guard_receipts_unconsumed_expiry_ix ON guard_receipts (tenant_id, e
 
 | kind | 条件 |
 |---|---|
-| `consumed_without_result` | `r.tenant_id=:t AND r.consumed_at >= :since AND r.consumed_at < :cutoff AND r.result_status IS NULL` |
-| `allow_unconsumed` | `r.tenant_id=:t AND r.consumed_at IS NULL AND r.expires_at < :cutoff AND r.issued_at >= :since` |
-| `consume_on_non_allow` | `r.tenant_id=:t AND r.consumed_at IS NOT NULL AND r.issued_at >= :since AND (d.id IS NULL OR d.tenant_id <> r.tenant_id OR NOT (d.outcome = 'ALLOW' OR a.status = 'APPROVED'))`，`LEFT JOIN guard_decisions d ON d.id = r.decision_id LEFT JOIN guard_approvals a ON a.decision_id = r.decision_id` |
-| `result_without_consume` | `r.tenant_id=:t AND r.result_status IS NOT NULL AND r.consumed_at IS NULL AND r.issued_at >= :since` |
+| `consumed_without_result` | `r.tenant_id=:t AND r.consume_audit_id IS NOT NULL AND r.consumed_at >= :since AND r.consumed_at < :cutoff AND r.result_status IS NULL` |
+| `allow_unconsumed` | `r.tenant_id=:t AND r.consume_audit_id IS NULL AND r.expires_at < :cutoff AND r.issued_at >= :since` |
+| `consume_on_non_allow` | `r.tenant_id=:t AND r.consume_audit_id IS NOT NULL AND r.issued_at >= :since AND (d.id IS NULL OR d.tenant_id <> r.tenant_id OR NOT (d.outcome = 'ALLOW' OR a.status = 'APPROVED'))`，`LEFT JOIN guard_decisions d ON d.id = r.decision_id LEFT JOIN guard_approvals a ON a.decision_id = r.decision_id` |
+| `result_without_consume` | `r.tenant_id=:t AND r.result_status IS NOT NULL AND r.consume_audit_id IS NULL AND r.issued_at >= :since` |
 
 - [ ] **Step 1: 写失败测试**（造数用真实端点：`POST /decisions` → `consume` → `result`，同 `GuardReceiptResourceTest` 的策略部署夹具；篡改类用 `QuarkusTransaction.requiringNew()` 直接改行；每个用例新建租户；`now` 显式传 `Instant.now().plus(grace).plusSeconds(60)`）
   - `consumedWithoutResultPastGrace`：消耗未回写 → 1 行 `consumed_without_result`，`executor_label="aster-guard-mcp"`（`executorId="aster-guard-mcp@h1"`）；同一数据以 `now = consumed_at + grace − 1s` 跑 → 0 行（宽限边界：`cutoff` 排他）。
   - `allowUnconsumedAfterExpiry`：ALLOW 未 consume、`now` 越过 `expires_at + grace` → 1 行 `allow_unconsumed`，`executor_label="unknown"`。
   - `consumeOnDenyIsCritical`：DENY 决策手工插入已消耗收据行 → `consume_on_non_allow`，`severity="critical"`。
   - `approvedDecisionConsumeIsNotNonAllow`（Review Focus 4）：`REQUIRE_APPROVAL → approve → consume → result` → 账本四类 0 行。
-  - `resultWithoutConsume`：手工把行改为 `result_status='executed', consumed_at=NULL` → 1 行。
-  - `sideEffectsClassifiedAndMarked`：同批上报 5 条——无 decisionId、DENY 决策 id、已消耗且 attempt 正确、同一决策同一 source 第二条、已消耗但 `actionHash` 错 → 依次 `without_decision / unconsumed / matched / mismatch(replayed) / mismatch(action_mismatch)`；5 条 `reconciled_at` 均非空，`reconcile_outcome` 对应。
+  - `resultWithoutConsume`：手工把行改为 `result_status='executed', consume_audit_id=NULL` → 1 行。
+  - `pointerIsAuthoritativeNotConsumedAt`（ADR 0041 §12 D1）：已消耗收据手工置 `consume_audit_id=NULL`（`consumed_at` 保留）→ 引用它的上报判 `side_effect_unconsumed/not_consumed`，该行不进 `consumed_without_result`；另一条收据只有被拒的尝试事件（`consume` 409 `action_mismatch`，链上有 ATTEMPT + `rejected:` OUTCOME、行无指针）→ 视为未消耗。
+  - `sideEffectsClassifiedAndMarked`：同批上报 5 条——无 decisionId、DENY 决策 id、已消耗且 attempt 正确、同一决策同一 source 第二条、已消耗但 `actionHash` 错 → 依次 `without_decision / unconsumed / matched / mismatch(replayed) / mismatch(action_mismatch)`；5 条 `reconciled_at` 均非空，`reconcile_outcome` 对应。另：同一决策由 `source="crm-db"` 再报一条 → `matched`（不同上报方观测同一动作不是重放）。
   - `foreignTenantDecisionIdIsWithoutDecision`（Review Focus 3）：B 上报 A 的已消耗 decisionId → B 侧 `side_effect_without_decision/unknown_decision`；A 租户孤儿表 0 行。
+  - `ledgerBatchLimitProgresses`：5 条 `consumed_without_result` 候选、`batchLimit=2` → 连续三轮依次返回 2、2、1 行，第四轮 0 行；上报同理（`checked` 2、2、1）。
   - `detectionIsIdempotent`：同一 `Window` 跑两次 → 第二次 `detectLedger` 返回空，表内行数不变；上报第二次 `checked=0`。
   - `lateResultAutoResolves`：先检出 `consumed_without_result`，再回写结果，`autoResolve` 返回 1，行 `RESOLVED / late_result`；`allow_unconsumed` 以 `now + ttl + 1s` 解除为 `aged_out`；`side_effect_*` 永不被 `autoResolve` 触及。
   - `executorLabelSqlMatchesJava`：对 `["aster-guard-mcp@h", "ASTER-GUARD-SDK@x:1", "my-bot@p", "", null, "aster-cloud-exec"]` 逐个造 `consumed_without_result`，断言 SQL 归一结果 == `ExecutorLabels.of(...)`。
@@ -325,12 +328,12 @@ CREATE INDEX guard_receipts_unconsumed_expiry_ix ON guard_receipts (tenant_id, e
 ### Task 6: 对账服务、调度与链事件
 
 **Files:**
-- Create: `src/main/java/io/aster/guard/reconcile/GuardReconciliationService.java`、`GuardReconciliationScheduler.java`
+- Create: `src/main/java/io/aster/guard/reconcile/GuardReconciliationService.java`、`GuardReconciliationScheduler.java`、`GuardOrphanMetrics.java`
 - Modify: `src/main/java/io/aster/policy/event/EventType.java`（`GUARD_RECONCILIATION`）、`src/main/java/io/aster/guard/GuardReceiptBuilder.java`（`reconciliationEvent`）
-- Test: `src/test/java/io/aster/guard/reconcile/GuardReconciliationServiceTest.java`（`@QuarkusTest`）、`src/test/java/io/aster/guard/GuardReceiptBuilderTest.java`（加用例）、`src/test/java/io/aster/policy/common/AuditIdentifierRedactionTest.java`（加用例）
+- Test: `src/test/java/io/aster/guard/reconcile/GuardReconciliationServiceTest.java`（`@QuarkusTest`）、`src/test/java/io/aster/guard/GuardReceiptBuilderTest.java`（加用例）、`src/test/java/io/aster/policy/common/AuditIdentifierRedactionTest.java`（加用例）、`src/test/java/io/aster/guard/reconcile/GuardOrphanMetricsCountersTest.java`
 
 **Interfaces:**
-- Consumes: `GuardOrphanDetector`（Task 5）、`AuditChainAppender.appendInCurrentTransaction`、`GuardOrphanMetrics.recordDetected(OrphanKind)` / `recordRun(TenantOutcome)` / `markLoopSucceeded(Instant)`（Task 7 产出；本任务先以接口方法调用、Task 7 前用空实现的同名 bean，见 Step 3）。
+- Consumes: `GuardOrphanDetector`（Task 5）、`AuditChainAppender.appendInCurrentTransaction`、`GuardOrphanMetrics.recordDetected(OrphanKind)` / `recordRun(TenantOutcome)` / `markLoopSucceeded(Instant)`（本任务在 `GuardOrphanMetrics` 中实现这三个方法与对应 Counter / Gauge；Task 7 只在同一类上追加 MultiGauge 与 `refresh()`）。
 - Produces:
   - `enum TenantOutcome { OK, FAILED, SKIPPED_LOCKED, SKIPPED_RECENT }`（`wire()` 小写，与 `guard_reconciliation_runs_total{outcome}` 一致）
   - `record TenantRun(TenantOutcome outcome, Long runId, int newOrphans, int resolved, int open, Long auditId)`
@@ -345,19 +348,21 @@ CREATE INDEX guard_receipts_unconsumed_expiry_ix ON guard_receipts (tenant_id, e
   - `newOrphanWritesOneChainEvent`：注入无 decisionId 上报 → `newOrphans=1`、链上恰一条 `GUARD_RECONCILIATION`，metadata `newByKind={"side_effect_without_decision":1}`、`newOrphanIds` 含该行 id、`performed_by="SYSTEM"`；`verify-chain`（`AuditChainVerifier`）对该租户 valid。
   - `rerunIsIdempotentAndLateResultResolves`（Review Focus 2）：`consumed_without_result` 检出 → 以 `now + min-interval + 1s` 再跑：`newOrphans=0`、无新链事件；回写结果后再跑：`resolved=1`、一条 `resolvedOrphans=1` 的事件、`open=0`。
   - `concurrentReplicasReconcileTenantOnce`（Review Focus 1）：两个线程 `CountDownLatch` 同时 `reconcileTenant(t, now)` → 结果集合恰为 `{OK, SKIPPED_LOCKED}` 或 `{OK, SKIPPED_RECENT}`；孤儿行数 = 1；链事件 = 1。
+  - `reconcileConcurrentWithChainWritersNoDeadlock`：同租户 8 个线程并发 `consume`（各自决策）与 1 个线程 `reconcileTenant`，全部在 30 s 内完成（`ExecutorService.awaitTermination`），无 `PSQLException: deadlock detected`；`AuditChainVerifier` 对该租户 valid。
   - `oneTenantFailureDoesNotStopOthers`：`QuarkusMock.installMockForType` 让 `GuardOrphanDetector.detectLedger` 对租户 A 抛异常 → A `FAILED` 且 A 无 run 行、上报 `reconciled_at` 仍为 null（整租户回滚）；B `OK`。
   - `candidateTenantsCoverThreeSources`：仅有旧 OPEN 孤儿的租户、仅有未对账上报的租户、仅有窗口内收据的租户都在候选内；窗口外且无上报无 OPEN 的租户不在。
+  - `GuardOrphanMetricsCountersTest`（纯单测，`SimpleMeterRegistry`）：`recordDetected(SIDE_EFFECT_MISMATCH)` 两次 → `guard.orphan.actions.detected{kind=side_effect_mismatch}` = 2；`recordRun(SKIPPED_LOCKED)` → `guard.reconciliation.runs{outcome=skipped_locked}` = 1；`markLoopSucceeded(Instant.ofEpochSecond(1_700_000_000))` → `guard.reconciliation.last.success` = 1.7e9。
   - `GuardReceiptBuilderTest.reconciliationEventShape`：键集与 64 项截断。
   - `AuditIdentifierRedactionTest.reconciliationIdsNotRedacted`：`newOrphanIds=[4111111111111111]` 形态的长整数原样入链（若被脱敏则把 `newOrphanIds`、`runId`、`orphanId`、`sideEffectId` 加入 `IDENTITY_METADATA_KEYS`，并在此测试写明原因）。
 - [ ] **Step 2:** 运行，FAIL。
-- [ ] **Step 3:** 实现。`GuardOrphanMetrics` 在本任务先建类骨架（三个方法 + 计数器，MultiGauge 留给 Task 7），使本任务可独立编译测试。
+- [ ] **Step 3:** 实现。`GuardOrphanMetrics`（`@ApplicationScoped`）在本任务创建，含 `recordDetected / recordRun / markLoopSucceeded` 的完整实现（`guard.orphan.actions.detected`、`guard.reconciliation.runs`、`guard.reconciliation.last.success`）；不建任何占位或空实现类。
 - [ ] **Step 4:** PASS；guard 套件（含 `NonDeterminismSourceTest`：确认无新增 `Clock.system` / `UUID.randomUUID` / `System.nanoTime` 命中）。
 - [ ] **Step 5:** 提交 `feat(guard): 定时对账服务与 GUARD_RECONCILIATION 事件（#465）`。
 
 ### Task 7: 指标 `guard_orphan_actions` 与运行指标
 
 **Files:**
-- Modify: `src/main/java/io/aster/guard/reconcile/GuardOrphanMetrics.java`（补全）、`docs/metrics/MetricsCatalog.md`
+- Modify: `src/main/java/io/aster/guard/reconcile/GuardOrphanMetrics.java`（Task 6 已建；本任务追加 MultiGauge 与 `refresh()`）、`docs/metrics/MetricsCatalog.md`
 - Test: `src/test/java/io/aster/guard/reconcile/GuardOrphanMetricsTest.java`（`@QuarkusTest`）
 
 **Interfaces:**
@@ -365,12 +370,11 @@ CREATE INDEX guard_receipts_unconsumed_expiry_ix ON guard_receipts (tenant_id, e
 - Produces:
   - `record OpenCount(String tenant, String executor, String kind, long count)`；`static List<OpenCount> bound(List<OpenCount> rows, int maxTenants)`（纯函数：按租户 OPEN 总数降序、同数按租户名升序取前 `maxTenants` 个租户，其余行按 `(executor, kind)` 累加到 `tenant="_other"`）
   - `void refresh()`：`SELECT tenant_id, executor_label, kind, count(*) FROM guard_orphan_actions WHERE status='OPEN' GROUP BY 1,2,3` → `bound(...)` →`MultiGauge.register(rows, true)`（覆盖旧序列，已归零的序列消失）。`@Scheduled(every = "${aster.guard.reconciliation.metric-refresh}", identity = "guard-orphan-metrics", concurrentExecution = SKIP, skipExecutionIf = BackgroundSchedulerSkipPredicate.class)`。
-  - `void recordDetected(OrphanKind k)`、`void recordRun(TenantOutcome o)`、`void markLoopSucceeded(Instant at)`（Gauge 读 `AtomicLong` epoch 秒）。
+  - （`recordDetected / recordRun / markLoopSucceeded` 已在 Task 6 实现，本任务不改。）
 
 - [ ] **Step 1: 写失败测试**（`bound` 与计数器用纯单测 + `SimpleMeterRegistry`；读库用例只按本用例租户过滤断言——共享测试库里有其它用例的 OPEN 行）
   - `gaugeReflectsOpenRowsOnly`：插 2 OPEN `side_effect_without_decision`（`other`）+ 1 RESOLVED → `refresh()` 后 `registry.find("guard.orphan.actions").tags("tenant",t,"executor","other","kind","side_effect_without_decision").gauge().value()==2`；把两行改 ACKNOWLEDGED 后 `refresh()` → 该序列不存在。
   - `labelsStayBounded`（Review Focus 5）：`bound([a:1, b:2, c:3 条], 2)` → 只含 `c`、`b` 与 `_other`（值 1）；`bound` 输入两行同 `(executor, kind)` 的被合并租户 → `_other` 一行、值为和。读库用例：`executorId="my-bot@pod-7f9c:3"` 与上报 `source="tenant-crm"` 产生的孤儿，本租户序列的 `executor` 只为 `other`。
-  - `countersAndLastSuccess`：`recordDetected(SIDE_EFFECT_MISMATCH)` 两次 → `guard.orphan.actions.detected{kind=side_effect_mismatch}` = 2；`markLoopSucceeded(Instant.ofEpochSecond(1_700_000_000))` → `guard.reconciliation.last.success` = 1.7e9。
   - `prometheusNames`：从 `/q/metrics` 抓取文本含 `guard_orphan_actions{`、`guard_orphan_actions_detected_total{`、`guard_reconciliation_runs_total{`、`guard_reconciliation_last_success_seconds`。
 - [ ] **Step 2:** 运行，FAIL。
 - [ ] **Step 3:** 实现；`MetricsCatalog.md` 新增「Guard 对账」节：四个指标的名称、类型、标签取值、多副本读法（`max` vs `sum`）。
@@ -460,7 +464,7 @@ annotations 用中文写 summary / description，description 指向 `GET /api/v1
 **Interfaces:**
 - Consumes: 全部前序任务的公开端点、`GuardReconciliationService.reconcileAll`、`GuardOrphanMetrics.refresh`、`/q/metrics`。
 
-- [ ] **Step 1: 写测试**（#465 验收原文两条 + ADR 0054 §5 三类）
+- [ ] **Step 1: 写测试**（#465 验收原文两条 + ADR 0054 §5 三类）。**效力边界**：本测试在 aster-api 内以 REST 扮演「执行方」与「副作用落地方」，证明的是「上报到达 → 对账 → 孤儿 / 指标 / 链事件」这一段；「真实工具在被绕过时确实会上报」属落地方接入，由 #466 部署层（集成点 I4）断言，不在本测试中声称。
   - `injectedBypassProducesOrphanAndMetric`：租户 T 先跑一次正常路径（决策 → consume（`executorId="aster-guard-mcp@e2e"`）→ result → 带 decisionId/attemptId/actionHash 上报 `source="aster-guard-mcp"`）；再**注入绕过**：上报一条 `source="aster-guard-mcp"`、无 decisionId 的副作用（模拟工具在未经 Guard 的情况下落地）→ `reconcileAll(now)` → `GET /reconciliation/orphans` 恰 1 条 `side_effect_without_decision`；`refresh()` 后 `/q/metrics` 含 `guard_orphan_actions{executor="aster-guard-mcp",kind="side_effect_without_decision",tenant="T"} 1.0`；链上一条 `GUARD_RECONCILIATION`。
   - `normalPathReconcilesToZero`：另一租户 U 只跑正常路径（含 `REQUIRE_APPROVAL → approve` 一条）→ `GET /reconciliation` `openTotal=0`；`/q/metrics` 无 `tenant="U"` 的 `guard_orphan_actions` 序列；U 无 `GUARD_RECONCILIATION` 事件。
   - `adr0054ThreeAnomalies`：同一租户 V：消耗未回写（`now` 越过宽限）→ `consumed_without_result`；DENY 决策被直接改行为已消耗 → `consume_on_non_allow`；上报指向 DENY 决策 → `side_effect_unconsumed`；三者 severity 分别 `warning / critical / critical`。
@@ -482,7 +486,7 @@ annotations 用中文写 summary / description，description 指向 `GET /api/v1
 
 ## 不在本计划（后续，需另开 issue）
 
-- aster-cloud 治理页「最近对账摘要」与孤儿列表 / 确认 UI（消费 Task 8 端点，HMAC 通道）。
+- **aster-cloud 治理页「最近对账摘要」**（#465 目标 3 的一部分）与孤儿列表 / 确认 UI（消费 Task 8 端点，HMAC 通道）：跨仓交付，本计划只交付其 API。**#465 不随本计划的 PR 关闭**：PR 用 `Refs #465`，待 cloud 子 issue（由用户开，见「待用户裁定」第 9 条）完成后再关闭。
 - aster-cloud from-evidence 执行路径 consume / 回写（ADR 0040 §12.4 ④）与 cloud 作为上报方。
 - workflow runner 接入 Guard（今天不接，无执行记录可对）。
 - 「已消耗但从未上报副作用」类别：只对**确定会上报**的执行方有意义，需要按执行方登记上报承诺，等首个上报方上线后再定。
@@ -499,3 +503,5 @@ annotations 用中文写 summary / description，description 指向 `GET /api/v1
 | 6 | `AsterGuardExecutionLost` 阈值 | ≥ 5 持续 30 m | 任一 > 0 | 单次网络抖动即告警 |
 | 7 | 上报 `source` 是否进标签 | 只有白名单内的名字进 `executor` 标签，其余 `other` | 每租户可登记自己的 source 白名单 | 多一张配置表 |
 | 8 | ADR 形式 | ADR 0054 §10 补记（R65） | 独立 ADR 0056 | 无功能差异 |
+| 9 | cloud 治理页归属 | 拆为 aster-cloud 子 issue（用户开），#465 待其完成后关闭 | 并入本计划作为 Task 12（aster-cloud 仓） | 本计划跨两仓、PR 串行 |
+| 10 | 上报粒度 | 每 `(decisionId, source)` 恰一条，多处副作用由上报方聚合 | 允许多条，不判重放 | 失去「同一收据执行多次」的落地侧证据 |
