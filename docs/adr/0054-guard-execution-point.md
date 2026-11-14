@@ -141,7 +141,7 @@ const outcome = await guard.run(
 代理启动参数 `--isolation network|auth` **必填**，但它只是**配置自述**：代理无法自己证明隔离成立。隔离的验收是**部署级**的（§7 第二层），以 e2e 从模型所在网络命名空间直连原始工具端点**失败**为准；`--isolation` 的值只决定 e2e 用哪种断言（连接被拒 / 401）与从哪里读取配置：
 
 - `network`：e2e 读取部署仓（aster-deploy / k3s）中该上游工具的 `NetworkPolicy`（`podSelector` 指向工具 Pod，`ingress.from` 仅含代理 Pod 的标签选择器），并在模型所在命名空间启动一个一次性 Pod 对工具 Service 发起连接，期望超时 / 拒绝；策略对象缺失即判失败。
-- `auth`：工具侧要求 **consume 票据**——代理在 consume 200 后把 `{ decisionId, attemptId }` 以 `X-Aster-Guard-Consume` 头附在上游请求上（R66 改为 MCP 请求 `params._meta["io.aster/guard-consume"]` 并附 `envelope`，见 §11 D2），工具侧按下列规则核对，任一不满足 → 401 且**不执行**（fail-closed）；e2e 从模型所在网络不带头直连，期望 401。该方式要求工具可改；不可改的第三方工具只能用 `network`。
+- `auth`：工具侧要求 **consume 票据**——代理在 consume 200 后把 `{ decisionId, attemptId }` 附在上游请求上（R66 §11 D2：载体为 MCP 请求 `params._meta["io.aster/guard-consume"] = { decisionId, attemptId, envelope }`，取代原文的 `X-Aster-Guard-Consume` 头；下文「头」一律读作该票据），工具侧按下列规则与 D2 的重算规则核对，并经 D11 的原子账本认领、按 D12 核对策略地址，任一不满足 → 401 且**不执行**（fail-closed）；e2e 从模型所在网络不带头直连，期望 401。该方式要求工具可改；不可改的第三方工具只能用 `network`。
   1. **认证**：工具用**自己的** API key（不是代理的）调 `GET /api/v1/guard/decisions/{decisionId}`；该 key 所属租户必须与决策租户一致（跨租户 404，与 ADR 0040 §3.4 同口径），所以工具只能核对本租户的决策。R63 响应增 `consumedBy: { attemptId, executorId, consumedAt }` 与 `actionHash`（仅 ALLOW 且已消耗时写），已结果回写时另增 `result: { status, resultAt }`（未回写则缺省）；这些字段只出现在 `GET /decisions/{id}`，不进入 `response_json`，幂等重放不含。
   2. **绑定到当前请求**：工具对收到的参数按代理的同一映射（§3.2：工具知道自己的 `digestArgs` 配置，或由代理在头中附 `actionHash` 供工具**比对而非信任**）重算 `actionHash`，与响应 `actionHash` 相等；`consumedBy.attemptId` 等于票据 `attemptId`；`consumedAt` 在 `now − ttl` 之后（`ttl` = 工具侧配置，缺省同收据 TTL `PT5M`）；`effectiveOutcome == ALLOW`；未写 result（响应 `result` 缺省）。
   3. **fail-closed**：Guard 不可达、超时、非 200、字段缺失或不符 → 401 不执行，不做「查不到就放行」。工具侧不缓存核对结果（每请求一次 GET；成本可接受——它只对有副作用的调用发生）。
@@ -191,7 +191,7 @@ result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, f
 | # | 场景 | 断言 |
 |---|---|---|
 | 1 | 不经代理直连上游（**部署层**，按 `--isolation` 选断言；§3.3） | 连接被拒 / 401；工具侧无副作用 |
-| 1b | `auth` 模式票据核对（工具侧夹具）：缺头；错 `attemptId`；票据对应另一租户决策（用另一租户 key 签发）；参数被改（重算 `actionHash` 不符）；`consumedAt` 超 ttl；已写 result 的票据重放；Guard 不可达 / 超时 / 5xx | 每种都 401、无副作用；只有「头正确 + 哈希相等 + attempt 相等 + 时间在窗内 + 未写 result + Guard 200」执行 |
+| 1b | `auth` 模式票据核对（工具侧夹具；R66 起票据在 `_meta`，另含 D2 envelope 不符、D11 同票据并发重放、D12 换策略模块）：缺票据 / 票据畸形；错 `attemptId`；票据对应另一租户决策（用另一租户 key 签发）；参数被改（重算 `actionHash` 不符）；`consumedAt` 超 ttl；已写 result 的票据重放；Guard 不可达 / 超时 / 5xx | 每种都 401、无副作用；只有「头正确 + 哈希相等 + attempt 相等 + 时间在窗内 + 未写 result + Guard 200」执行 |
 | 2 | 规则 DENY 后调用 | 返回 `status: denied`；`sideEffects` 空；链上有 DECISION、无 CONSUME_ATTEMPT |
 | 2b | DENY 后模型尝试其它可用工具 / 路径：同一会话里对白名单内另一工具发起调用、对同一工具改参重试、直连上游（#466 第 2 条扩展） | 每次调用各得独立决策（新 decisionId）；被拒的不转发；直连按第 1 条失败；`sideEffects` 只含被 ALLOW 的那些；代理与 SDK 代码中不存在读取 `reason / poll / approvalId` 后分支执行的逻辑（静态断言：grep 这些字段只出现在返回构造处） |
 | 3 | ALLOW 后、转发前改参数（测试用钩子篡改 `args`）；以及 null / 缺失 / `""` 三种 `cc` 各得不同 `actionHash`（§3.2 正反例） | consume 409 `action_mismatch`；`sideEffects` 空；`guard_receipts.consumed_at` 空；三哈希两两不等 |
@@ -207,6 +207,8 @@ result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, f
 ## 8. 分阶段落地
 
 ① 本 ADR 与 ADR 0040 §12、ADR 0041 §12 同车次定稿 → ② aster-api 落 R63/R64（先于代理；旧代理不受影响）→ ②′ 排空：待处理的迁移前 ALLOW 决策处理完或过期（ADR 0040 §12 D10）→ ③ aster-guard 0.2.0：`hashAction` + 向量、`verifyReceipt / consume / reportResult / keys / run`、代理固定顺序与结构化返回、`--tools` / 映射文件 / `--isolation`、套件 1–5、7；release workflow 与 Trusted Publisher；发布 → ④ aster-cloud：演示 Agent 场景接入代理（#464 验收第 6 条），from-evidence 执行路径用同一契约 consume / 回写 → ⑤ Streamable HTTP 模式 + Agent 登记 + 镜像（有多 Agent 共用代理的需求时）→ ⑥ Java 客户端（有需求时）。
+
+> R66（§11 D7）：④ 后半「from-evidence 执行路径用同一契约 consume / 回写」不在 #464，随「审批后执行」另立；#464 的 ④ 只含演示 Agent 场景。
 
 ---
 
@@ -343,7 +345,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 | D8 | 代理 `--tenant-id` 必填（收据租户核对需要）；API key 环境变量沿用代码现状 `ASTER_GUARD_API_KEY` | 0.1.0 已用此名 | §3.1 写 `ASTER_API_KEY` |
 | D9 | 部署版本 DRAFT→APPROVED→ACTIVE、`approvedBy` = cloud 签名用户、只部署入口函数；设默认 / 删除「先部署后提交」，依赖 aster-api 可用 | cloud 四眼即权威；Guard 不得落后于 cloud | — |
 | D10 | 演示验收以脚本化对抗驱动为准，真实模型为用户执行的 runbook | 确定性、可重复 | — |
-| D11 | `auth` 模式工具侧核对 `verifyConsumeTicket` 必须带原子 `AttemptLedger`（首次认领 true，之后恒 false）：**at-most-once 放行**，不是 exactly-once 效果；认领后工具崩溃则动作不执行，须重新申请决策；要求恰好一次的工具把 `attemptId` 与业务副作用同事务落库或作业务幂等键 | §3.3 第 2 条「未写 result」只在首次执行回写之后生效，执行期间同一票据可被并发 / 连续重放 | 补强 §3.3 `auth` 第 2 条 |
+| D11 | `auth` 模式工具侧核对 `verifyConsumeTicket` 必须带原子 `AttemptLedger`（首次认领 true，之后恒 false），**作用域 = 该工具的全部副本、至少覆盖 ttl 窗口并跨重启存活**：多副本或会重启的工具必须用共享持久存储（如数据库唯一键插入）；SDK 自带的内存账本只对单进程、且重启后 ttl 内不再接受旧票据的部署成立（重启后的 ttl 窗口内可重放一次，README 写明）：**at-most-once 放行**，不是 exactly-once 效果；认领后工具崩溃则动作不执行，须重新申请决策；要求恰好一次的工具把 `attemptId` 与业务副作用同事务落库或作业务幂等键 | §3.3 第 2 条「未写 result」只在首次执行回写之后生效，执行期间同一票据可被并发 / 连续重放 | 补强 §3.3 `auth` 第 2 条 |
 
 ### 11.3 D12 收据须绑定期望策略（#517）
 
