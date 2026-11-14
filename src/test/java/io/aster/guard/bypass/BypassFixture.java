@@ -5,6 +5,7 @@ import io.aster.guard.GuardApprovalEntity;
 import io.aster.guard.GuardDecisionEntity;
 import io.aster.guard.provenance.GuardFactIssuerEntity;
 import io.aster.guard.receipt.GuardReceiptEntity;
+import io.aster.guard.snapshot.GuardDecisionInputEntity;
 import io.aster.policy.cache.CompiledPolicyCache;
 import io.aster.policy.cache.PolicyVersionResolutionCache;
 import io.aster.policy.entity.AuditLog;
@@ -75,17 +76,11 @@ public class BypassFixture {
    */
   public void reset(String... tenants) {
     QuarkusTransaction.requiringNew().run(() -> {
-      // #460（V6.37.0）的 guard_decision_inputs 以外键引用 guard_decisions：表存在时先删，迁移合入前后都适用
-      boolean hasInputs = (Boolean) GuardDecisionEntity.getEntityManager()
-          .createNativeQuery("select to_regclass('guard_decision_inputs') is not null").getSingleResult();
       for (String tenant : tenants) {
         GuardApprovalEntity.delete("tenantId = ?1", tenant);
         GuardReceiptEntity.delete("tenantId = ?1", tenant);
-        if (hasInputs) {
-          GuardDecisionEntity.getEntityManager()
-              .createNativeQuery("delete from guard_decision_inputs where tenant_id = ?1")
-              .setParameter(1, tenant).executeUpdate();
-        }
+        // 待审批决策的输入快照（#460，V6.37.0）以外键引用 guard_decisions，须先删
+        GuardDecisionInputEntity.delete("tenantId = ?1", tenant);
         GuardDecisionEntity.delete("tenantId = ?1", tenant);
         GuardFactIssuerEntity.delete("tenantId = ?1", tenant);
         PolicyCatalog.update("defaultVersionId = null where tenantId = ?1", tenant);
