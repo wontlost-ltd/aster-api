@@ -377,3 +377,39 @@ Rule decide given applicant as Applicant, produce Verdict:
 15. **签发方吊销导致的过期暂不发通知。** 修订 ADR 0040 §11 D4 第 4 项「`guard.approval_decided` 通知 payload 增 `expiredReason`」：X4 只在收件箱对 `expiredReason = fact_issuer_revoked` 的项显示「签发方已吊销，自动拒绝」；不发通知，因为签发方 DELETE 不返回受影响的审批，cloud 无从逐条通知。通知另案，前提是 aster-api 回传 `affectedDecisionIds`。
 
 **1.3.0 翻转（§11.4 ⑦）的硬门**（X4 计划 Global Constraints，本小节确认）：G0 本小节已合并；G1 X4 计划阶段 A 的 cloud PR 全部合并并部署；G2 本地栈以 1.3.0 注册表完成第 9 条两项验收，且全部对真实 aster-api 验签与执行点进行；G3 生产可验证性台账：扫描报告中每个声明 `eu-ai-act-high-risk` 的生产模块（含近 30 天无执行量的）都有用户写下的一条裁定，且恰为第 8 条三种之一——(a) 可验证：列出覆盖其**全部** `inputRefs` 的 `issuer#kid` 与来源函数，且该租户的签发方已启用；(b) 接受翻转后 DENY：须引用本小节第 8 条；(c) 阻塞翻转——存在任一 (c) 或缺裁定的模块即不翻转；扫描输入可信（cloud 导出非空、按种类计数打印、源码头部声明档案的 id 集合与扫描所得逐 id 相等）；G4 aster-api 含 #487（前缀规则）与 #492（Task 16b）；G5 列车前常规扫描在同一非空源集合上，差异只有 G3 台账列出的 E708；G6 aster-api#493（评估事件 metadata 超 4096 字符被截断，from-evidence 409 `evidence_not_approvable`）已修复并部署——翻转后高风险模块的 from-evidence 是用户可见路径。回滚顺序固定为先 cloud（ts / 注册表副本）后 aster-api（引擎 pin），避免出现编辑器报 E708 禁止保存而服务端允许的窗口。
+
+### 11.8 高风险档案下 ALLOW 同样过来源门（#510 裁定 (a)，2026-11-14）
+
+状态：**ACCEPTED**（用户 2026-11-14 在 wontlost-ltd/aster-api#510 裁定选项 (a)；本小节是该裁定的落地口径）。与 §11.2–§11.7、ADR 0040 §11 D5、ADR 0042 §3.1 / §5.1 冲突处以本小节为准；被修订的条款在第 7 条逐条列出。
+
+**1. 问题。** 来源门（`VerifiedInputsGate`，ADR 0040 §11 D5）只在 guard 决策消费评估证据时执行，而证据只在结论需要审批时才被消费：cloud 的 `needsGuardDecision` 只对 `require_approval / escalate` 返回 true，aster-api `from-evidence` 对 `outcome ∉ {REQUIRE_APPROVAL, ESCALATE}` 一律 409 `evidence_not_approvable`（ADR 0042 §3.1 第 4 步）。于是在要求 verifiedInputs 的档案下，调用方把自报输入「填小」让规则直接得出 ALLOW，就完全不经来源门。复现：aster-cloud `guard-bypass.spec.ts` C7b（信贷试点 `requestedAmount: 19999` → ALLOW，无 guard 决策）。
+
+**2. 裁定 (a)：要求 verifiedInputs 时，ALLOW 也必须过来源门。** 被引用输入未被有效签名事实覆盖 → DENY `unverified_input`（元数据缺位 → `input_refs_unavailable`），不依赖调用方是否经过 #464 执行点。只有档案要求 verifiedInputs 的 ALLOW 受影响；其余 ALLOW、全部 DENY 行为不变。
+
+**3. aster-api：`from-evidence` 受理 ALLOW。**
+- **受理集合**：`outcome ∈ {REQUIRE_APPROVAL, ESCALATE}`，或 `outcome = ALLOW` 且事件 `profile` 经**当前**注册表重算要求 verifiedInputs（与来源门第 1 步同一判定，§11.6 第 4 条；事件里的 `verifiedInputsRequired` 快照不参与）。其余（不要求的 ALLOW、DENY、无 outcome）仍 409 `evidence_not_approvable`。
+- **输入绑定必须成立**：ALLOW 没有人工复核兜底，而事实是对请求 `action.context` 验的，只有确认它就是被评估的输入，「事实覆盖了引用」才等于「被评估的输入已验证」。分类行存在且 `input_hash` 非空 → 不等即 409 `evidence_input_mismatch`（同 ADR 0042 §12 D1，不消耗证据）；分类行缺失或 `input_hash` 为 null（位置格式输入）→ DENY `unverified_input`、`unverifiedFields: ["*"]`（消耗证据）。这里的 `"*"` 不是「逐个字段比对后全部未通过」，而是「无法证明被评估的输入与签名事实所针对的是同一份输入」，因此不能可信地列出具体字段。分类行在评估事件之后写、可能异步落库，cloud 紧接着登记时可能尚未可读：只为 ALLOW 限时等待（最多读 10 次、间隔 100 ms），仍缺行才按缺行处理。REQUIRE_APPROVAL / ESCALATE 仍按 §12 D1 的 `unbound` 照常建决策，审批人看得到「未核对」。
+- **分类行对这类 ALLOW 也写**：`EvaluationClassificationWriter` 原只为可审批结论写行（ADR 0042 §12 D1）；现增加「结论为 ALLOW 且本次评估要求 verifiedInputs」时同样写（只算 `input_hash`，分类照写）。翻转前写下、无分类行的 ALLOW 证据在翻转后登记会得到 DENY——fail-closed，重新执行即可。
+- **门通过 → ALLOW**：写决策收据（`ACTION_GUARD_DECISION`，带 `evidenceCorrelationId`）并签发执行收据（ADR 0040 §12，与 `POST /decisions` 的 ALLOW 同一签发；签发或收据写入失败 → DENY `receipt_unavailable`）；不建审批、不写输入快照（`guard_decision_inputs` 只随审批行写）。**门拒绝 → DENY**：与 D5 相同，写决策行与收据、消耗该 correlationId。
+- 响应体不变（`GuardDecisionResponse`）：`outcome / effectiveOutcome = ALLOW`，`executionReceipt` 有值；DENY 时 `reasonCode` 与收据 `unverifiedFields` 同 D5。
+
+**4. aster-cloud：ALLOW 在档案要求时同样登记。**
+- **登记条件**：`require_approval / escalate`（不变），或 Verdict 结论 ALLOW（`metadata.outcome = ALLOW`）且评估响应的 `profile` 按 cloud 注册表副本 `requiresVerifiedInputs` 为真。其余 ALLOW 不调 aster-api。非 Verdict 函数不产出 `inputRefs`（§11.6 第 1 条），不在本裁定范围。
+- 事实照旧随**首次** from-evidence 请求附上（§11.6 第 11 条、§11.7 第 6 条），`invalid_fact` 不去掉事实重试。执行人不属于策略租户（公开 / 分享策略的外部执行人）→ `guardError: not_tenant_member`，按未授权处理。
+- 判定用 cloud 的注册表副本而不是新开一个「是否要求」的 API：副本与 core / locales 由 parity 守护测试锁定、随同一列车发布。`from-evidence` 只对内部 HMAC 通道开放（ADR 0042 §3.1、§4.2；Bearer 调用 403 `internal_only`），cloud 是它唯一的调用方，所以本小节的闭合范围就是 cloud 执行路径；直接调用 `POST /api/v1/guard/decisions` 的接入方本就逐请求过来源门（ADR 0040 §11 D5），不受此处漂移影响。两份注册表不一致的窗口只出现在列车发布 / 回滚之间：
+  - **回滚（先 cloud 后 aster-api，§11.7 末段）**：cloud 已回到不要求、aster-api 仍要求 → cloud 不再登记高风险 ALLOW，执行响应无 `guard` 块、`success` 回到评估的 allowed。这正是「撤回要求」的预期状态；aster-api 引擎 pin 回滚完成后，`from-evidence` 对 ALLOW 恢复 409，回滚即完成。窗口内**禁止**手工对 ALLOW 执行行做「重新登记」（端点按 cloud 副本判定，会 409 `not_approvable`，无副作用）。回滚前已写下的高风险 ALLOW 执行行保持原样：带 `guardOutcome` 的是链上已有决策的记录（DENY 行没有执行收据，不构成授权；ALLOW 行的收据照常可验、可 consume）；带 `guardError` 的行在回滚后无法再登记，视为**未授权**，需要时按回滚后的规则重新执行。
+  - **发布（同列车，aster-api 先于 cloud 部署，见第 8 条）**：aster-api 已要求、cloud 尚未登记 → 与 #510 修复前相同的已知窗口，部署完成即关闭。运行约束：cloud 部署须紧随 aster-api 部署（同一次发布窗口，不跨天），并以第 8 条的 C7b 形态做上线冒烟（高风险 ALLOW 未附事实 → 响应 `success: false`、`guard.reasonCode = unverified_input`）作为部署验收；窗口内的绕过面与 #510 修复前相同，不新增。反向（cloud 要求而 aster-api 不受理）只会让登记 409 → `guardError` → `success: false`，fail-closed。
+- 「重新登记」端点（ADR 0042 §5.1 第 5 条）对同样条件的 ALLOW 行开放。
+
+**5. 用户可见语义（cloud 执行响应与界面）。**
+- **策略结论不改**：响应的 `decision`、`output.metadata.outcome`（v1 为 `data.decision`、`data.metadata.outcome`），以及**持久化的执行行** `decision / outcome / success` 三列仍是评估事实，与链上评估事件同值。What-If、证据包、日志统计（通过率）都读执行行与评估事件，`run-credit-pilot` 读 `data.metadata.outcome`，均不读响应顶层 `success`，口径不变。guard 的 DENY 是另一个事实（另一条链上决策收据），不改写评估。
+- **新增顶层 `guard` 块**（v1 与 dashboard 执行端点；只在需要 guard 时出现）：`{ required: "approval" | "provenance", decisionId?, approvalId?, effectiveOutcome?, reasonCode?, error? }`。`required = provenance` 即本小节的 ALLOW 登记。
+- **响应顶层 `success`（只指执行响应字段，不是执行行列）收紧为「调用方可据此继续」**：`required = provenance` 时 `success = (guard.effectiveOutcome == ALLOW)`；guard DENY、登记失败（`error`）或未登记一律 `false`（fail-closed）。其余情形 `success` 与今天相同。HTTP 仍为 200：执行已发生并已记录，不是请求错误。对照：guard DENY → 执行行 `success = true`（评估 ALLOW）、响应 `success = false`、`guard.effectiveOutcome = DENY`；登记失败 → 执行行 `success = true`、`metadata.guardError` 有值、响应 `success = false`、`guard.error` 有值；guard ALLOW → 两者皆 true。依赖 `success` 判断能否继续的接入方因此自动得到 fail-closed；需要区分原因的读 `guard.reasonCode`。
+- 执行行 `metadata` 在无审批的决策（ALLOW / DENY 终态）上增 `guardOutcome`、`guardReasonCode`；日志页据此显示「Guard 拒绝 · 原因」或「Guard 放行」，不再把它们显示为「待审批 · 查看」（顺带修正 REQUIRE_APPROVAL 被门 DENY 时的同一误显）。执行页 Decision 行仍显示策略结论（如「Approved」），其下新增 Guard 行（ALLOW 绿 / PENDING 琥珀 / DENY 与登记失败红）；`guard.required = provenance` 且响应 `success: false` 时再显示一行警示「策略允许了该请求，但 Guard 未予放行，请勿据此执行」，避免把评估结论误读为可继续。
+- 执行收据不随执行响应返回；需要时按 `guard.decisionId` 经 `GET /api/v1/guard/decisions/{id}` 取回（cloud 自身 consume 见 ADR 0054 §8 ④）。
+
+**6. 直接调用 `/evaluate`、`/evaluate-source`、`/evaluate-json` 的接入方。** 评估结论 ALLOW **不是执行授权**。评估端点只产出链上评估事实，不执行来源门、不签执行收据，本小节不改它们。执行授权只来自 guard 决策的执行收据——`POST /api/v1/guard/decisions` 的 ALLOW、`from-evidence` 的 ALLOW（本小节）或审批转 ALLOW——并须在落副作用前 consume（ADR 0040 §12；执行点由 #464 的 `GuardClient.run` / MCP 代理保证）。把评估 ALLOW 直接当授权的下游，在要求 verifiedInputs 的档案下即绕过来源门；这是接入错误，由文档与 SDK 说明约束，不由评估端点兜底。本小节即面向接入方的规范说明；aster-guard SDK（`GuardClient.run`）与 MCP 代理的接入文档把「只凭执行收据执行」写入 #464 的交付验收，评估端点的 OpenAPI 描述在下一次契约变更时补同一句话（不单独为此改契约 golden）。收据本身的绑定缺口（`actionHash` 不含 `policyModule`）另见 #517：本小节只保证「被评估的输入经签名事实证实」，不改变执行收据绑定的内容，收据仍不绑定策略模块，#517 未因此解决。
+
+**7. 被修订的条款。** ADR 0042 §3.1 第 4 步（受理集合增加本小节第 3 条的 ALLOW）；ADR 0042 §5.1 首句（登记条件增加第 4 条）；ADR 0042 §12 D1 分类行写入条件（增加第 3 条）；ADR 0040 §11 D5「`from-evidence` 同样执行」扩展到 ALLOW；ADR 0040 §12 D9 末句「from-evidence 的 ALLOW 同样签发执行收据」从「审批转 ALLOW」扩展到直接 ALLOW。
+
+**8. 落地顺序与验收。** 与其他 guard 工作的顺序（#510 裁定评论）：排在 #460 核心之后、#465 对账之前，按 aster-api guard 代码顺序合并；#465 依赖的「执行都有 guard 决策可对账」只有在本小节上线后才对高风险 ALLOW 成立，故 #465 不得先于本小节上线。组件顺序：先 aster-api（只扩大受理面：cloud 未改前没有调用方发 ALLOW）→ 再 cloud（反序会让高风险 ALLOW 全部 409 → `guardError`、`success: false`，fail-closed 但吵）。验收：aster-api 单元 / 资源测试与 `guardBypassTest` 增「高风险 ALLOW 未附事实 → DENY `unverified_input`、无执行收据；附事实 → ALLOW 且执行恰一次；不要求的 ALLOW 仍 409」；cloud 单元测试；本地栈 C7b（`requestedAmount: 19999`）去掉 `test.fixme` 后通过，正向对照 `PILOT_APPLICANTS.allow`（fixture 来源签事实）→ guard ALLOW。
