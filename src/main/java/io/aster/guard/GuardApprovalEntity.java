@@ -39,6 +39,14 @@ public class GuardApprovalEntity extends PanacheEntityBase {
   /** 转 EXPIRED 的原因（ADR 0040 §11 D4）：自然过期为 null，签发方吊销为 {@code fact_issuer_revoked}。 */
   @Column(name = "expired_reason", length = 32) public String expiredReason;
   @Column(name = "created_at", nullable = false) public Instant createdAt = Instant.now();
+  /** 审批人提交（或服务端按打码视图代记）的输入视图快照哈希（ADR 0042 §12 D6）；未决或输入不可用为 null。 */
+  @Column(name = "input_snapshot_hash", length = 64) public String inputSnapshotHash;
+  /** 提交的哈希与服务端为该审批人重算的视图一致；未带哈希为 false，未决为 null。 */
+  @Column(name = "input_snapshot_matched") public Boolean inputSnapshotMatched;
+  /** 审批所据视图是否为该审批人的解除视图；未决为 null。 */
+  @Column(name = "input_revealed") public Boolean inputRevealed;
+  /** 审批时的输入状态：available / unavailable / purged / integrity_failed / too_large；未决为 null。 */
+  @Column(name = "input_status", length = 16) public String inputStatus;
 
   public static Optional<GuardApprovalEntity> findByDecision(UUID decisionId) {
     return find("decisionId = ?1", decisionId).firstResultOptional();

@@ -1,6 +1,9 @@
 package io.aster.guard;
 
 import io.aster.guard.provenance.GuardFactIssuerEntity;
+import io.aster.guard.snapshot.GuardDecisionInputEntity;
+import io.aster.guard.snapshot.GuardEvaluationClassificationEntity;
+import io.aster.guard.snapshot.GuardInputRevealEntity;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.persistence.PersistenceException;
@@ -24,6 +27,9 @@ class GuardEntitiesPersistenceTest {
   @AfterEach
   void cleanup() {
     QuarkusTransaction.requiringNew().run(() -> {
+      GuardInputRevealEntity.delete("tenantId in (?1, ?2)", tenant, otherTenant);
+      GuardDecisionInputEntity.delete("tenantId in (?1, ?2)", tenant, otherTenant);
+      GuardEvaluationClassificationEntity.delete("tenantId in (?1, ?2)", tenant, otherTenant);
       GuardApprovalEntity.delete("tenantId in (?1, ?2)", tenant, otherTenant);
       GuardDecisionEntity.delete("tenantId in (?1, ?2)", tenant, otherTenant);
       GuardFactIssuerEntity.delete("tenantId in (?1, ?2)", tenant, otherTenant);
@@ -204,5 +210,120 @@ class GuardEntitiesPersistenceTest {
     e.createdAt = Instant.parse("2026-11-08T00:00:00Z");
     e.createdBy = "u-admin";
     return e;
+  }
+
+  // ---- ADR 0042 §12 D1 / D5 / D6：输入快照、评估分类行与解除记录（V6.37.0） ----
+
+  @Test
+  void decisionInputRoundTrip() {
+    GuardDecisionEntity d = decision(tenant, null);
+    GuardApprovalEntity a = approval(d, Instant.now().plus(1, ChronoUnit.HOURS));
+    GuardDecisionInputEntity in = new GuardDecisionInputEntity();
+    in.decisionId = d.id;
+    in.tenantId = tenant;
+    in.actionJson = "{\"principal\":{\"id\":\"agent-1\"},\"context\":{\"amount\":1.10,\"email\":\"a@b.cc\"}}";
+    in.contextHash = "a".repeat(64);
+    in.classification = "{\"declared\":[\"context.amount\"],\"marks\":[]}";
+    in.marksSource = GuardDecisionInputEntity.MARKS_VERSION;
+    in.inputBinding = GuardDecisionInputEntity.BINDING_DIRECT;
+    QuarkusTransaction.requiringNew().run(() -> {
+      d.persistAndFlush();
+      a.persistAndFlush();
+      in.persistAndFlush();
+    });
+
+    QuarkusTransaction.requiringNew().run(() -> {
+      GuardDecisionInputEntity found = GuardDecisionInputEntity.findByDecisionAndTenant(d.id, tenant).orElseThrow();
+      assertThat(found.actionJson).contains("a@b.cc");
+      assertThat(found.contextHash).isEqualTo("a".repeat(64));
+      assertThat(found.classification).contains("context.amount");
+      assertThat(found.marksSource).isEqualTo("version");
+      assertThat(found.inputBinding).isEqualTo("direct");
+      assertThat(GuardDecisionInputEntity.findByDecisionAndTenant(d.id, otherTenant)).isEmpty();
+      GuardApprovalEntity foundApproval = GuardApprovalEntity.findByDecision(d.id).orElseThrow();
+      assertThat(foundApproval.inputSnapshotHash).isNull();
+      assertThat(foundApproval.inputSnapshotMatched).isNull();
+      assertThat(foundApproval.inputRevealed).isNull();
+      assertThat(foundApproval.inputStatus).isNull();
+    });
+
+    GuardDecisionInputEntity bad = new GuardDecisionInputEntity();
+    bad.decisionId = UUID.randomUUID();
+    bad.tenantId = tenant;
+    bad.actionJson = "{}";
+    bad.contextHash = "b".repeat(64);
+    bad.marksSource = "catalog";
+    bad.inputBinding = GuardDecisionInputEntity.BINDING_DIRECT;
+    // 外键与 CHECK 约束：未知 decision 或未知取值都拒绝
+    assertThatThrownBy(() -> QuarkusTransaction.requiringNew().run(bad::persistAndFlush))
+        .isInstanceOf(PersistenceException.class);
+  }
+
+  @Test
+  void approvalSnapshotColumnsRoundTrip() {
+    GuardDecisionEntity d = decision(tenant, null);
+    GuardApprovalEntity a = approval(d, Instant.now().plus(1, ChronoUnit.HOURS));
+    a.inputSnapshotHash = "c".repeat(64);
+    a.inputSnapshotMatched = true;
+    a.inputRevealed = false;
+    a.inputStatus = "available";
+    QuarkusTransaction.requiringNew().run(() -> {
+      d.persistAndFlush();
+      a.persistAndFlush();
+    });
+    QuarkusTransaction.requiringNew().run(() -> {
+      GuardApprovalEntity found = GuardApprovalEntity.findByIdAndTenant(a.id, tenant).orElseThrow();
+      assertThat(found.inputSnapshotHash).isEqualTo("c".repeat(64));
+      assertThat(found.inputSnapshotMatched).isTrue();
+      assertThat(found.inputRevealed).isFalse();
+      assertThat(found.inputStatus).isEqualTo("available");
+    });
+  }
+
+  @Test
+  void evaluationClassificationRoundTrip() {
+    String correlationId = UUID.randomUUID().toString();
+    GuardEvaluationClassificationEntity row = new GuardEvaluationClassificationEntity();
+    row.tenantId = tenant;
+    row.correlationId = correlationId;
+    row.inputHash = null;
+    row.classification = null;
+    QuarkusTransaction.requiringNew().run(row::persistAndFlush);
+
+    QuarkusTransaction.requiringNew().run(() -> {
+      GuardEvaluationClassificationEntity found =
+          GuardEvaluationClassificationEntity.findByKey(tenant, correlationId).orElseThrow();
+      assertThat(found.inputHash).isNull();
+      assertThat(found.classification).isNull();
+      assertThat(found.createdAt).isNotNull();
+      assertThat(GuardEvaluationClassificationEntity.findByKey(otherTenant, correlationId)).isEmpty();
+    });
+  }
+
+  @Test
+  void revealPrimaryKeyRejectsDuplicate() {
+    GuardDecisionEntity d = decision(tenant, null);
+    GuardApprovalEntity a = approval(d, Instant.now().plus(1, ChronoUnit.HOURS));
+    QuarkusTransaction.requiringNew().run(() -> {
+      d.persistAndFlush();
+      a.persistAndFlush();
+      reveal(a, "u-dpo", 41L).persistAndFlush();
+      reveal(a, "u-other", 42L).persistAndFlush();
+    });
+
+    assertThatThrownBy(() -> QuarkusTransaction.requiringNew().run(() -> reveal(a, "u-dpo", 43L).persistAndFlush()))
+        .isInstanceOf(PersistenceException.class);
+    QuarkusTransaction.requiringNew().run(() ->
+        assertThat(GuardInputRevealEntity.count("approvalId", a.id)).isEqualTo(2));
+  }
+
+  private GuardInputRevealEntity reveal(GuardApprovalEntity a, String user, long auditId) {
+    GuardInputRevealEntity r = new GuardInputRevealEntity();
+    r.approvalId = a.id;
+    r.revealedBy = user;
+    r.tenantId = a.tenantId;
+    r.revealedAt = Instant.now();
+    r.auditId = auditId;
+    return r;
   }
 }
