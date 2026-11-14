@@ -803,4 +803,159 @@ public class GuardFromEvidenceResourceTest {
     assertThat(r.jsonPath().getString("approval")).isNull();
     assertThat(inputRow(TENANT, r.jsonPath().getString("decisionId"))).isNull();
   }
+
+  // ---- ADR 0046 §11.8（#510 裁定 (a)）：要求 verifiedInputs 的档案下 ALLOW 同样经 from-evidence 过来源门 ----
+
+  /** 高风险档案模块：金额 ≥ 50000 需审批，否则直接 ALLOW；规则只读 applicant.amount。 */
+  private static final String HIGH_RISK_SOURCE = String.join("\n",
+      "Module guard.hr510.", "",
+      "Profile \"eu-ai-act-high-risk\".", "",
+      "Define Applicant has amount as Int.", "",
+      "@id(\"HR510-001\")",
+      "@control(\"EU_AI_ACT:ART14\")",
+      "Rule decide given applicant as Applicant, produce Verdict:",
+      "  If applicant.amount at least 50000:",
+      "    Return Verdict.require_approval(\"Credit Officer\", \"large amount\").",
+      "  Otherwise:",
+      "    Return Verdict.allow().", "");
+  private static final String SMALL_AMOUNT = "{\"applicant\":{\"amount\":100}}";
+
+  private static ObjectNode smallAmountFact(TestFactSigner signer) {
+    Instant now = Instant.now();
+    return signer.fresh().audience(TENANT).window(now.minusSeconds(30), now.plusSeconds(600))
+        .claims("{\"context.applicant.amount\":100}").sources("{\"context.applicant.amount\":\"ledger.amount\"}")
+        .sign();
+  }
+
+  private static String withFacts(String body, JsonNode... facts) {
+    ObjectNode root = (ObjectNode) readTree(body);
+    var list = ((ObjectNode) root.get("action")).putArray("facts");
+    for (JsonNode f : facts) {
+      list.add(f);
+    }
+    return root.toString();
+  }
+
+  private static long receiptRows(String decisionId) {
+    UUID id = UUID.fromString(decisionId);
+    return QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id));
+  }
+
+  private static long approvalRows(String decisionId) {
+    UUID id = UUID.fromString(decisionId);
+    return QuarkusTransaction.requiringNew().call(() -> GuardApprovalEntity.count("decisionId", id));
+  }
+
+  /**
+   * C7b 的服务端形态：高风险模块评估得 ALLOW（自报金额填小），未附事实即登记 → DENY unverified_input，
+   * 不建审批、不签执行收据、不写输入快照；证据被消耗，补附事实重放仍是这条 DENY。
+   */
+  @Test
+  void highRiskAllowEvidenceWithoutFactIsDenyUnverifiedInput() throws Exception {
+    String cid = evaluateSource(TENANT, HIGH_RISK_SOURCE, SMALL_AMOUNT);
+    // 要求 verifiedInputs 的 ALLOW 同样写分类行：输入绑定靠它
+    var classification = QuarkusTransaction.requiringNew().call(() ->
+        io.aster.guard.snapshot.GuardEvaluationClassificationEntity.findByKey(TENANT, cid)).orElseThrow();
+    assertThat(classification.inputHash).hasSize(64);
+
+    Response r = signedPost(FROM_EVIDENCE, fromEvidenceBody(cid, SMALL_AMOUNT), TENANT, "u-req", List.of());
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    assertThat(r.jsonPath().getString("outcome")).isEqualTo("DENY");
+    assertThat(r.jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
+    assertThat(r.jsonPath().getString("reasonCode")).isEqualTo("unverified_input");
+    assertThat(r.jsonPath().getString("approval")).isNull();
+    assertThat(r.asString()).doesNotContain("executionReceipt");
+    String decisionId = r.jsonPath().getString("decisionId");
+    assertThat(receiptRows(decisionId)).isZero();
+    assertThat(approvalRows(decisionId)).isZero();
+    assertThat(inputRow(TENANT, decisionId)).isNull();
+    Response receipts = signedGet(RECEIPTS, "decisionIds=" + decisionId, TENANT, "u-export");
+    assertThat(receipts.jsonPath().getList("receipts[0].metadata.unverifiedFields"))
+        .containsExactly("context.applicant.amount");
+
+    TestFactSigner signer = registeredSigner(newKid());
+    Response replay = signedPost(FROM_EVIDENCE, withFacts(fromEvidenceBody(cid, SMALL_AMOUNT), smallAmountFact(signer)),
+        TENANT, "u-req", List.of());
+    assertThat(replay.statusCode()).as(replay.asString()).isEqualTo(200);
+    assertThat(replay.jsonPath().getString("decisionId")).isEqualTo(decisionId);
+    assertThat(replay.jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
+  }
+
+  /** 事实覆盖被引用的输入 → ALLOW：签发执行收据（actionHash 为请求体 action 的哈希），不建审批、不写输入快照。 */
+  @Test
+  void highRiskAllowEvidenceWithCoveringFactIsAllowWithExecutionReceipt() {
+    TestFactSigner signer = registeredSigner(newKid());
+    String cid = evaluateSource(TENANT, HIGH_RISK_SOURCE, SMALL_AMOUNT);
+    String body = withFacts(fromEvidenceBody(cid, SMALL_AMOUNT), smallAmountFact(signer));
+
+    Response r = signedPost(FROM_EVIDENCE, body, TENANT, "u-req", List.of());
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    assertThat(r.jsonPath().getString("outcome")).isEqualTo("ALLOW");
+    assertThat(r.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
+    assertThat(r.jsonPath().getString("reasonCode")).isNull();
+    assertThat(r.jsonPath().getString("approval")).isNull();
+    assertThat(r.jsonPath().getList("inputSources.verified")).contains("context.applicant.amount");
+    var receipt = ExecutionReceiptAssert.assertVerifiable(r.asString(), signingKeys);
+    assertThat(receipt.get("payload").get("actionHash").asText()).isEqualTo(ExecutionReceiptAssert.actionHashOf(body));
+    assertThat(receipt.get("payload").has("policyVersionId")).isFalse();
+    String decisionId = r.jsonPath().getString("decisionId");
+    assertThat(receiptRows(decisionId)).isEqualTo(1);
+    assertThat(approvalRows(decisionId)).isZero();
+    assertThat(inputRow(TENANT, decisionId)).isNull();
+    Response receipts = signedGet(RECEIPTS, "decisionIds=" + decisionId, TENANT, "u-export");
+    assertThat(receipts.jsonPath().getString("receipts[0].metadata.evidenceCorrelationId")).isEqualTo(cid);
+  }
+
+  /**
+   * 没有分类行（无从核对请求 context 就是被评估的输入）时，即使事实覆盖了请求里的引用也 DENY，
+   * unverifiedFields 为「*」：ALLOW 没有审批人兜底，不能接受 unbound。
+   */
+  @Test
+  void highRiskAllowWithoutClassificationRowIsDenyEvenWithFact() {
+    TestFactSigner signer = registeredSigner(newKid());
+    String cid = newCid();
+    append(TENANT, new HashMap<>(Map.of("correlationId", cid, "outcome", "ALLOW", "ruleId", "CUST-DEL-001",
+        "profile", "eu-ai-act-high-risk", "inputRefs", List.of("context.amount"))));
+
+    Response r = signedPost(FROM_EVIDENCE, bodyWithFacts(cid, null, amountFact(signer)), TENANT, "u-req", List.of());
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    assertThat(r.jsonPath().getString("effectiveOutcome")).isEqualTo("DENY");
+    assertThat(r.jsonPath().getString("reasonCode")).isEqualTo("unverified_input");
+    assertThat(r.jsonPath().getList("inputSources.verified")).contains("context.amount");
+    String decisionId = r.jsonPath().getString("decisionId");
+    assertThat(receiptRows(decisionId)).isZero();
+    Response receipts = signedGet(RECEIPTS, "decisionIds=" + decisionId, TENANT, "u-export");
+    assertThat(receipts.jsonPath().getList("receipts[0].metadata.unverifiedFields")).containsExactly("*");
+  }
+
+  /** 档案不要求 verifiedInputs 的 ALLOW 不受影响：仍 409 evidence_not_approvable，不开决策。 */
+  @Test
+  void allowEvidenceUnderNonRequiringProfileStill409() {
+    String cid = newCid();
+    append(TENANT, new HashMap<>(Map.of("correlationId", cid, "outcome", "ALLOW", "ruleId", "CUST-DEL-001",
+        "profile", "governed", "inputRefs", List.of("context.amount"))));
+
+    Response r = signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(409);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("evidence_not_approvable");
+    assertThat(r.jsonPath().getString("outcome")).isEqualTo("ALLOW");
+    assertThat(decisionsFor(cid)).isZero();
+  }
+
+  /** 高风险 ALLOW 的 context 与被评估输入不一致 → 409 evidence_input_mismatch，不消耗证据。 */
+  @Test
+  void highRiskAllowMismatchedContextIs409NotConsumed() {
+    String cid = evaluateSource(TENANT, HIGH_RISK_SOURCE, SMALL_AMOUNT);
+
+    Response r = signedPost(FROM_EVIDENCE, fromEvidenceBody(cid, "{\"applicant\":{\"amount\":99}}"), TENANT, "u-req",
+        List.of());
+
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(409);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("evidence_input_mismatch");
+    assertThat(decisionsFor(cid)).isZero();
+  }
 }

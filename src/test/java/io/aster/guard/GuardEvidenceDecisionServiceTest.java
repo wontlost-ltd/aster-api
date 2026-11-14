@@ -8,6 +8,7 @@ import io.aster.guard.api.GuardFromEvidenceRequest;
 import io.aster.guard.provenance.FactIssuerStore;
 import io.aster.guard.provenance.FactVerifier;
 import io.aster.guard.provenance.ProfileRequirements;
+import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.snapshot.EvaluationClassificationWriter;
 import io.aster.guard.api.GuardActionRequest.Action;
 import io.aster.guard.api.GuardActionRequest.ActionName;
@@ -57,7 +58,7 @@ class GuardEvidenceDecisionServiceTest {
   private final GuardEvidenceDecisionService service = new GuardEvidenceDecisionService(store, decisionService,
       new GuardActionMapper(), mock(AuditChainAppender.class), mock(GuardReceiptBuilder.class), objectMapper,
       new FactVerifier(mock(FactIssuerStore.class), Clock.systemUTC()), evaluationService, profileRequirements, meters,
-      Duration.ofHours(24), mock(EvaluationClassificationWriter.class));
+      Duration.ofHours(24), mock(EvaluationClassificationWriter.class), mock(ExecutionReceiptIssuer.class));
 
   private GuardDecisionEntity storedRow(GuardDecisionResponse response) throws Exception {
     GuardDecisionEntity e = new GuardDecisionEntity();
@@ -94,6 +95,20 @@ class GuardEvidenceDecisionServiceTest {
 
     assertThat(service.createFromEvidence(TENANT, "u-req", Set.of(), new GuardFromEvidenceRequest(CID, null), null, null)).isEqualTo(stored);
     verify(store, never()).saveDecision(any(), any(), any(), any());
+  }
+
+  /** ADR 0046 §11.8：只有带输入哈希的分类行才算绑定成立；缺行与位置格式输入（哈希 null）都不算。 */
+  @Test
+  void boundOnlyWithInputHash() {
+    io.aster.guard.snapshot.GuardEvaluationClassificationEntity hashed =
+        new io.aster.guard.snapshot.GuardEvaluationClassificationEntity();
+    hashed.inputHash = "a".repeat(64);
+    io.aster.guard.snapshot.GuardEvaluationClassificationEntity positional =
+        new io.aster.guard.snapshot.GuardEvaluationClassificationEntity();
+
+    assertThat(GuardEvidenceDecisionService.bound(Optional.of(hashed))).isTrue();
+    assertThat(GuardEvidenceDecisionService.bound(Optional.of(positional))).isFalse();
+    assertThat(GuardEvidenceDecisionService.bound(Optional.empty())).isFalse();
   }
 
   // ---- 档案来源门（ADR 0040 §11 D5 实施澄清；Task 16 carry-over 1/2/6） ----
@@ -253,7 +268,8 @@ class GuardEvidenceDecisionServiceTest {
     return new GuardEvidenceDecisionService(store, decisionService, new GuardActionMapper(),
         mock(AuditChainAppender.class), mock(GuardReceiptBuilder.class), objectMapper,
         new FactVerifier(mock(FactIssuerStore.class), Clock.systemUTC()), evaluationService,
-        new ProfileRequirements(registry), meters, Duration.ofHours(24), mock(EvaluationClassificationWriter.class));
+        new ProfileRequirements(registry), meters, Duration.ofHours(24), mock(EvaluationClassificationWriter.class),
+        mock(ExecutionReceiptIssuer.class));
   }
 
   private static Map<String, Object> eventWithRefs(Object inputRefs, Boolean snapshot) {

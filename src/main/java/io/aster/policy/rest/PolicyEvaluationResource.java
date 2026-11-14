@@ -295,7 +295,7 @@ public class PolicyEvaluationResource {
             );
             // /evaluate 的输入恒为位置数组：分类行 input_hash 与分类均为 null，from-evidence 得 unbound / none
             classificationWriter.record(tenantId, evidence.correlationId(), request.context(),
-                outcomeOf(result.getDecision()), null, false);
+                outcomeOf(result.getDecision()), null, false, Boolean.TRUE.equals(result.getVerifiedInputsRequired()));
 
             LOG.infof("Policy evaluation completed in %dms: %s.%s", executionTime, request.policyModule(), request.policyFunction());
             recordApiCall("/api/v1/policies/evaluate", "success", executionTime, identity);
@@ -428,7 +428,7 @@ public class PolicyEvaluationResource {
                     evidence
                 );
                 classificationWriter.record(tenantId, evidence.correlationId(), request.context(),
-                    outcomeOf(decision), result.classification(), false);
+                    outcomeOf(decision), result.classification(), false, result.verifiedInputsRequired());
 
                 LOG.infof("JSON policy evaluation completed in %dms: %s.%s", executionTime, policyModule, policyFunction);
                 recordApiCall("/api/v1/policies/evaluate-json", "success", executionTime, identity);
@@ -718,7 +718,7 @@ public class PolicyEvaluationResource {
                     );
                     // 分类行（ADR 0042 §12 D1）：模拟执行不到这里（无事件、无 correlationId）
                     classificationWriter.record(tenantId, evidence.correlationId(), request.context(),
-                        outcomeOf(decision), exec.classification(), false);
+                        outcomeOf(decision), exec.classification(), false, exec.verifiedInputsRequired());
                 }
 
                 LOG.infof("CNL source evaluation completed in %dms: %s.%s",

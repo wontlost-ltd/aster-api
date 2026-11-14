@@ -15,6 +15,8 @@ import io.aster.guard.api.GuardActionRequest;
 import io.aster.guard.provenance.InputSourceResolver;
 import io.aster.guard.provenance.ProfileRequirements;
 import io.aster.guard.provenance.VerifiedInputsGate;
+import io.aster.guard.receipt.ExecutionReceiptIssuer;
+import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
 import io.aster.guard.snapshot.DecisionInputFactory;
 import io.aster.guard.snapshot.EvaluationClassificationWriter;
 import io.aster.guard.snapshot.GuardDecisionInputEntity;
@@ -60,6 +62,10 @@ import static io.aster.guard.GuardText.isBlank;
  * DENY（{@code unverified_input} / {@code input_refs_unavailable}）而非 PENDING，写决策收据与决策行但不建待审批。
  * 门的 DENY 同样写决策行，因而消耗该证据的相关键：同一相关键重放返回这条 DENY，补齐事实后须用新的评估事件。
  *
+ * <p>受理的结论（ADR 0046 §11.8，#510 裁定 (a)）：REQUIRE_APPROVAL / ESCALATE，以及事件档案要求 verifiedInputs 时的 ALLOW。
+ * 后者没有审批人兜底，输入绑定必须成立（无从核对即 DENY {@code unverified_input}），过门即 ALLOW 并签发执行收据，
+ * 与 {@code POST /decisions} 的 ALLOW 同一签发；签发失败按 DENY {@code receipt_unavailable}。
+ *
  * <p>阻塞方法：须在非事务的 worker 线程调用——存储层每步自开独立事务，唯一索引冲突时才能干净地回读先到者。
  */
 @ApplicationScoped
@@ -84,6 +90,7 @@ public class GuardEvidenceDecisionService {
   private Counter metadataUnavailable;
   private Duration approvalTtl;
   private EvaluationClassificationWriter classificationWriter;
+  private ExecutionReceiptIssuer receiptIssuer;
 
   /** CDI 客户端代理所需。 */
   protected GuardEvidenceDecisionService() {
@@ -96,7 +103,8 @@ public class GuardEvidenceDecisionService {
                                       FactVerifier factVerifier, PolicyEvaluationService evaluationService,
                                       ProfileRequirements profileRequirements, MeterRegistry meterRegistry,
                                       @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl,
-                                      EvaluationClassificationWriter classificationWriter) {
+                                      EvaluationClassificationWriter classificationWriter,
+                                      ExecutionReceiptIssuer receiptIssuer) {
     this.store = store;
     this.decisionService = decisionService;
     this.mapper = mapper;
@@ -111,6 +119,7 @@ public class GuardEvidenceDecisionService {
     this.metadataUnavailable = GuardMetrics.ruleMetadataUnavailable(meterRegistry, "from_evidence");
     this.approvalTtl = approvalTtl;
     this.classificationWriter = classificationWriter;
+    this.receiptIssuer = receiptIssuer;
   }
 
   /**
@@ -140,29 +149,35 @@ public class GuardEvidenceDecisionService {
     AuditLog event = evaluationEvent(tenantId, correlationId);
     Map<String, Object> metadata = metadataOf(event);
     String outcome = text(metadata, "outcome");
-    // 无 outcome（失败的评估事件、metadata 被截断无法解析）同样不可审批；Set.of 的 contains(null) 会抛 NPE，须先判空
-    if (outcome == null || !APPROVABLE.contains(outcome)) {
+    if (!accepted(outcome, metadata)) {
       throw new GuardApprovalConflictException("evidence_not_approvable", "评估结论不需要审批",
           Map.of("outcome", String.valueOf(outcome)));
     }
     GuardDecisionDraft evaluated = draftOf(tenantId, event, req, actionHash, metadata, outcome);
-    // 输入绑定（ADR 0042 §12 D1）：可审批判定之后、来源门之前。不一致即 409，不建决策、不写收据、不消耗该证据
+    // 输入绑定（ADR 0042 §12 D1）：受理判定之后、来源门之前。不一致即 409，不建决策、不写收据、不消耗该证据
     Optional<GuardEvaluationClassificationEntity> classification = classificationRow(tenantId, correlationId);
     requireBoundInput(classification, evaluated.contextHash());
-    GuardDecisionDraft draft = gate(evaluated
-        .withInputSources(InputSourceResolver.resolve(req.action(), facts, performedBy, businessRoles)), req.action(),
-        metadata);
+    GuardDecisionDraft sourced = evaluated
+        .withInputSources(InputSourceResolver.resolve(req.action(), facts, performedBy, businessRoles));
+    GuardDecisionDraft draft = sourced.allowed() && !bound(classification)
+        ? sourced.denyUnverified(GuardReasonCode.UNVERIFIED_INPUT, List.of(VerifiedInputsGate.ALL_INPUTS))
+        : gate(sourced, req.action(), metadata);
 
     UUID decisionId = UUID.randomUUID();
+    ExecutionReceiptIssuer.Issued issued = draft.allowed() ? issueReceipt(draft, decisionId, metadata) : null;
+    if (draft.allowed() && issued == null) {
+      draft = draft.deny(GuardReasonCode.RECEIPT_UNAVAILABLE);
+    }
     UUID approvalId = draft.needsApproval() ? UUID.randomUUID() : null;
     AppendedRecord receipt = appendReceipt(draft, decisionId, approvalId, performedBy, correlationId);
     if (receipt == null) {
       draft = draft.deny(GuardReasonCode.RECEIPT_UNAVAILABLE);
       approvalId = null;
+      issued = null;
     }
     Instant expiresAt = Instant.now().plus(approvalTtl);
-    // 证据只开可审批的决策，不存在直接 ALLOW：执行收据只会在审批转 ALLOW 时签发
-    GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt, null);
+    GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt,
+        issued == null ? null : issued.receipt());
     GuardApprovalEntity approval = approvalId == null ? null : toApproval(approvalId, decisionId, draft, expiresAt);
     // 输入快照只随审批行写：门 DENY 与 receipt_unavailable 不写（ADR 0042 §12 D1）
     GuardDecisionInputEntity input = approval == null ? null
@@ -170,14 +185,42 @@ public class GuardEvidenceDecisionService {
     GuardDecisionEntity entity = assembler.toEntity(decisionId, draft, receipt, response, performedBy, null);
     entity.evidenceCorrelationId = correlationId;
     // 版本列取事件 metadata（ADR 0041 有值时才写）；响应体的 policyVersion 按裁定保持 null
-    entity.policyVersionId = metadata.get("policyVersionId") instanceof Number n ? n.longValue() : null;
+    entity.policyVersionId = policyVersionId(metadata);
     try {
-      store.saveDecision(entity, approval, null, input);
+      store.saveDecision(entity, approval, issued == null ? null : issued.row(), input);
     } catch (GuardIdempotencyRaceException race) {
       // 并发同一证据：唯一索引让后写者失败，回读先到者的决策
       return existing(tenantId, correlationId).orElseThrow(() -> race);
     }
     return response;
+  }
+
+  /**
+   * 受理的评估结论：可审批结论，或事件档案（按当前注册表重算，同 {@link #gate} 第 1 步）要求 verifiedInputs 时的 ALLOW
+   * （ADR 0046 §11.8）。无 outcome（失败的评估事件、metadata 被截断无法解析）不受理；Set.of 的 contains(null) 会抛 NPE，须先判空。
+   */
+  private boolean accepted(String outcome, Map<String, Object> event) {
+    if (outcome == null) {
+      return false;
+    }
+    return APPROVABLE.contains(outcome) || GuardDecisionDraft.ALLOW.equals(outcome)
+        && profileRequirements.verifiedInputsRequired(text(event, EvaluationEvidence.KEY_PROFILE));
+  }
+
+  /** 分类行带输入哈希，且已由 {@link #requireBoundInput} 核对一致：请求的 context 就是被评估的输入。 */
+  static boolean bound(Optional<GuardEvaluationClassificationEntity> row) {
+    return row.map(r -> r.inputHash != null).orElse(false);
+  }
+
+  /** 签发执行收据（ADR 0040 §12，与 {@code POST /decisions} 同一签发）；失败返回 null，由调用方改判 DENY receipt_unavailable。 */
+  private ExecutionReceiptIssuer.Issued issueReceipt(GuardDecisionDraft draft, UUID decisionId,
+                                                     Map<String, Object> event) {
+    try {
+      return receiptIssuer.issueNow(decisionId, draft.tenantId(), draft.actionHash(), policyVersionId(event));
+    } catch (ExecutionReceiptUnavailableException e) {
+      LOG.errorf(e, "from-evidence 执行收据签发失败，按 DENY 处理: decision=%s", decisionId);
+      return null;
+    }
   }
 
   /**
@@ -355,6 +398,11 @@ public class GuardEvidenceDecisionService {
     } catch (GuardInvalidActionException bad) {
       throw new GuardApprovalConflictException("invalid_action", bad.getMessage());
     }
+  }
+
+  /** 事件 metadata 的策略版本（ADR 0041 有值时才写；evaluate-source 事件没有）。 */
+  private static Long policyVersionId(Map<String, Object> m) {
+    return m.get(EvaluationEvidence.KEY_POLICY_VERSION_ID) instanceof Number n ? n.longValue() : null;
   }
 
   private static List<String> controls(Map<String, Object> m) {
