@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @QuarkusTest
 @QuarkusTestResource(PostgresTestResource.class)
 @TestProfile(GuardReceiptResourceAuthTest.AuthProfile.class)
-class GuardReceiptResourceAuthTest {
+public class GuardReceiptResourceAuthTest {
   public static class AuthProfile implements QuarkusTestProfile {
     @Override
     public Map<String, String> getConfigOverrides() {
