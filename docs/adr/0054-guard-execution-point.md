@@ -305,6 +305,8 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 - **I4 #466 部署层**：绕过套件第 1 条（直连原始工具）在隔离成立时直连失败、无副作用、对账零孤儿；用于证明「对账是第二道」（§7 末段）的反证场景是**故意关掉隔离**（去掉 `NetworkPolicy` 或关闭工具侧票据核对）后直连执行，此时工具按 §10.1 上报义务照报，下一轮对账必须出现 `side_effect_without_decision`，由 #466 断言。
 - **I5 旧代理 / 旧 SDK**：0.1.0 不 consume → 它放行的每个 ALLOW 都会成为 `allow_unconsumed`（info，不告警），治理页据此列出「未消耗 ALLOW」（ADR 0040 §12 D10）。
 
+---
+
 ## 11. 2026-11 修订：策略来源与 0.2.0 细化（R66，#464）
 
 - 状态：**PROPOSED**（2026-11-14；实施计划 docs/superpowers/plans/2026-11-14-guard-execution-point.md，计划中称「R65」——R65 / §10 已由 #465 对账契约（#523）占用，本修订顺延为 R66 / §11，内容不变）
@@ -336,7 +338,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 
 | # | 决定 | 理由 | 偏离 |
 |---|---|---|---|
-| D2 | `auth` 模式票据载体为 MCP 请求 `params._meta["io.aster/guard-consume"] = { decisionId, attemptId, envelope }`，`envelope` = 被哈希 action 去掉 `context`（`principal / action / resource? / agent?`）；不是 `X-Aster-Guard-Consume` 头。工具侧重算：`context` 由工具**自己的**映射配置（与代理同一 `actions.<tool>`，§3.2）对**实际收到的参数**构造（含 `digestArgs` 摘要），完整 action = `{ ...envelope, context }`，其 `jcs-sha256/v1` 必须等于回读 `actionHash`；此外 `envelope.action.name` 必须等于工具自己的 `actionName ?? 工具名`，有 `resourceFrom` 时 `envelope.resource` 必须等于 `{ type: "arg", id: <实际参数值> }`、无则不得出现——工具只信任自己算出的部分，`principal / agent` 只被哈希绑定、仅供审计 | 0.2.0 只有 stdio 上游，没有 HTTP 头可带；工具不知道 principal / agent，须由票据带 envelope 才能重算整 action 哈希（envelope 不受信，被 `actionHash` 比对绑定） | §3.3 `auth` |
+| D2 | `auth` 模式票据载体为 MCP 请求 `params._meta["io.aster/guard-consume"] = { decisionId, attemptId, envelope }`，`envelope` = 被哈希 action 去掉 `context`（`principal / action / resource? / agent?`）；不是 `X-Aster-Guard-Consume` 头（§10.1 / §10.5 中提到的该头同样读作此票据）。工具侧重算：`context` 由工具**自己的**映射配置（与代理同一 `actions.<tool>`，§3.2）对**实际收到的参数**构造（含 `digestArgs` 摘要），完整 action = `{ ...envelope, context }`，其 `jcs-sha256/v1` 必须等于回读 `actionHash`；此外 `envelope.action.name` 必须等于工具自己的 `actionName ?? 工具名`，有 `resourceFrom` 时 `envelope.resource` 必须等于 `{ type: "arg", id: <实际参数值> }`、无则不得出现——工具只信任自己算出的部分，`principal / agent` 只被哈希绑定、仅供审计 | 0.2.0 只有 stdio 上游，没有 HTTP 头可带；工具不知道 principal / agent，须由票据带 envelope 才能重算整 action 哈希（envelope 不受信，被 `actionHash` 比对绑定） | §3.3 `auth` |
 | D3 | HTTP 上游（`--upstream-url` / `--upstream-auth-env`）推迟到 §8 ⑤；0.2.0 仅 stdio 上游 | 随 Streamable HTTP 服务端与镜像一起做 | §3.3 网络策略行 |
 | D4 | 拒绝 / 待审批 / 阻断载荷 `{ asterGuard }` **总在** `_meta`；上游工具未声明 `outputSchema` 时另放 `structuredContent` | MCP SDK Client 按 `outputSchema` 校验 `isError` 结果的 `structuredContent`，DENY 载荷会让下游 `callTool` 抛 `InvalidParams` 而看不到拒绝 | §2.2「structuredContent 是契约」 |
 | D5 | `aster-cloud/aster-guard` 已改为 **public**（2026-11-14，用户执行） | npm provenance 不支持私有仓 | §6、头部「private」 |
