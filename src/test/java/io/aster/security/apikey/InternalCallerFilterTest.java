@@ -793,7 +793,8 @@ class InternalCallerFilterTest {
                 "/api/v1/guard/approvals/" + id + "/reject", "/api/v1/guard/approvals/" + id + "/input",
                 "/api/v1/guard/approvals/" + id + "/input/reveal", "/api/v1/guard/decisions/" + id,
                 "/api/v1/guard/receipts/" + id + "/consume", "/api/v1/guard/receipts/" + id + "/result",
-                "/api/v1/guard/side-effects")) {
+                "/api/v1/guard/side-effects", "/api/v1/guard/reconciliation", "/api/v1/guard/reconciliation/orphans",
+                "/api/v1/guard/reconciliation/orphans/7/ack")) {
             assertEquals(Classification.REQUIRE_HMAC,
                 InternalCallerFilter.classify(p, false, false, false, false, true), p);
             assertEquals(Classification.NOT_PROTECTED,
@@ -808,7 +809,9 @@ class InternalCallerFilterTest {
                 "/api/v1/guard/approvals/a/b/input", "/api/v1/guard/approvals/" + id + "/input/reveal/",
                 "/api/v1/guard/approvalsX", "/api/v1/guard/receipts/" + id,
                 "/api/v1/guard/receipts/" + id + "/consume/x", "/api/v1/guard/receipts/" + id + "/other",
-                "/api/v1/guard/side-effects/x", "/api/v1/guard/side-effectsX")) {
+                "/api/v1/guard/side-effects/x", "/api/v1/guard/side-effectsX", "/api/v1/guard/reconciliationX",
+                "/api/v1/guard/reconciliation/orphans/7", "/api/v1/guard/reconciliation/orphans/7/ack/x",
+                "/api/v1/guard/reconciliation/runs")) {
             assertEquals(Classification.NOT_PROTECTED,
                 InternalCallerFilter.classify(p, false, false, false, false, true), p);
         }

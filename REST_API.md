@@ -74,6 +74,17 @@ trace 响应包含: `{"decisionTrace":{"moduleName":"...","functionName":"...","
 **GET /decisions/{id}** -- 回读决策（Bearer 或内部 HMAC；非法 UUID 与跨租户 404 空体）。响应为存储的决策响应（与 `POST /decisions` 同字段：`effectiveOutcome`、`approval`、`executionReceipt`（含签发时的 `revision`）等），另附执行状态（ADR 0054 §3.3，仅回读端点有，幂等重放不含）：收据已 consume 时附 `actionHash` 与 `consumedBy: { attemptId, consumedAt, executorId }`，已结果回写时附 `result: { resultAt, status }`；未发生的不写出。`executionReceipt.payload.policyVersionId` 可缺省（决策无已保存策略版本，如 evaluate-source 锚定的 from-evidence 决策）。
 **GET /keys** -- 执行收据验签公钥（JWKS：`alg=EdDSA`、`crv=Ed25519`、`kty=OKP`、`use=sig`、`kid`、`x`=base64url 32 字节公钥，有 `notAfter` 时附 `exp` 秒）与配置 `revision`；仅列出未过期且未撤销的 key，响应头 `Cache-Control: max-age=300`。密钥运维见 `docs/runbooks/guard-receipt-signing-keys.md`。
 
+### 对账（ADR 0054 §10，#465）
+
+Bearer API key 与 HMAC 内部调用双通道；租户取自已验证身份；跨租户、不存在、非数字 id 一律 404 空体。
+
+**POST /side-effects** -- 副作用落地方（工具服务、业务系统、cloud）批量上报（MEMBER，不计量配额）。请求 `{ "effects": [ { "effectId", "source", "occurredAt", "action": { "name" }, "resource"?: { "type", "id" }, "decisionId"?, "attemptId"?, "actionHash"? } ] }`：1–500 条；`effectId` 1–128 字符无控制字符；`source` 匹配 `[a-z0-9][a-z0-9._-]{0,63}`；`occurredAt` 带偏移的 ISO-8601 且不晚于 now + 5 分钟；`action.name` 1–255；`resource.type / id` 各不超过 255；`decisionId` / `attemptId` 为 UUID 形态；`actionHash` 64 位小写 hex。200 `{ "accepted": n, "duplicates": m }`，幂等键 `(source, effectId)`，重复上报不改原行。任一条不合法 → 400 `{ "error": "invalid_side_effect", "index", "field" }` 整批不写；条数不合法 → 400 `{ "error": "invalid_side_effect", "field": "effects" }`；重复键 / 非法 JSON → 400 `{ "error": "invalid_side_effect" }`。上报粒度：同一 `source` 对同一 `decisionId` 恰报一条，第二条已匹配的上报判 `side_effect_mismatch`（`replayed`）。
+**GET /reconciliation** -- 摘要（MEMBER）：`{ "lastRun": { "runId", "finishedAt", "windowStart", "windowEnd", "newOrphans", "resolvedOrphans", "openOrphans" } | null, "open": { "<kind>": n }, "openTotal", "resultGrace", "lookback" }`（`open` 只列非零）。
+**GET /reconciliation/orphans** -- 孤儿列表（MEMBER）：`?status=OPEN|RESOLVED|ACKNOWLEDGED`（缺省 OPEN）`&kind=<kind>&limit=1..200`（缺省 50）`&before=<id>`；`{ "items": [ { "id", "kind", "severity", "status", "decisionId"?, "sideEffectId"?, "executor", "executorId"?, "detectedAt", "resolvedAt"?, "resolution"?, "acknowledgedBy"?, "detail" } ], "next"? }`，`id` 降序，`next` 作下一页 `before`。非法参数 → 400 `{ "error": "invalid_query" }`。
+**POST /reconciliation/orphans/{id}/ack** -- 管理员确认（ADMIN）：体 `{ "comment": "<1–1000 字符>" }` → 200 同列表项，并写链事件 `GUARD_ORPHAN_ACKNOWLEDGED`；非 OPEN → 409 `{ "error": "not_open", "status" }`；`comment` 不合法 → 400 `{ "error": "invalid_ack", "field": "comment" }`，非法 JSON / 重复键 → 400 `{ "error": "invalid_ack" }`。
+
+`kind` 与 severity：`side_effect_without_decision` / `side_effect_unconsumed` / `side_effect_mismatch` / `consume_on_non_allow` / `result_without_consume`（critical）、`consumed_without_result`（warning，补到结果自动解除 `late_result`）、`allow_unconsumed` / `orphan_receipt`（info，检出满 `ASTER_GUARD_RECONCILIATION_ALLOW_UNCONSUMED_TTL` 后 `aged_out`）。判定见 ADR 0054 §10.3。
+
 ## 6 错误处理
 
 评估端点业务错误: `{"result":null,"executionTimeMs":0,"error":"CNL 解析失败: ..."}`

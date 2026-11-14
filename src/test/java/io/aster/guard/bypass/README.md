@@ -42,6 +42,7 @@ outcome → 时间窗 → actionHash），通过才 consume；`attackConsume` �
 | 6 | 注入指令驱动 Agent | `B6PromptInjectionBypassTest` | `@Disabled`：阶段 B 待 #464（aster-guard 0.2.0）发布 |
 | 7 | 自报输入篡改（高风险档案） | `B7TamperedSelfReportedInputBypassTest` | 启用：DENY `unverified_input`；`invalid_fact` 的 `claim_mismatch / bad_signature / unknown_issuer / expired`；两条正向对照 |
 | 7 | 自报输入填小使规则直接 ALLOW（高风险档案，#510） | `B7bAllowSkipsProvenanceGateBypassTest` | 启用：HMAC evaluate-source 得 ALLOW → from-evidence 未附事实 DENY `unverified_input`、无收据、consume 409；附事实 ALLOW 执行恰一次；不要求 verifiedInputs 的档案仍 409 `evidence_not_approvable`（ADR 0046 §11.8） |
+| — | 抹掉对账证据（#465） | `io.aster.guard.reconcile.GuardReconciliationAuthBypassTest` | 启用：MEMBER 确认孤儿 403、无凭证上报 / 读取 401、他租户不可见、自报 `X-Tenant-Id` 403；ADMIN 确认 200 |
 
 `ReferenceExecutorSelfTest` 是套件自检（诚实路径会执行、攻击者原语只在 200 时写账本、本地检查会拦）。
 

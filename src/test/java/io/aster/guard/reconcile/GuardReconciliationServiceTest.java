@@ -10,6 +10,7 @@ import io.quarkus.arc.ClientProxy;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusMock;
 import io.quarkus.test.junit.QuarkusTest;
+import io.restassured.response.Response;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -241,5 +242,77 @@ class GuardReconciliationServiceTest {
     service.reconcileAll(now);
     // 本副本进程内值：Prometheus 名 guard_reconciliation_last_success_seconds
     assertThat(registry.get("guard.reconciliation.last.success").gauge().value()).isEqualTo(now.getEpochSecond());
+  }
+
+  /**
+   * 锁顺序（计划 D5）：对账（孤儿行 UPDATE → 链锁）、确认（孤儿行 FOR UPDATE → 链锁）、consume（链锁 → 收据行锁）、
+   * 结果回写（链锁 → 收据行锁）在孤儿行与租户链锁上重叠，同时跑完且无死锁，链仍完整。
+   */
+  @Test
+  void reconcileConcurrentWithChainWritersNoDeadlock() throws Exception {
+    String t = tenant("svc-deadlock");
+    Instant start = Instant.now().minusSeconds(5);
+    Decision c1 = ReconcileFixture.allow(t, 1);
+    String a1 = ReconcileFixture.consume(t, c1, MCP);
+    Decision c2 = ReconcileFixture.allow(t, 2);
+    String a2 = ReconcileFixture.consume(t, c2, MCP);
+    report(t, effect("e-0", "crm", null, null, null));
+    Instant now = future();
+    assertThat(service.reconcileTenant(t, now).newOrphans()).isEqualTo(3);
+    long sideEffectOrphan = orphans(t).stream().filter(o -> o.kind.equals("side_effect_without_decision"))
+        .findFirst().orElseThrow().id;
+    report(t, effect("e-1", "crm", null, null, null), effect("e-2", "crm", null, null, null));
+    List<Decision> fresh = new ArrayList<>();
+    for (int i = 0; i < 8; i++) {
+      fresh.add(ReconcileFixture.allow(t, 100 + i));
+    }
+
+    CountDownLatch go = new CountDownLatch(1);
+    ExecutorService pool = Executors.newFixedThreadPool(12);
+    List<Future<?>> tasks = new ArrayList<>();
+    try {
+      for (Decision d : fresh) {
+        tasks.add(pool.submit(() -> {
+          go.await();
+          return ReconcileFixture.consume(t, d, MCP);
+        }));
+      }
+      tasks.add(pool.submit(() -> {
+        go.await();
+        ReconcileFixture.result(t, c1.id(), a1, MCP);
+        return null;
+      }));
+      tasks.add(pool.submit(() -> {
+        go.await();
+        ReconcileFixture.result(t, c2.id(), a2, MCP);
+        return null;
+      }));
+      tasks.add(pool.submit(() -> {
+        go.await();
+        Response r = io.restassured.RestAssured.given().header("X-Tenant-Id", t).header("X-User-Id", "admin-1")
+            .contentType(io.restassured.http.ContentType.JSON).body(java.util.Map.of("comment", "并发确认"))
+            .when().post("/api/v1/guard/reconciliation/orphans/" + sideEffectOrphan + "/ack");
+        assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+        return null;
+      }));
+      tasks.add(pool.submit(() -> {
+        go.await();
+        TenantRun run = service.reconcileTenant(t, now.plus(minInterval).plusSeconds(1));
+        assertThat(run.outcome()).isEqualTo(TenantOutcome.OK);
+        return run;
+      }));
+      go.countDown();
+      pool.shutdown();
+      assertThat(pool.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+      for (Future<?> f : tasks) {
+        f.get();
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+    assertThat(verifier.verifyChain(t, start, Instant.now().plusSeconds(5)).isValid()).isTrue();
+    assertThat(sideEffects(t)).allSatisfy(s -> assertThat(s.reconciledAt).isNotNull());
+    assertThat(orphans(t)).filteredOn(o -> o.id == sideEffectOrphan).singleElement()
+        .satisfies(o -> assertThat(o.status).isEqualTo("ACKNOWLEDGED"));
   }
 }

@@ -31,6 +31,8 @@ GET /api/v1/guard/approvals/{id}/input
 GET /api/v1/guard/decisions/{id}
 GET /api/v1/guard/fact-issuers
 GET /api/v1/guard/keys
+GET /api/v1/guard/reconciliation
+GET /api/v1/guard/reconciliation/orphans
 GET /api/v1/lexicons
 GET /api/v1/lexicons/stream
 GET /api/v1/messages-manifest
@@ -64,6 +66,7 @@ POST /api/v1/guard/decisions
 POST /api/v1/guard/decisions/from-evidence
 POST /api/v1/guard/receipts/{decisionId}/consume
 POST /api/v1/guard/receipts/{decisionId}/result
+POST /api/v1/guard/reconciliation/orphans/{id}/ack
 POST /api/v1/guard/side-effects
 POST /api/v1/policies/compile
 POST /api/v1/policies/evaluate
