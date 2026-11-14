@@ -141,10 +141,33 @@ public class GuardReceiptBuilder {
     put(m, "comment", clip(a.comment, MAX_COMMENT));
     put(m, "decisionReceiptHash", decisionReceiptHash);
     put(m, "expiredReason", a.expiredReason);
+    // 审批快照键（ADR 0042 §12 D6）：过期事件（SYSTEM）不写；输入不可用时不写哈希键
+    if (a.status != GuardApprovalStatus.EXPIRED && a.inputStatus != null) {
+      put(m, "inputSnapshotHash", clip(a.inputSnapshotHash, DIGEST_LENGTH));
+      put(m, "inputSnapshotMatched", a.inputSnapshotMatched);
+      put(m, "inputRevealed", a.inputRevealed);
+      put(m, "inputStatus", clip(a.inputStatus, MAX_TEXT));
+    }
     String actor = a.decidedBy == null ? SYSTEM_ACTOR : clip(a.decidedBy, MAX_PERFORMED_BY);
     return new AuditEvent(EventType.ACTION_GUARD_APPROVAL, Instant.now(), a.tenantId,
         null, null, null, null, null, actor, a.status == GuardApprovalStatus.APPROVED, null, null,
         Collections.unmodifiableMap(fitBudget(m, APPROVAL_SHRINK_ORDER)), null, null, null, null);
+  }
+
+  /**
+   * 审批输入解除事件（ADR 0042 §12 D5）：每人每审批首次解除时同步入链，{@code performed_by} 为解除人，
+   * {@code decision_id} 列由 decisionId 投影。metadata 只有标识与计数，不含任何输入值：
+   * {@code decisionId, approvalId, revealedFields, maskRules, inputSnapshotHash}（解除后视图的快照哈希）。
+   */
+  public AuditEvent inputRevealEvent(GuardApprovalEntity a, String performedBy, int revealedFields, String maskRules,
+                                     String viewHash) {
+    Map<String, Object> m = new LinkedHashMap<>();
+    put(m, "decisionId", a.decisionId);
+    put(m, "approvalId", a.id);
+    m.put("revealedFields", revealedFields);
+    put(m, "maskRules", clip(maskRules, MAX_TEXT));
+    put(m, "inputSnapshotHash", clip(viewHash, DIGEST_LENGTH));
+    return receiptEvent(EventType.ACTION_GUARD_INPUT_REVEAL, a.tenantId, performedBy, true, m, List.of());
   }
 
   /**

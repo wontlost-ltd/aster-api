@@ -16,7 +16,7 @@ import java.util.Map;
 @JsonPropertyOrder(alphabetic = true)
 @JsonInclude(JsonInclude.Include.NON_EMPTY)
 public record ReceiptLookupResponse(List<Approval> approvals, List<Consume> consumes, List<String> missing,
-                                    List<Receipt> receipts, List<Result> results) {
+                                    List<Receipt> receipts, List<Result> results, List<Reveal> reveals) {
 
     /** 链上一条审计行的收据；metadata 解析失败时为 {@code {"_raw": 原文}}。 */
     @JsonPropertyOrder(alphabetic = true)
@@ -45,10 +45,20 @@ public record ReceiptLookupResponse(List<Approval> approvals, List<Consume> cons
                          String currentHash, String decisionId, String errorCode, String executorId,
                          String finishedAt, String resultHash, String status, Instant timestamp) {}
 
-    /** Action Guard 人工审批结论，字段取自 ACTION_GUARD_APPROVAL 行的 metadata，decidedAt 取行时间戳。 */
+    /**
+     * Action Guard 人工审批结论，字段取自 ACTION_GUARD_APPROVAL 行的 metadata，decidedAt 取行时间戳。
+     * 审批快照四键（ADR 0042 §12 D6）原样取自 metadata；旧事件与过期事件没有这些键，对应字段不输出。
+     */
     @JsonPropertyOrder(alphabetic = true)
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Approval(Long auditId, String comment, String currentHash, Instant decidedAt,
                            String decidedBy, String decisionId, String decisionReceiptHash,
-                           String outcome, String requiredRole) {}
+                           Boolean inputRevealed, String inputSnapshotHash, Boolean inputSnapshotMatched,
+                           String inputStatus, String outcome, String requiredRole) {}
+
+    /** 一次审批输入原值解除（ACTION_GUARD_INPUT_REVEAL 行，ADR 0042 §12 D8）：谁在何时解除了哪条审批的输入。 */
+    @JsonPropertyOrder(alphabetic = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record Reveal(String approvalId, Long auditId, String currentHash, String decisionId, String performedBy,
+                         Instant timestamp) {}
 }

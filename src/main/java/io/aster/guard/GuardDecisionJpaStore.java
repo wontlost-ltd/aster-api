@@ -163,6 +163,10 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
     row.comment = decided.comment;
     row.receiptAuditId = decided.receiptAuditId;
     row.expiredReason = decided.expiredReason;
+    row.inputSnapshotHash = decided.inputSnapshotHash;
+    row.inputSnapshotMatched = decided.inputSnapshotMatched;
+    row.inputRevealed = decided.inputRevealed;
+    row.inputStatus = decided.inputStatus;
     decision.responseJson = write.responseJson();
     if (write.receiptOrNull() != null) {
       write.receiptOrNull().persist();

@@ -79,7 +79,9 @@ public class AuditChainAppender {
         // 执行收据（ADR 0040 §12）：摘要与执行方自报标识（executorId 可含卡号形态文本，仍须逐字入链）
         "actionHash", "attemptId", "executorId", "resultHash", "consumeReceiptHash", "attemptReceiptHash",
         // 签名事实签发方（ADR 0040 §11 D4）：issuer 常为域名或邮箱形态，吊销事件须逐字记下被吊销的是哪一把
-        "issuer", "kid");
+        "issuer", "kid",
+        // 审批输入视图快照哈希（ADR 0042 §12 D6）：审批事件与解除事件用它指认审批人所见的视图
+        "inputSnapshotHash");
     /** 规范 UUID 形态（8-4-4-4-12 十六进制），整串匹配。 */
     private static final Pattern CANONICAL_UUID = Pattern.compile(
         "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");

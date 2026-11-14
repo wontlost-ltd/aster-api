@@ -104,4 +104,11 @@ class AuditIdentifierRedactionTest {
         }
         assertFalse(AuditChainAppender.isRedactionExempt("performedBy", "admin@example.com"));
     }
+
+    @Test
+    @DisplayName("审批输入视图快照哈希逐字入链（ADR 0042 §12 D6 身份键豁免）")
+    void inputSnapshotHashNotRedacted() {
+        assertTrue(AuditChainAppender.isRedactionExempt("inputSnapshotHash", "4111-1111-1111-1111" + "a".repeat(45)));
+        assertTrue(AuditChainAppender.isRedactionExempt("inputSnapshotHash", "a".repeat(64)));
+    }
 }

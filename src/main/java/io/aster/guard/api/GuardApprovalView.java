@@ -18,7 +18,9 @@ import java.util.List;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record GuardApprovalView(String actionName, String comment, List<String> controls, String createdAt,
                                 String decidedAt, String decidedBy, String decisionId, String evidenceCorrelationId,
-                                String expiredReason, String expiresAt, String id, String outcome, String policyFunction, String policyModule,
+                                String expiredReason, String expiresAt, String id, Boolean inputRevealed,
+                                String inputSnapshotHash, Boolean inputSnapshotMatched, String inputStatus,
+                                String outcome, String policyFunction, String policyModule,
                                 String principalId, String reason, String requiredRole, String resourceId,
                                 String resourceType, String ruleId, String status) {
 
@@ -27,10 +29,20 @@ public record GuardApprovalView(String actionName, String comment, List<String> 
    * @param controls 已解析的决策控制项（{@code guard_decisions.controls}），null 表示不写出
    */
   public static GuardApprovalView of(GuardApprovalEntity a, GuardDecisionEntity d, List<String> controls) {
+    return of(a, d, controls, a.inputStatus);
+  }
+
+  /**
+   * @param inputStatus 输入状态（ADR 0042 §12 D8）：已决审批取审批时记下的值；PENDING 由调用方按输入行是否存在给出
+   *                    （available / unavailable，完整性与尺寸只在取视图时判定）；null 不写出
+   */
+  public static GuardApprovalView of(GuardApprovalEntity a, GuardDecisionEntity d, List<String> controls,
+                                     String inputStatus) {
     // 缺失的决策按「全空」处理，免去逐字段判空
     GuardDecisionEntity src = d != null ? d : new GuardDecisionEntity();
     return new GuardApprovalView(src.actionName, a.comment, controls, text(a.createdAt), text(a.decidedAt), a.decidedBy,
-        a.decisionId.toString(), src.evidenceCorrelationId, a.expiredReason, text(a.expiresAt), a.id.toString(), a.outcome,
+        a.decisionId.toString(), src.evidenceCorrelationId, a.expiredReason, text(a.expiresAt), a.id.toString(),
+        a.inputRevealed, a.inputSnapshotHash, a.inputSnapshotMatched, inputStatus, a.outcome,
         src.policyFunction, src.policyModule, a.principalId, src.reason, a.requiredRole, emptyToNull(src.resourceId),
         emptyToNull(src.resourceType), src.ruleId, a.status.name());
   }

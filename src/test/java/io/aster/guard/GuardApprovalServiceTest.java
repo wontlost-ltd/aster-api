@@ -11,6 +11,7 @@ import io.aster.guard.provenance.InputSourceResolver;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptSigner;
 import io.aster.guard.receipt.ReceiptSigningKeys;
+import io.aster.guard.snapshot.InputSnapshotService;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import org.junit.jupiter.api.BeforeEach;
@@ -69,6 +70,8 @@ class GuardApprovalServiceTest {
   private AuditChainAppender appender;
   private final ObjectMapper json = new ObjectMapper();
   private GuardApprovalService service;
+  /** 审批快照哈希（ADR 0042 §12 D6）：缺省输入不可用（修订前的决策）。 */
+  private InputSnapshotService snapshots;
   private ExecutionReceiptSigner signer;
   /** 存储层在加锁后以 {@link #LOCKED_NOW} 求得的写入内容，按调用顺序。 */
   private final List<GuardDecisionStore.ApprovalWrite> writes = new ArrayList<>();
@@ -77,10 +80,15 @@ class GuardApprovalServiceTest {
   void setUp() {
     store = mock(GuardDecisionStore.class);
     appender = mock(AuditChainAppender.class);
+    snapshots = mock(InputSnapshotService.class);
+    when(snapshots.hashesFor(any(), any()))
+        .thenReturn(new InputSnapshotService.ApproverHashes(InputSnapshotService.UNAVAILABLE, null, null));
+    when(snapshots.decisionsWithInput(any(), any())).thenReturn(java.util.Set.of());
     Clock clock = Clock.fixed(LOCKED_NOW, ZoneOffset.UTC);
     signer = new ExecutionReceiptSigner(ReceiptSigningKeys.parse(KEYS, "k1", clock), Duration.ofMinutes(5), clock);
     service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json,
-        new ExecutionReceiptIssuer(signer, clock), NO_FACT_ISSUERS);
+        new ExecutionReceiptIssuer(signer, clock), NO_FACT_ISSUERS,
+        snapshots);
     when(appender.appendSync(any())).thenReturn(new AppendedRecord(9001L, APPROVAL_HASH, DECISION_HASH));
     when(store.completeApproval(any(), any())).thenAnswer(inv -> applyWrite(inv.getArgument(1)));
   }
@@ -475,7 +483,8 @@ class GuardApprovalServiceTest {
     GuardApprovalEntity a = pending(DPO);
     ExecutionReceiptIssuer unavailable = mock(ExecutionReceiptIssuer.class);
     when(unavailable.available()).thenReturn(false);
-    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable, NO_FACT_ISSUERS);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable, NO_FACT_ISSUERS,
+        snapshots);
 
     assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
     // 模拟重试时重新读到的审批行（mock 返回同一实例，服务在校验后已就地写入目标状态）
@@ -491,7 +500,8 @@ class GuardApprovalServiceTest {
     GuardApprovalEntity a = pending(DPO);
     ExecutionReceiptIssuer unavailable = mock(ExecutionReceiptIssuer.class);
     when(unavailable.available()).thenReturn(false);
-    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable, NO_FACT_ISSUERS);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, unavailable, NO_FACT_ISSUERS,
+        snapshots);
 
     GuardDecisionResponse r = service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), false, "no");
 
@@ -514,7 +524,8 @@ class GuardApprovalServiceTest {
     ExecutionReceiptSigner expiring = new ExecutionReceiptSigner(ReceiptSigningKeys.parse(config, "k1", running),
         Duration.ofMinutes(5), running);
     service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json,
-        new ExecutionReceiptIssuer(expiring, running), NO_FACT_ISSUERS);
+        new ExecutionReceiptIssuer(expiring, running), NO_FACT_ISSUERS,
+        snapshots);
     GuardApprovalEntity a = pending(DPO);
     now[0] = notAfter;
 
@@ -530,7 +541,8 @@ class GuardApprovalServiceTest {
     when(broken.available()).thenReturn(true);
     when(broken.issue(any(), any(), any(), anyLong(), any())).thenThrow(
         new io.aster.guard.receipt.ExecutionReceiptUnavailableException("down", null));
-    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, broken, NO_FACT_ISSUERS);
+    service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, broken, NO_FACT_ISSUERS,
+        snapshots);
 
     assertCode(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null), "receipt_unavailable");
     assertThat(writes).isEmpty();
@@ -634,5 +646,31 @@ class GuardApprovalServiceTest {
 
     assertThat(service.expireDue(now)).isEqualTo(1);
     verify(store, times(1)).completeApproval(any(), any());
+  }
+
+  // ---- ADR 0042 §12 D6：锁内复核解除状态 ----
+
+  @Test
+  void ownRevealCommittedBeforeLockIsSnapshotMismatch() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    when(snapshots.hashesFor(any(), any()))
+        .thenReturn(new InputSnapshotService.ApproverHashes(InputSnapshotService.AVAILABLE, "m".repeat(64), null));
+    when(snapshots.revealedNow(any(), any())).thenReturn(true);
+    assertThatThrownBy(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null,
+        "m".repeat(64)))
+        .isInstanceOfSatisfying(GuardApprovalConflictException.class,
+            e -> assertThat(e.code()).isEqualTo("input_snapshot_mismatch"));
+  }
+
+  @Test
+  void unchangedRevealStateRecordsMatchedSnapshot() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    when(snapshots.hashesFor(any(), any()))
+        .thenReturn(new InputSnapshotService.ApproverHashes(InputSnapshotService.AVAILABLE, "m".repeat(64), null));
+    when(snapshots.revealedNow(any(), any())).thenReturn(false);
+    service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null, "m".repeat(64));
+    assertThat(a.inputSnapshotMatched).isTrue();
+    assertThat(a.inputRevealed).isFalse();
+    assertThat(a.inputSnapshotHash).isEqualTo("m".repeat(64));
   }
 }

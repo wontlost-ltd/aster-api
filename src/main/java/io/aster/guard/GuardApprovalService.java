@@ -8,6 +8,7 @@ import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.provenance.InputSourceResolver;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
+import io.aster.guard.snapshot.InputSnapshotService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
@@ -16,6 +17,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -59,6 +61,7 @@ public class GuardApprovalService {
   private GuardJson json;
   private ExecutionReceiptIssuer receiptIssuer;
   private InputSourceResolver inputSources;
+  private InputSnapshotService inputSnapshots;
 
   /** 单条过期迁移的结果：已迁移、加锁后发现已不是 PENDING（被并发处理）、或审计 / 存储失败（状态不变）。 */
   public enum ExpiryOutcome { EXPIRED, NOT_PENDING, FAILED }
@@ -70,13 +73,14 @@ public class GuardApprovalService {
   @Inject
   public GuardApprovalService(GuardDecisionStore store, AuditChainAppender appender, GuardReceiptBuilder receiptBuilder,
                               ObjectMapper objectMapper, ExecutionReceiptIssuer receiptIssuer,
-                              InputSourceResolver inputSources) {
+                              InputSourceResolver inputSources, InputSnapshotService inputSnapshots) {
     this.store = store;
     this.appender = appender;
     this.receiptBuilder = receiptBuilder;
     this.json = new GuardJson(objectMapper);
     this.receiptIssuer = receiptIssuer;
     this.inputSources = inputSources;
+    this.inputSnapshots = inputSnapshots;
   }
 
   /**
@@ -92,6 +96,19 @@ public class GuardApprovalService {
   public GuardDecisionResponse decideApproval(String tenantId, UUID approvalId, String decidedBy,
                                               String approverApiKeyId, List<String> businessRoles, boolean approve,
                                               String comment) {
+    return decideApproval(tenantId, approvalId, decidedBy, approverApiKeyId, businessRoles, approve, comment, null);
+  }
+
+  /**
+   * 同上，并记录审批人所见输入视图的快照哈希（ADR 0042 §12 D6）：服务端为<b>该审批人</b>重算打码视图哈希
+   * {@code H_masked}，本人解除过时再算 {@code H_revealed}。提交的哈希等于其一 → {@code matched = true}，
+   * {@code inputRevealed} 为是否等于 {@code H_revealed}；都不等 → 409 {@code input_snapshot_mismatch}，状态不变；
+   * 未提交（旧 SDK）→ 记 {@code H_masked}、{@code matched = false}、{@code inputRevealed} 为本人是否解除过。
+   * 输入不可用时不记哈希，只记 {@code inputStatus}。别人的解除不影响本人。
+   */
+  public GuardDecisionResponse decideApproval(String tenantId, UUID approvalId, String decidedBy,
+                                              String approverApiKeyId, List<String> businessRoles, boolean approve,
+                                              String comment, String inputSnapshotHash) {
     if (isAnonymous(decidedBy)) {
       throw conflict("user_required", "审批需要已验证的用户身份");
     }
@@ -103,6 +120,7 @@ public class GuardApprovalService {
     expireIfIssuerRevoked(approval, decision, now);
     checkSegregation(approval, decision, decidedBy, approverApiKeyId);
     checkRoleAndInput(approval, decidedBy, businessRoles, approve, comment);
+    recordSnapshot(approval, decidedBy, inputSnapshotHash);
     approval.status = approve ? GuardApprovalStatus.APPROVED : GuardApprovalStatus.REJECTED;
     approval.decidedBy = decidedBy;
     approval.decidedAt = now;
@@ -125,14 +143,18 @@ public class GuardApprovalService {
     if (approvals.isEmpty()) {
       return List.of();
     }
-    Map<UUID, GuardDecisionEntity> byId = store.findDecisions(tenantId,
-            approvals.stream().map(a -> a.decisionId).collect(Collectors.toSet()))
+    Set<UUID> decisionIds = approvals.stream().map(a -> a.decisionId).collect(Collectors.toSet());
+    Map<UUID, GuardDecisionEntity> byId = store.findDecisions(tenantId, decisionIds)
         .stream().collect(Collectors.toMap(d -> d.id, Function.identity()));
-    return approvals.stream().map(a -> view(a, byId.get(a.decisionId))).toList();
+    Set<UUID> withInput = inputSnapshots.decisionsWithInput(tenantId, decisionIds);
+    return approvals.stream().map(a -> view(a, byId.get(a.decisionId), withInput)).toList();
   }
 
-  private GuardApprovalView view(GuardApprovalEntity a, GuardDecisionEntity d) {
-    return GuardApprovalView.of(a, d, d == null ? null : controlsOrNull(d));
+  private GuardApprovalView view(GuardApprovalEntity a, GuardDecisionEntity d, Set<UUID> withInput) {
+    String inputStatus = a.status == GuardApprovalStatus.PENDING
+        ? (withInput.contains(a.decisionId) ? InputSnapshotService.AVAILABLE : InputSnapshotService.UNAVAILABLE)
+        : a.inputStatus;
+    return GuardApprovalView.of(a, d, d == null ? null : controlsOrNull(d), inputStatus);
   }
 
   /** 列表只读展示：单行 controls 损坏不应让整页 500，记 warn 后该项省略 controls。 */
@@ -237,6 +259,50 @@ public class GuardApprovalService {
     }
   }
 
+  /** 把快照哈希四键写进审批行的目标状态（审批事件与加锁迁移都读这里）；校验失败抛 409，状态不变。 */
+  private void recordSnapshot(GuardApprovalEntity approval, String decidedBy, String submitted) {
+    InputSnapshotService.ApproverHashes h = inputSnapshots.hashesFor(approval, decidedBy);
+    approval.inputStatus = h.status();
+    if (!InputSnapshotService.AVAILABLE.equals(h.status())) {
+      approval.inputSnapshotHash = null;
+      approval.inputSnapshotMatched = false;
+      approval.inputRevealed = false;
+      return;
+    }
+    boolean ownReveal = h.revealed() != null;
+    approval.revealedAtHash = ownReveal;
+    if (submitted == null) {
+      approval.inputSnapshotHash = h.masked();
+      approval.inputSnapshotMatched = false;
+      approval.inputRevealed = ownReveal;
+    } else if (submitted.equals(h.masked())) {
+      approval.inputSnapshotHash = h.masked();
+      approval.inputSnapshotMatched = true;
+      approval.inputRevealed = false;
+    } else if (ownReveal && submitted.equals(h.revealed())) {
+      approval.inputSnapshotHash = h.revealed();
+      approval.inputSnapshotMatched = true;
+      approval.inputRevealed = true;
+    } else {
+      throw conflict("input_snapshot_mismatch", "输入视图已变化，请刷新后重新审阅");
+    }
+  }
+
+  /**
+   * 锁内复核快照（ADR 0042 §12 D6）：哈希在加锁前按审批人当时的解除状态算出；若本人的首次解除恰在其后、加锁之前提交，
+   * 记下的 {@code inputRevealed} 会与事实不符——此时整个迁移回滚并报 {@code input_snapshot_mismatch}，客户端刷新视图后重试。
+   * 已追加的审批事件作为一次被否决的尝试留在链上（与并发处理同一口径）。过期迁移与输入不可用不复核。
+   */
+  private void requireSnapshotUnchanged(GuardApprovalEntity approval) {
+    if (approval.status == GuardApprovalStatus.EXPIRED || approval.decidedBy == null
+        || !InputSnapshotService.AVAILABLE.equals(approval.inputStatus)) {
+      return;
+    }
+    if (approval.revealedAtHash != inputSnapshots.revealedNow(approval, approval.decidedBy)) {
+      throw conflict("input_snapshot_mismatch", "输入视图已变化（解除状态改变），请刷新后重新审阅");
+    }
+  }
+
   private static boolean sameIdentity(String a, String b) {
     return !isBlank(a) && a.equals(b);
   }
@@ -265,6 +331,7 @@ public class GuardApprovalService {
     boolean completed;
     try {
       completed = store.completeApproval(approval, now -> {
+        requireSnapshotUnchanged(approval);
         if (!issues) {
           return new GuardDecisionStore.ApprovalWrite(json.writeJson(base), null);
         }

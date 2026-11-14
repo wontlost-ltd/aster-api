@@ -6,6 +6,7 @@ import io.aster.audit.dto.ReceiptLookupResponse.Approval;
 import io.aster.audit.dto.ReceiptLookupResponse.Consume;
 import io.aster.audit.dto.ReceiptLookupResponse.Receipt;
 import io.aster.audit.dto.ReceiptLookupResponse.Result;
+import io.aster.audit.dto.ReceiptLookupResponse.Reveal;
 import io.aster.common.JacksonMappers;
 import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.policy.entity.AuditLog;
@@ -38,7 +39,7 @@ public class AuditReceiptService {
         List<AuditLog> rows = AuditLog.findByCorrelationIds(tenantId, ids);
         List<Receipt> receipts = rows.stream().map(this::toReceipt).toList();
         return new ReceiptLookupResponse(List.of(), List.of(), missing(ids, found(receipts, Receipt::correlationId)),
-            receipts, List.of());
+            receipts, List.of(), List.of());
     }
 
     /**
@@ -58,8 +59,12 @@ public class AuditReceiptService {
             .filter(r -> found.contains(r.decisionId))
             .map(this::toApproval).toList();
         List<AuditLog> hits = rows.stream().filter(r -> found.contains(r.decisionId)).toList();
+        List<Reveal> reveals = hits.stream()
+            .filter(r -> EventType.ACTION_GUARD_INPUT_REVEAL.name().equals(r.eventType))
+            .map(r -> new Reveal(text(meta(r), "approvalId"), r.id, r.currentHash, r.decisionId, r.performedBy,
+                r.timestamp)).toList();
         return new ReceiptLookupResponse(approvals, consumes(hits, pointers), missing(ids, found), receipts,
-            results(hits, pointers));
+            results(hits, pointers), reveals);
     }
 
     /** 命中决策的收据行指针，键为小写 UUID 字符串；非法 UUID 的 id 不可能有收据行，直接跳过。 */
@@ -146,8 +151,13 @@ public class AuditReceiptService {
     private Approval toApproval(AuditLog r) {
         Map<String, Object> meta = meta(r);
         return new Approval(r.id, text(meta, "comment"), r.currentHash, r.timestamp, text(meta, "decidedBy"),
-            r.decisionId, text(meta, "decisionReceiptHash"), text(meta, "outcome"),
-            text(meta, "requiredRole"));
+            r.decisionId, text(meta, "decisionReceiptHash"), bool(meta, "inputRevealed"),
+            text(meta, "inputSnapshotHash"), bool(meta, "inputSnapshotMatched"), text(meta, "inputStatus"),
+            text(meta, "outcome"), text(meta, "requiredRole"));
+    }
+
+    private static Boolean bool(Map<String, Object> meta, String key) {
+        return meta.get(key) instanceof Boolean b ? b : null;
     }
 
     private static String text(Map<String, Object> meta, String key) {
