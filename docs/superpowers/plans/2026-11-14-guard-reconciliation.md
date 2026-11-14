@@ -51,7 +51,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 **D5 幂等与多副本。** 每个副本都跑调度；每租户在一个 `QuarkusTransaction.requiringNew()` 里先 `SELECT pg_try_advisory_xact_lock(hashtextextended('guard-reconcile:' || :t, 0))`，拿不到即跳过（计 `skipped_locked`）；拿到后若该租户最近一次 run 的 `finished_at > now − min-interval`（`${ASTER_GUARD_RECONCILIATION_MIN_INTERVAL:PT2M}`）也跳过（计 `skipped_recent`）。孤儿写入是 `INSERT … ON CONFLICT (tenant_id, kind, subject_key) DO NOTHING RETURNING`，同一事实永远一行；上报行的 `reconciled_at` 与孤儿行、run 行、链事件在**同一事务**提交（`AuditChainAppender.appendInCurrentTransaction`），任一步失败整租户回滚、下轮重来。**锁顺序约束**：对账事务先取对账 advisory 锁、再取孤儿 / 上报行锁，**租户链锁（`appendInCurrentTransaction` 内部的 `pg_advisory_xact_lock(tenantLockId)`）永远最后取**，且链追加之后只剩回填 run 行一条 UPDATE 即提交——其它链写入方只取链锁、从不取对账锁，确认端点同样「行锁 → 链锁」，因此不存在环；链锁持有时间与普通事件追加同量级。检测 SQL 全在链锁之前完成。
 
 **D6 指标（低基数）。**
-- `guard_orphan_actions{tenant,executor,kind}`（Micrometer `guard.orphan.actions`，MultiGauge）= 当前 `status='OPEN'` 行数，**只发非零序列**；每个副本每 60 s 从库里重读（所有副本报同值，告警用 `max`）。`kind` 7 值；`executor` 由 `ExecutorLabels.of` 归一：取 `executorId`（或上报 `source`）`@` 之前的组件名，小写，在白名单 `aster.guard.reconciliation.executor-labels=${ASTER_GUARD_RECONCILIATION_EXECUTOR_LABELS:aster-guard-mcp,aster-guard-sdk,aster-cloud-exec}` 内取原值，否则 `other`，空为 `unknown`；`tenant` 至多 `metric-max-tenants=${ASTER_GUARD_RECONCILIATION_METRIC_MAX_TENANTS:100}` 个（按 OPEN 总数降序），其余合并为 `tenant="_other"`。原始 `executorId` 只进行与 `detail`，不进标签。
+- `guard_orphan_actions{tenant,executor,kind}`（Micrometer `guard.orphan.actions`，MultiGauge）= 当前 `status='OPEN'` 行数，**只发非零序列**；每个副本每 60 s 从库里重读（所有副本报同值，告警用 `max`）。`kind` 8 值；`executor` 由 `ExecutorLabels.of` 归一：取 `executorId`（或上报 `source`）`@` 之前的组件名，小写，在白名单 `aster.guard.reconciliation.executor-labels=${ASTER_GUARD_RECONCILIATION_EXECUTOR_LABELS:aster-guard-mcp,aster-guard-sdk,aster-cloud-exec}` 内取原值，否则 `other`，空为 `unknown`；`tenant` 至多 `metric-max-tenants=${ASTER_GUARD_RECONCILIATION_METRIC_MAX_TENANTS:100}` 个（按 OPEN 总数降序），其余合并为 `tenant="_other"`。原始 `executorId` 只进行与 `detail`，不进标签。
 - `guard_orphan_actions_detected_total{kind}`（Counter `guard.orphan.actions.detected`）：新孤儿数，只由跑出它的副本加，`sum` 正确。
 - `guard_reconciliation_runs_total{outcome}`（Counter `guard.reconciliation.runs`，`outcome ∈ ok | failed | skipped_locked | skipped_recent`）：按租户计。
 - `guard_reconciliation_last_success_seconds`（Gauge `guard.reconciliation.last.success`，`baseUnit("seconds")`）：本副本最近一次完整跑完租户循环（含无租户、含跳过）的 epoch 秒；进程内值，告警取 `max`。
@@ -154,7 +154,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 
 **Interfaces:**
 - Produces:
-  - `enum OrphanKind { SIDE_EFFECT_WITHOUT_DECISION, SIDE_EFFECT_UNCONSUMED, SIDE_EFFECT_MISMATCH, CONSUMED_WITHOUT_RESULT, ALLOW_UNCONSUMED, CONSUME_ON_NON_ALLOW, RESULT_WITHOUT_CONSUME; String wire(); String severity(); boolean autoResolvable(); static Optional<OrphanKind> fromWire(String) }`
+  - `enum OrphanKind { SIDE_EFFECT_WITHOUT_DECISION, SIDE_EFFECT_UNCONSUMED, SIDE_EFFECT_MISMATCH, CONSUMED_WITHOUT_RESULT, ALLOW_UNCONSUMED, CONSUME_ON_NON_ALLOW, RESULT_WITHOUT_CONSUME, ORPHAN_RECEIPT; String wire(); String severity(); boolean autoResolvable(); static Optional<OrphanKind> fromWire(String) }`
   - `@ApplicationScoped class ExecutorLabels { String of(String executorIdOrSource) }`（读 `executor-labels`）
   - 实体字段与下列 DDL 列一一对应（Java 名为列名 camelCase）。
 
@@ -229,7 +229,7 @@ CREATE INDEX guard_receipts_unconsumed_expiry_ix ON guard_receipts (tenant_id, e
 
 - [ ] **Step 0: 迁移编号门禁**：`git fetch origin && git ls-tree -r --name-only origin/main -- src/main/resources/db/migration/ | sort -V | tail -3`。若最大号是 `V6.37.0__…`（#460 已合并）→ 继续用 `V6.38.0`；若最大号仍是 `V6.36.0` → **停止并请用户裁定**「待用户裁定」第 1 条（等 #460，或互换编号），不得自行改号或开 `out-of-order`。开 PR 前、合并前各复查一次。
 - [ ] **Step 1: 写失败测试**
-  - `OrphanKindTest.wireValuesMatchSpec`：`Arrays.stream(values()).map(OrphanKind::wire)` 等于 Global Constraints 的 7 个字面量（同序）；`severity()` 按 Global Constraints；`autoResolvable()` 仅 `CONSUMED_WITHOUT_RESULT`、`ALLOW_UNCONSUMED` 为 true；`fromWire("nope")` 为 empty。
+  - `OrphanKindTest.wireValuesMatchSpec`：`Arrays.stream(values()).map(OrphanKind::wire)` 等于 Global Constraints 的 8 个字面量（同序）；`severity()` 按 Global Constraints；`autoResolvable()` 仅 `CONSUMED_WITHOUT_RESULT`、`ALLOW_UNCONSUMED`、`ORPHAN_RECEIPT` 为 true；`fromWire("nope")` 为 empty。
   - `ExecutorLabelsTest.normalizes`：`of("aster-guard-mcp@agent-host-1")=="aster-guard-mcp"`、`of("ASTER-CLOUD-EXEC@cloud-7f9c")=="aster-cloud-exec"`、`of("my-bot@pod-7f9c:3")=="other"`、`of("billing-db")=="other"`、`of(null)==of("")==of("  ")=="unknown"`、`of("aster-guard-sdk")=="aster-guard-sdk"`（无 `@`）。
   - `GuardReconcilePersistenceTest`（`@QuarkusTest`）：三个实体往返；重复 `(tenant_id, source, effect_id)` 抛约束异常；`kind='bogus'` 违反 CHECK；删除上报行后引用它的孤儿行 `side_effect_id` 变 null。
 - [ ] **Step 2:** 运行 `./gradlew --offline :test --tests 'io.aster.guard.reconcile.*'`，预期编译失败 / FAIL。
