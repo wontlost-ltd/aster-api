@@ -174,7 +174,7 @@ result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, f
 
 - 仓：`aster-cloud/aster-guard`（现状）；单包 `@aster-cloud/aster-guard`，入口 `.`（SDK）与 `./mcp`，bin `aster-guard-mcp`（现状 `package.json`）。
 - 语言：**TypeScript 先行**（0.2.0 实现本 ADR）；Java `GuardClient` 留作后续（aster-cloud 没有 Java 执行方，aster-api 自身是签发方不需要客户端；需求出现再立项）。
-- 发布（R66 取代本段的 Trusted Publisher 部分，见 §11 D6）：tag-push 触发 release workflow，npm trusted publisher + provenance（ADR 0040 §6；workflow 照 `aster-lang-ts/.github/workflows/release.yml`，发布前用户需在 npm 为 `@aster-cloud/aster-guard` 配置 Trusted Publisher——与 design-system v0.3.2 时同样的前置操作）。独立版本号，不进 ADR 0023 lockstep。首个发布版本 **0.2.0**（0.1.0 从未发布，直接跳过）。
+- 发布（R66 §11 D6 修订）：tag-push `v*` 触发 `release.yml`；publish job `permissions: id-token: write`，以组织级 Actions secret `NPM_TOKEN` 作 `NODE_AUTH_TOKEN`，`npm publish --provenance --access public`（仓库已公开，provenance 证明由 OIDC 产出）；**不**配置 per-package Trusted Publisher，发布前确认没有仓库级同名 `NPM_TOKEN` 遮蔽组织级 secret（design-system v0.3.2 的教训）。workflow 的 ci job 与 `ci.yml` 的 test job 步骤逐条一致。独立版本号，不进 ADR 0023 lockstep。首个发布版本 **0.2.0**（0.1.0 从未发布，直接跳过）。
 - 容器镜像：Streamable HTTP 模式需要常驻进程，第二阶段随 `aster-deploy` 出镜像；stdio 模式只需 npm 包。
 
 ---
@@ -334,7 +334,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 
 | # | 决定 | 理由 | 偏离 |
 |---|---|---|---|
-| D2 | `auth` 模式票据载体为 MCP 请求 `params._meta["io.aster/guard-consume"] = { decisionId, attemptId, envelope }`，`envelope` = 被哈希 action 去掉 `context`；不是 `X-Aster-Guard-Consume` 头 | 0.2.0 只有 stdio 上游，没有 HTTP 头可带；工具不知道 principal / agent，须由票据带 envelope 才能重算整 action 哈希（envelope 不受信，被 `actionHash` 比对绑定） | §3.3 `auth` |
+| D2 | `auth` 模式票据载体为 MCP 请求 `params._meta["io.aster/guard-consume"] = { decisionId, attemptId, envelope }`，`envelope` = 被哈希 action 去掉 `context`（`principal / action / resource? / agent?`）；不是 `X-Aster-Guard-Consume` 头。工具侧重算：`context` 由工具**自己的**映射配置（与代理同一 `actions.<tool>`，§3.2）对**实际收到的参数**构造（含 `digestArgs` 摘要），完整 action = `{ ...envelope, context }`，其 `jcs-sha256/v1` 必须等于回读 `actionHash`；此外 `envelope.action.name` 必须等于工具自己的 `actionName ?? 工具名`，有 `resourceFrom` 时 `envelope.resource` 必须等于 `{ type: "arg", id: <实际参数值> }`、无则不得出现——工具只信任自己算出的部分，`principal / agent` 只被哈希绑定、仅供审计 | 0.2.0 只有 stdio 上游，没有 HTTP 头可带；工具不知道 principal / agent，须由票据带 envelope 才能重算整 action 哈希（envelope 不受信，被 `actionHash` 比对绑定） | §3.3 `auth` |
 | D3 | HTTP 上游（`--upstream-url` / `--upstream-auth-env`）推迟到 §8 ⑤；0.2.0 仅 stdio 上游 | 随 Streamable HTTP 服务端与镜像一起做 | §3.3 网络策略行 |
 | D4 | 拒绝 / 待审批 / 阻断载荷 `{ asterGuard }` **总在** `_meta`；上游工具未声明 `outputSchema` 时另放 `structuredContent` | MCP SDK Client 按 `outputSchema` 校验 `isError` 结果的 `structuredContent`，DENY 载荷会让下游 `callTool` 抛 `InvalidParams` 而看不到拒绝 | §2.2「structuredContent 是契约」 |
 | D5 | `aster-cloud/aster-guard` 已改为 **public**（2026-11-14，用户执行） | npm provenance 不支持私有仓 | §6、头部「private」 |
@@ -355,9 +355,11 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 
 ### 11.4 只有被消耗的收据才是授权（#510 / ADR 0046 §11.8）
 
-ADR 0046 §11.8 起，from-evidence 对 verified-input 档案也会开 ALLOW 决策并签发执行收据。执行点对授权的判定**只**看「本执行方对本请求的决策验签通过且 consume 200」：`effectiveOutcome == ALLOW`、持有收据、读到别处的 ALLOW（包括 from-evidence 的、审批后转 ALLOW 的、`guard_status` 查到的）都**不是**授权；SDK 与代理没有接受外来收据或决策 id 执行的入口。未被消耗的 ALLOW 在 #465 对账里是 `allow_unconsumed`（info）。
+ADR 0046 §11.8 起，from-evidence 对 verified-input 档案也会开 ALLOW 决策并签发执行收据。执行点对授权的判定**只**看「本执行方对本请求的决策验签通过且 consume 200」：`effectiveOutcome == ALLOW`、持有收据、读到别处的 ALLOW（包括 from-evidence 的、审批后转 ALLOW 的、`guard_status` 查到的）都**不是**授权；SDK 与代理没有接受外来收据或决策 id 执行的入口。
+
+from-evidence 的 ALLOW 收据同样只在被某个执行方 consume 后才授权副作用。今天 cloud 的 `/execute` 只返回评估结论、自身不落地副作用，所以这些收据在 cloud 侧无人 consume，按设计成为 #465 对账里的 `allow_unconsumed`（info）——这是 ADR 0040 §12 D10 已知的治理缺口，不是放行。cloud 执行方按 §5 契约 consume / 回写（ADR 0040 §12.4、本 ADR §8 ④ 后半）随 D7 另立的「审批后执行」交付；在它落地之前，任何据 cloud 结论落地副作用的系统都必须自己经 `run` / 代理取得并 consume 决策，不得以 cloud 返回的 ALLOW 作为授权。
 
 ### 11.5 与 #465（§10）的分工
 
-- 代理与 SDK 是**执行方**，不是副作用落地方：它们的执行记录就是 consume / result（§5），**不**调用 `POST /guard/side-effects`（§10.1 选项 B「不做」）。
+- 代理与 SDK 是**执行方**，不是副作用落地方（cloud 执行路径的 consume 见 §11.4 / D7）：它们的执行记录就是 consume / result（§5），**不**调用 `POST /guard/side-effects`（§10.1 选项 B「不做」）。
 - SDK 另提供 `reportSideEffects(effects[])` 供**工具侧 / 业务系统**上报（§10.5 I2）；`executorId` 缺省值：代理 `aster-guard-mcp@<host>`、SDK `run` `aster-guard-sdk@<host>`（§10.5 I1）。
