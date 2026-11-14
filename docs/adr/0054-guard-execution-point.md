@@ -238,6 +238,8 @@ result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, f
 
 C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理，但副作用总要落在某个系统里，由那个系统上报。§3.3 `auth` 隔离模式下工具侧本就收到 `X-Aster-Guard-Consume: {decisionId, attemptId}`，是天然的上报方。
 
+**上报义务按「落地」而不是按「票据」**：落地方对它**实际执行**的每一个受守卫动作都上报一条，有票据时带上票据里的 `decisionId / attemptId`，没有票据也照报（不带这两项）——无票据的落地正是 `side_effect_without_decision` 要抓的。`auth` 模式的工具对无票据请求 401 且不执行，不产生副作用，也就无需上报；所以在隔离成立时对账看到零孤儿，在隔离失效（`network` 策略缺失、工具漏核票据、业务系统被旁路写入）时由落地方的上报暴露。
+
 「有效消耗」一律且只以 `guard_receipts.consume_audit_id IS NOT NULL` 判定（ADR 0041 §12 D1「读法」），`consumed_at` 只用作时间坐标；不数 `ACTION_GUARD_CONSUME_*` 事件、不看 `success` 列。迁移前（`V6.35.0` 之前）的决策没有收据行，账本自检不覆盖它们（不回填，ADR 0040 §12 D10）。
 
 ### 10.2 上报端点
@@ -252,7 +254,8 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 - 1–500 条；`effectId` 1–128 字符无控制字符；`source` 匹配 `[a-z0-9][a-z0-9._-]{0,63}`；`occurredAt` ISO-8601 且 `≤ now + PT5M`；`action.name` 1–255；`resource.type / id` 各 ≤ 255；`decisionId` / `attemptId` 为 UUID 形态；`actionHash` 64 位小写 hex。
 - 任一条不合法 → 400 `{ "error": "invalid_side_effect", "index": <i>, "field": "<name>" }`，整批不写；重复键 / 非法 JSON → 400 `invalid_side_effect`（无 `index`）。
 - 幂等键 `(tenant, source, effectId)`：重复上报计入 `duplicates`、不改原行。200 `{ "accepted": n, "duplicates": m }`。不计量配额（它是账本输入，不含评估）。
-- **上报粒度**：一个上报方（`source`）对一次受守卫动作（一个 `decisionId`）**恰好上报一条**；一个动作落地多处副作用时由上报方聚合成一条（`effectId` 取上报方自己的动作记录键）。不同 `source` 观测同一决策是正常的。据此同 `(decisionId, source)` 的第二条已匹配上报判 `side_effect_mismatch`（`reason = replayed`）。
+- **重试与重放的区分只靠 `effectId`**：上报方对同一动作的网络重试**必须**沿用同一 `effectId`（得到 `duplicates`，无副作用）；换了 `effectId` 即视为另一次落地。端点从不按 `decisionId` 拒绝请求——是否重放由对账在接受之后判定（见下条）。
+- **上报粒度**：一个上报方（`source`）对一次受守卫动作（一个 `decisionId`）**恰好上报一条**；一个动作落地多处副作用时由上报方聚合成一条（`effectId` 取上报方自己的动作记录键）。不同 `source` 观测同一决策是正常的。据此同 `(decisionId, source)` 的第二条上报（另一个 `effectId`）照常 200 接受，对账时若同一 `(decisionId, source)` 已有一条判为匹配，它判 `side_effect_mismatch`（`reason = replayed`）。
 - 鉴权：Bearer API key（SDK、工具服务、业务系统）与 HMAC 内部调用（cloud）双通道，`MEMBER` 即可；租户取自已验证身份。
 
 查询与确认（类级 `MEMBER`，确认需 `ADMIN`；跨租户、不存在、非数字 id 一律 404 空体）：
@@ -274,7 +277,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 | `allow_unconsumed` | 未消耗、`expires_at < cutoff` 且 `issued_at ≥ since`（ADR 0040 §12 D10 治理缺口） | info | 是：检出满 `allow-unconsumed-ttl`（缺省 `P7D`）→ `RESOLVED / aged_out` |
 | `consume_on_non_allow` | 已有效消耗，但决策既非 `ALLOW` 也无 `APPROVED` 审批，或收据与决策租户不同（服务端本应 409，出现即 aster-api 自身被绕过） | critical | 否 |
 | `result_without_consume` | 有结果而未有效消耗（行级判定；复核失败的结果事件按 ADR 0041 §12 D1 读作未生效，是合法状态，不按事件判） | critical | 否 |
-| `orphan_receipt` | 链上有 `ACTION_GUARD_DECISION` 事件（`timestamp ∈ [since, cutoff)`），而本租户无对应决策行：同一幂等键 / 证据相关键并发登记的落败方已先把决策事件写入链、决策行随唯一约束冲突未落库（#522），或进程在两步之间崩溃 | info | 是：同 `allow_unconsumed` 以 `aged_out` 解除 |
+| `orphan_receipt` | 链上有 `ACTION_GUARD_DECISION` 事件（`timestamp ∈ [since, cutoff)`），而本租户无对应决策行：同一幂等键 / 证据相关键并发登记的落败方已先把决策事件写入链、决策行随唯一约束冲突未落库（#522），或进程在两步之间崩溃 | info | 是：检出满 `allow-unconsumed-ttl`（同样从 `detected_at` 起算）→ `RESOLVED / aged_out` |
 
 `orphan_receipt` 不可执行（无决策行即无收据行，consume 一律 404），只是链上噪声；单列一类是为了让它不混入任何 critical 类别、不触发绕过告警，也不被重复计数（同一决策事件只记一行）。根因修复（决策事件与决策行同事务写入）由 #522 承担。
 
@@ -294,7 +297,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 ### 10.5 与 #464 的集成点
 
 - **I1 `executorId` 组件名**：代理用 `aster-guard-mcp@<host>[:<inst>]`，SDK `run` 缺省用 `aster-guard-sdk@<host>`，cloud 执行路径用 `aster-cloud-exec@<pod>`——三者正是 `executor-labels` 缺省白名单；改名须同时改 `ASTER_GUARD_RECONCILIATION_EXECUTOR_LABELS`。
-- **I2 工具侧上报**：§3.3 `auth` 隔离模式的工具在核对 consume 票据后落地副作用，是上报端点的首选上报方——建议 SDK 提供 `reportSideEffects(effects[])`（同一 API key，`source` = 工具名），README「工具侧接入」写明「执行后上报，带票据里的 `decisionId / attemptId`」。不提供该助手时工具可直接调 REST。
+- **I2 工具侧上报**：§3.3 `auth` 隔离模式的工具在核对 consume 票据后落地副作用，是上报端点的首选上报方——建议 SDK 提供 `reportSideEffects(effects[])`（同一 API key，`source` = 工具名），README「工具侧接入」写明「每次实际执行后上报一条，有票据带票据里的 `decisionId / attemptId`，无票据也上报（§10.1 上报义务）；网络重试沿用同一 `effectId`」。不提供该助手时工具可直接调 REST。
 - **I3 结果回写解除「执行侧丢失」**：代理 / SDK 的 `reportResult` 失败只记日志（§2.1 第 6 步）→ 对账在宽限后报 `consumed_without_result`，补写后自动解除；consume 响应丢失时报 `aborted`（ADR 0040 §12 D5）不会形成孤儿。
-- **I4 #466 部署层**：绕过套件第 1 条（直连原始工具）若工具侧照常上报，下一轮对账必须出现 `side_effect_without_decision`——这是「对账是第二道」（§7 末段）的端到端证据，由 #466 断言。
+- **I4 #466 部署层**：绕过套件第 1 条（直连原始工具）在隔离成立时直连失败、无副作用、对账零孤儿；用于证明「对账是第二道」（§7 末段）的反证场景是**故意关掉隔离**（去掉 `NetworkPolicy` 或关闭工具侧票据核对）后直连执行，此时工具按 §10.1 上报义务照报，下一轮对账必须出现 `side_effect_without_decision`，由 #466 断言。
 - **I5 旧代理 / 旧 SDK**：0.1.0 不 consume → 它放行的每个 ALLOW 都会成为 `allow_unconsumed`（info，不告警），治理页据此列出「未消耗 ALLOW」（ADR 0040 §12 D10）。
