@@ -77,7 +77,7 @@ ADR 0041 §5.2 的 `guard-approval` 复核者随之从 `roleVerified=false` 改�
 1. 签名内用户为空白或 `anonymous` → 400 `user_required`。
 2. 幂等：`guard_decisions` 新列 `evidence_correlation_id VARCHAR(64)`，唯一索引 `(tenant_id, evidence_correlation_id) WHERE evidence_correlation_id IS NOT NULL`；已存在 → 200 回放既有决策的**当前**审批状态（与 Idempotency-Key 重放同一语义，`action` 不比对）。
 3. `AuditLog.findByCorrelationIds(tenant, [correlationId])` 取事件，只认 `event_type = POLICY_EVALUATION`；无（含跨租户、非评估事件）→ 404 `evidence_not_found`。
-4. 解析 metadata；metadata 缺失或无法解析、无 `outcome`、或 `outcome ∉ {REQUIRE_APPROVAL, ESCALATE}` → 409 `evidence_not_approvable`（响应体 `outcome` 为字符串，取不到时为 `"null"`）。
+4. 解析 metadata；metadata 缺失或无法解析、无 `outcome`、或 `outcome ∉ {REQUIRE_APPROVAL, ESCALATE}` → 409 `evidence_not_approvable`（响应体 `outcome` 为字符串，取不到时为 `"null"`）。（2026-11-14 修订，ADR 0046 §11.8：事件档案要求 verifiedInputs 时 `ALLOW` 也受理——须过输入绑定与来源门，通过即 ALLOW 并签执行收据，否则 DENY；其余 ALLOW 与 DENY 仍 409。）
 5. 建 `guard_decisions`：outcome/reason/required_role/rule_id/controls 取自事件 metadata（`role`、`reason` 键见 §3.2）；事件无 `role` → `required_role = null`；`receipt_audit_id = 事件 id`、`receipt_hash = current_hash`；`requested_by = performedBy()`（签过的用户）、`requested_api_key_id = null`；`policy_version_id` 取事件 metadata 的 `policyVersionId`（ADR 0041 本轮未写该键，实际为 null），响应的 `policyVersion` 恒为 null。
 6. 同一保存内建 `guard_approvals`（PENDING，TTL 同 ADR 0040 `aster.guard.approval-ttl`）。并发同一 correlationId 时唯一索引让后写者失败，捕获后回读先到者的决策返回。
 7. 响应 `GuardDecisionResponse`（同 `POST /guard/decisions`，`receipt` 指向决策收据行）。
@@ -128,7 +128,7 @@ v2 调用方（`/evaluate-source`、`/whatif-batches`、`/api/v1/audit/receipts`
 
 ### 5.1 执行路径
 
-两条执行路由（dashboard 与 v1）在 `deriveExecutionDecision ∈ {require_approval, escalate}` 时：
+两条执行路由（dashboard 与 v1）在 `deriveExecutionDecision ∈ {require_approval, escalate}` 时（2026-11-14 修订，ADR 0046 §11.8：另加「Verdict 结论 ALLOW 且模块档案要求 verifiedInputs」；执行响应增 `guard` 块，该情形下 `success` 取 guard 结论）时：
 1. 执行行先落库（`metadata` 为 null），再登记 guard，最后回写 `metadata`：api 挂起或实例被回收都不会丢执行行及其链锚，最坏只是 metadata 仍为 null。插入失败则不登记。
 2. 登记前校验执行人属于策略租户：个人策略只有所有者本人，团队策略须有该团队的成员行；否则 `guardError: not_tenant_member`，不开决策、不发通知（公开/共享策略的外部执行人不得向他人租户写待审批）。
 3. 以当前身份（dashboard：会话用户与其在该策略租户的业务角色；v1：key 持有者）调 `guardFromEvidence({ correlationId: metadata.evidenceCorrelationId, action })`。映射：`principal.id` 恒为执行用户（api 四眼同时拦 `decidedBy == principalId`，若允许输入指定会让执行人可以锁死某位审批人；输入的 `principal_id` 仍随整个输入留在 `context`）；`principal.type/roles` = 输入 `principal_type`（缺省 `user`）/ `principal_roles`；`action.name` = 输入 `action` 或策略函数名；`resource` = 输入 `resource_type/resource_id` 或空串；`context` = 输入对象；`agent` = 执行声明的 agent。
@@ -374,7 +374,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 
 - 存储表、写入时点与范围不变：`guard_decision_inputs`，只对 `outcome ∈ {REQUIRE_APPROVAL, ESCALATE}` 的决策写，与决策行、审批行同一 `requiringNew` 事务写入，写入后不可变（无 UPDATE 路径）；`context_hash` 在读取时复核（§11 D1）。门 DENY（`unverified_input` / `input_refs_unavailable`）与 `receipt_unavailable` 不建审批，也不写输入行。
 - §11 D1 的 `pii_marks` 列改名为 `classification JSONB NULL`，存 D2 的声明树与标记（`{declared, marks}`）；新增两列：`marks_source VARCHAR(16) NOT NULL`（`version | evaluation | none`，D2）、`input_binding VARCHAR(16) NOT NULL`（`direct | evaluated | unbound`）。`direct` 用于 `POST /decisions`：请求的 `action` 就是被评估的输入。`evaluated` 用于 from-evidence：已与评估时的输入哈希核对一致。`unbound` 用于 from-evidence 但无从核对的情况（见下）。
-- **评估期分类行（新表，同一迁移）** `guard_evaluation_classifications`：`tenant_id VARCHAR(64)`、`correlation_id VARCHAR(64)`、`input_hash VARCHAR(64) NULL`、`classification JSONB NULL`、`created_at`，主键 `(tenant_id, correlation_id)`。三条 `/evaluate*` 路径在**非 simulate** 且结论 ∈ `{REQUIRE_APPROVAL, ESCALATE}` 时，于评估事件发布之后写入：
+- **评估期分类行（新表，同一迁移）** `guard_evaluation_classifications`：`tenant_id VARCHAR(64)`、`correlation_id VARCHAR(64)`、`input_hash VARCHAR(64) NULL`、`classification JSONB NULL`、`created_at`，主键 `(tenant_id, correlation_id)`。三条 `/evaluate*` 路径在**非 simulate** 且结论 ∈ `{REQUIRE_APPROVAL, ESCALATE}` 时，于评估事件发布之后写入（2026-11-14 修订，ADR 0046 §11.8：结论为 ALLOW 且本次评估要求 verifiedInputs 时同样写入）：
   - `input_hash` = `sha256-sorted-json/v1`（与 `context_hash` 同一配方，`GuardActionMapper.contextHash`）作用于请求的 `context`，仅当 `context` 是 JSON 对象（命名格式）时写；位置格式（数组）为 null。
   - `classification` = 用本次评估实际使用的 `CoreModel.Module` 推导的声明树与标记（D2）；推导失败或超上限为 null。
   - 写入语义：`INSERT … ON CONFLICT DO NOTHING`，**先写者为准、绝不覆盖**。correlationId 是每次评估新生成的随机 UUID，同键第二次写入只可能是缺陷或重放攻击，不能让它改写 from-evidence 依据的绑定与标记；冲突计入同一 counter。
