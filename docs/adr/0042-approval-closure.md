@@ -358,7 +358,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 | # | 发现 | 证据 | 影响 |
 |---|---|---|---|
 | F1 | §11 已 ACCEPTED，一行代码都还没写；`V6.37.0` 仍空（最新迁移 `V6.36.0__guard_input_provenance.sql`） | `src/main/resources/db/migration/` | 迁移号仍可用；须与 #464/#465 按合并顺序取号 |
-| F2 | 生产中唯一产生审批的路径是 cloud 的 `/evaluate-source` + from-evidence；aster-api 生产 `policy_versions` 为 0 行。§11 D2「决策时读该版本 `core_json`」对生产的每一个审批都取不到标记 → 全部 `context` 键按 `unknown` 打码 → 审批人看不到任何业务值，#460 的目标落空 | from-evidence 决策 `policyVersionId` 来自事件，evaluate-source 事件不写（`EvaluationEvidence` 类注释）；`DynamicCnlExecutor.ExecutionResult`（`replay/…/DynamicCnlExecutor.java:117-141`）在评估时持有 `CoreModel.Module` 与 `RuleMetadata` | 标记必须在**评估时**由 aster-api 推导并保存（D2） |
+| F2 | 生产中唯一产生审批的路径是 cloud 的 `/evaluate-source` + from-evidence；aster-api 生产 `policy_versions` 为 0 行（运维观测：2026-11-13 1.0.44 列车 gate scan 与上线冒烟记录，非仓内可证事实）。§11 D2「决策时读该版本 `core_json`」对生产的每一个审批都取不到标记 → 全部 `context` 键按 `unknown` 打码 → 审批人看不到任何业务值，#460 的目标落空 | from-evidence 决策 `policyVersionId` 来自事件，evaluate-source 事件不写（`EvaluationEvidence` 类注释）；执行器在评估时持有编译出的 `CoreModel.Module`（`DynamicCnlExecutor` 内 `CompiledCoreIr.coreModule`，`replay/…/DynamicCnlExecutor.java:143-150`），并在 `ExecutionResult.of(…)`（`:135-141`）由它算出 `RuleMetadata` 的各值；`ExecutionResult` 记录本身只带这些值，不带 Module——标记须在同一处算出并加入该记录（计划 Task A1） | 标记必须在**评估时**由 aster-api 推导并保存（D2） |
 | F3 | from-evidence 的 `action.context` 由 cloud 给出，与被评估的输入没有绑定：§3.1 第 2 步「`action` 不比对」，评估事件也没有输入哈希 | `GuardEvidenceDecisionService.createFromEvidence`；`EvaluationEvidence` 键表 | 审批人看到的「输入」可能不是策略实际评估的输入（D1 绑定校验） |
 | F4 | §11 D2 把解除记在审批行的单列 `input_revealed_at`，D3 按它算视图哈希：A 解除后，没解除的 B 审批也会按「已解除」记录；而「谁看过原值」根本没有记录 | §11 D2 末段、D3 第 1 项 | 解除改为按人记录并入链（D5） |
 | F5 | §11 D4 用 `GET …/input?reveal=true` 解除——有写副作用（留痕）的 GET | §11 D4 首行 | 改为 POST（D8） |
@@ -377,6 +377,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 - **评估期分类行（新表，同一迁移）** `guard_evaluation_classifications`：`tenant_id VARCHAR(64)`、`correlation_id VARCHAR(64)`、`input_hash VARCHAR(64) NULL`、`classification JSONB NULL`、`created_at`，主键 `(tenant_id, correlation_id)`。三条 `/evaluate*` 路径在**非 simulate** 且结论 ∈ `{REQUIRE_APPROVAL, ESCALATE}` 时，于评估事件发布之后写入：
   - `input_hash` = `sha256-sorted-json/v1`（与 `context_hash` 同一配方，`GuardActionMapper.contextHash`）作用于请求的 `context`，仅当 `context` 是 JSON 对象（命名格式）时写；位置格式（数组）为 null。
   - `classification` = 用本次评估实际使用的 `CoreModel.Module` 推导的声明树与标记（D2）；推导失败或超上限为 null。
+  - 写入语义：`INSERT … ON CONFLICT DO NOTHING`，**先写者为准、绝不覆盖**。correlationId 是每次评估新生成的随机 UUID，同键第二次写入只可能是缺陷或重放攻击，不能让它改写 from-evidence 依据的绑定与标记；冲突计入同一 counter。
   - 写入失败只记 WARN 与 counter `aster_guard_classification_write_failed_total`，评估响应与事件不变——分类行不是评估结果的一部分，缺了只会让后面按 fail-closed 降级。
   - 保留：`created_at` 起 `ASTER_GUARD_CLASSIFICATION_RETENTION`（缺省 `P7D`），到期无条件删除。from-evidence 在执行后立即调用；「重新登记」晚于保留期时按缺行处理。
 - **from-evidence 绑定校验**（插在 §3.1 第 4 步之后、建决策之前）：读本租户该 `correlationId` 的分类行。行存在且 `input_hash` 非空 → 要求 `contextHash(action.context) == input_hash`，否则 409 `evidence_input_mismatch`（不建决策、不写收据、**不消耗**该证据，修正后可用同一 correlationId 重试）。行不存在或 `input_hash` 为 null → `input_binding = unbound`，照常建决策。审批人在视图里看得到「未核对」（D10）。
@@ -415,7 +416,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 **D5 解除原值与留痕（取代 §11 D2「解除打码」段与 `input_revealed_at`）。**
 
 - 端点：`POST /api/v1/guard/approvals/{id}/input/reveal`（空体），返回 `revealed: true` 的视图（D8）。谁能解除：沿用 §11——审批 `PENDING`，且审批人**已验证**业务角色包含 `required_role`；ESCALATE 与无角色的 owner/admin 不可解除；只还原已声明的 `@pii` 字段，`unknown` 任何人都看不到。不满足 → 403 `reveal_not_permitted`（附 `verifiedRoles`）；非 PENDING → 409 `approval_not_pending`；`status ≠ available` → 409 `input_not_available`。
-- **按人留痕。** 新表 `guard_input_reveals`：`approval_id UUID`、`revealed_by VARCHAR(255)`、`tenant_id`、`revealed_at`、`audit_id BIGINT`，主键 `(approval_id, revealed_by)`。每人首次解除时，先**同步**追加新事件类型 `ACTION_GUARD_INPUT_REVEAL`：`performed_by` = 解除人，`decision_id` 列投影；metadata 为 `decisionId, approvalId, revealedFields`（已还原叶子数）、`maskRules, inputSnapshotHash`（该人解除后视图的哈希）。追加成功后再插行；追加失败 → 503 `receipt_unavailable`，**不返回原值**（没有留痕就不解除）。同一人再次解除不追加事件，直接返回解除视图；并发首次解除靠主键冲突去重，回读即可，最多多一条事件，与 ADR 0040 §10「多副本过期产生重复事件」同类，可接受。
+- **按人留痕。** 新表 `guard_input_reveals`：`approval_id UUID`、`revealed_by VARCHAR(255)`、`tenant_id`、`revealed_at`、`audit_id BIGINT`，主键 `(approval_id, revealed_by)`。每人首次解除时，先**同步**追加新事件类型 `ACTION_GUARD_INPUT_REVEAL`：`performed_by` = 解除人，`decision_id` 列投影；metadata 为 `decisionId, approvalId, revealedFields`（已还原叶子数）、`maskRules, inputSnapshotHash`（该人解除后视图的哈希）。追加成功后再插行；追加失败 → 503 `receipt_unavailable`，**不返回原值**（没有留痕就不解除）。同一人再次解除不追加事件，直接返回解除视图。**并发串行化**：整个解除在一个事务内先对审批行 `SELECT … FOR UPDATE`（与审批 / 过期迁移同一把行锁），在锁内查解除行、追加事件、插行，所以同一人并发首次解除恰好一条事件；`guard_input_reveals.audit_id` 即该事件，`reveals[]` 与表一一对应。代价是解除与该审批的审批 / 过期互斥，持锁时长为一次同步入链。
 - `GET …/input` 永远返回打码视图，视图带 `revealedByMe: boolean`。原值只经 POST 返回，任何读路径都不产生副作用。
 - 解除记录不随输入行清理（D7）：它不含 PII，只含审批人 id，是访问审计的一部分。
 

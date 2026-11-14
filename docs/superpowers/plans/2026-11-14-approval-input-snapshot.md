@@ -151,10 +151,10 @@ PR 1 单独合并部署也安全：只写新表、新列，没有读方。from-e
 - Test: `src/test/java/io/aster/guard/snapshot/EvaluationClassificationWriterTest.java`、`src/test/java/io/aster/policy/rest/EvaluateSourceClassificationTest.java`
 
 **Interfaces:**
-- Produces: `void EvaluationClassificationWriter.record(String tenantId, String correlationId, Object requestContext, String outcome, InputClassification classification, boolean simulate)`：outcome 不可审批或 simulate → 不写；`requestContext instanceof Map` → `input_hash = GuardActionMapper.contextHash(map)`，否则 null；`requiringNew` 事务；任何异常记 WARN 并加 counter，不上抛。
+- Produces: `void EvaluationClassificationWriter.record(String tenantId, String correlationId, Object requestContext, String outcome, InputClassification classification, boolean simulate)`：outcome 不可审批或 simulate → 不写；`requestContext instanceof Map` → `input_hash = GuardActionMapper.contextHash(map)`，否则 null；`requiringNew` 事务；`INSERT … ON CONFLICT DO NOTHING`（先写者为准，冲突计 counter）；任何异常记 WARN 并加 counter，不上抛。
 - Produces: `Optional<GuardEvaluationClassificationEntity> EvaluationClassificationWriter.find(String tenantId, String correlationId)`
 
-- [ ] **Step 1:** 失败测试：`writesOnlyForApprovableOutcomes`（ALLOW / DENY 不写）、`simulateDoesNotWrite`、`namedContextGetsInputHash`（与 `GuardActionMapper.contextHash` 同值）、`positionalContextHasNullHash`、`writeFailureDoesNotThrow`（store 抛异常 → counter +1）、`EvaluateSourceClassificationTest.requireApprovalEvaluationLeavesClassificationRow`（`@QuarkusTest`，HmacProfile，带 `@pii` 的 REQUIRE_APPROVAL 源码 → 行的 marks 含该字段）。
+- [ ] **Step 1:** 失败测试：`writesOnlyForApprovableOutcomes`（ALLOW / DENY 不写）、`simulateDoesNotWrite`、`namedContextGetsInputHash`（与 `GuardActionMapper.contextHash` 同值）、`positionalContextHasNullHash`、`writeFailureDoesNotThrow`（store 抛异常 → counter +1）、`secondWriteSameCorrelationIdKeepsFirst`（第二次写不同 hash / 标记 → 行不变，counter +1）、`EvaluateSourceClassificationTest.requireApprovalEvaluationLeavesClassificationRow`（`@QuarkusTest`，HmacProfile，带 `@pii` 的 REQUIRE_APPROVAL 源码 → 行的 marks 含该字段）。
 - [ ] **Step 2:** 运行 `./gradlew test --tests '*EvaluationClassification*' --tests '*EvaluateSourceClassificationTest'`，预期 FAIL。
 - [ ] **Step 3:** 实现并接入三条路径（在 `evidence` 非 null 的分支里调用）。
 - [ ] **Step 4:** 同一命令，预期 PASS；再跑 `./gradlew test --tests '*PolicyEvaluationResource*' --tests '*EvaluationEvidence*'`，确认没有回归。
@@ -178,6 +178,7 @@ PR 1 单独合并部署也安全：只写新表、新列，没有读方。from-e
   - `GuardEvidenceDecisionServiceTest.mismatchedContextIs409AndCreatesNothing`（之后用同一 correlationId 带正确 context 成功 → 证明没有消耗证据）
   - `positionalEvaluationIsUnboundNotMismatch`（分类行 `input_hash=null`）
   - `missingClassificationRowIsUnboundNone`
+  - `GuardFromEvidenceResourceTest.bindingHashEqualAcrossHttpPaths`（`@QuarkusTest`：同一 JSON 体——含 `1.10`、`9007199254740993`、`null` 值、嵌套对象、数组、非 ASCII 键——经真实 HTTP 先打 `/evaluate-source` 再打 from-evidence，得 `input_binding = evaluated`；两条反序列化路径的数字类型若不一致，此用例必失败）
   - `gateDenyWritesNoInputRow`（档案要求 verifiedInputs 而未验证 → DENY，无输入行）
   - `GuardDecisionServiceTest.requireApprovalWritesDirectInputWithVersionMarks`、`allowWritesNoInputRow`、`receiptUnavailableWritesNoInputRow`
   - `GuardDecisionJpaStoreTest.inputRowRollsBackWithDecision`（审批行插入失败 → 输入行也不存在）
@@ -222,11 +223,11 @@ PR 1 单独合并部署也安全：只写新表、新列，没有读方。from-e
 
 - [ ] **Step 1:** 失败测试：
   - `InputSnapshotServiceTest`：`statusUnavailableForLegacyDecision`、`statusPurgedAfterTerminalDelete`、`tamperedActionJsonIsIntegrityFailed`、`oversizeViewIsTooLarge`
-  - reveal：`roleHolderRevealAppendsOneEventFirstTimeOnly`（两次调用 → 一条事件、一行记录）、`noRoleIs403WithVerifiedRoles`、`escalateIsNotRevealable`、`terminalApprovalIs409`、`appendFailureReturns503WithoutRawValues`（appender 抛 `AuditAppendException` → 抛 503，且没有插记录行）
+  - reveal：`roleHolderRevealAppendsOneEventFirstTimeOnly`（两次调用 → 一条事件、一行记录）、`concurrentFirstRevealsAppendExactlyOneEvent`（两线程同时首次解除 → 一条事件、`audit_id` 等于该事件）、`noRoleIs403WithVerifiedRoles`、`escalateIsNotRevealable`、`terminalApprovalIs409`、`appendFailureReturns503WithoutRawValues`（appender 抛 `AuditAppendException` → 抛 503，且没有插记录行）
   - `GuardApprovalInputResourceTest`：`crossTenantIs404SameBodyAsApprove`、`invalidUuidIs404`、`getHasNoSideEffects`（GET 后事件数不变）、`revealedValuesSurvivePiiResponseFilter`（`aster.pii.enforce=true`，邮箱原样返回）
   - `AuditIdentifierRedactionTest.inputSnapshotHashNotRedacted`
 - [ ] **Step 2:** 运行 `./gradlew test --tests '*InputSnapshotServiceTest' --tests '*GuardApprovalInputResourceTest' --tests '*AuditIdentifierRedactionTest'`，预期 FAIL。
-- [ ] **Step 3:** 实现。顺序：加锁读审批行（`FOR SHARE`）→ 判权 → 渲染解除视图 → `appendSync(inputRevealEvent)` → `INSERT … ON CONFLICT DO NOTHING` 解除行 → 返回。命中主键冲突说明并发首次解除，回读即可。
+- [ ] **Step 3:** 实现。一个事务内：`SELECT … FOR UPDATE` 审批行 → 判权 → 查本人解除行（有则直接渲染返回）→ 渲染解除视图 → `appendSync(inputRevealEvent)` → 插解除行 → 提交 → 返回。行锁使同一人并发首次解除串行，恰好一条事件。
 - [ ] **Step 4:** 同一命令，预期 PASS。
 - [ ] **Step 5:** 提交 `feat(guard): 审批输入端点与按人入链的原值解除（ADR 0042 §12 D5/D8）`。
 
