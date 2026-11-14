@@ -353,18 +353,21 @@ tasks.register('guardBypassTest', Test) {
         maxRetries = 0
     }
     // failOnNoDiscoveredTests 只在「没有候选测试类」时生效：测试类存在但全被标签过滤掉时 Gradle 仍报绿
-    // （实测 Gradle 9.8.2）。这里按根套件的实际执行数兜底——标签被误删、类被误排除时任务必须变红。
+    // （实测 Gradle 9.8.2）。这里按根套件的实际执行数兜底——标签被误删、类被误排除、用例全被 @Disabled
+    // 时任务必须变红（skipped 不计入「已执行」）。
     def bypassExecuted = new java.util.concurrent.atomic.AtomicLong()
+    def bypassSkipped = new java.util.concurrent.atomic.AtomicLong()
     afterSuite { desc, result ->
         if (desc.parent == null) {
-            bypassExecuted.addAndGet(result.testCount)
+            bypassExecuted.addAndGet(result.testCount - result.skippedTestCount)
+            bypassSkipped.addAndGet(result.skippedTestCount)
         }
     }
     doLast {
         if (bypassExecuted.get() == 0) {
-            throw new GradleException('guardBypassTest 未执行任何 @Tag("guard-bypass") 测试：绕过套件不得为空（#466）')
+            throw new GradleException('guardBypassTest 未执行任何 @Tag("guard-bypass") 测试（skipped 不计）：绕过套件不得为空（#466）')
         }
-        logger.lifecycle("guardBypassTest: 执行 ${bypassExecuted.get()} 个测试（含 skipped）")
+        logger.lifecycle("guardBypassTest: 执行 ${bypassExecuted.get()} 个测试，skipped ${bypassSkipped.get()} 个")
     }
 }
 

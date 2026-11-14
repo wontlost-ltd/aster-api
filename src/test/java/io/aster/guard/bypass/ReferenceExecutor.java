@@ -45,7 +45,8 @@ public final class ReferenceExecutor {
 
   /**
    * 拒绝执行：{@code stage} 为 {@code local}（本地验签失败，未 consume）或 {@code consume}（服务端 consume 非 200）；
-   * {@code code} 为本地原因或 consume 响应的 {@code error}（无 JSON 体时为 {@code http_<status>}）。
+   * {@code code} 为本地原因，或 consume 响应：409 时为其 {@code error}，其余状态一律 {@code http_<status>}
+   * （带 error 时为 {@code http_<status>:<error>}）——401 / 403 等不能冒充期望的 409 拒绝码。
    */
   public record Refused(String stage, String code) implements Outcome {}
 
@@ -226,14 +227,19 @@ public final class ReferenceExecutor {
   }
 
   private static String errorOf(Response r) {
+    String status = "http_" + r.statusCode();
     String body = r.asString();
-    if (body == null || body.isEmpty()) {
-      return "http_" + r.statusCode();
+    String error = null;
+    if (body != null && !body.isEmpty()) {
+      try {
+        error = ExecutionReceiptAssert.tree(body).path("error").asText(null);
+      } catch (RuntimeException e) {
+        error = null;
+      }
     }
-    try {
-      return ExecutionReceiptAssert.tree(body).path("error").asText("http_" + r.statusCode());
-    } catch (RuntimeException e) {
-      return "http_" + r.statusCode();
+    if (r.statusCode() == 409 && error != null) {
+      return error;
     }
+    return error == null ? status : status + ":" + error;
   }
 }

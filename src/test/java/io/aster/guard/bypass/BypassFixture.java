@@ -75,9 +75,17 @@ public class BypassFixture {
    */
   public void reset(String... tenants) {
     QuarkusTransaction.requiringNew().run(() -> {
+      // #460（V6.37.0）的 guard_decision_inputs 以外键引用 guard_decisions：表存在时先删，迁移合入前后都适用
+      boolean hasInputs = (Boolean) GuardDecisionEntity.getEntityManager()
+          .createNativeQuery("select to_regclass('guard_decision_inputs') is not null").getSingleResult();
       for (String tenant : tenants) {
         GuardApprovalEntity.delete("tenantId = ?1", tenant);
         GuardReceiptEntity.delete("tenantId = ?1", tenant);
+        if (hasInputs) {
+          GuardDecisionEntity.getEntityManager()
+              .createNativeQuery("delete from guard_decision_inputs where tenant_id = ?1")
+              .setParameter(1, tenant).executeUpdate();
+        }
         GuardDecisionEntity.delete("tenantId = ?1", tenant);
         GuardFactIssuerEntity.delete("tenantId = ?1", tenant);
         PolicyCatalog.update("defaultVersionId = null where tenantId = ?1", tenant);
