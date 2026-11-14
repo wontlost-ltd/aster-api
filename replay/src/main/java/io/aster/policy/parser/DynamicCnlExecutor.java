@@ -9,6 +9,8 @@ import aster.core.module.LinkException;
 import aster.core.module.ModuleGraphLinker;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.api.convert.NamedContextMapper;
+import io.aster.policy.governance.InputClassification;
+import io.aster.policy.governance.InputClassifier;
 import io.aster.policy.governance.RuleMetadata;
 import io.aster.policy.module.ModuleResolutionException;
 import io.aster.policy.runtime.ExecutionWatchdog;
@@ -113,6 +115,9 @@ public class DynamicCnlExecutor {
      * <p>inputRefs / verifiedInputsRequired 见 {@link RuleMetadata}（引擎源码路径，按规则体重算，不采信 IR 自带值）；
      * inputKey 为第一个参数实际匹配到的命名输入键（{@link NamedContextMapper.MappingResult#firstParamKey}），
      * 位置输入或未做命名映射时为 null。写评估事件时二者合起来映射为证据形状路径（ADR 0046 §11.6 第 3、4 条）。
+     *
+     * <p>classification 为用执行时的 Core IR 与命名映射推导的输入分类（ADR 0042 §12 D2，证据形状）；位置输入时为空分类
+     * （无已声明路径），推导失败或超上限为 null。推导异常只记 DEBUG，不影响执行结果。
      */
     public record ExecutionResult(
         Object result,
@@ -124,19 +129,33 @@ public class DynamicCnlExecutor {
         String profile,
         List<String> inputRefs,
         boolean verifiedInputsRequired,
-        String inputKey
+        String inputKey,
+        InputClassification classification
     ) {
         /** 不带输入引用信息的构造（测试桩与无规则元数据的调用方）。 */
         public ExecutionResult(Object result, String moduleName, String functionName, long executionTimeMs,
                                String ruleId, List<String> controls, String profile) {
-            this(result, moduleName, functionName, executionTimeMs, ruleId, controls, profile, null, false, null);
+            this(result, moduleName, functionName, executionTimeMs, ruleId, controls, profile, null, false, null, null);
         }
 
         static ExecutionResult of(Object result, String moduleName, String functionName, long executionTimeMs,
-                                  RuleMetadata meta, NamedContextMapper.MappingResult mapping) {
+                                  RuleMetadata meta, NamedContextMapper.MappingResult mapping,
+                                  CoreModel.Module module) {
             return new ExecutionResult(result, moduleName, functionName, executionTimeMs, meta.ruleId(),
                 meta.controls(), meta.profile(), meta.inputRefs(), meta.verifiedInputsRequired(),
-                mapping == null ? null : mapping.firstParamKey());
+                mapping == null ? null : mapping.firstParamKey(), classify(module, functionName, mapping));
+        }
+
+        /** 推导失败只降级为 null（视图 fail-closed 为 none），绝不让评估因此失败。 */
+        private static InputClassification classify(CoreModel.Module module, String functionName,
+                                                    NamedContextMapper.MappingResult mapping) {
+            try {
+                List<String> keys = mapping == null ? List.of() : mapping.paramKeys();
+                return InputClassifier.evidenceShape(module, functionName, keys);
+            } catch (RuntimeException e) {
+                LOG.debugf(e, "输入分类推导失败，按无分类处理: %s", functionName);
+                return null;
+            }
         }
     }
 
@@ -359,7 +378,7 @@ public class DynamicCnlExecutor {
             LOG.infof("Core IR 直接执行完成: %s.%s, 耗时 %dms", moduleName, targetFunction, executionTime);
             // 提交的 IR 不可信：RuleMetadata 按规则体重算 inputRefs，不读 IR 自带值（ADR 0046 §11.6 第 19 条）
             RuleMetadata meta = RuleMetadata.of(coreModule, targetFunction);
-            return ExecutionResult.of(result, moduleName, targetFunction, executionTime, meta, mappingResult);
+            return ExecutionResult.of(result, moduleName, targetFunction, executionTime, meta, mappingResult, coreModule);
         } catch (DynamicExecutionException e) {
             throw e;
         } catch (Exception e) {
@@ -535,7 +554,8 @@ public class DynamicCnlExecutor {
             LOG.infof("动态执行完成: %s.%s, 耗时 %dms", compiled.moduleName(), targetFunction, executionTime);
 
             RuleMetadata meta = RuleMetadata.of(compiled.coreModule(), targetFunction);
-            return ExecutionResult.of(result, compiled.moduleName(), targetFunction, executionTime, meta, mapping);
+            return ExecutionResult.of(result, compiled.moduleName(), targetFunction, executionTime, meta, mapping,
+                compiled.coreModule());
 
         } catch (InProcessCnlParser.CnlParseException e) {
             // 用户源码编译不过（语法 / E8xx）：由 REST 边界统一按 WARN 记录一次，此处不重复

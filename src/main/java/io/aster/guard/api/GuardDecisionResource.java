@@ -234,7 +234,7 @@ public class GuardDecisionResource {
   private static int evidenceStatusOf(String code) {
     Response.Status status = switch (code) {
       case "evidence_not_found" -> Response.Status.NOT_FOUND;
-      case "evidence_not_approvable" -> Response.Status.CONFLICT;
+      case "evidence_not_approvable", "evidence_input_mismatch" -> Response.Status.CONFLICT;
       default -> Response.Status.BAD_REQUEST;
     };
     return status.getStatusCode();

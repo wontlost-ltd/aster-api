@@ -25,6 +25,7 @@ class GuardDecisionStoreEvidenceTest {
 
   @BeforeEach void clean() {
     QuarkusTransaction.requiringNew().run(() -> {
+      io.aster.guard.snapshot.GuardDecisionInputEntity.delete("tenantId in ?1", List.of(TENANT, OTHER));
       GuardApprovalEntity.delete("tenantId in ?1", List.of(TENANT, OTHER));
       GuardDecisionEntity.delete("tenantId in ?1", List.of(TENANT, OTHER));
     });
@@ -51,6 +52,37 @@ class GuardDecisionStoreEvidenceTest {
 
     assertThat(found).extracting(d -> d.id).containsExactlyInAnyOrder(a.id, b.id);
     assertThat(store.findDecisions(TENANT, Set.of())).isEmpty();
+  }
+
+  /** ADR 0042 §12 D1：输入行与决策行、审批行同一事务——审批行插入失败时输入行同样不存在。 */
+  @Test void inputRowRollsBackWithDecision() {
+    GuardDecisionEntity ok = minimal(TENANT, null);
+    store.saveDecision(ok, approval(ok, "p"), null, input(ok));
+    assertThat(QuarkusTransaction.requiringNew().call(() ->
+        io.aster.guard.snapshot.GuardDecisionInputEntity.findByDecisionAndTenant(ok.id, TENANT))).isPresent();
+
+    GuardDecisionEntity bad = minimal(TENANT, null);
+    // principal_id NOT NULL：审批行插入失败，整个事务回滚
+    assertThatThrownBy(() -> store.saveDecision(bad, approval(bad, null), null, input(bad)))
+        .isInstanceOf(RuntimeException.class);
+    QuarkusTransaction.requiringNew().run(() -> {
+      assertThat(io.aster.guard.snapshot.GuardDecisionInputEntity.findByDecisionAndTenant(bad.id, TENANT)).isEmpty();
+      assertThat(GuardDecisionEntity.findByIdAndTenant(bad.id, TENANT)).isEmpty();
+    });
+  }
+
+  private static GuardApprovalEntity approval(GuardDecisionEntity d, String principalId) {
+    GuardApprovalEntity a = new GuardApprovalEntity();
+    a.id = UUID.randomUUID(); a.tenantId = d.tenantId; a.decisionId = d.id; a.outcome = d.outcome;
+    a.principalId = principalId; a.expiresAt = java.time.Instant.now().plusSeconds(3600);
+    return a;
+  }
+
+  private static io.aster.guard.snapshot.GuardDecisionInputEntity input(GuardDecisionEntity d) {
+    io.aster.guard.snapshot.GuardDecisionInputEntity in = new io.aster.guard.snapshot.GuardDecisionInputEntity();
+    in.decisionId = d.id; in.tenantId = d.tenantId; in.actionJson = "{\"context\":{}}"; in.contextHash = d.contextHash;
+    in.marksSource = "none"; in.inputBinding = "direct";
+    return in;
   }
 
   /** 最小合法决策行：response_json 等 NOT NULL 列给占位值。 */

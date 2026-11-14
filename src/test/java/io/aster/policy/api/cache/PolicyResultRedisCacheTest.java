@@ -62,6 +62,7 @@ class PolicyResultRedisCacheTest {
         String t = tenant;
         QuarkusTransaction.requiringNew().run(() -> {
             GuardReceiptEntity.delete("tenantId = ?1", t);
+            io.aster.guard.snapshot.GuardDecisionInputEntity.delete("tenantId = ?1", t);
             GuardDecisionEntity.delete("tenantId = ?1", t);
             PolicyCatalog.update("defaultVersionId = null where tenantId = ?1", t);
             PolicyArtifact.delete("policyVersionId in (select id from PolicyVersion where tenantId = ?1)", t);

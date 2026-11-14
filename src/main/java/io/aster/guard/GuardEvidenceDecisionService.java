@@ -15,6 +15,10 @@ import io.aster.guard.api.GuardActionRequest;
 import io.aster.guard.provenance.InputSourceResolver;
 import io.aster.guard.provenance.ProfileRequirements;
 import io.aster.guard.provenance.VerifiedInputsGate;
+import io.aster.guard.snapshot.DecisionInputFactory;
+import io.aster.guard.snapshot.EvaluationClassificationWriter;
+import io.aster.guard.snapshot.GuardDecisionInputEntity;
+import io.aster.guard.snapshot.GuardEvaluationClassificationEntity;
 import io.aster.policy.api.PolicyEvaluationService;
 import io.aster.policy.entity.AuditLog;
 import io.aster.policy.event.EventType;
@@ -79,6 +83,7 @@ public class GuardEvidenceDecisionService {
   private ProfileRequirements profileRequirements;
   private Counter metadataUnavailable;
   private Duration approvalTtl;
+  private EvaluationClassificationWriter classificationWriter;
 
   /** CDI 客户端代理所需。 */
   protected GuardEvidenceDecisionService() {
@@ -90,7 +95,8 @@ public class GuardEvidenceDecisionService {
                                       GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
                                       FactVerifier factVerifier, PolicyEvaluationService evaluationService,
                                       ProfileRequirements profileRequirements, MeterRegistry meterRegistry,
-                                      @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl) {
+                                      @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl,
+                                      EvaluationClassificationWriter classificationWriter) {
     this.store = store;
     this.decisionService = decisionService;
     this.mapper = mapper;
@@ -104,6 +110,7 @@ public class GuardEvidenceDecisionService {
     this.profileRequirements = profileRequirements;
     this.metadataUnavailable = GuardMetrics.ruleMetadataUnavailable(meterRegistry, "from_evidence");
     this.approvalTtl = approvalTtl;
+    this.classificationWriter = classificationWriter;
   }
 
   /**
@@ -115,7 +122,8 @@ public class GuardEvidenceDecisionService {
    * @param rawAction     请求体 {@code action} 原文树，其中的 {@code facts} 在查既有决策之前验签；null 视为无签名事实
    * @throws GuardInvalidFactException      签名事实验签失败（先于重放，不会被既有决策掩盖）
    * @throws GuardApprovalConflictException {@code user_required} / {@code invalid_action}(400)、
-   *                                        {@code evidence_not_found}(404)、{@code evidence_not_approvable}(409)
+   *                                        {@code evidence_not_found}(404)、{@code evidence_not_approvable}(409)、
+   *                                        {@code evidence_input_mismatch}(409，ADR 0042 §12 D1)
    */
   public GuardDecisionResponse createFromEvidence(String tenantId, String performedBy, Set<String> businessRoles,
                                                   GuardFromEvidenceRequest req, String actionHash, JsonNode rawAction) {
@@ -137,7 +145,11 @@ public class GuardEvidenceDecisionService {
       throw new GuardApprovalConflictException("evidence_not_approvable", "评估结论不需要审批",
           Map.of("outcome", String.valueOf(outcome)));
     }
-    GuardDecisionDraft draft = gate(draftOf(tenantId, event, req, actionHash, metadata, outcome)
+    GuardDecisionDraft evaluated = draftOf(tenantId, event, req, actionHash, metadata, outcome);
+    // 输入绑定（ADR 0042 §12 D1）：可审批判定之后、来源门之前。不一致即 409，不建决策、不写收据、不消耗该证据
+    Optional<GuardEvaluationClassificationEntity> classification = classificationRow(tenantId, correlationId);
+    requireBoundInput(classification, evaluated.contextHash());
+    GuardDecisionDraft draft = gate(evaluated
         .withInputSources(InputSourceResolver.resolve(req.action(), facts, performedBy, businessRoles)), req.action(),
         metadata);
 
@@ -152,12 +164,15 @@ public class GuardEvidenceDecisionService {
     // 证据只开可审批的决策，不存在直接 ALLOW：执行收据只会在审批转 ALLOW 时签发
     GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt, null);
     GuardApprovalEntity approval = approvalId == null ? null : toApproval(approvalId, decisionId, draft, expiresAt);
+    // 输入快照只随审批行写：门 DENY 与 receipt_unavailable 不写（ADR 0042 §12 D1）
+    GuardDecisionInputEntity input = approval == null ? null
+        : DecisionInputFactory.fromEvidence(decisionId, tenantId, req.action(), draft.contextHash(), classification);
     GuardDecisionEntity entity = assembler.toEntity(decisionId, draft, receipt, response, performedBy, null);
     entity.evidenceCorrelationId = correlationId;
     // 版本列取事件 metadata（ADR 0041 有值时才写）；响应体的 policyVersion 按裁定保持 null
     entity.policyVersionId = metadata.get("policyVersionId") instanceof Number n ? n.longValue() : null;
     try {
-      store.saveDecision(entity, approval, null);
+      store.saveDecision(entity, approval, null, input);
     } catch (GuardIdempotencyRaceException race) {
       // 并发同一证据：唯一索引让后写者失败，回读先到者的决策
       return existing(tenantId, correlationId).orElseThrow(() -> race);
@@ -202,6 +217,34 @@ public class GuardEvidenceDecisionService {
     return VerifiedInputsGate.check(meta, draft.inputSources(), VerifiedInputsGate.presentLeafPaths(action))
         .map(denial -> draft.denyUnverified(denial.code(), denial.unverifiedFields()))
         .orElse(draft);
+  }
+
+  /**
+   * 评估分类行（ADR 0042 §12 D1）。读失败按缺行处理（{@code unbound / none}），审批人在视图里看得到「未核对」；
+   * 读失败不会放过哈希不一致——缺行时本就不核对。
+   */
+  private Optional<GuardEvaluationClassificationEntity> classificationRow(String tenantId, String correlationId) {
+    try {
+      return classificationWriter.find(tenantId, correlationId);
+    } catch (RuntimeException e) {
+      LOG.warnf("from-evidence 读取评估分类行失败，按未核对处理: tenant=%s correlationId=%s: %s", tenantId, correlationId,
+          e.toString());
+      return Optional.empty();
+    }
+  }
+
+  /**
+   * 分类行带输入哈希时，请求的 {@code action.context} 必须与评估时的输入同一哈希（{@code sha256-sorted-json/v1}）；
+   * 行缺失或哈希为 null（位置格式输入）不核对，决策照建并标 {@code unbound}。
+   *
+   * @throws GuardApprovalConflictException {@code evidence_input_mismatch}(409)
+   */
+  static void requireBoundInput(Optional<GuardEvaluationClassificationEntity> row, String contextHash) {
+    String expected = row.map(r -> r.inputHash).orElse(null);
+    if (expected != null && !expected.equals(contextHash)) {
+      throw new GuardApprovalConflictException("evidence_input_mismatch",
+          "action.context 与该评估事件的输入不一致；请提交被评估的同一输入");
+    }
   }
 
   /** 事件自带的引用集须是字符串列表；其余形态（含 null 项）按「*」处理。 */

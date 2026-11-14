@@ -1,5 +1,7 @@
 package io.aster.replay.core;
 
+import io.aster.policy.governance.InputClassification;
+
 import java.util.List;
 
 /**
@@ -18,7 +20,16 @@ public record ReplayExecutorResult(
         String profile,
         List<String> inputRefs,
         boolean verifiedInputsRequired,
-        String inputKey) {
+        String inputKey,
+        InputClassification classification) {
+
+    /** 不带输入分类的构造（ADR 0042 §12 之前的调用方与测试桩）。 */
+    public ReplayExecutorResult(Object result, String moduleName, String functionName, long executionTimeMs,
+                                String ruleId, List<String> controls, String profile, List<String> inputRefs,
+                                boolean verifiedInputsRequired, String inputKey) {
+        this(result, moduleName, functionName, executionTimeMs, ruleId, controls, profile, inputRefs,
+            verifiedInputsRequired, inputKey, null);
+    }
 
     /**
      * 不带输入引用信息的构造。inputRefs / verifiedInputsRequired / inputKey 的语义同
@@ -26,7 +37,7 @@ public record ReplayExecutorResult(
      */
     public ReplayExecutorResult(Object result, String moduleName, String functionName, long executionTimeMs,
                                 String ruleId, List<String> controls, String profile) {
-        this(result, moduleName, functionName, executionTimeMs, ruleId, controls, profile, null, false, null);
+        this(result, moduleName, functionName, executionTimeMs, ruleId, controls, profile, null, false, null, null);
     }
 
     /** ruleId / controls（ADR 0039 §3）为空的便捷构造：无规则元数据的执行器（如测试桩）使用。 */

@@ -22,6 +22,7 @@ class GuardReceiptPersistenceTest {
   void cleanup() {
     QuarkusTransaction.requiringNew().run(() -> {
       GuardReceiptEntity.delete("tenantId", tenant);
+      io.aster.guard.snapshot.GuardDecisionInputEntity.delete("tenantId", tenant);
       GuardDecisionEntity.delete("tenantId", tenant);
     });
   }
