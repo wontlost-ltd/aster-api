@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把「治理未被绕过」做成每次 PR 与每次发版自动跑的红队套件：aster-api 集成测试（CI 必需检查 `Guard bypass suite (#466)`）+ aster-cloud 本地栈 Playwright；套件覆盖 #466 的七条，按依赖分三阶段逐条启用，未启用的以 skip + 原因登记。
+**Goal:** 为 #466 的七条场景建红队套件，按依赖分三阶段逐条启用，未启用的以 skip + 原因登记。**自动化范围要说准**：每次 PR（必需检查 `Guard bypass suite (#466)`）与每次发版构建（`check` 依赖）自动跑的**只有** aster-api JUnit 任务 `guardBypassTest`（阶段 A 的 B1–B5、B7，阶段 B 启用后加上代理层用例）；aster-cloud Playwright（A6，C2–C7）只在本地栈上**手动**运行，不进任何 CI；阶段 C 的部署层探针由用户在集群上执行。cloud 场景要进入自动检查，前提是有可复现的 CI 环境（见 §3 跟进项 F1）。
 
 **Architecture:** 阶段 A 只依赖已上线的 R63 / R60 / R62（收据、consume / result、签名事实、档案来源门），在 aster-api 内以独立 JUnit 标签 `guard-bypass` 组织：一个「参考执行方」按 ADR 0054 §2.1 的固定顺序（验签 → consume → 副作用 → 回写）落地副作用到内存账本，红队用例要么喂给它篡改过的输入、要么跳过它直接打端点，每条都做三样断言（决策记录、账本无副作用、收据行 / 链事件一致）。阶段 B 在同一 JUnit 任务里拉起 #464 发布的 `aster-guard-mcp` 子进程，对脚本化的「被注入 Agent」断言代理不转发；阶段 C 是部署层：k3s 里从模型所在命名空间直连原始工具端点必须失败，由部署仓脚本执行。
 
@@ -53,7 +53,7 @@
 - 「有效消耗」只认 `guard_receipts.consume_audit_id` 指向的尝试事件；断言「未消耗」= 行不存在，或 `consumed_at` 与 `consume_audit_id` 都为空，且 `GET /api/v1/audit/receipts?decisionIds=` 的 `consumes[]` 中无 `authoritative: true`。
 - 套件运行在**鉴权打开**的独立 profile（`aster.security.apikey.enabled=true`，HMAC 密钥同 `GuardReceiptResourceAuthTest`）：红队请求必须穿过真实过滤器，不用 `X-Tenant-Id` 直通。签名密钥配置与默认测试配置相同、`revision` 为 1。
 - 每个测试类用 `RUN = UUID` 后缀的独立租户（审计链只追加不删除）；不改动任何既有测试的断言。
-- 必需检查名固定为 `Guard bypass suite (#466)`（作业名，ruleset 按此登记）；Gradle 任务名 `guardBypassTest`、JUnit 标签 `guard-bypass`、`retry` 0 次（安全门不容忍「重试后通过」）。
+- 必需检查名固定为 `Guard bypass suite (#466)`（作业名，ruleset 按此登记），它只跑 aster-api JUnit `guardBypassTest`；cloud Playwright 与部署层探针不在其中（见 Goal、§3 F1）；Gradle 任务名 `guardBypassTest`、JUnit 标签 `guard-bypass`、`retry` 0 次（安全门不容忍「重试后通过」）。
 - 未启用的场景一律 `@Disabled("<阶段> 待 <issue/PR>：<原因>")` / `test.fixme(true, '<原因>')`，原因里写清启用条件，不删除用例。
 - 不触达生产：Playwright 只在 `BASE_CLOUD` 含 `localhost` 时运行；阶段 C 脚本默认 `--dry-run`，对真实集群执行由用户操作。
 - 注释与文档使用简体中文；提交信息中文并以 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` 结尾。
@@ -64,7 +64,7 @@
 2. **「没有副作用」被误证**：账本断言如果只在参考执行方内部调用，攻击者路径（跳过执行方直接 consume）就永远不会写账本，断言变成同义反复。期望：攻击者路径在 consume **200** 时才写账本（模拟「拿到 200 就执行」的恶意执行方），因此「账本为空」等价于「服务端没给出 200」。测试落在 Task A1 的 `attackerExecutesOnlyOn200`。
 3. **并发重放**：两个执行方同时 consume 同一收据，只有一个 200、`consume_audit_id` 指向唯一尝试事件。期望：恰一个 200、一个 409 `receipt_consumed`，账本恰一条。测试落在 Task A3 的 `concurrentConsumeExactlyOneWins`。
 4. **收据挪用**：拿决策 X 的合法收据去执行决策 Y（同租户、不同动作）。期望：本地验签因 `decisionId` 不符拒绝；绕过本地检查直接用 X 的 `actionHash` consume Y → 409 `action_mismatch`。测试落在 Task A3 的 `receiptFromOtherDecisionIsRejected`。
-5. **cloud 低风险结论不经 guard**：高风险档案策略在自报金额填小后规则直接 ALLOW，cloud 不开 guard 决策，副作用方拿到 ALLOW 却没有可消耗的收据。期望（#466 第 7 条）：DENY `unverified_input`；现状推断为 ALLOW 且无 guard 决策。测试落在 Task A6 的 C7b（先 `test.fixme` 登记，裁定见 O1）。
+5. **cloud 的 ALLOW 结论不经 guard**：高风险档案策略在自报金额填小后规则直接 ALLOW，cloud 不开 guard 决策。cloud 执行路由只记录执行与用量，自己不调用外部业务工具；但如果下游把这个 ALLOW 当作执行授权，来源门就被绕过了。期望（#466 第 7 条）：DENY `unverified_input`；现状推断为 ALLOW 且无 guard 决策。测试落在 Task A6 的 C7b（先 `test.fixme` 登记，裁定见 O1 / aster-api#510）。
 
 ---
 
@@ -307,7 +307,7 @@ test('C3/C4/C5 审批通过的 from-evidence 收据：验签、改哈希、重�
 //   GET /api/v1/guard/decisions/{id} → executionReceipt；verifyExecutionReceipt(…, GET /api/v1/guard/keys) === 'ok'；payload 无 policyVersionId
 //   改 payload.expiresAt 一字节 → 'bad_signature'
 //   consume(actionHash 末位翻转) → 409 {"error":"action_mismatch"}；consume(payload.actionHash) → 200；再 consume → 409 receipt_consumed；result executed → 200
-test.fixme('C7b 自报金额填小使规则 ALLOW → 应 DENY unverified_input（见计划 O1）', …)
+test.fixme('C7b 自报金额填小使规则 ALLOW、无 guard 决策；下游若据此执行即绕过来源门（见计划 O1、aster-api#510）', …)
 //   input.applicant = { ...PILOT_APPLICANTS.requireApproval, requestedAmount: 20000 } → 现状推断 outcome ALLOW 且无 guard 决策
 ```
 C3/C4 用收据载荷里的 `actionHash` 作为「正确哈希」，因为 from-evidence 的 action 由 cloud 构造、执行方即 cloud；ADR 0054 §8 ④ 落地（cloud 自行 consume）后，此用例改为断言 cloud 的 `consumedBy.executorId` 以 `aster-cloud-exec@` 开头、测试自身的 consume 得到 409 `receipt_consumed`——在用例注释中写明。
@@ -452,12 +452,13 @@ Run: `./gradlew guardBypassTest`，Expected: 全部 `io.aster.guard.bypass.*` �
 | A7「必需」生效 | 仓库 ruleset 加必需检查 `Guard bypass suite (#466)`（建议同时加 `ci-result`） | 用户（U1） |
 | A6 运行 | 本地栈 + `CP_API_KEY` + 容器 `ASTER_FACT_SIGNING_KEY` + `pnpm seed:credit-pilot` | 执行者本地 |
 | A6 C3/C4 断言形态 | ADR 0054 §8 ④（cloud 自行 consume）落地后改写 | cloud 后续 PR |
+| **F1（跟进项）** cloud 场景进自动检查 | 一个可复现的 CI 环境：在 CI 中拉起 aster-cloud + aster-api + Postgres、seed 信贷试点、生成会话夹具与 API key、注入事实签名密钥；在此之前 A6 只是本地栈手动用例，不得在 #466 或发版说明中写成「CI 覆盖」 | 待立项 |
 | 阶段 B | #464：aster-guard 0.2.0 发布到 npm（含 Trusted Publisher 配置，用户操作）；#464 计划中的 CLI / `structuredContent` 键名定稿 | #464 / 用户 |
 | 阶段 C | ADR 0054 §8 ⑤（HTTP 上游 / Streamable HTTP 代理与镜像）；k3s NetworkPolicy 能否在 kube-router 下启用（或换 CNI）；探针执行权限 | 用户 + k3s 仓 |
 
 ## 4. 待裁定（不阻塞阶段 A）
 
-- **O1**：cloud 对高风险档案策略的 **ALLOW** 执行结论不开 guard 决策（`needsGuardDecision`），自报输入「填小」即绕过来源门。默认方案：把它记为新 issue（aster-cloud），在 A6 以 `test.fixme` 登记；可选方案：声明 `verifiedInputs` 档案的策略在 cloud 执行时对所有结论开 guard 决策（ALLOW 也需收据才可执行），影响 cloud 执行延迟与配额计量。
+- **O1**（跟进 issue：wontlost-ltd/aster-api#510）：cloud 对高风险档案策略的 **ALLOW** 执行结论不开 guard 决策（`needsGuardDecision` 只覆盖 require_approval / escalate）。cloud 执行路由只记录执行与用量、自己不调用外部业务工具，所以 cloud 本身没有越过来源门执行动作；但**如果下游把这个 ALLOW 当作执行授权**，自报输入「填小」就绕过了来源门。默认方案：由该 issue 跟踪，A6 以 `test.fixme` 登记；可选方案：声明 `verifiedInputs` 档案的策略在 cloud 执行时对所有结论开 guard 决策（ALLOW 也需收据才可执行），影响 cloud 执行延迟与配额计量。
 - **O2**：A7 的绕过套件放在 `build` 作业内（默认，零重复 setup；回落语义同 `ci-result`，「本地红、托管绿」以 `::warning::` 显示）还是独立作业且不回落（失败即红、更易定位，但本地 runner 串行多 ~5 分钟 setup，且 runner 故障会直接卡住必需检查）。
 - **O3**：阶段 B Step 6 的真实模型 nightly 是否要做（成本：BYOK key 与每晚少量调用）。
 
@@ -473,3 +474,4 @@ Run: `./gradlew guardBypassTest`，Expected: 全部 `io.aster.guard.bypass.*` �
 - 与既有测试的关系：不复制 `GuardReceiptResourceTest` 的逐端点断言，套件的增量是鉴权打开、执行方视角、副作用账本与并发 / 挪用 / 嫁接等组合攻击。
 - 类型一致：`ReferenceExecutor.Outcome`（`Executed / Refused(stage, code)`）在 A1–A5、B2 中同名使用；Gradle 任务 `guardBypassTest`、标签 `guard-bypass`、作业名 `Guard bypass suite (#466)`、输出键 `guard-bypass` 全文一致。
 - Codex 审查（2026-11-14，82/100「需修改」）已处理：部署层覆盖声明与阶段 C 验收记录（Critical 1）；阶段 B 子目录 lockfile 与 pnpm 版本来源（Critical 2）；B1 攻击前建决策、事后用有权身份核对（I-1）；`check` 依赖套件并说明 deploy 影响（I-2）；撤销 kid 夹具写法（I-3）；Gradle 分流前移到 A1 Step 0、所有命令改用 `guardBypassTest`（I-4）；回落语义裁定 + `::warning::`（I-5，列 O2）；显式 `failOnNoDiscoveredTests` 与空套件反向自检（I-6）。
+- Codex 第二轮（3c9e77f5，82）：先前各项均已解决；新 Important「自动化范围说过头」已修正：Goal 与 Global Constraints 写明必需检查只覆盖 aster-api JUnit，cloud 场景为本地栈手动运行、进 CI 列为跟进项 F1；O1 措辞收窄为「下游若把 ALLOW 当作执行授权即绕过来源门」，并引用 aster-api#510。
