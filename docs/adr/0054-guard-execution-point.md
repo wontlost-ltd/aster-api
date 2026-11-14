@@ -224,7 +224,7 @@ result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, f
 
 ## 10. 对账契约（R65，#465）
 
-- 状态：**PROPOSED**（2026-11-14；实施计划 docs/superpowers/plans/2026-11-14-guard-reconciliation.md）
+- 状态：**ACCEPTED**（2026-11-15，提出于 2026-11-14；实施计划 docs/superpowers/plans/2026-11-14-guard-reconciliation.md）
 - 范围：只记外部可见的契约（端点、类别、指标、告警、与 #464 的集成点）；SQL、类名等实现细节见实施计划。
 
 ### 10.1 事实来源
