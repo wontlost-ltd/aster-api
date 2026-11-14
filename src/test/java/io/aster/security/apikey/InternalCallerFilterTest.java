@@ -792,7 +792,8 @@ class InternalCallerFilterTest {
         for (String p : List.of("/api/v1/guard/approvals", "/api/v1/guard/approvals/" + id + "/approve",
                 "/api/v1/guard/approvals/" + id + "/reject", "/api/v1/guard/approvals/" + id + "/input",
                 "/api/v1/guard/approvals/" + id + "/input/reveal", "/api/v1/guard/decisions/" + id,
-                "/api/v1/guard/receipts/" + id + "/consume", "/api/v1/guard/receipts/" + id + "/result")) {
+                "/api/v1/guard/receipts/" + id + "/consume", "/api/v1/guard/receipts/" + id + "/result",
+                "/api/v1/guard/side-effects")) {
             assertEquals(Classification.REQUIRE_HMAC,
                 InternalCallerFilter.classify(p, false, false, false, false, true), p);
             assertEquals(Classification.NOT_PROTECTED,
@@ -806,7 +807,8 @@ class InternalCallerFilterTest {
                 "/api/v1/guard/approvals/" + id + "/reveal", "/api/v1/guard/approvals//input",
                 "/api/v1/guard/approvals/a/b/input", "/api/v1/guard/approvals/" + id + "/input/reveal/",
                 "/api/v1/guard/approvalsX", "/api/v1/guard/receipts/" + id,
-                "/api/v1/guard/receipts/" + id + "/consume/x", "/api/v1/guard/receipts/" + id + "/other")) {
+                "/api/v1/guard/receipts/" + id + "/consume/x", "/api/v1/guard/receipts/" + id + "/other",
+                "/api/v1/guard/side-effects/x", "/api/v1/guard/side-effectsX")) {
             assertEquals(Classification.NOT_PROTECTED,
                 InternalCallerFilter.classify(p, false, false, false, false, true), p);
         }

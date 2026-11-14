@@ -50,6 +50,7 @@ public class ApiKeyAuthFilter {
         "/api/v1/guard/decisions/from-evidence",
         "/api/v1/guard/approvals",
         InternalCallerFilter.GUARD_FACT_ISSUERS_PATH,
+        InternalCallerFilter.GUARD_SIDE_EFFECTS_PATH,
         InternalCallerFilter.CEDAR_EXPORT_PATH);
 
     /** 同上的前缀集合；不含 {@code /api/v1/guard/decisions} 本身——Agent 提交决策只走 Bearer。 */
