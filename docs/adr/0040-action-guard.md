@@ -62,6 +62,8 @@ Agent 提议动作 ──► POST /api/v1/guard/decisions ──► 已部署的
 | B 租户级绑定表 | 多一张表一套 CRUD，现阶段没有多策略路由需求；有客户要求再做（见 §10） |
 | C 内联源码评估 | 规则不受版本与审批管控，违背治理初衷 |
 
+> R66（ADR 0054 §11 D1，2026-11）：方案 A 的策略来源——aster-cloud 把策略的默认版本经 HMAC 部署端点 `PUT /api/v1/guard/policy-deployments/{cloudPolicyId}` 部署为 aster-api 的活跃版本（冻结词汇与别名），`/decisions` 契约不变。
+
 ### 2.2 Action 模型（请求体 `action`）
 
 ```json
