@@ -388,7 +388,7 @@ Rule decide given applicant as Applicant, produce Verdict:
 
 **3. aster-api：`from-evidence` 受理 ALLOW。**
 - **受理集合**：`outcome ∈ {REQUIRE_APPROVAL, ESCALATE}`，或 `outcome = ALLOW` 且事件 `profile` 经**当前**注册表重算要求 verifiedInputs（与来源门第 1 步同一判定，§11.6 第 4 条；事件里的 `verifiedInputsRequired` 快照不参与）。其余（不要求的 ALLOW、DENY、无 outcome）仍 409 `evidence_not_approvable`。
-- **输入绑定必须成立**：ALLOW 没有人工复核兜底，而事实是对请求 `action.context` 验的，只有确认它就是被评估的输入，「事实覆盖了引用」才等于「被评估的输入已验证」。分类行存在且 `input_hash` 非空 → 不等即 409 `evidence_input_mismatch`（同 ADR 0042 §12 D1，不消耗证据）；分类行缺失或 `input_hash` 为 null（位置格式输入）→ DENY `unverified_input`、`unverifiedFields: ["*"]`（消耗证据）。REQUIRE_APPROVAL / ESCALATE 仍按 §12 D1 的 `unbound` 照常建决策，审批人看得到「未核对」。
+- **输入绑定必须成立**：ALLOW 没有人工复核兜底，而事实是对请求 `action.context` 验的，只有确认它就是被评估的输入，「事实覆盖了引用」才等于「被评估的输入已验证」。分类行存在且 `input_hash` 非空 → 不等即 409 `evidence_input_mismatch`（同 ADR 0042 §12 D1，不消耗证据）；分类行缺失或 `input_hash` 为 null（位置格式输入）→ DENY `unverified_input`、`unverifiedFields: ["*"]`（消耗证据）。这里的 `"*"` 不是「逐个字段比对后全部未通过」，而是「无法证明被评估的输入与签名事实所针对的是同一份输入」，因此不能可信地列出具体字段。REQUIRE_APPROVAL / ESCALATE 仍按 §12 D1 的 `unbound` 照常建决策，审批人看得到「未核对」。
 - **分类行对这类 ALLOW 也写**：`EvaluationClassificationWriter` 原只为可审批结论写行（ADR 0042 §12 D1）；现增加「结论为 ALLOW 且本次评估要求 verifiedInputs」时同样写（只算 `input_hash`，分类照写）。翻转前写下、无分类行的 ALLOW 证据在翻转后登记会得到 DENY——fail-closed，重新执行即可。
 - **门通过 → ALLOW**：写决策收据（`ACTION_GUARD_DECISION`，带 `evidenceCorrelationId`）并签发执行收据（ADR 0040 §12，与 `POST /decisions` 的 ALLOW 同一签发；签发或收据写入失败 → DENY `receipt_unavailable`）；不建审批、不写输入快照（`guard_decision_inputs` 只随审批行写）。**门拒绝 → DENY**：与 D5 相同，写决策行与收据、消耗该 correlationId。
 - 响应体不变（`GuardDecisionResponse`）：`outcome / effectiveOutcome = ALLOW`，`executionReceipt` 有值；DENY 时 `reasonCode` 与收据 `unverifiedFields` 同 D5。
@@ -396,13 +396,15 @@ Rule decide given applicant as Applicant, produce Verdict:
 **4. aster-cloud：ALLOW 在档案要求时同样登记。**
 - **登记条件**：`require_approval / escalate`（不变），或 Verdict 结论 ALLOW（`metadata.outcome = ALLOW`）且评估响应的 `profile` 按 cloud 注册表副本 `requiresVerifiedInputs` 为真。其余 ALLOW 不调 aster-api。非 Verdict 函数不产出 `inputRefs`（§11.6 第 1 条），不在本裁定范围。
 - 事实照旧随**首次** from-evidence 请求附上（§11.6 第 11 条、§11.7 第 6 条），`invalid_fact` 不去掉事实重试。执行人不属于策略租户（公开 / 分享策略的外部执行人）→ `guardError: not_tenant_member`，按未授权处理。
-- 判定用 cloud 的注册表副本而不是新开一个「是否要求」的 API：副本与 core / locales 由 parity 守护测试锁定、随同一列车发布；回滚顺序先 cloud（§11.7 末段）时，窗口内 cloud 认为不要求而 aster-api 仍要求 → ALLOW 不登记，这与「撤回要求」的回滚意图一致，不会出现相反方向（cloud 要求而 api 不受理）的长期漂移。
+- 判定用 cloud 的注册表副本而不是新开一个「是否要求」的 API：副本与 core / locales 由 parity 守护测试锁定、随同一列车发布。`from-evidence` 只对内部 HMAC 通道开放（ADR 0042 §3.1、§4.2；Bearer 调用 403 `internal_only`），cloud 是它唯一的调用方，所以本小节的闭合范围就是 cloud 执行路径；直接调用 `POST /api/v1/guard/decisions` 的接入方本就逐请求过来源门（ADR 0040 §11 D5），不受此处漂移影响。两份注册表不一致的窗口只出现在列车发布 / 回滚之间：
+  - **回滚（先 cloud 后 aster-api，§11.7 末段）**：cloud 已回到不要求、aster-api 仍要求 → cloud 不再登记高风险 ALLOW，执行响应无 `guard` 块、`success` 回到评估的 allowed。这正是「撤回要求」的预期状态；aster-api 引擎 pin 回滚完成后，`from-evidence` 对 ALLOW 恢复 409，回滚即完成。窗口内**禁止**手工对 ALLOW 执行行做「重新登记」（端点按 cloud 副本判定，会 409 `not_approvable`，无副作用）。
+  - **发布（同列车，aster-api 先于 cloud 部署，见第 8 条）**：aster-api 已要求、cloud 尚未登记 → 与 #510 修复前相同的已知窗口，部署完成即关闭；反向（cloud 要求而 aster-api 不受理）只会让登记 409 → `guardError` → `success: false`，fail-closed。
 - 「重新登记」端点（ADR 0042 §5.1 第 5 条）对同样条件的 ALLOW 行开放。
 
 **5. 用户可见语义（cloud 执行响应与界面）。**
-- **策略结论不改**：`decision`、`output.metadata.outcome`、执行行 `decision / outcome / success` 列仍是评估事实，与链上评估事件同值；What-If、证据包、统计与 `run-credit-pilot` 的结论口径不变。guard 的 DENY 是另一个事实（另一条链上决策收据），不改写评估。
+- **策略结论不改**：响应的 `decision`、`output.metadata.outcome`（v1 为 `data.decision`、`data.metadata.outcome`），以及**持久化的执行行** `decision / outcome / success` 三列仍是评估事实，与链上评估事件同值。What-If、证据包、日志统计（通过率）都读执行行与评估事件，`run-credit-pilot` 读 `data.metadata.outcome`，均不读响应顶层 `success`，口径不变。guard 的 DENY 是另一个事实（另一条链上决策收据），不改写评估。
 - **新增顶层 `guard` 块**（v1 与 dashboard 执行端点；只在需要 guard 时出现）：`{ required: "approval" | "provenance", decisionId?, approvalId?, effectiveOutcome?, reasonCode?, error? }`。`required = provenance` 即本小节的 ALLOW 登记。
-- **`success` 收紧为「调用方可据此继续」**：`required = provenance` 时 `success = (guard.effectiveOutcome == ALLOW)`；guard DENY、登记失败（`error`）或未登记一律 `false`（fail-closed）。其余情形 `success` 与今天相同。HTTP 仍为 200：执行已发生并已记录，不是请求错误。依赖 `success` 判断能否继续的接入方因此自动得到 fail-closed；需要区分原因的读 `guard.reasonCode`。
+- **响应顶层 `success`（只指执行响应字段，不是执行行列）收紧为「调用方可据此继续」**：`required = provenance` 时 `success = (guard.effectiveOutcome == ALLOW)`；guard DENY、登记失败（`error`）或未登记一律 `false`（fail-closed）。其余情形 `success` 与今天相同。HTTP 仍为 200：执行已发生并已记录，不是请求错误。对照：guard DENY → 执行行 `success = true`（评估 ALLOW）、响应 `success = false`、`guard.effectiveOutcome = DENY`；登记失败 → 执行行 `success = true`、`metadata.guardError` 有值、响应 `success = false`、`guard.error` 有值；guard ALLOW → 两者皆 true。依赖 `success` 判断能否继续的接入方因此自动得到 fail-closed；需要区分原因的读 `guard.reasonCode`。
 - 执行行 `metadata` 在无审批的决策（ALLOW / DENY 终态）上增 `guardOutcome`、`guardReasonCode`；日志页据此显示「Guard 拒绝 · 原因」或「Guard 放行」，不再把它们显示为「待审批 · 查看」（顺带修正 REQUIRE_APPROVAL 被门 DENY 时的同一误显）。执行页 Decision 行仍显示策略结论，其下新增 Guard 行。
 - 执行收据不随执行响应返回；需要时按 `guard.decisionId` 经 `GET /api/v1/guard/decisions/{id}` 取回（cloud 自身 consume 见 ADR 0054 §8 ④）。
 
