@@ -3,6 +3,7 @@ package io.aster.guard.api;
 import io.aster.guard.GuardApprovalConflictException;
 import io.aster.guard.GuardApprovalService;
 import io.aster.guard.GuardApprovalStatus;
+import io.aster.guard.snapshot.InputSnapshotService;
 import io.aster.policy.rest.RequestIdentityResolver;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
@@ -44,6 +45,9 @@ public class GuardApprovalResource {
   @Inject
   GuardApprovalService service;
 
+  @Inject
+  InputSnapshotService inputSnapshots;
+
   /** 租户内按状态分页列出审批，默认 PENDING（不含已到期行）；page 从 0 起，size 取 1–200。 */
   @GET
   public Response list(@QueryParam("status") @DefaultValue("PENDING") String status,
@@ -75,6 +79,36 @@ public class GuardApprovalResource {
     return decide(id, false, body);
   }
 
+  /**
+   * 审批输入视图（ADR 0042 §12 D8）：永远是打码视图，无写副作用。修订前的决策返回 200 {@code status: unavailable}；
+   * 非法 UUID 与跨租户一律 404 approval_not_found（与审批端点同体）。以对象实体返回，全局 PII 响应过滤器不改写。
+   */
+  @GET
+  @Path("/{id}/input")
+  public Response input(@PathParam("id") String id) {
+    try {
+      return Response.ok(inputSnapshots.view(identityResolver.tenantId(), parseId(id), identityResolver.performedBy()))
+          .build();
+    } catch (GuardApprovalConflictException e) {
+      return error(statusOf(e.code()), e.code(), e.getMessage(), e.details());
+    }
+  }
+
+  /**
+   * 解除原值（ADR 0042 §12 D5）：空体；只对 PENDING 且已验证业务角色包含所需角色者开放，每人每审批首次解除同步入链，
+   * 入链失败 503 且不返回原值。
+   */
+  @POST
+  @Path("/{id}/input/reveal")
+  public Response reveal(@PathParam("id") String id) {
+    try {
+      return Response.ok(inputSnapshots.reveal(identityResolver.tenantId(), parseId(id),
+          identityResolver.performedBy(), identityResolver.businessRoles())).build();
+    } catch (GuardApprovalConflictException e) {
+      return error(statusOf(e.code()), e.code(), e.getMessage(), e.details());
+    }
+  }
+
   /** 非法 UUID 与跨租户一律 404 approval_not_found，不泄露审批是否存在。 */
   private Response decide(String id, boolean approve, Map<String, String> body) {
     String comment = body == null ? null : body.get("comment");
@@ -100,8 +134,8 @@ public class GuardApprovalResource {
   private static Response.Status statusOf(String code) {
     return switch (code) {
       case "approval_not_found" -> Response.Status.NOT_FOUND;
-      case "segregation_of_duties", "role_mismatch" -> Response.Status.FORBIDDEN;
-      case "approval_not_pending" -> Response.Status.CONFLICT;
+      case "segregation_of_duties", "role_mismatch", "reveal_not_permitted" -> Response.Status.FORBIDDEN;
+      case "approval_not_pending", "input_not_available", "input_snapshot_mismatch" -> Response.Status.CONFLICT;
       case "receipt_unavailable" -> Response.Status.SERVICE_UNAVAILABLE;
       default -> Response.Status.BAD_REQUEST;
     };

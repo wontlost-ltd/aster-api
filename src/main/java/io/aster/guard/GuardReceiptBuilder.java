@@ -148,6 +148,22 @@ public class GuardReceiptBuilder {
   }
 
   /**
+   * 审批输入解除事件（ADR 0042 §12 D5）：每人每审批首次解除时同步入链，{@code performed_by} 为解除人，
+   * {@code decision_id} 列由 decisionId 投影。metadata 只有标识与计数，不含任何输入值：
+   * {@code decisionId, approvalId, revealedFields, maskRules, inputSnapshotHash}（解除后视图的快照哈希）。
+   */
+  public AuditEvent inputRevealEvent(GuardApprovalEntity a, String performedBy, int revealedFields, String maskRules,
+                                     String viewHash) {
+    Map<String, Object> m = new LinkedHashMap<>();
+    put(m, "decisionId", a.decisionId);
+    put(m, "approvalId", a.id);
+    m.put("revealedFields", revealedFields);
+    put(m, "maskRules", clip(maskRules, MAX_TEXT));
+    put(m, "inputSnapshotHash", clip(viewHash, DIGEST_LENGTH));
+    return receiptEvent(EventType.ACTION_GUARD_INPUT_REVEAL, a.tenantId, performedBy, true, m, List.of());
+  }
+
+  /**
    * 消耗尝试事件（ADR 0040 §12 D1）：先于判定入链，是权威消耗点。attemptId / executorId 为执行方自报，
    * 只截断不校验；只投影 decision_id 列，不写 correlationId。
    */
