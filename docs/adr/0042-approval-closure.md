@@ -1,6 +1,6 @@
 # ADR 0042：审批闭环 —— 经验证的业务角色、从证据开决策、cloud 审批收件箱（AI 治理方向·子项目 3b）
 
-- 状态：**ACCEPTED**（2026-10-09）
+- 状态：**ACCEPTED**（2026-10-09）；§11 R59 ACCEPTED（2026-11-08）；§12（R59 实施前定稿修订，#460）**PROPOSED**（2026-11-14）
 - 提出：2026-10-09；实施计划 `docs/superpowers/plans/2026-10-09-approval-closure.md`；栈验收见 §9.1
 - 决策者：用户已拍板「业务角色挂在团队成员上由 owner/admin 授予；cloud 以证据链收据为锚开决策，不重复评估；收件箱走内部 HMAC v3 通道并签正用户与角色；角色持有者可审、管理员只读、站内通知不发邮件」
 - 相关：ADR 0040（Action Guard：决策、待审批、四眼、§10 开放问题第一条）、ADR 0041（证据链补齐：correlationId 列、收据接口、复核者 `guard-approval`）、aster-cloud ADR 0015（团队作用域 API key 身份：verify 响应与快照）、ADR 0039（Verdict 四态与 `role`）
@@ -343,3 +343,183 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 | 审批事件 `inputSnapshotMatched` | 只表示客户端提交哈希与当前视图一致（D3 第 4 项） | — | 更强证明需另立 ADR |
 
 另：ADR 0040 §3.3「不存明文 context」在本节后的准确表述是「决策行与审计链不存明文 context；明文只存于独立、限期、按审批可达的 `guard_decision_inputs`」，定稿时回写 ADR 0040 §3.3 行 207 与 §5.2 行 337 的脚注。
+
+## 12. 2026-11 修订：R59 实施前定稿 —— 审批输入快照落地口径、`catalog.piiMark` 再定义、证据包 v6（#460）
+
+状态：**PROPOSED**（2026-11-14）。实施计划 `docs/superpowers/plans/2026-11-14-approval-input-snapshot.md`。定稿后与 §11 冲突时以本节为准；被取代的 §11 条款逐条列在 §12.3，未列出的 §11 条款不变。
+相关：wontlost-ltd/aster-api#460；ADR 0046 §11.7 第 2、3 条（`catalog.piiMark` 与证据包 v6 `factSources` 推迟到 #460）；ADR 0041 §11 D3/D4、§12 D3（证据包 v6 的其余内容）；ADR 0040 §3.3 / §5.2（决策行与审计链不存明文 context）、§11 D4（审批视图并列 `inputSources` 与 `factsStale`）；ADR 0044 §3.1 与 ADR 0045（Article 14 对照由控制注册表驱动）；aster-api ADR 0015「已锁决策」（租户隔离、visibility-safe 不泄露存在性）；ADR 0055（Core IR v2 保留 `PiiType`，只删 `Func.piiLevel / piiCategories`）。
+
+### 12.0 为什么是本 ADR 的新节，而不是新 ADR
+
+#460 的设计主体（存什么、怎么打码、审批记录什么）已经是本 ADR §11（R59，用户 2026-11-08 确认），ADR 0041 / 0046 也都以「ADR 0042 §11（#460）」作为这几项的唯一指向。本节只做三件事：按今天的 main 复核 §11 并修正走不通的条款，给两项推迟事项（`catalog.piiMark`、证据包 v6）下定义，补上 §11 没写的尺寸、存储与 UI 细节。新开 ADR 会让同一个决策分在两份文档里，各方引用要全部改写；做法与 ADR 0046 §11.6 / §11.7 相同。
+
+### 12.1 复核结论（origin/main `749fa44d`）
+
+| # | 发现 | 证据 | 影响 |
+|---|---|---|---|
+| F1 | §11 已 ACCEPTED，一行代码都还没写；`V6.37.0` 仍空（最新迁移 `V6.36.0__guard_input_provenance.sql`） | `src/main/resources/db/migration/` | 迁移号仍可用；须与 #464/#465 按合并顺序取号 |
+| F2 | 生产中唯一产生审批的路径是 cloud 的 `/evaluate-source` + from-evidence；aster-api 生产 `policy_versions` 为 0 行（运维观测：2026-11-13 1.0.44 列车 gate scan 与上线冒烟记录，非仓内可证事实）。§11 D2「决策时读该版本 `core_json`」对生产的每一个审批都取不到标记 → 全部 `context` 键按 `unknown` 打码 → 审批人看不到任何业务值，#460 的目标落空 | from-evidence 决策 `policyVersionId` 来自事件，evaluate-source 事件不写（`EvaluationEvidence` 类注释）；执行器在评估时持有编译出的 `CoreModel.Module`（`DynamicCnlExecutor` 内 `CompiledCoreIr.coreModule`，`replay/…/DynamicCnlExecutor.java:143-150`），并在 `ExecutionResult.of(…)`（`:135-141`）由它算出 `RuleMetadata` 的各值；`ExecutionResult` 记录本身只带这些值，不带 Module——标记须在同一处算出并加入该记录（计划 Task A1） | 标记必须在**评估时**由 aster-api 推导并保存（D2） |
+| F3 | from-evidence 的 `action.context` 由 cloud 给出，与被评估的输入没有绑定：§3.1 第 2 步「`action` 不比对」，评估事件也没有输入哈希 | `GuardEvidenceDecisionService.createFromEvidence`；`EvaluationEvidence` 键表 | 审批人看到的「输入」可能不是策略实际评估的输入（D1 绑定校验） |
+| F4 | §11 D2 把解除记在审批行的单列 `input_revealed_at`，D3 按它算视图哈希：A 解除后，没解除的 B 审批也会按「已解除」记录；而「谁看过原值」根本没有记录 | §11 D2 末段、D3 第 1 项 | 解除改为按人记录并入链（D5） |
+| F5 | §11 D4 用 `GET …/input?reveal=true` 解除——有写副作用（留痕）的 GET | §11 D4 首行 | 改为 POST（D8） |
+| F6 | §11 D4 把 14(4)(a) 改判写成 cloud 代码改动，但条款判定由控制注册表**数据**驱动（`regulatory-mapping.ts` `judge`；`controls-registry.json:19` 中 14(4)(a) 为 `evidenced: []`、`partial: ["whatIf.comparable"]`）。改判需要新的证据来源名，再加一次注册表升版（locales 真相源 + core / ts / cloud 副本，走 ADR 0053 列车）。§11 还按「`inputSnapshotHash` 非空」判 evidenced；旧 SDK 不取视图时服务端照样记哈希（`matched=false`），这样会把没看过输入的审批算成证据 | cloud `src/services/evidence/regulatory-mapping.ts`、`control-registry.ts` | 判定条件改为 `matched === true`；注册表改判与 #460 解耦（D9） |
+| F7 | 键名分歧：ADR 0041 §11 D3 写 `inputSnapshotAttested`，本 ADR §11 写 `inputSnapshotMatched` | 两处原文 | 以 `inputSnapshotMatched` 为准，定稿时回写 0041 |
+| F8 | cloud 证据包仍为 v5（`types.ts:113`），ADR 0041 §11 D4（`inputSource` / `guardInputSources`）与 §12 D3（`execution`）都没进包，三者都约定与 #460 一次升版 | cloud `src/services/evidence/` | v6 一次装齐（D9） |
+| F9 | cloud 执行日志页对能看到该策略的成员明文展示 `Execution.input` | cloud `policies/[id]/logs/logs-content.tsx:826` | 只在收件箱打码，兑现不了「无权角色看不到原值」；本节限定验收面并另开 issue（D11） |
+| F10 | `AuditChainAppender` 已豁免规范 UUID（`AuditChainAppender.java:84,212`），§11 D2「约 1/800 UUID 被信用卡正则误伤」已不成立；全局 `PIIResponseFilter` 只改写 `String` 实体 | `PIIResponseFilter.java` | 视图必须以对象实体返回，否则解除后的原值会被全局正则再改写一遍（D8 测试钉住） |
+
+### 12.2 决策
+
+**D1 快照什么、何时（修订 §11 D1）。**
+
+- 存储表、写入时点与范围不变：`guard_decision_inputs`，只对 `outcome ∈ {REQUIRE_APPROVAL, ESCALATE}` 的决策写，与决策行、审批行同一 `requiringNew` 事务写入，写入后不可变（无 UPDATE 路径）；`context_hash` 在读取时复核（§11 D1）。门 DENY（`unverified_input` / `input_refs_unavailable`）与 `receipt_unavailable` 不建审批，也不写输入行。
+- §11 D1 的 `pii_marks` 列改名为 `classification JSONB NULL`，存 D2 的声明树与标记（`{declared, marks}`）；新增两列：`marks_source VARCHAR(16) NOT NULL`（`version | evaluation | none`，D2）、`input_binding VARCHAR(16) NOT NULL`（`direct | evaluated | unbound`）。`direct` 用于 `POST /decisions`：请求的 `action` 就是被评估的输入。`evaluated` 用于 from-evidence：已与评估时的输入哈希核对一致。`unbound` 用于 from-evidence 但无从核对的情况（见下）。
+- **评估期分类行（新表，同一迁移）** `guard_evaluation_classifications`：`tenant_id VARCHAR(64)`、`correlation_id VARCHAR(64)`、`input_hash VARCHAR(64) NULL`、`classification JSONB NULL`、`created_at`，主键 `(tenant_id, correlation_id)`。三条 `/evaluate*` 路径在**非 simulate** 且结论 ∈ `{REQUIRE_APPROVAL, ESCALATE}` 时，于评估事件发布之后写入：
+  - `input_hash` = `sha256-sorted-json/v1`（与 `context_hash` 同一配方，`GuardActionMapper.contextHash`）作用于请求的 `context`，仅当 `context` 是 JSON 对象（命名格式）时写；位置格式（数组）为 null。
+  - `classification` = 用本次评估实际使用的 `CoreModel.Module` 推导的声明树与标记（D2）；推导失败或超上限为 null。
+  - 写入语义：`INSERT … ON CONFLICT DO NOTHING`，**先写者为准、绝不覆盖**。correlationId 是每次评估新生成的随机 UUID，同键第二次写入只可能是缺陷或重放攻击，不能让它改写 from-evidence 依据的绑定与标记；冲突计入同一 counter。
+  - 写入失败只记 WARN 与 counter `aster_guard_classification_write_failed_total`，评估响应与事件不变——分类行不是评估结果的一部分，缺了只会让后面按 fail-closed 降级。
+  - 保留：`created_at` 起 `ASTER_GUARD_CLASSIFICATION_RETENTION`（缺省 `P7D`），到期无条件删除。from-evidence 在执行后立即调用；「重新登记」晚于保留期时按缺行处理。
+- **from-evidence 绑定校验**（插在 §3.1 第 4 步之后、建决策之前）：读本租户该 `correlationId` 的分类行。行存在且 `input_hash` 非空 → 要求 `contextHash(action.context) == input_hash`，否则 409 `evidence_input_mismatch`（不建决策、不写收据、**不消耗**该证据，修正后可用同一 correlationId 重试）。行不存在或 `input_hash` 为 null → `input_binding = unbound`，照常建决策。审批人在视图里看得到「未核对」（D10）。
+- 不另存「评估输入」副本：绑定是对哈希的核对，输入明文只存一份（`guard_decision_inputs.action_json`）。
+
+**D2 PII 标记的来源（取代 §11 D2「标记来源」段）。**
+
+唯一来源是 aster-api 从**本次评估实际执行的** Core IR 推导，按决策的产生路径取：
+
+| 决策路径 | 推导时点与来源 | `marks_source` |
+|---|---|---|
+| `POST /api/v1/guard/decisions` | 决策时，用与评估同一个已解析版本的 `core_json`；与 `RuleMetadata` 同一版本键、同一 memo（每版本只推导一次） | `version` |
+| from-evidence（锚定任何 `/evaluate*` 事件） | 评估时，由执行器持有的 `CoreModel.Module` 推导，经 D1 分类行带到 from-evidence | `evaluation` |
+| 以上都取不到（分类行缺失 / 已过保留期 / `classification` 为 null / 位置格式输入） | — | `none`：全部 `context.*` 叶子按 `level: unknown` 打码 |
+
+推导器（新类 `InputClassifier`，与 `RuleMetadata` 同在 `replay` 模块的 `io.aster.policy.governance` 包）：
+
+- 输入：`CoreModel.Module`、被执行函数名，以及路径形状。guard 形状用第一个参数的记录类型，字段名按 `GuardInputRefPaths` 的常量键表映射成请求路径（`context` 字段 → `context.*`）。证据形状对**每个**已匹配到命名键的参数取 `context.<匹配键>` 前缀。未匹配到键的参数不产生标记，它下面的值按 `unknown` 处理。
+- 输出：`List<PiiMark>`，`PiiMark(path, level, category, source)`，`level ∈ {L1, L2, L3}`；`source` 本期恒为 `"ir"`（为 D3 的预留扩展保留取值 `"catalog"`）。路径语法与 §11 D2 相同（记录字段 `.`，`List of 记录` `[]`，`List of 标量` 为叶子）。
+- 无标记的已声明字段也要记录，否则「已声明无 PII」和「未声明」无法区分。所以推导器同时输出**声明树**：每个已声明叶子路径，加上它的 `PiiMark`（可无）。存储形状为 `{ "declared": ["context.applicant.amount", …], "marks": [PiiMark…] }`，`declared ⊇ marks.path`。
+- 上限：声明叶子 ≤ 512 条，类型展开深度 ≤ 8（与 `MAX_CONTEXT_DEPTH` 一致）；超出任一上限整体返回 null（→ `none`，fail-closed）。递归类型按引擎类型嵌套上限 64 已在编译期拒绝；推导器另以「已展开类型名集合」防环。
+- `/evaluate-json`（调用方提交 IR）同样推导。`@pii` 注解在三条路径里都是作者声明的，作者本就掌控源码，所以不比 `/evaluate-source` 更不可信；`RuleMetadata.inputRefs` 不信 IR（ADR 0046 §11.6 第 19 条），是因为它可以从规则体重算，而类型注解没有第二来源。
+
+**D3 `catalog.piiMark` 再定义（落实 ADR 0046 §11.7 第 2 条）。**
+
+- **结论：撤销 `catalog.piiMark` 作为签名事实来源函数。** PII 分类描述的是输入 schema，不是输入值。按 ADR 0040 §11 D3，事实是「签发方对 `action` 中某个**值**的担保」，`claims` 路径必须在 `action` 里存在且值深度相等；分类没有这样的值可比，原写法因此必然 `claim_path_absent`。分类的权威来源是策略类型注解，而做评估的 aster-api 自己就能从它实际执行的 IR 推导（D2）。让 cloud 签一份验签方在同一次评估中自己算得出的东西，不增加任何来源保证，还会让标记依赖租户是否启用了 cloud 签发方（ADR 0046 §11.7 第 4 条）——没启用就全部 `unknown`。ADR 0046 §11 D5 第一期来源函数清单维持三项（`hmac.userId`、`idp.businessRoles`、`fixture.creditPilot`），`catalog.piiMark` 从「推迟」改为「撤销」；cloud `src/config/fact-sources.ts` 的注释同步改写。
+- **预留扩展（本期不实施，写清以便将来实现）。** 将来出现真实的外部数据目录（如企业数据目录对字段的分级）时，用签名事实信封的新可选成员承载：`classifications: { "<schema 路径>": { "level": "L1|L2|L3", "category": "<≤32 字符>" } }`。它进签名载荷（JCS 规范化，与 `claims` 并列）；路径只允许 `context.` 前缀，按 D2 路径语法写，**不**与 `action` 的值比对；≤ 64 条；`sources` 的键集合等于 `claims` 叶子路径 ∪ `classifications` 路径。与 D4 打码的合并规则：**只升不降**。对同一路径取 IR 标记与目录标记中较高的级别，`source` 记 `catalog`；已声明为无 PII 的字段，目录标为 PII → 打码，视图标 `markConflict: true`。`unknown` 不会因为目录说「无 PII」而变得可见——要让字段可见只有一条路：策略作者把它声明进记录类型。启用条件：有数据源和消费方同时存在，另走一次 ADR 修订。
+- 备选（非默认，见 §12.5）：cloud 用 aster-lang-ts 对已保存版本的编译结果签 `classifications`，做双引擎标记交叉核对。不推荐：两引擎类型检查的一致性已由 aster-lang-test parity 锁定，再签一遍是重复保证。
+
+**D4 打码规则（§11 D2 的表格、递归与路径规则、正反例全部沿用，只改以下几处）。**
+
+- 「已声明无 `@pii`」以 D2 的声明树判定；`marks_source = none` 时声明树为空，所有 `context.*` 叶子为 `unknown`。
+- 第二层 `PIIRedactor` 的代价说明改为：规范 UUID 形态的值已整串豁免（F10），残余误伤只发生在非 UUID 的长数字串上，只影响展示，不影响哈希核对。
+- `piiMarks` 在视图里的每项增 `source`（本期恒 `ir`）。
+
+**D5 解除原值与留痕（取代 §11 D2「解除打码」段与 `input_revealed_at`）。**
+
+- 端点：`POST /api/v1/guard/approvals/{id}/input/reveal`（空体），返回 `revealed: true` 的视图（D8）。谁能解除：沿用 §11——审批 `PENDING`，且审批人**已验证**业务角色包含 `required_role`；ESCALATE 与无角色的 owner/admin 不可解除；只还原已声明的 `@pii` 字段，`unknown` 任何人都看不到。不满足 → 403 `reveal_not_permitted`（附 `verifiedRoles`）；非 PENDING → 409 `approval_not_pending`；`status ≠ available` → 409 `input_not_available`。
+- **按人留痕。** 新表 `guard_input_reveals`：`approval_id UUID`、`revealed_by VARCHAR(255)`、`tenant_id`、`revealed_at`、`audit_id BIGINT`，主键 `(approval_id, revealed_by)`。每人首次解除时，先**同步**追加新事件类型 `ACTION_GUARD_INPUT_REVEAL`：`performed_by` = 解除人，`decision_id` 列投影；metadata 为 `decisionId, approvalId, revealedFields`（已还原叶子数）、`maskRules, inputSnapshotHash`（该人解除后视图的哈希）。追加成功后再插行；追加失败 → 503 `receipt_unavailable`，**不返回原值**（没有留痕就不解除）。同一人再次解除不追加事件，直接返回解除视图。**并发串行化**：整个解除在一个事务内先对审批行 `SELECT … FOR UPDATE`（与审批 / 过期迁移同一把行锁），在锁内查解除行、追加事件、插行，所以同一人并发首次解除恰好一条事件；`guard_input_reveals.audit_id` 即该事件，`reveals[]` 与表一一对应。代价是解除与该审批的审批 / 过期互斥，持锁时长为一次同步入链。
+- `GET …/input` 永远返回打码视图，视图带 `revealedByMe: boolean`。原值只经 POST 返回，任何读路径都不产生副作用。
+- 解除记录不随输入行清理（D7）：它不含 PII，只含审批人 id，是访问审计的一部分。
+
+**D6 快照哈希与审批记录（修订 §11 D3）。**
+
+- 视图哈希配方不变（`sha256-sorted-json/v1`，服务端自算自比），被哈希的视图体扩为：`{ decisionId, contextHash, input, piiMarks, maskRules: "v1", revealed, marksSource, inputBinding, inputSources }`。`inputSources` 取决策行的 `verified / factIssuers / factSources`，**不含**随时间变化的 `factsStale`。
+- approve / reject 时，服务端对**该审批人**计算 `H_masked`，该人有解除记录时再计算 `H_revealed`。请求体带的 `inputSnapshotHash` 等于其中之一 → `input_snapshot_matched = true`，`input_revealed` = 是否等于 `H_revealed`；两者都不等 → 409 `input_snapshot_mismatch`；未带（旧 SDK）→ 记 `H_masked`、`matched = false`、`input_revealed` = 该人是否有解除记录。别人的解除不影响本人（修正 F4）。
+- `guard_approvals` 新列：`input_snapshot_hash VARCHAR(64)`、`input_snapshot_matched BOOLEAN`、`input_revealed BOOLEAN`、`input_status VARCHAR(16)`（不建 §11 的 `input_revealed_at`）。
+- 审批事件 metadata 键：`inputSnapshotHash`（加入 `AuditChainAppender.IDENTITY_METADATA_KEYS`）、`inputSnapshotMatched`、`inputRevealed`、`inputStatus ∈ {available, unavailable, purged, integrity_failed, too_large}`；`status ≠ available` 时不写哈希键。过期事件（SYSTEM）不写这四个键。键名统一为 `inputSnapshotMatched`，ADR 0041 §11 D3 的 `inputSnapshotAttested` 是笔误（F7）。
+- §11 D3 第 4 项「证明边界」原文保留：`matched = true` 只证明提交审批的客户端持有与当前视图一致的哈希，不证明人读过。
+
+**D7 尺寸、存储与保留。**
+
+| 项 | 上限 / 规则 |
+|---|---|
+| 存储的 `action_json` | 沿用请求校验：`context` ≤ 64 KB、深度 ≤ 8、文本字段 ≤ 255、roles ≤ 16（`GuardActionMapper`）；不另设存储上限 |
+| 视图响应 | 渲染后 UTF-8 ≤ 1 MiB，超出 → `status: too_large`，不给 `input`，仍可审批（同 `unavailable`）；打码对象会让体积膨胀，64 KB 输入在极端情况下（大量极短叶子）可超过 1 MiB |
+| 声明树 | ≤ 512 叶子（D2），超出 → `none` |
+| 列表项 | 不内嵌输入（§11 D4，一页 200 项） |
+| 保留：`guard_decision_inputs` | 审批终态后 `P90D`（§11 D1，`ASTER_GUARD_INPUT_RETENTION`），PENDING 不删；删除后视图 `purged` |
+| 保留：`guard_evaluation_classifications` | `P7D`（D1） |
+| 保留：`guard_input_reveals` | 不清理（D5） |
+| 清理调度 | 与 `GuardApprovalExpiryScheduler` 同构的新调度器，每轮每表至多删 1000 行，`SKIP` 并发 |
+
+**D8 API 形状（取代 §11 D4 中 aster-api 各行）。**
+
+| 端点 / 产物 | 形状 |
+|---|---|
+| `GET /api/v1/guard/approvals/{id}/input` | MEMBER；HMAC 或 Bearer（§4.2 前缀已覆盖）。200 `GuardApprovalInputView`（字母序、null 不写）：`approvalId, contextHash, decisionId, factsStale?, input?, inputBinding, inputSnapshotHash?, inputSources?, marksSource, maskRules, piiMarks?, revealed, revealedByMe, status`。`status ≠ available` 时无 `input / piiMarks / inputSnapshotHash`；修订前的决策（无输入行）返回 200 `status: unavailable`。非法 UUID 与跨租户一律 404 `approval_not_found`（与审批端点同体）。以对象实体返回（F10） |
+| `POST /api/v1/guard/approvals/{id}/input/reveal` | 同上视图，`revealed: true`；错误码见 D5 |
+| `POST …/approve`、`…/reject` 请求体 | `{ comment?, inputSnapshotHash? }`；新增 409 `input_snapshot_mismatch` |
+| `GuardApprovalView`（列表项） | 增 `inputStatus`、`inputSnapshotHash`、`inputSnapshotMatched`、`inputRevealed`（后三者仅已决且有记录时） |
+| `POST /guard/decisions/from-evidence` | 新增 409 `evidence_input_mismatch`（D1） |
+| `GET /api/v1/audit/receipts?decisionIds=` | `approvals[]` 每项增四键（取自审批事件 metadata）；新增 `reveals[]`：`{ auditId, currentHash, decisionId, approvalId, performedBy, timestamp }`（空不输出） |
+| 契约 | `public-api-contract.golden` 登记两个新端点与新字段 |
+| aster-guard SDK | `getApprovalInput(id)`、`revealApprovalInput(id)`；`approve / reject` 选项增 `inputSnapshotHash`；`GuardApproval` 增四个可选字段 |
+
+**D9 证据包 v6（一次升版：R59 + ADR 0041 §11 D4 + ADR 0041 §12 D3）。**
+
+- `Reviewer` 增 `inputSnapshotHash: string | null`、`inputSnapshotMatched: boolean | null`、`inputRevealed: boolean | null`、`inputStatus: string | null`。`guard-approval` 来源取收据接口 `approvals[]` 的值，其余来源为 null。
+- `EvidenceEntry` 增：
+  - `inputSource: 'declared' | 'mixed' | 'legacy'`（ADR 0041 §11 D4）；
+  - `guardInputSources: { verified: string[]; factIssuers: string[]; factSources: string[]; unverifiedFields?: string[]; truncated?: boolean } | null`：取决策收据 metadata 的 `verifiedFields / factIssuers / factSources / unverifiedFields / inputSourcesTruncated`。`factSources` 按链上原样保留 `<path>=<sourceId>` 字符串并按字典序排列，不改写，审计方可逐字核对。这一项落实 ADR 0046 §11.7 第 3 条；
+  - `execution`（ADR 0041 §12 D3 原形状）。
+- 以上字段全部进 `bundleHash`。manifest 增 `inputSourceTally`、`verifiedInputsUsed`、`executionTally`（ADR 0041 原定义），以及 `inputSnapshotTally: { matched, unmatched, unavailable }`（按 guard-approval 复核者计数）；manifest 不进 `bundleHash`。`notes.verification` 改写为 v6 配方。
+- `schemaVersion: '6'`；v5 类型冻结只读，`stored.ts` 认 1–6，已存包按原样下载（与 v1–v4 同法）。
+- **Article 14。** v6 本身不改任何条款判定。cloud `SOURCES` 新增证据来源名 `reviewers.guard.inputSnapshot`：存在 `source = guard-approval`、`roleVerified`、`inputSnapshotMatched === true` 且 `inputStatus === 'available'` 的复核者。注册表未引用该名之前，它不影响任何判定。14(4)(a) 改为 `evidenced: ["reviewers.guard.inputSnapshot"]`、`partial: ["whatIf.comparable"]`，随下一次注册表升版（1.4.0，locales 真相源 + core / ts / cloud 副本，ADR 0053 列车）生效，不阻塞 #460；cloud 必须先认得这个来源名，注册表才能引用它（F6）。14(4)(b) 仍恒 `none`。
+- 不进包：明文或打码后的输入、`reveals[]`。证据包只搬运哈希与结论（`types.ts` 类注释的既有原则）；解除记录在链上，经收据接口可查。
+
+**D10 cloud 收件箱（取代 §11 D4 中 cloud 收件箱一行）。**
+
+- 每行可展开「决策输入」面板，展开时才请求 `GET /api/approvals/[tenantId]/[approvalId]/input`（以当前用户身份转发，v3 签名，8 s 超时）。
+- 渲染：按树展示，结构保留。已声明字段显示明文。`$pii` 显示为徽标（级别 + 类别），`unknown` 显示为「未声明类型，不可见」徽标。每个叶子旁显示来源徽标：路径 ∈ `inputSources.verified` 为「已验证」，悬停显示对应的 `factSources` 条目，其余为「自报」。
+- 横幅：`inputBinding = unbound` →「输入未与评估记录核对」；`marksSource = none` →「策略未声明输入类型，业务字段全部隐藏」；`factsStale`；`status` 为 `unavailable / purged / integrity_failed / too_large` 时显示对应文案。
+- 「显示原值」按钮出现条件：`canAct && requiredRole != null && status == available` 且存在已声明的 `@pii` 字段。点击后先弹确认框（「此次查看会以你的身份记入审计链」），确认后调用 `POST …/input/reveal`。
+- 批准 / 拒绝：`status == available` 时，面板加载出视图之前按钮禁用，提交时带上当前展示视图的 `inputSnapshotHash`；`status ≠ available` 时直接可用、不带哈希。409 `input_snapshot_mismatch` →「输入视图已变化，请刷新后重新审阅」；403 `reveal_not_permitted`、409 `input_not_available`、503 `receipt_unavailable` 各有文案。对 api 的 404 / 未知错误（旧 api）一律按「输入不可用」显示，审批照常可用。
+- 文案四语（en / zh / de / hi）。
+
+**D11 兼容、发布与验收边界。**
+
+- 纯增量：两张新表、两张表的新列、两个新端点、一种新事件类型、若干可选字段，既有响应形状不变。迁移取合并时的下一个可用号（`V6.37.0` 起，#464 / #465 若先合则顺延），`migration-checksums.golden` 追加。
+- 发布顺序：aster-api → aster-guard SDK → aster-cloud，反序也不坏：旧 cloud 不读新字段；新 cloud 遇到旧 api 的 404 显示「不可用」；旧 cloud 的 from-evidence 不带新东西，只会多出 409 `evidence_input_mismatch`——只有 cloud 传入的 `context` 与评估时不同才会触发，按现有映射（`toGuardAction` 的 `context: input` 与 evaluate-source 的输入同一对象）不应发生。计划 Task A4 以测试钉住，并在上线后统计该错误码。
+- 注册表 1.4.0（14(4)(a)）在 #460 之后，随下一次列车。
+- **验收边界（F9）。** 「无权限角色看不到 PII 原值」本节只对审批面兑现：aster-api 视图、aster-guard SDK、cloud 收件箱。cloud 执行日志页对策略可见者明文展示 `Execution.input`，属于 cloud 侧的数据展示策略，另开 issue（计划「后续」），不在 #460 内修。
+- 回滚：cloud 先回滚（隐藏面板）、api 后回滚（删端点与写入路径）；新表、新列、新事件留存无害。
+
+### 12.3 被本节取代的 §11 条款
+
+| §11 原文 | 处置 |
+|---|---|
+| D1 `guard_decision_inputs.pii_marks` 列 | 改名 `classification`，增 `marks_source / input_binding` 两列（D1） |
+| D2「标记来源：决策时读该版本 `core_json`…」 | 由 D2 取代（按路径取来源，增 `marks_source`、声明树） |
+| D2「解除打码」段中 `reveal=true` 与 `guard_approvals.input_revealed_at` | 由 D5 取代（POST、按人留痕、入链） |
+| D2 第二层正则的「约 1/800 UUID 误伤」 | 由 D4 更正 |
+| D3 第 1、2 项（按 `input_revealed_at` 重算、三列） | 由 D6 取代 |
+| D4 表中 aster-api 端点、列表项、approve 体、收据接口、SDK、cloud 收件箱、证据包各行 | 由 D8、D9、D10 取代 |
+| D4 证据包行「存在 `inputSnapshotHash` 非空…→ 14(4)(a) evidenced」 | 由 D9 取代（`matched === true`，随注册表 1.4.0） |
+| §11.4 ②「纯 aster-api 改动，不需要引擎发版列车」 | 对 #460 本体仍成立；14(4)(a) 改判需要列车（D9） |
+| §11.5 表「解除原值的角色」可改项 | 保留；D5 的按人留痕对扩展角色集合同样适用 |
+
+### 12.4 验收（在 §11.3 基础上增补或替换）
+
+1. `POST /decisions`（已部署版本带 `@pii` 记录）→ 视图 `marksSource: version`、`inputBinding: direct`，声明字段明文、`@pii` 字段打码、未声明键 `unknown`。
+2. cloud 执行（evaluate-source → from-evidence）→ 视图 `marksSource: evaluation`、`inputBinding: evaluated`；删除分类行后再登记新证据 → `unbound` + `none`，全部 `context.*` 为 `unknown`。
+3. from-evidence 的 `context` 与评估时不同 → 409 `evidence_input_mismatch`，不建决策；用同一 correlationId 带正确 `context` 重试成功。
+4. 持角色者 A 解除 → 链上一条 `ACTION_GUARD_INPUT_REVEAL`（performed_by = A），再次解除不新增；B 未解除就审批 → 事件 `inputRevealed: false`；无角色成员解除 → 403 `reveal_not_permitted`；审批链写入失败时解除 → 503 且响应不含原值。
+5. 带 `H_masked` 或 `H_revealed` 审批 → `matched = true`，`inputRevealed` 与所带哈希一致；带错误哈希 → 409；不带 → `matched = false`。
+6. 解除视图经 HTTP 返回时原值未被 `PIIResponseFilter` 改写（`aster.pii.enforce=true`）。
+7. 收据接口 `approvals[]` 四键与 `reveals[]`；cloud 导出 `schemaVersion '6'`：reviewer 四字段、`guardInputSources.factSources` 与链上收据逐字一致、`execution`、manifest 四个 tally；v5 包仍可下载。
+8. 收件箱 Playwright：无角色成员无「显示原值」；面板未加载时批准按钮禁用；DPO 确认解除后批准，事件 `inputRevealed: true`。
+9. 保留：输入行终态 + `P90D` 后视图 `purged`；分类行 `P7D` 后删除。
+
+### 12.5 已选默认（定稿即生效）与可改项
+
+| 项 | 已选默认 | 可改为 | 影响 |
+|---|---|---|---|
+| `catalog.piiMark` | 撤销；标记由 aster-api 从执行 IR 推导；`classifications` 只作为预留格式 | 备选：cloud 签 ts 编译结果做双引擎交叉核对 | 需 FactVerifier 载荷扩展 + cloud 来源函数；收益仅为 parity 的重复保证 |
+| from-evidence 输入不一致 | 409 `evidence_input_mismatch`，不消耗证据 | 照常建决策，只标 `unbound` | 更宽松；审批人可能看到非评估输入 |
+| 分类行保留期 | `P7D` | 任意 ISO 时长 | 只影响晚于保留期的「重新登记」降级为 `none` |
+| 解除留痕粒度 | 每人每审批首次一条事件 | 每次解除一条 | 链上事件数随查看次数增长 |
+| 14(4)(a) 改判 | 随注册表 1.4.0（下一次列车），条件 `matched === true` | 不改判（仍 partial） | 不改则注册表无需升版 |
+| ESCALATE 解除 | 不可解除（§11） | 允许任一成员解除 | 扩大原值可见范围 |
+| 执行日志页明文输入（F9） | 另开 issue，不在 #460 | 并入 #460，日志页用同一打码 | cloud 需复刻打码规则或改调 api 视图 |
+| 视图上限 | 1 MiB → `too_large` | 更大 / 更小 | 仅影响极端输入的展示 |
+
+定稿时回写：ADR 0040 §3.3 / §5.2 脚注（§11 末段已约定）；ADR 0041 §11 D3 键名 `inputSnapshotAttested` → `inputSnapshotMatched`，§11 D4 / §12 D3 注明 v6 一次升版；ADR 0046 §11.7 第 2 条注明「撤销（ADR 0042 §12 D3）」。
