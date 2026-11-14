@@ -281,6 +281,19 @@ public class GuardReceiptBuilder {
     return receiptEvent(EventType.GUARD_ORPHAN_ACKNOWLEDGED, tenantId, performedBy, true, m, APPROVAL_SHRINK_ORDER);
   }
 
+  /**
+   * cloud 策略部署 / 撤回事件（ADR 0054 §11 D1）：{@code type} 为 {@code POLICY_DEPLOYED} 或 {@code POLICY_WITHDRAWN}，
+   * metadata 由部署服务给出（cloudPolicyId、cloudVersionId、generation、policyVersionId、地址），字段均为短文本或数字。
+   */
+  public AuditEvent policyDeploymentEvent(EventType type, String tenantId, String performedBy, Map<String, Object> m) {
+    if (type != EventType.POLICY_DEPLOYED && type != EventType.POLICY_WITHDRAWN) {
+      throw new IllegalArgumentException("不是部署事件类型: " + type);
+    }
+    Map<String, Object> fitted = new LinkedHashMap<>();
+    m.forEach((k, v) -> fitted.put(k, v instanceof String text ? clip(text, MAX_TEXT) : v));
+    return receiptEvent(type, tenantId, performedBy, true, fitted, List.of());
+  }
+
   private AuditEvent receiptEvent(EventType type, String tenantId, String performedBy, boolean success,
                                   Map<String, Object> m, List<String> shrinkOrder) {
     Objects.requireNonNull(tenantId, "tenantId");

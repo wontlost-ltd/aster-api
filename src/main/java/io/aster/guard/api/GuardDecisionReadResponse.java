@@ -12,6 +12,8 @@ import com.fasterxml.jackson.annotation.JsonUnwrapped;
  * <ul>
  *   <li>{@code actionHash} 与 {@code consumedBy}：仅收据行已消耗时写（只有 ALLOW 决策才有收据行）；</li>
  *   <li>{@code result}：仅已结果回写时写；缺省即「未写 result」，工具侧核对 consume 票据时据此拒绝重放。</li>
+ *   <li>{@code policyModule / policyFunction}：决策评估的策略地址（ADR 0054 §11 D12）；收据的 {@code actionHash}
+ *       不含地址，工具侧据此核对「这次放行来自我期望的策略」。</li>
  * </ul>
  *
  * @param decision 存储的决策响应（字段平铺到顶层，与旧响应完全相同）
@@ -22,11 +24,24 @@ public record GuardDecisionReadResponse(
     String actionHash,
     ConsumedBy consumedBy,
     @JsonUnwrapped GuardDecisionResponse decision,
+    String policyFunction,
+    String policyModule,
     ResultView result) {
+
+  /** 执行状态与决策，不带策略地址（由回读端点另行附上，见 {@link #withPolicy}）。 */
+  public GuardDecisionReadResponse(String actionHash, ConsumedBy consumedBy, GuardDecisionResponse decision,
+                                   ResultView result) {
+    this(actionHash, consumedBy, decision, null, null, result);
+  }
 
   /** 只有决策本身、没有执行状态（无收据行或未消耗）。 */
   public static GuardDecisionReadResponse of(GuardDecisionResponse decision) {
     return new GuardDecisionReadResponse(null, null, decision, null);
+  }
+
+  /** 附上决策评估的策略地址。 */
+  public GuardDecisionReadResponse withPolicy(String module, String function) {
+    return new GuardDecisionReadResponse(actionHash, consumedBy, decision, function, module, result);
   }
 
   /** 权威消耗者（{@code guard_receipts} 行）：自报的关联字段与加锁后的消耗时刻（ISO-8601）。 */

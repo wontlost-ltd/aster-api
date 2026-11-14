@@ -162,7 +162,7 @@ public class ResolverMigrationService {
             update(INTEGRITY_SQL, id).setParameter("error", INTEGRITY_ERROR).executeUpdate();
             return new Migrated(new RowResult(id, RowResult.Status.FAILED, INTEGRITY_ERROR), null);
         }
-        CompilationResult compiled = compiler.compile(v.content, v.locale, v.aliasSet);
+        CompilationResult compiled = compiler.compile(v.content, v.locale, v.aliasSet, v.vocabularyScopes(), false);
         if (!compiled.isSuccess() && !carriesSourceDiagnostics(compiled)) {
             // 没有源码诊断的失败是编译器内部异常（基础设施问题），不是名称解析失败：不归档、不改状态，留待重跑
             String error = truncate(String.join("; ", compiled.getErrors()));

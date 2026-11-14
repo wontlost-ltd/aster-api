@@ -1,0 +1,6 @@
+Module guard.deploy.ra16fdcfc.
+
+Define Fahrer has alter as Int.
+
+Rule decide given driver as Fahrer, produce Int:
+  Return driver.alter.

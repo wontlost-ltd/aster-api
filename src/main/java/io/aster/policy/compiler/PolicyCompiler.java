@@ -234,7 +234,7 @@ public class PolicyCompiler {
         if (version == null) {
             return CompilationResult.failure("策略版本不能为空");
         }
-        return compile(version.content, version.locale, version.aliasSet);
+        return compile(version.content, version.locale, version.aliasSet, version.vocabularyScopes(), false);
     }
 
     static CompilationResult.Diagnostic mapTypecheckDiagnostic(Diagnostic diagnostic, boolean warnOnly) {
@@ -343,7 +343,8 @@ public class PolicyCompiler {
         }
         LOG.infof("动态编译 CNL 源代码: versionId=%d, locale=%s, hasAliases=%b",
             policyVersionId, version.locale, version.aliasSet != null);
-        return compileSource(version.content, version.locale, version.aliasSet, null, false, policyVersionId);
+        return compileSource(version.content, version.locale, version.aliasSet, version.vocabularyScopes(), false,
+            policyVersionId);
     }
 
     /** 已记录过源码错误的版本 id 上限，超出后淘汰最旧项。失败结果虽按版本缓存，但缓存淘汰或进程重启后会重新编译，故仍需去重。 */

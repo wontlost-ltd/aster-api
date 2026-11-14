@@ -32,5 +32,9 @@ public enum EventType {
 
     // Cedar 导出（ADR 0047 §6）：成功导出同步入链后才返回
     POLICY_EXPORTED,            // 策略导出为 Cedar（源码、策略文本与 schema 各自哈希）
-    POLICY_REVALIDATION         // 重验生命周期，具体动作记录在 metadata.action
+    POLICY_REVALIDATION,        // 重验生命周期，具体动作记录在 metadata.action
+
+    // cloud 策略部署（ADR 0054 §11 D1）：部署 / 撤回与版本激活同一事务入链
+    POLICY_DEPLOYED,            // cloud 默认版本部署为 aster-api 活跃版本
+    POLICY_WITHDRAWN            // cloud 策略撤回，该地址不再有活跃版本
 }
