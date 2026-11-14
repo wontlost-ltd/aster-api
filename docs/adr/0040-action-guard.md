@@ -204,7 +204,7 @@ HostAccess.newBuilder(HostAccess.EXPLICIT)
 | `tenant_id` | 租户 |
 | `idempotency_key` | 可空；`(tenant_id, idempotency_key)` 部分唯一索引 |
 | `policy_module`, `policy_function`, `policy_version_id`, `source_hash` | 被评估的策略与版本 |
-| `principal_id`, `action_name`, `resource_type`, `resource_id`, `context_hash` | Action 摘要（不存明文 context） |
+| `principal_id`, `action_name`, `resource_type`, `resource_id`, `context_hash` | Action 摘要（不存明文 context¹） |
 | `outcome`, `reason`, `required_role`, `reason_code`, `rule_id`, `controls` JSONB | 规则结论 |
 | `receipt_audit_id`, `receipt_hash` | 决策事件在审计链中的行 id 与哈希 |
 | `response_json` JSONB | **当前**响应体：落库时写入决策响应；审批迁移（APPROVED / REJECTED / EXPIRED）时，与审批行在同一事务内改写为重算后的响应（§4.2）。幂等重放与 `GET` 都从它读取 |
@@ -216,6 +216,8 @@ HostAccess.newBuilder(HostAccess.EXPLICIT)
 索引：`guard_decisions_idem_uq`（幂等查重，§3.1）；`guard_decisions_tenant_created_ix (tenant_id, created_at DESC)` 目前没有查询使用，预期消费者是未来的租户决策列表端点（按创建时间倒序分页）。该端点上线前它只增加写入开销；若最终不做列表端点，在下次改动本表的迁移中删除。
 
 `V6.27.0` 迁移 SQL 里写着 `response_json` 存「首次响应体（幂等重放）」，这句注释已过时，以本节为准。已发布的迁移受 checksum 锁定，不再修改。
+
+¹ 脚注（2026-11-14，ADR 0042 §11 / §12 定稿）：准确表述为「决策行与审计链不存明文 context；明文只存于独立、限期、按审批可达的 `guard_decision_inputs`（ADR 0042 §11 / §12）」。该表只为建了审批行的 `REQUIRE_APPROVAL / ESCALATE` 决策写入，审批终态后按 `ASTER_GUARD_INPUT_RETENTION`（缺省 `P90D`）清理。
 
 ### 3.4 `GET /api/v1/guard/decisions/{id}`
 
@@ -334,13 +336,15 @@ approve / reject 的事务顺序（`GuardApprovalService` + `GuardDecisionJpaSto
 | `performed_by` | API key 解析出的 userId（截到列宽 100） |
 | `metadata` | `decisionId, outcome, effectiveOutcome, reasonCode, reason, ruleId, controls, principalId, principalType, principalRoles, actionName, resourceType, resourceId, contextHash, agentModel, policyVersionId, sourceHash, approvalId, idempotencyKey`；null 与空列表不写；controls 至多 16 条、每条至多 64 字符；`principalRoles` 是 List of Text，至多 16 项、每项至多 255 字符 |
 
-`contextHash` 的算法记为 `sha256-sorted-json/v1`：`context` 用 Jackson 序列化，开启 `ORDER_MAP_ENTRIES_BY_KEYS`（键排序），再取 SHA-256 hex；null 视同 `{}`。摘要与键的写入顺序无关。**不用** `CanonicalJson`：它对非整数数字要求类型上下文，而 Action context 是自由 Map。**不存明文 context**。
+`contextHash` 的算法记为 `sha256-sorted-json/v1`：`context` 用 Jackson 序列化，开启 `ORDER_MAP_ENTRIES_BY_KEYS`（键排序），再取 SHA-256 hex；null 视同 `{}`。摘要与键的写入顺序无关。**不用** `CanonicalJson`：它对非整数数字要求类型上下文，而 Action context 是自由 Map。**不存明文 context**²。
 
 metadata 预算：追加器在 metadata 超过 4 KB 时会截断成非法 JSON，所以决策事件在构造后强制 ≤ 3800 字符，为脱敏膨胀留出余量。测量口径与追加器一致：取「原样序列化」与「String 值经 PII 脱敏后再序列化」两者中较长的一个（脱敏可能变长，如 `a@b.cc` → `***@***.***`；`"` 与 `\` 转义后长度翻倍）。脱敏的豁免判定与追加器共用同一个静态方法 `AuditChainAppender.isRedactionExempt`，测量不会与实际写入漂移。超出时按固定顺序缩短：`reason → principalRoles → agentModel → principalType → resourceType → resourceId → actionName → principalId`，最后才动「谁对什么做了什么」。文本字段每轮缩到一半（不切开代理对）；`principalRoles` 每轮删掉最后一项，保留下来的项不截断。直到达标或该字段为空，再处理下一个。自由文本全部清空仍超限时，最后删除 `controls`。身份与结构键（`decisionId`、`approvalId`、`contextHash`、`outcome`、`effectiveOutcome`、`reasonCode`、`ruleId`、`policyVersionId`、`sourceHash`、`idempotencyKey`）永不改动。`reason` 被缩短时，`audit_logs.reason` 随之变短；决策行的 `reason` 列不受影响。追加器只对顶层 String 值做 PII 脱敏，`principalRoles` 与 `controls` 的列表元素原样入链。但身份键（`decisionId`、`approvalId`、`idempotencyKey`、`decisionReceiptHash`、`contextHash`、`sourceHash`）的值，以及任何整串为规范 UUID 形态（8-4-4-4-12 十六进制）的顶层 String 值，豁免脱敏。原因：`PIIRedactor.CREDIT_CARD_PATTERN` 会把含「4 组 4 位数字」片段的 UUID 改写为 `****-****-****-****-…`，随机 v4 UUID 约 1/800 命中，被改写的收据就再也对不上它指向的决策行与审批行。这与 `tenantId` 不脱敏是同一类问题（`AuditIdentifierRedactionTest`）。
 
 写入顺序：决策收据在决策行落库**之前**追加，所以没有收据就不会有放行。代价是：如果落库失败，或在幂等并发中落败（§3.1），链上会留下一条收据事件，其 `decisionId` / `approvalId` 没有对应的行。链本身仍然有效；这类孤儿事件与进程在追加后、落库前崩溃产生的事件同类，审计时以表中存在的行为准。
 
 审批事件 metadata：`decisionId, approvalId, outcome(APPROVED/REJECTED/EXPIRED), decidedBy, requiredRole, comment, decisionReceiptHash`，让第二条事件指回第一条的哈希；comment 截到 1000。审批事件同样按 3800 预算测量与缩短，`comment` 是唯一可缩短的键，其余键永不改动。按现有列宽（comment ≤ 1000，decidedBy / requiredRole ≤ 255），最坏转义约 3.3 KB，实际不会触发；走预算是为了日后列宽放宽时不会退回非法 JSON 截断。过期事件的 performedBy 为 `SYSTEM`；`success` 只在 APPROVED 时为 true。审批事件同样先于加锁迁移写入（§4.2）：同一审批可能对应多条事件，以 `guard_approvals.receipt_audit_id` 指向的那条为准。
+
+² 脚注（2026-11-14，ADR 0042 §11 / §12 定稿）：准确表述为「决策行与审计链不存明文 context；明文只存于独立、限期、按审批可达的 `guard_decision_inputs`（ADR 0042 §11 / §12）」。审计链只记录输入视图的快照哈希（`inputSnapshotHash`，ADR 0042 §12 D6），不记录输入值。
 
 ### 5.3 策略版本信息
 

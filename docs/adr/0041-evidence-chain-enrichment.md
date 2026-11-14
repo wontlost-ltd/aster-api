@@ -267,13 +267,14 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 
 `POLICY_EVALUATION` 另有两键，只在模块声明档案时写：`inputRefs`（List of Text；写事件时已映射为请求路径 `context.<键>.<path>`；映射后 ≤ 32 项且 JSON 数组 UTF-8 字节数 ≤ 512，超限整体写 `["*"]`；`[]` 照写；IR 没有 `inputRefs` 时不写）与 `verifiedInputsRequired`（Boolean，**仅供审计**：消费方一律按事件 `profile` 加当前注册表重算要求项，不读此键）。语义与上限见 ADR 0046 §11.6 第 4 条；无档案事件的 metadata 不变。
 
-**D3 收据查询接口**（§2.4）：`receipts[].metadata` 已原样透传，无需改；`approvals[]` 增 ADR 0042 §11 D3 的四个键（`inputSnapshotHash / inputSnapshotAttested / inputRevealed / inputStatus`）。
+**D3 收据查询接口**（§2.4）：`receipts[].metadata` 已原样透传，无需改；`approvals[]` 增 ADR 0042 §11 D3 的四个键（`inputSnapshotHash / inputSnapshotMatched / inputRevealed / inputStatus`；键名以 ADR 0042 §12 D6 为准，2026-11-14 更正）。
 
 **D4 证据包**（与 ADR 0042 §11 同一 `schemaVersion: '6'`，一次升版）：
 
 - entry 增 `inputSource: 'declared' | 'mixed' | 'legacy'`（取评估事件 `inputSource`；旧事件无键 → `legacy`）；对带 `guardDecisionId` 的条目增 `guardInputSources: { verified: string[], factIssuers: string[], unverifiedFields?: string[], truncated?: boolean } | null`（取决策收据 metadata；取不到 → null）。两者进 `bundleHash`。
 - manifest 增 `inputSourceTally: { declared, mixed, legacy }`、`verifiedInputsUsed: number`（`guardInputSources.verified` 非空的条目数）。manifest 不进 `bundleHash`（既有规则）。
 - 报告页在条目旁显示来源徽标；Article 14 对照（ADR 0044 §3.1）**不**因来源改变状态——输入来源对应的是 Art.15（准确性、稳健性与网络安全）而非 Art.14，留待控制注册表增加框架条款时再映射。
+- v6 一次升版，内容见 ADR 0042 §12 D9（2026-11-14 定稿；`guardInputSources` 另含 `factSources`）。
 
 **D5 兼容。** 新键全部可选；旧收据不变（链不可改）；旧 cloud 忽略新键；v1–v5 包按原样下载。`AuditChainAppender` 只脱敏顶层 String，新列表键元素原样入链（路径名不是 PII）。
 
@@ -288,7 +289,7 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 
 与 ADR 0040 §11.4 同：aster-api 先（收据键与查询接口）→ cloud（证据包 v6）。不需要引擎发版。
 
-补注（2026-11-13，ADR 0046 §11.7 第 2、3 条）：D4 的证据包 v6（含 `guardInputSources.factSources` 展示）与 ADR 0042 §11（#460）一次升版，不随 ADR 0046 §11.4 ⑥（X4）交付，也不是 registry 1.3.0 翻转的前置条件；X4 期间 `factSources` 只在链上决策收据中（D1），经 `GET /api/v1/audit/receipts` 可核验。签发端来源函数 `catalog.piiMark` 同样随 #460 再定义。
+补注（2026-11-13，ADR 0046 §11.7 第 2、3 条）：D4 的证据包 v6（含 `guardInputSources.factSources` 展示）与 ADR 0042 §11（#460）一次升版，不随 ADR 0046 §11.4 ⑥（X4）交付，也不是 registry 1.3.0 翻转的前置条件；X4 期间 `factSources` 只在链上决策收据中（D1），经 `GET /api/v1/audit/receipts` 可核验。签发端来源函数 `catalog.piiMark` 已随 #460 撤销（ADR 0042 §12 D3，2026-11-14 定稿）。
 
 ## 12. 2026-11 修订：执行收据的消耗与结果事件入链（R64）
 
@@ -319,7 +320,7 @@ C：迁移 0050 与枚举扩展测试；`parseApprovalFromResult` / `deriveExecu
 
 **D2 收据查询接口**（§2.4）：`decisionIds` 路径增 `consumes[]`（每个尝试事件一项，`{ auditId, currentHash, decisionId, authoritative: boolean, outcome: consumed | rejected:<code> | crashed-unknown, ... }`，`outcome` 由对应 OUTCOME 事件合入、缺失且 `authoritative` 为 `crashed-unknown`、缺失且非权威为 `unknown`）、`results[]`，每项加该事件 metadata 的同名键（形状与 `approvals[]` 同法：时间取行时间戳）。`correlationIds` 路径不变。空集合不输出。`authoritativeConsumeAuditId`（来自 `guard_receipts.consume_audit_id`）随 `receipts[]` 中对应的决策收据一并返回。
 
-**D3 证据包**：对带 `guardDecisionId` 的条目增 `execution: { consumed: boolean, executorId?: string, attemptId?: string, resultStatus?: 'executed' | 'failed' | 'aborted' | null, consumeAuditId?: number } | null`（取不到收据 → null；决策为 ALLOW 且 `consumed=false` 就是「未消耗的 ALLOW」）。进 `bundleHash`。manifest 增 `executionTally: { consumed, unconsumedAllow, executed, failed, aborted }`，不进 `bundleHash`。`schemaVersion`：与 ADR 0042 §11 / 本 ADR §11 的 `'6'` 同车次则并入 `'6'`，否则 `'7'`，一次升版。
+**D3 证据包**：对带 `guardDecisionId` 的条目增 `execution: { consumed: boolean, executorId?: string, attemptId?: string, resultStatus?: 'executed' | 'failed' | 'aborted' | null, consumeAuditId?: number } | null`（取不到收据 → null；决策为 ALLOW 且 `consumed=false` 就是「未消耗的 ALLOW」）。进 `bundleHash`。manifest 增 `executionTally: { consumed, unconsumedAllow, executed, failed, aborted }`，不进 `bundleHash`。`schemaVersion`：与 ADR 0042 §11 / 本 ADR §11 的 `'6'` 同车次则并入 `'6'`，否则 `'7'`，一次升版。v6 一次升版，内容见 ADR 0042 §12 D9（2026-11-14 定稿：`execution` 并入 `'6'`）。
 
 **D4 兼容**：新键全部可选；旧收据不变；旧 cloud 忽略新数组与新字段；v1–v5 包按原样下载。
 
