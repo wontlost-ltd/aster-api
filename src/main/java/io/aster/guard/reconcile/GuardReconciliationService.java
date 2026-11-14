@@ -46,6 +46,22 @@ public class GuardReconciliationService {
       + "UNION SELECT tenant_id FROM guard_orphan_actions WHERE status = 'OPEN' "
       + "ORDER BY 1";
 
+  /** 保留期清理每批删除的行数（{@code ctid IN (SELECT ctid … LIMIT n)}），循环到 0。 */
+  static final int PURGE_BATCH = 10_000;
+  static final String PURGE_SIDE_EFFECTS = "DELETE FROM guard_side_effects WHERE ctid IN (SELECT ctid "
+      + "FROM guard_side_effects WHERE reconciled_at < :cutoff LIMIT :batch)";
+  static final String PURGE_ORPHANS = "DELETE FROM guard_orphan_actions WHERE ctid IN (SELECT ctid "
+      + "FROM guard_orphan_actions WHERE status <> 'OPEN' AND COALESCE(resolved_at, detected_at) < :cutoff LIMIT :batch)";
+  static final String PURGE_RUNS = "DELETE FROM guard_reconciliation_runs WHERE ctid IN (SELECT ctid "
+      + "FROM guard_reconciliation_runs WHERE finished_at < :cutoff LIMIT :batch)";
+
+  /** 三项实际删除数。 */
+  public record PurgeResult(int sideEffects, int orphans, int runs) {
+    public boolean any() {
+      return sideEffects + orphans + runs > 0;
+    }
+  }
+
   /** 每租户一次对账的结果；{@code wire()} 是指标 {@code guard_reconciliation_runs_total{outcome}} 的取值。 */
   public enum TenantOutcome {
     OK, FAILED, SKIPPED_LOCKED, SKIPPED_RECENT;
@@ -78,6 +94,9 @@ public class GuardReconciliationService {
   @ConfigProperty(name = "aster.guard.reconciliation.min-interval") Duration minInterval;
   @ConfigProperty(name = "aster.guard.reconciliation.batch-limit") int batchLimit;
   @ConfigProperty(name = "aster.guard.reconciliation.allow-unconsumed-ttl") Duration allowUnconsumedTtl;
+  @ConfigProperty(name = "aster.guard.reconciliation.side-effect-retention") Duration sideEffectRetention;
+  @ConfigProperty(name = "aster.guard.reconciliation.orphan-retention") Duration orphanRetention;
+  @ConfigProperty(name = "aster.guard.reconciliation.run-retention") Duration runRetention;
 
   /** 枚举候选租户逐个对账；单租户失败不影响后续。循环跑完（含无租户、含跳过）即记最近成功时刻。 */
   public List<TenantRun> reconcileAll(Instant now) {
@@ -142,6 +161,29 @@ public class GuardReconciliationService {
     run.auditId = auditId;
     return new Attempt(new TenantRun(tenantId, TenantOutcome.OK, run.id, detected.size(), resolved, open, auditId),
         detected);
+  }
+
+  /**
+   * 保留期清理（计划 D9）：已对账的上报行（{@code reconciled_at} 早于 side-effect-retention；未对账的无论多旧都不删）、
+   * 非 OPEN 孤儿（解除或检出早于 orphan-retention；OPEN 永不删除）、run 行（早于 run-retention）。先删上报行：孤儿行的
+   * {@code side_effect_id} 随之置空，{@code detail} 已复制上报关键字段。每批一个独立事务，不与对账争锁。
+   */
+  public PurgeResult purgeExpired(Instant now) {
+    int sideEffects = purge(PURGE_SIDE_EFFECTS, now.minus(sideEffectRetention));
+    int orphans = purge(PURGE_ORPHANS, now.minus(orphanRetention));
+    int runs = purge(PURGE_RUNS, now.minus(runRetention));
+    return new PurgeResult(sideEffects, orphans, runs);
+  }
+
+  private int purge(String sql, Instant cutoff) {
+    int total = 0;
+    int n;
+    do {
+      n = QuarkusTransaction.requiringNew().call(() -> em.createNativeQuery(sql).setParameter("cutoff", cutoff)
+          .setParameter("batch", PURGE_BATCH).executeUpdate());
+      total += n;
+    } while (n >= PURGE_BATCH);
+    return total;
   }
 
   /** 先插 run 行取得 id（孤儿行的 first_run_id），计数为 0，末步回填。时刻取本轮逻辑时刻 {@code now}。 */

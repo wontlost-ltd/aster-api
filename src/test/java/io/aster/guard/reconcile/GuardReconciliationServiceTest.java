@@ -315,4 +315,70 @@ class GuardReconciliationServiceTest {
     assertThat(orphans(t)).filteredOn(o -> o.id == sideEffectOrphan).singleElement()
         .satisfies(o -> assertThat(o.status).isEqualTo("ACKNOWLEDGED"));
   }
+
+  /** 保留期（计划 D9）：OPEN 孤儿永不删除，未对账的上报无论多旧都不删；删上报后孤儿 side_effect_id 置空、detail 仍自描述。 */
+  @Test
+  void purgeRespectsRetentionAndKeepsOpen() {
+    String t = ReconcileFixture.tenant("svc-purge");
+    Instant now = Instant.now();
+    GuardSideEffectEntity old = GuardReconcilePersistenceTest.sideEffect(t, "crm", "old");
+    old.reconciledAt = now.minus(Duration.ofDays(91));
+    old.reconcileOutcome = "side_effect_without_decision";
+    GuardSideEffectEntity recent = GuardReconcilePersistenceTest.sideEffect(t, "crm", "recent");
+    recent.reconciledAt = now.minus(Duration.ofDays(89));
+    GuardSideEffectEntity pending = GuardReconcilePersistenceTest.sideEffect(t, "crm", "pending");
+    pending.receivedAt = now.minus(Duration.ofDays(400));
+    QuarkusTransaction.requiringNew().run(() -> {
+      old.persist();
+      recent.persist();
+      pending.persist();
+    });
+    GuardOrphanActionEntity openOrphan = GuardReconcilePersistenceTest.orphan(t, OrphanKind.SIDE_EFFECT_WITHOUT_DECISION,
+        "se:" + old.id, old.id);
+    openOrphan.detectedAt = now.minus(Duration.ofDays(400));
+    GuardOrphanActionEntity resolvedOld = GuardReconcilePersistenceTest.orphan(t, OrphanKind.ALLOW_UNCONSUMED,
+        UUID.randomUUID().toString(), null);
+    resolvedOld.status = "RESOLVED";
+    resolvedOld.resolution = "aged_out";
+    resolvedOld.detectedAt = now.minus(Duration.ofDays(200));
+    resolvedOld.resolvedAt = now.minus(Duration.ofDays(181));
+    GuardOrphanActionEntity resolvedRecent = GuardReconcilePersistenceTest.orphan(t, OrphanKind.ALLOW_UNCONSUMED,
+        UUID.randomUUID().toString(), null);
+    resolvedRecent.status = "RESOLVED";
+    resolvedRecent.detectedAt = now.minus(Duration.ofDays(200));
+    resolvedRecent.resolvedAt = now.minus(Duration.ofDays(179));
+    GuardReconciliationRunEntity oldRun = runRow(t, now.minus(Duration.ofDays(31)));
+    GuardReconciliationRunEntity recentRun = runRow(t, now.minus(Duration.ofDays(29)));
+    QuarkusTransaction.requiringNew().run(() -> {
+      openOrphan.persist();
+      resolvedOld.persist();
+      resolvedRecent.persist();
+      oldRun.persist();
+      recentRun.persist();
+    });
+
+    GuardReconciliationService.PurgeResult r = service.purgeExpired(now);
+
+    assertThat(r.sideEffects()).isGreaterThanOrEqualTo(1);
+    assertThat(r.orphans()).isGreaterThanOrEqualTo(1);
+    assertThat(r.runs()).isGreaterThanOrEqualTo(1);
+    assertThat(sideEffects(t)).extracting(s -> s.effectId).containsExactlyInAnyOrder("recent", "pending");
+    assertThat(orphans(t)).extracting(o -> o.id).containsExactlyInAnyOrder(openOrphan.id, resolvedRecent.id);
+    GuardOrphanActionEntity kept = orphans(t).stream().filter(o -> o.id.equals(openOrphan.id)).findFirst()
+        .orElseThrow();
+    assertThat(kept.sideEffectId).isNull();
+    assertThat(kept.detail).contains("effectId");
+    assertThat(runs(t)).extracting(x -> x.id).containsExactly(recentRun.id);
+  }
+
+  private static GuardReconciliationRunEntity runRow(String tenant, Instant finishedAt) {
+    GuardReconciliationRunEntity run = new GuardReconciliationRunEntity();
+    run.tenantId = tenant;
+    run.windowStart = finishedAt.minus(Duration.ofDays(7));
+    run.windowEnd = finishedAt;
+    run.startedAt = finishedAt;
+    run.finishedAt = finishedAt;
+    run.newByKind = "{}";
+    return run;
+  }
 }
