@@ -89,12 +89,31 @@ jobs:
     with:
       runs-on: '["ubuntu-latest"]'
 
-  # ── 4. 汇总门禁：给分支保护用的单一必需检查 ────────────────────────────
+  # ── 4. Guard 绕过套件必需检查（wontlost-ltd/aster-api#466）────────────────
+  # 作业名即分支保护登记的检查名，不得改动。只判定 ci-build.yml 中「Guard bypass suite (#466)」
+  # 步骤的 outcome（只跑 aster-api JUnit guardBypassTest；cloud Playwright 与部署层探针不在其中）。
+  # 套件通过而后续步骤失败时本检查为绿、ci-result 为红——两个检查各自说明各自的事实。
+  guard-bypass:
+    name: Guard bypass suite (#466)
+    needs: [build-local, build-hosted]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 判定绕过套件结论
+        env:
+          LOCAL: ${{ needs.build-local.outputs.guard-bypass }}
+          HOSTED: ${{ needs.build-hosted.outputs.guard-bypass }}
+        run: bash scripts/ci/guard-bypass-verdict.sh "$LOCAL" "$HOSTED"
+
+  # ── 5. 汇总门禁：给分支保护用的单一必需检查 ────────────────────────────
   # ★必需：build-local / build-hosted 互为条件分支，任一都可能 skipped，无法直接
   #   作为 required check（skipped 会被当成"未运行"而卡住合并）。故用本 job 收敛成
   #   一个确定结论：只要有任意一条路径成功就绿，两条都没成功就红（fail-closed）。
   ci-result:
-    needs: [build-local, build-hosted]
+    needs: [build-local, build-hosted, guard-bypass]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -102,9 +121,14 @@ jobs:
         env:
           LOCAL: ${{ needs.build-local.result }}
           HOSTED: ${{ needs.build-hosted.result }}
+          GUARD_BYPASS: ${{ needs.guard-bypass.result }}
         run: |
           set -euo pipefail
-          echo "build-local=$LOCAL  build-hosted=$HOSTED"
+          echo "build-local=$LOCAL  build-hosted=$HOSTED  guard-bypass=$GUARD_BYPASS"
+          if [[ "$GUARD_BYPASS" != "success" ]]; then
+            echo "::error::CI 失败——Guard 绕过套件检查未通过（guard-bypass=$GUARD_BYPASS）"
+            exit 1
+          fi
           if [[ "$LOCAL" == "success" || "$HOSTED" == "success" ]]; then
             echo "✅ CI 通过（至少一条路径成功）"
             exit 0

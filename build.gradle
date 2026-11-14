@@ -279,7 +279,8 @@ tasks.register('jacocoCoverageVerification', JacocoCoverageVerification) {
 //   - 标签 chaos  → 混沌测试，跑 testChaos
 tasks.named('test', Test) {
     useJUnitPlatform {
-        excludeTags 'chaos'
+        // guard-bypass 由独立任务 guardBypassTest 运行（#466），不在快速反馈里重复跑
+        excludeTags 'chaos', 'guard-bypass'
     }
     // 排除 *IT 集成测试，让 test 任务保持快速反馈（< 30s）
     exclude '**/*IT.class'
@@ -305,7 +306,7 @@ tasks.register('integrationTest', Test) {
     testClassesDirs = sourceSets.test.output.classesDirs
     classpath = sourceSets.test.runtimeClasspath
     useJUnitPlatform {
-        excludeTags 'chaos'
+        excludeTags 'chaos', 'guard-bypass'
     }
     include '**/*IT.class'
     // 集成测试套件每个 @QuarkusTest 配置（如 @InjectMock）会触发独立 Quarkus boot，
@@ -324,6 +325,49 @@ tasks.register('integrationTest', Test) {
     retry {
         maxRetries = 1
         failOnPassedAfterRetry = false
+    }
+}
+
+// Guard 绕过红队套件（wontlost-ltd/aster-api#466）：JUnit 标签 guard-bypass，独立于 test / integrationTest。
+// 安全门不容忍「重试后通过」，故 retry 0 次；空套件必须失败（failOnNoDiscoveredTests 显式写出，
+// 防止日后全局默认被改掉后套件被整体排除却仍报绿）。CI 必需检查 `Guard bypass suite (#466)` 只跑本任务。
+tasks.register('guardBypassTest', Test) {
+    description = 'Run the Guard bypass red-team suite (@Tag("guard-bypass"), #466)'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform {
+        includeTags 'guard-bypass'
+    }
+    // 2g 时 Quarkus 启动即 OOM（多个 @TestProfile 各自重启应用、引擎与 Truffle 常驻）；与 test 任务在
+    // 16 GB 托管 runner 上的默认堆（物理内存 1/4）同量级
+    maxHeapSize = '4g'
+    systemProperty 'java.util.logging.manager', 'org.jboss.logmanager.LogManager'
+    systemProperty 'quarkus.test.flat-class-path', 'true'
+    systemProperty 'aster.truffle.tests.skip', 'true'
+    jvmArgs '--add-opens', 'java.base/java.lang=ALL-UNNAMED'
+    shouldRunAfter 'test'
+    maxParallelForks = 1
+    failOnNoDiscoveredTests = true
+    retry {
+        maxRetries = 0
+    }
+    // failOnNoDiscoveredTests 只在「没有候选测试类」时生效：测试类存在但全被标签过滤掉时 Gradle 仍报绿
+    // （实测 Gradle 9.8.2）。这里按根套件的实际执行数兜底——标签被误删、类被误排除、用例全被 @Disabled
+    // 时任务必须变红（skipped 不计入「已执行」）。
+    def bypassExecuted = new java.util.concurrent.atomic.AtomicLong()
+    def bypassSkipped = new java.util.concurrent.atomic.AtomicLong()
+    afterSuite { desc, result ->
+        if (desc.parent == null) {
+            bypassExecuted.addAndGet(result.testCount - result.skippedTestCount)
+            bypassSkipped.addAndGet(result.skippedTestCount)
+        }
+    }
+    doLast {
+        if (bypassExecuted.get() == 0) {
+            throw new GradleException('guardBypassTest 未执行任何 @Tag("guard-bypass") 测试（skipped 不计）：绕过套件不得为空（#466）')
+        }
+        logger.lifecycle("guardBypassTest: 执行 ${bypassExecuted.get()} 个测试，skipped ${bypassSkipped.get()} 个")
     }
 }
 
@@ -366,9 +410,11 @@ tasks.register('verifyFlywayMigrations') {
     }
 }
 
-// 让 build 任务依赖 integrationTest + Flyway guard，CI 跑 ./gradlew build 时自动包含
+// 让 build 任务依赖 integrationTest + guardBypassTest + Flyway guard，CI 跑 ./gradlew build 时自动包含
 tasks.named('check') {
     dependsOn 'integrationTest'
+    // 发版构建（deploy.yml 的 ./gradlew build）同样跑绕过套件（#466「每次发版自动验证」）
+    dependsOn 'guardBypassTest'
     dependsOn 'verifyFlywayMigrations'
 }
 

@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code RequestIdentityResolver.businessRoles()} 回落读取 {@code X-User-Business-Roles}（逗号分隔）。
  */
 @QuarkusTest
-class GuardApprovalResourceTest {
+public class GuardApprovalResourceTest {
   /** 每次 JVM 用独立租户：审计链与锚点只追加不删除，避免与历史运行互相干扰。 */
   private static final String TENANT = "tenant-guard-approval-" + UUID.randomUUID().toString().substring(0, 8);
   private static final String DPO = "Data Protection Officer";
@@ -64,14 +64,14 @@ class GuardApprovalResourceTest {
   @ConfigProperty(name = "aster.guard.receipt.signing-keys") String signingKeys;
 
   /** 可变时钟：经 {@link QuarkusMock} 替换注入的 {@link Clock}，只作用于当前测试方法。 */
-  static final class MutableClock extends Clock {
+  public static final class MutableClock extends Clock {
     private volatile Instant now;
 
-    MutableClock(Instant now) {
+    public MutableClock(Instant now) {
       this.now = now;
     }
 
-    void set(Instant instant) {
+    public void set(Instant instant) {
       this.now = instant;
     }
 
