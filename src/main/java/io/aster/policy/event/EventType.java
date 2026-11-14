@@ -27,6 +27,8 @@ public enum EventType {
     ACTION_GUARD_RESULT,        // 执行方回写的执行结果（executed / failed / aborted）
     ACTION_GUARD_INPUT_REVEAL,  // 审批人解除审批输入的 PII 打码（每人每审批首次一条，ADR 0042 §12 D5）
     GUARD_FACT_ISSUER_REVOKED,  // 签名事实签发方吊销，依赖它的待审批已转 EXPIRED（ADR 0040 §11 D4）
+    GUARD_RECONCILIATION,       // 某租户一次对账有新孤儿或有解除（ADR 0054 §10.3；无变化不入链）
+    GUARD_ORPHAN_ACKNOWLEDGED,  // 管理员确认一条孤儿动作（ADR 0054 §10.2）
 
     // Cedar 导出（ADR 0047 §6）：成功导出同步入链后才返回
     POLICY_EXPORTED,            // 策略导出为 Cedar（源码、策略文本与 schema 各自哈希）

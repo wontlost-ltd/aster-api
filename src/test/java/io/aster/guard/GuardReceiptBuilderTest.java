@@ -768,4 +768,60 @@ class GuardReceiptBuilderTest {
     assertThat(event.metadata()).containsOnlyKeys("decisionId", "approvalId", "revealedFields", "maskRules",
         "inputSnapshotHash").containsEntry("revealedFields", 3).containsEntry("decisionId", a.decisionId.toString());
   }
+
+  // ---- 对账（ADR 0054 §10）----
+
+  @Test
+  void reconciliationEventShape() throws Exception {
+    Instant start = Instant.parse("2026-11-07T10:00:00Z");
+    Instant end = Instant.parse("2026-11-14T09:45:00Z");
+    AuditEvent event = builder.reconciliationEvent("t1", 7L, start, end, 2, 1, 5,
+        Map.of("side_effect_mismatch", 1, "allow_unconsumed", 1), List.of(11L, 12L));
+
+    assertThat(event.eventType()).isEqualTo(EventType.GUARD_RECONCILIATION);
+    assertThat(event.performedBy()).isEqualTo("SYSTEM");
+    assertThat(event.success()).isTrue();
+    assertThat(event.tenantId()).isEqualTo("t1");
+    assertThat(event.metadata()).containsOnlyKeys("runId", "windowStart", "windowEnd", "newOrphans",
+        "resolvedOrphans", "openOrphans", "newByKind", "newOrphanIds")
+        .containsEntry("runId", 7L).containsEntry("windowStart", start.toString())
+        .containsEntry("windowEnd", end.toString()).containsEntry("newOrphans", 2)
+        .containsEntry("resolvedOrphans", 1).containsEntry("openOrphans", 5)
+        .containsEntry("newOrphanIds", List.of(11L, 12L));
+    String serialized = appender().toAuditLog(event).metadata;
+    assertThat(serialized).contains("\"newOrphanIds\":[11,12]").contains("\"side_effect_mismatch\":1");
+    assertThat(appender().toAuditLog(event).decisionId).isNull();
+  }
+
+  @Test
+  void reconciliationEventTruncatesIdsAt64() {
+    List<Long> ids = IntStream.range(0, 65).mapToObj(i -> (long) i).toList();
+    AuditEvent event = builder.reconciliationEvent("t1", 1L, Instant.EPOCH, Instant.EPOCH, 65, 0, 65,
+        Map.of("side_effect_without_decision", 65), ids);
+    assertThat((List<?>) event.metadata().get("newOrphanIds")).hasSize(64);
+    assertThat(event.metadata()).containsEntry("newOrphansTruncated", true);
+
+    AuditEvent exact = builder.reconciliationEvent("t1", 1L, Instant.EPOCH, Instant.EPOCH, 64, 0, 64,
+        Map.of("side_effect_without_decision", 64), ids.subList(0, 64));
+    assertThat(exact.metadata()).doesNotContainKey("newOrphansTruncated");
+  }
+
+  @Test
+  void orphanAcknowledgedEventShape() throws Exception {
+    UUID decisionId = UUID.randomUUID();
+    AuditEvent event = builder.orphanAcknowledgedEvent("t1", 42L, "side_effect_mismatch", decisionId, 9L,
+        "已核实：补录", "admin-1");
+
+    assertThat(event.eventType()).isEqualTo(EventType.GUARD_ORPHAN_ACKNOWLEDGED);
+    assertThat(event.performedBy()).isEqualTo("admin-1");
+    assertThat(event.metadata()).containsOnlyKeys("orphanId", "kind", "decisionId", "sideEffectId", "comment")
+        .containsEntry("orphanId", 42L).containsEntry("decisionId", decisionId.toString())
+        .containsEntry("sideEffectId", 9L);
+    assertThat(appender().toAuditLog(event).decisionId).isEqualTo(decisionId.toString());
+
+    AuditEvent bare = builder.orphanAcknowledgedEvent("t1", 43L, "side_effect_without_decision", null, null,
+        "x".repeat(2000), "admin-1");
+    assertThat(bare.metadata()).containsOnlyKeys("orphanId", "kind", "comment");
+    assertThat((String) bare.metadata().get("comment")).hasSize(1000);
+  }
 }

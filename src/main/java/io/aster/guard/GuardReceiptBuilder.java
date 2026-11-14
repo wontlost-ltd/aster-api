@@ -49,6 +49,8 @@ public class GuardReceiptBuilder {
   static final int MAX_KID = 64;
   /** 吊销事件逐条列出的受影响决策上限（ADR 0040 §11 D4）。 */
   static final int MAX_AFFECTED_DECISIONS = 64;
+  /** 对账事件逐条列出的新孤儿 id 上限（ADR 0054 §10.3）。 */
+  static final int MAX_RECONCILIATION_IDS = 64;
   /** metadata 序列化长度预算：低于追加器的 4096 上限，留出余量（与评估事件共用 {@link AuditMetadataSize#BUDGET}）。 */
   static final int METADATA_BUDGET = AuditMetadataSize.BUDGET;
   /** 输入来源键（ADR 0041 §11 D1）：verified 路径、签发方、签发端来源、档案来源门拒绝时的未验证路径。 */
@@ -239,6 +241,44 @@ public class GuardReceiptBuilder {
       m.put("affectedTruncated", Boolean.TRUE);
     }
     return receiptEvent(EventType.GUARD_FACT_ISSUER_REVOKED, tenantId, performedBy, true, m, List.of());
+  }
+
+  /**
+   * 对账事件（ADR 0054 §10.3）：某租户一次对账有新孤儿或有解除时写一条，{@code performedBy=SYSTEM}、{@code success=true}
+   * （「本次对账已记录」）。{@code newOrphanIds} 至多 {@link #MAX_RECONCILIATION_IDS} 项，超出另写
+   * {@code newOrphansTruncated: true}；全部为整数，体积远低于预算，不需要缩短顺序。不写 decisionId（一次对账对应多条决策）。
+   */
+  public AuditEvent reconciliationEvent(String tenantId, long runId, Instant windowStart, Instant windowEnd,
+                                        int newOrphans, int resolved, int open, Map<String, Integer> newByKind,
+                                        List<Long> newOrphanIds) {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("runId", runId);
+    m.put("windowStart", windowStart.toString());
+    m.put("windowEnd", windowEnd.toString());
+    m.put("newOrphans", newOrphans);
+    m.put("resolvedOrphans", resolved);
+    m.put("openOrphans", open);
+    m.put("newByKind", Map.copyOf(newByKind));
+    m.put("newOrphanIds", newOrphanIds.stream().limit(MAX_RECONCILIATION_IDS).toList());
+    if (newOrphanIds.size() > MAX_RECONCILIATION_IDS) {
+      m.put("newOrphansTruncated", Boolean.TRUE);
+    }
+    return receiptEvent(EventType.GUARD_RECONCILIATION, tenantId, SYSTEM_ACTOR, true, m, List.of());
+  }
+
+  /**
+   * 孤儿确认事件（ADR 0054 §10.2）：{@code performed_by} 为确认的管理员；decisionId 有值时投影到 decision_id 列。
+   * 唯一可缩短的键是管理员自填的 comment。
+   */
+  public AuditEvent orphanAcknowledgedEvent(String tenantId, long orphanId, String kind, UUID decisionId,
+                                            Long sideEffectId, String comment, String performedBy) {
+    Map<String, Object> m = new LinkedHashMap<>();
+    m.put("orphanId", orphanId);
+    put(m, "kind", kind);
+    put(m, "decisionId", decisionId);
+    put(m, "sideEffectId", sideEffectId);
+    put(m, "comment", clip(comment, MAX_COMMENT));
+    return receiptEvent(EventType.GUARD_ORPHAN_ACKNOWLEDGED, tenantId, performedBy, true, m, APPROVAL_SHRINK_ORDER);
   }
 
   private AuditEvent receiptEvent(EventType type, String tenantId, String performedBy, boolean success,

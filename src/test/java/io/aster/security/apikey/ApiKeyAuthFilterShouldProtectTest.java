@@ -164,6 +164,10 @@ class ApiKeyAuthFilterShouldProtectTest {
         assertTrue(call("/api/v1/guard/receipts/abc/consume"));
         assertTrue(call("/api/v1/guard/fact-issuers"));
         assertTrue(call("/api/v1/guard/fact-issuers/idp.example.com/2026-11"));
+        assertTrue(call("/api/v1/guard/side-effects"));
+        assertTrue(call("/api/v1/guard/reconciliation"));
+        assertTrue(call("/api/v1/guard/reconciliation/orphans"));
+        assertTrue(call("/api/v1/guard/reconciliation/orphans/7/ack"));
     }
 
     @Test
@@ -341,6 +345,12 @@ class ApiKeyAuthFilterShouldProtectTest {
         assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/receipts/abc/consume"));
         assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/fact-issuers"));
         assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/fact-issuers/idp.example.com/2026-11"));
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/side-effects"));
+        assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/side-effects/x"));
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/reconciliation"));
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/reconciliation/orphans"));
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/reconciliation/orphans/7/ack"));
+        assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/reconciliationX"));
         assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/fact-issuersX"));
         assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/receipts"));
         assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/guard/decisions"));

@@ -45,6 +45,17 @@ sum(increase(pm_weekly_waadr_adopted_total[7d]))
 
 去重原则：分析时按 `emitted_by="server"` 过滤即可（前端同名事件保留作 UX timing）。
 
+## Guard 对账（ADR 0054 §10，#465）
+
+| 指标 | 类型 | 标签 | 多副本读法 |
+|---|---|---|---|
+| `guard_orphan_actions` | Gauge（MultiGauge） | `tenant`（至多 `ASTER_GUARD_RECONCILIATION_METRIC_MAX_TENANTS` 个，缺省 100，其余合并为 `_other`）、`executor`（`aster-guard-mcp` / `aster-guard-sdk` / `aster-cloud-exec` 白名单内的组件名，其余 `other`，空为 `unknown`）、`kind`（8 个孤儿类别） | 每个副本每 `metric-refresh`（缺省 60 s）从库重读当前 OPEN 行数，各副本同值，取 `max`；只发非零序列 |
+| `guard_orphan_actions_detected_total` | Counter | `kind` | 只由检出它的副本累加，取 `sum` |
+| `guard_reconciliation_runs_total` | Counter | `outcome` ∈ `ok` / `failed` / `skipped_locked` / `skipped_recent`（按租户计） | 取 `sum` |
+| `guard_reconciliation_last_success_seconds` | Gauge | — | 本副本最近一次完整跑完租户循环（含无租户、含跳过）的 epoch 秒，进程内值，取 `max` |
+
+`kind` 的 severity：`critical`（`side_effect_without_decision`、`side_effect_unconsumed`、`side_effect_mismatch`、`consume_on_non_allow`、`result_without_consume`）、`warning`（`consumed_without_result`）、`info`（`allow_unconsumed`、`orphan_receipt`）。告警规则在 k3s `apps/aster-lang/observability/prometheus-rule.yaml` 的 `aster.guard.reconciliation` 组：critical 类任一 > 0 即 `AsterGuardBypassSuspected`，`consumed_without_result` ≥ 5 持续 30 m 为 `AsterGuardExecutionLost`，`time() - max(last_success) > 1800` 持续 10 m 为 `AsterGuardReconciliationStale`；info 类不告警。
+
 ## 告警规则示例（Grafana / Prometheus alerting）
 
 ```yaml

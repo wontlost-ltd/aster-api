@@ -111,4 +111,26 @@ class AuditIdentifierRedactionTest {
         assertTrue(AuditChainAppender.isRedactionExempt("inputSnapshotHash", "4111-1111-1111-1111" + "a".repeat(45)));
         assertTrue(AuditChainAppender.isRedactionExempt("inputSnapshotHash", "a".repeat(64)));
     }
+
+    /**
+     * 对账事件（ADR 0054 §10）的 runId / newOrphanIds / orphanId / sideEffectId 都是整数：追加器只对顶层字符串值脱敏，
+     * 卡号形态的长整数原样入链，无需加入身份键白名单。
+     */
+    @Test
+    void reconciliationIdsNotRedacted() throws Exception {
+        AuditChainAppender appender = new AuditChainAppender();
+        java.lang.reflect.Field mapper = AuditChainAppender.class.getDeclaredField("objectMapper");
+        mapper.setAccessible(true);
+        mapper.set(appender, new com.fasterxml.jackson.databind.ObjectMapper());
+        long cardShaped = 4111111111111111L;
+        String metadata = appender.toAuditLog(new io.aster.guard.GuardReceiptBuilder().reconciliationEvent("t1",
+            cardShaped, java.time.Instant.EPOCH, java.time.Instant.EPOCH, 1, 0, 1,
+            java.util.Map.of("side_effect_mismatch", 1), java.util.List.of(cardShaped))).metadata;
+        assertTrue(metadata.contains("\"newOrphanIds\":[4111111111111111]"), metadata);
+        assertTrue(metadata.contains("\"runId\":4111111111111111"), metadata);
+        String ack = appender.toAuditLog(new io.aster.guard.GuardReceiptBuilder().orphanAcknowledgedEvent("t1",
+            cardShaped, "side_effect_mismatch", null, cardShaped, "ok", "admin")).metadata;
+        assertTrue(ack.contains("\"orphanId\":4111111111111111"), ack);
+        assertTrue(ack.contains("\"sideEffectId\":4111111111111111"), ack);
+    }
 }

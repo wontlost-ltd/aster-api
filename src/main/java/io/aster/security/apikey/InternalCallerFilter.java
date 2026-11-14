@@ -219,6 +219,8 @@ public class InternalCallerFilter {
 
     static final String GUARD_FROM_EVIDENCE_PATH = "/api/v1/guard/decisions/from-evidence";
     static final String GUARD_FACT_ISSUERS_PATH = "/api/v1/guard/fact-issuers";
+    static final String GUARD_SIDE_EFFECTS_PATH = "/api/v1/guard/side-effects";
+    static final String GUARD_RECONCILIATION_PATH = "/api/v1/guard/reconciliation";
     static final String CEDAR_EXPORT_PATH = "/api/v1/policies/export/cedar";
     static final String COMPILE_PATH = "/api/v1/policies/compile";
 
@@ -234,7 +236,12 @@ public class InternalCallerFilter {
             // 输入视图 GET /input 与原值解除 POST /input/reveal（#518）：身份与已验证业务角色同 approve / reject，取自 HMAC 签名头
             || p.matches("/api/v1/guard/approvals/[^/]+/input(?:/reveal)?")
             || p.matches("/api/v1/guard/decisions/[^/]+")
-            || p.matches("/api/v1/guard/receipts/[^/]+/(?:consume|result)");
+            || p.matches("/api/v1/guard/receipts/[^/]+/(?:consume|result)")
+            // 对账（ADR 0054 §10）：工具服务 / 业务系统走 Bearer 上报副作用，cloud 走 HMAC
+            || p.equals(GUARD_SIDE_EFFECTS_PATH)
+            || p.equals(GUARD_RECONCILIATION_PATH)
+            || p.equals(GUARD_RECONCILIATION_PATH + "/orphans")
+            || p.matches("/api/v1/guard/reconciliation/orphans/[^/]+/ack");
     }
 
     /**
