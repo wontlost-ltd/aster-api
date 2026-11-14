@@ -559,7 +559,7 @@ DB_JDBC_URL=jdbc:postgresql://localhost:55432/aster_policy DB_USERNAME=postgres 
   - 理由：PENDING 审批是「等人替输入背书」，而输入的可信前提已消失，继续等人只会让审批人替一个不再可证的事实签字；与 §4.3「过期即 DENY」同一哲学，复用同一迁移路径，不新增状态。
 - 收据键见 ADR 0041 §11 R61。审批视图（ADR 0042 §11 R59）的 `piiMarks` 旁并列 `inputSources`，收件箱对每个字段同时显示「来源」与「PII」徽标。
 
-**D5 与 Profile 的衔接（执行点）。** 模块档案要求 `verifiedInputs`（ADR 0046 §11 R62）时，guard 在评估**之前**把规则的静态输入引用集 `inputRefs` 与本请求的 verified 集合比对：存在被引用却为 `declared` 的路径 → 不评估，直接 DENY `unverified_input`（200，fail-closed 表与 §3.2 同体：`reason` 为 null，收据 `unverifiedFields` 列出路径），写收据与决策行但**不**建待审批（人不能替未验证的输入背书）。模块 IR 没有 `inputRefs`（旧引擎编译）而档案要求 verifiedInputs → DENY `input_refs_unavailable`（与 E707 同精神：基础设施缺位不读成策略违规）。`from-evidence` 同样执行：cloud 执行输入是人手填的 `declared`，高风险模块的 from-evidence 决策将是 DENY 而非 PENDING，除非 cloud 附签名事实——这是有意的；档案何时开始要求 verifiedInputs、cloud 何时具备附 facts 的能力，按 ADR 0046 §11 D5 的默认方案排期（registry 1.2.0 不要求，1.3.0 翻转）。
+**D5 与 Profile 的衔接（执行点）。** 模块档案要求 `verifiedInputs`（ADR 0046 §11 R62）时，guard 在评估**之前**把规则的静态输入引用集 `inputRefs` 与本请求的 verified 集合比对：存在被引用却为 `declared` 的路径 → 不评估，直接 DENY `unverified_input`（200，fail-closed 表与 §3.2 同体：`reason` 为 null，收据 `unverifiedFields` 列出路径），写收据与决策行但**不**建待审批（人不能替未验证的输入背书）。模块 IR 没有 `inputRefs`（旧引擎编译）而档案要求 verifiedInputs → DENY `input_refs_unavailable`（与 E707 同精神：基础设施缺位不读成策略违规）。`from-evidence` 同样执行：cloud 执行输入是人手填的 `declared`，高风险模块的 from-evidence 决策将是 DENY 而非 PENDING，除非 cloud 附签名事实——这是有意的；（2026-11-14 修订，ADR 0046 §11.8：要求 verifiedInputs 时评估结论为 ALLOW 的证据同样经 from-evidence 过门，未附事实即 DENY `unverified_input`；）档案何时开始要求 verifiedInputs、cloud 何时具备附 facts 的能力，按 ADR 0046 §11 D5 的默认方案排期（registry 1.2.0 不要求，1.3.0 翻转）。
 
 D5 实施澄清（2026-11-12，ADR 0046 §11.6）：
 
