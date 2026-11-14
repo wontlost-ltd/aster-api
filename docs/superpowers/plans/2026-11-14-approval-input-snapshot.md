@@ -38,7 +38,7 @@
 
 ## Global Constraints
 
-- **ADR 状态门（硬门）**：ADR 0042 §12 已于 2026-11-14 由用户确认为 ACCEPTED（本计划 §9 七项与 ADR 0042 §12.5 均采用建议默认）。Task 0 的状态翻转 PR 由用户审阅并合并；合并前任何实现 PR 不得合并。
+- **ADR 状态门（硬门，已满足条件）**：ADR 0042 §12 已于 2026-11-14 由用户确认为 ACCEPTED（本计划 §9 七项与 ADR 0042 §12.5 全部采用建议默认）。状态翻转由 Task 0′ PR（#514）落地；该 PR 合并前任何实现 PR 不得合并。
 - 迁移号：合并时取下一个可用号，起点 `V6.37.0__guard_approval_input_snapshot.sql`；#464 / #465 若先合则顺延。`src/test/resources/db/migration-checksums.golden` 追加 `文件名=sha256`（`shasum -a 256`，LF）。
 - 哈希配方：`context_hash`、分类行 `input_hash`、视图 `inputSnapshotHash` 一律 `sha256-sorted-json/v1`（`GuardActionMapper.contextHash` 同一实现），**不用** `jcs-sha256/v1`。
 - 输入快照只为 `outcome ∈ {REQUIRE_APPROVAL, ESCALATE}` 且真正建了审批行的决策写；ALLOW / DENY / 门 DENY / `receipt_unavailable` 不写。
@@ -66,8 +66,8 @@
 
 | 顺序 | 仓库 | 分支 | 内容 | 依赖 |
 |---|---|---|---|---|
-| 0 | aster-api | `docs/adr-460-approval-input-snapshot` | 本 ADR 修订 + 本计划（PROPOSED） | — |
-| 0′ | aster-api | `docs/adr-460-accepted` | Task 0：§12 状态 → ACCEPTED，回写 0040 / 0041 / 0046 | 用户裁定 §6 |
+| 0 | aster-api | `docs/adr-460-approval-input-snapshot` | 本 ADR 修订 + 本计划（PROPOSED；已合并 #512） | — |
+| 0′ | aster-api | `docs/adr-460-accepted` | Task 0：§12 状态 → ACCEPTED（2026-11-14），回写 0040 / 0041 / 0046 | 用户裁定 §9（已定） |
 | 1 | aster-api | `feat/460-input-classification` | Task A1–A4（推导、迁移、分类行、写输入行与绑定） | 0′ |
 | 2 | aster-api | `feat/460-approval-input-view` | Task A5–A9（视图、解除、审批哈希、收据接口、清理、契约） | 1 |
 | 3 | aster-guard | `feat/460-approval-input` | Task S1 | 2 已部署 |
@@ -84,9 +84,9 @@ PR 1 单独合并部署也安全：只写新表、新列，没有读方。from-e
 
 **Files:** Modify `docs/adr/0042-approval-closure.md`（头部状态行、§12 状态行）、`docs/adr/0040-action-guard.md`（§3.3 与 §5.2 脚注：「决策行与审计链不存明文 context；明文只存于独立、限期、按审批可达的 `guard_decision_inputs`（ADR 0042 §11/§12）」）、`docs/adr/0041-evidence-chain-enrichment.md`（§11 D3 键名改 `inputSnapshotMatched`；§11 D4 与 §12 D3 各加一句「v6 一次升版，内容见 ADR 0042 §12 D9」）、`docs/adr/0046-governance-profile.md`（§11.7 第 2 条末加「已撤销，见 ADR 0042 §12 D3」）。
 
-- [ ] **Step 1:** 按用户在 §6 的裁定改写 §12.5 中被改动的默认项（未改动的保持原文）。
-- [ ] **Step 2:** 校验：`git grep -n "inputSnapshotAttested" docs/adr` 无命中；`git grep -n "catalog.piiMark" docs/adr` 的每一处都指向「撤销」或 ADR 0042 §12 D3。
-- [ ] **Step 3:** 提交 `docs(adr): ADR 0042 §12 定稿（#460）`，由用户合并。
+- [x] **Step 1:** 按用户在 §9 的裁定改写 §12.5 中被改动的默认项（裁定全部采用默认，§12.5 原文保留，补记定稿裁定段）。
+- [x] **Step 2:** 校验：`git grep -n "inputSnapshotAttested" docs/adr` 无命中；`git grep -n "catalog.piiMark" docs/adr` 的每一处都指向「撤销」或 ADR 0042 §12 D3。
+- [x] **Step 3:** 提交 `docs(adr): ADR 0042 §12 定稿（#460）`（#514），由用户合并。
 
 ---
 
@@ -365,15 +365,17 @@ podman 全栈（aster-api PR 2 分支 + cloud PR 4/5 分支 + aster-guard PR 3�
 - aster-cloud：执行日志页对策略可见者明文展示 `Execution.input`（ADR 0042 §12 F9），与审批面的打码口径不一致。已开：wontlost-ltd/aster-cloud#754。
 - aster-api：from-evidence `evidence_input_mismatch` 的线上计数（上线后一周看 0 次即关）。
 
-## 9. 待用户裁定（Task 0 前）
+## 9. 用户裁定（已定，2026-11-14）
 
-| # | 问题 | 建议（默认） | 备选 |
+用户于 2026-11-14 确认下表七项全部采用「建议（默认）」列，ADR 0042 §12.5 同步定稿为 ACCEPTED，无改动项。
+
+| # | 问题 | 裁定（= 建议默认） | 未采用的备选 |
 |---|---|---|---|
 | 1 | `catalog.piiMark` 的处置 | 撤销；标记由 aster-api 从执行 IR 推导；`classifications` 作为预留格式写进 ADR，不实施 | cloud 签 ts 编译结果做双引擎交叉核对（需 FactVerifier 扩展） |
 | 2 | from-evidence 输入与评估输入不一致 | 409，不消耗证据 | 只标 `unbound` 照常建决策 |
 | 3 | 证据包 v6 是否同时装入 ADR 0041 §12 D3 的 `execution` | 装入（一次升版） | 留给 v7 |
 | 4 | 14(4)(a) 改判时点 | 阶段 R，随下一次列车 | 不改判 |
-| 5 | 执行日志页明文输入 | 另开 issue | 并入 #460 |
+| 5 | 执行日志页明文输入 | 另开 issue（wontlost-ltd/aster-cloud#754） | 并入 #460 |
 | 6 | 解除留痕粒度 | 每人每审批首次一条事件 | 每次一条 |
 | 7 | 分类行保留期 / 视图上限 | `P7D` / 1 MiB | 其他值 |
 
