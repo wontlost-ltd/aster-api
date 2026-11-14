@@ -6,6 +6,7 @@ import io.aster.policy.parser.DynamicCnlExecutor.ExecutionResult;
 import io.aster.replay.core.parser.ReplayMappers;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -204,5 +205,42 @@ class DynamicCnlExecutorCoreIrJsonTest {
             coreIrJsonOf(SOURCE), Map.of("driver", Map.of("age", 42)), null);
         assertThat(result.inputRefs()).isNull();
         assertThat(result.inputKey()).isEqualTo("driver");
+    }
+
+    private static final String PII_SOURCE = """
+        Module json.pii.
+
+        Define Applicant has amount as Int, email as @pii(L2, email) Text.
+
+        Rule decide given applicant as Applicant, produce Verdict:
+          If applicant.amount greater than 10:
+            Return Verdict.require_approval("Credit Officer", "big").
+          Return Verdict.allow().
+        """;
+
+    /** ADR 0042 §12 D2：执行结果带用执行时 IR 推导的输入分类（证据形状，按实际匹配键取前缀）。 */
+    @Test
+    void executionResultCarriesClassification() throws Exception {
+        ExecutionResult result = DynamicCnlExecutor.executeCoreIrJson(
+            coreIrJsonOf(PII_SOURCE), Map.of("applicant", Map.of("amount", 20, "email", "a@b.cc")), null);
+        assertThat(result.classification()).isNotNull();
+        assertThat(result.classification().declared())
+            .containsExactly("context.applicant.amount", "context.applicant.email");
+        assertThat(result.classification().marks())
+            .containsExactly(new io.aster.policy.governance.PiiMark("context.applicant.email", "L2", "email", "ir"));
+
+        ExecutionResult positional = DynamicCnlExecutor.executeCoreIrJson(
+            coreIrJsonOf(PII_SOURCE), List.of(Map.of("amount", 20, "email", "a@b.cc")), null);
+        assertThat(positional.classification()).isNotNull();
+        assertThat(positional.classification().declared()).isEmpty();
+    }
+
+    /** CNL 路径（evaluate-source 所走的 executeWithTenantContext）同样带分类。 */
+    @Test
+    void cnlExecutionCarriesClassification() {
+        ExecutionResult result = new DynamicCnlExecutor().executeWithTenantContext("t1", PII_SOURCE,
+            Map.of("applicant", Map.of("amount", 1, "email", "a@b.cc")), "decide", null, null, false, null, false);
+        assertThat(result.classification()).isNotNull();
+        assertThat(result.classification().marks()).hasSize(1);
     }
 }

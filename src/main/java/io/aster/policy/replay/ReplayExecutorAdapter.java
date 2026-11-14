@@ -35,6 +35,7 @@ public class ReplayExecutorAdapter implements ReplayExecutor {
                 tenantId, source, context, functionName, locale,
                 vocabularyScopes, legacyEvaluateSentinel, aliasSet, aliasesTrusted);
         return new ReplayExecutorResult(r.result(), r.moduleName(), r.functionName(), r.executionTimeMs(),
-                r.ruleId(), r.controls(), r.profile(), r.inputRefs(), r.verifiedInputsRequired(), r.inputKey());
+                r.ruleId(), r.controls(), r.profile(), r.inputRefs(), r.verifiedInputsRequired(), r.inputKey(),
+                r.classification());
     }
 }

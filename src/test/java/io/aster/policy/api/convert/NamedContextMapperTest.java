@@ -390,4 +390,18 @@ class NamedContextMapperTest {
         assertNull(NamedContextMapper.mapContext(Map.of("amount", 1), params("req")).firstParamKey());
         assertNull(NamedContextMapper.mapContext(null, params("req")).firstParamKey());
     }
+
+    /** ADR 0042 §12 D2：每个参数实际匹配到的键都要带出，供输入分类按参数推导证据形状路径。 */
+    @Test
+    void paramKeysListsEveryMatchedKey() {
+        var r = NamedContextMapper.mapContext(Map.of("applicant", Map.of(), "Buerge", Map.of()),
+            params("applicant", "bürge"));
+        assertTrue(r.success());
+        assertEquals(List.of("applicant", "Buerge"), r.paramKeys());
+        assertEquals("applicant", r.firstParamKey());
+        // 位置输入、整 Map 单参数与失败：没有匹配键
+        assertEquals(List.of(), NamedContextMapper.mapContext(List.of(Map.of()), params("req")).paramKeys());
+        assertEquals(List.of(), NamedContextMapper.mapContext(Map.of("amount", 1), params("req")).paramKeys());
+        assertEquals(List.of(), NamedContextMapper.mapContext(Map.of("a", 1), params("a", "b")).paramKeys());
+    }
 }

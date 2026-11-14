@@ -47,25 +47,36 @@ public class NamedContextMapper {
          * 第一个参数由某个键匹配时非 null。位置数组、单参数整 Map 传入等情形为 null。
          * 用途：写评估事件时把规则的引擎路径映射为证据形状 {@code context.<键>.<path>}（ADR 0046 §11.6 第 3 条）。
          */
-        String firstParamKey
+        String firstParamKey,
+        /**
+         * 每个参数实际匹配到的输入键（按参数声明顺序，未匹配为 null）；只在命名格式映射成功时非空，
+         * 其它情形为空列表。{@code firstParamKey} 恒等于 {@code paramKeys.get(0)}（命名格式下）。
+         * 用途：评估期按参数推导输入分类的证据形状路径 {@code context.<键>.…}（ADR 0042 §12 D2）。
+         */
+        List<String> paramKeys
     ) {
-        public static MappingResult success(Object[] args, boolean named, List<String> warnings) {
-            return new MappingResult(args, named, warnings, null, List.of(), null);
+        public MappingResult {
+            paramKeys = paramKeys == null ? List.of() : java.util.Collections.unmodifiableList(new ArrayList<>(paramKeys));
         }
 
-        /** 命名格式映射成功，带第一个参数实际匹配到的输入键。 */
-        public static MappingResult named(Object[] args, List<String> warnings, String firstParamKey) {
-            return new MappingResult(args, true, warnings, null, List.of(), firstParamKey);
+        public static MappingResult success(Object[] args, boolean named, List<String> warnings) {
+            return new MappingResult(args, named, warnings, null, List.of(), null, List.of());
+        }
+
+        /** 命名格式映射成功，带每个参数实际匹配到的输入键（未匹配为 null）。 */
+        public static MappingResult named(Object[] args, List<String> warnings, List<String> paramKeys) {
+            String first = paramKeys == null || paramKeys.isEmpty() ? null : paramKeys.get(0);
+            return new MappingResult(args, true, warnings, null, List.of(), first, paramKeys);
         }
 
         public static MappingResult error(String errorMessage) {
-            return new MappingResult(new Object[0], false, List.of(), errorMessage, List.of(), null);
+            return new MappingResult(new Object[0], false, List.of(), errorMessage, List.of(), null, List.of());
         }
 
         /** 命名格式缺少参数：错误信息与缺失参数名一并带出，供执行器归因为输入缺字段。 */
         public static MappingResult missing(List<String> missingParams) {
             return new MappingResult(new Object[0], true, List.of(),
-                "缺少必需参数: " + String.join(", ", missingParams), List.copyOf(missingParams), null);
+                "缺少必需参数: " + String.join(", ", missingParams), List.copyOf(missingParams), null, List.of());
         }
 
         public boolean hasError() {
@@ -260,7 +271,9 @@ public class NamedContextMapper {
             return missing;
         }
 
-        return MappingResult.named(positionalArgs, warnings, paramToKeyMapping.get(params.get(0).name));
+        List<String> paramKeys = new ArrayList<>(params.size());
+        params.forEach(p -> paramKeys.add(paramToKeyMapping.get(p.name)));
+        return MappingResult.named(positionalArgs, warnings, paramKeys);
     }
 
     /**
