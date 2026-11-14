@@ -257,6 +257,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 - **重试与重放的区分只靠 `effectId`**：上报方对同一动作的网络重试**必须**沿用同一 `effectId`（得到 `duplicates`，无副作用）；换了 `effectId` 即视为另一次落地。端点从不按 `decisionId` 拒绝请求——是否重放由对账在接受之后判定（见下条）。
 - **上报粒度**：一个上报方（`source`）对一次受守卫动作（一个 `decisionId`）**恰好上报一条**；一个动作落地多处副作用时由上报方聚合成一条（`effectId` 取上报方自己的动作记录键）。不同 `source` 观测同一决策是正常的。据此同 `(decisionId, source)` 的第二条上报（另一个 `effectId`）照常 200 接受，对账时若同一 `(decisionId, source)` 已有一条判为匹配，它判 `side_effect_mismatch`（`reason = replayed`）。
 - 鉴权：Bearer API key（SDK、工具服务、业务系统）与 HMAC 内部调用（cloud）双通道，`MEMBER` 即可；租户取自已验证身份。
+- **信任边界**：上报是租户内成员对自己系统的陈述，接受即入账，不做真实性核验——本租户任一 `MEMBER` key 都能上报一条无 `decisionId` 的副作用并触发 critical 孤儿。这是有意的：漏报（绕过不可见）的代价远高于误报，而误报可追责、可处置——每行记 `reported_by`（已解析身份），孤儿 `detail` 复制上报原文，管理员核实后经确认端点关闭并入链。建议为每个落地方发独立的 key，使 `reported_by` 能直接指认上报方。
 
 查询与确认（类级 `MEMBER`，确认需 `ADMIN`；跨租户、不存在、非数字 id 一律 404 空体）：
 
