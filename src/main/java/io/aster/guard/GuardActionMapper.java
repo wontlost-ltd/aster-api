@@ -120,6 +120,27 @@ public class GuardActionMapper {
     return DigestUtils.sha256Hex(serialize(context == null ? Map.of() : context));
   }
 
+  /**
+   * sha256-sorted-json/v1 作用于任意 JSON 形态的值（Map / List / 标量）：与 {@link #contextHash} 同一配方，
+   * 供审批输入视图快照哈希使用（ADR 0042 §12 D6）。
+   */
+  public static String sortedJsonSha256(Object value) {
+    try {
+      return DigestUtils.sha256Hex(SORTED.writeValueAsBytes(value));
+    } catch (JsonProcessingException e) {
+      throw new IllegalArgumentException("值无法序列化为 JSON", e);
+    }
+  }
+
+  /** sha256-sorted-json/v1 的序列化字节（UTF-8），视图尺寸上限按它测量。 */
+  public static byte[] sortedJsonBytes(Object value) {
+    try {
+      return SORTED.writeValueAsBytes(value);
+    } catch (JsonProcessingException e) {
+      throw new IllegalArgumentException("值无法序列化为 JSON", e);
+    }
+  }
+
   private static byte[] serialize(Map<String, Object> context) {
     try {
       return SORTED.writeValueAsBytes(context);
