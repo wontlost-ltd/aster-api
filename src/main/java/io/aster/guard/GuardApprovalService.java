@@ -270,6 +270,7 @@ public class GuardApprovalService {
       return;
     }
     boolean ownReveal = h.revealed() != null;
+    approval.revealedAtHash = ownReveal;
     if (submitted == null) {
       approval.inputSnapshotHash = h.masked();
       approval.inputSnapshotMatched = false;
@@ -284,6 +285,21 @@ public class GuardApprovalService {
       approval.inputRevealed = true;
     } else {
       throw conflict("input_snapshot_mismatch", "输入视图已变化，请刷新后重新审阅");
+    }
+  }
+
+  /**
+   * 锁内复核快照（ADR 0042 §12 D6）：哈希在加锁前按审批人当时的解除状态算出；若本人的首次解除恰在其后、加锁之前提交，
+   * 记下的 {@code inputRevealed} 会与事实不符——此时整个迁移回滚并报 {@code input_snapshot_mismatch}，客户端刷新视图后重试。
+   * 已追加的审批事件作为一次被否决的尝试留在链上（与并发处理同一口径）。过期迁移与输入不可用不复核。
+   */
+  private void requireSnapshotUnchanged(GuardApprovalEntity approval) {
+    if (approval.status == GuardApprovalStatus.EXPIRED || approval.decidedBy == null
+        || !InputSnapshotService.AVAILABLE.equals(approval.inputStatus)) {
+      return;
+    }
+    if (approval.revealedAtHash != inputSnapshots.revealedNow(approval, approval.decidedBy)) {
+      throw conflict("input_snapshot_mismatch", "输入视图已变化（解除状态改变），请刷新后重新审阅");
     }
   }
 
@@ -315,6 +331,7 @@ public class GuardApprovalService {
     boolean completed;
     try {
       completed = store.completeApproval(approval, now -> {
+        requireSnapshotUnchanged(approval);
         if (!issues) {
           return new GuardDecisionStore.ApprovalWrite(json.writeJson(base), null);
         }

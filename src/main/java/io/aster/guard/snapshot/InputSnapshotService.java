@@ -169,6 +169,14 @@ public class InputSnapshotService {
     });
   }
 
+  /**
+   * 审批加锁迁移内复核（须在持有审批行锁的事务内调用）：本人此刻是否有解除记录。解除同样先锁审批行，
+   * 所以在锁内读到的就是与本次迁移串行化后的结果。
+   */
+  public boolean revealedNow(GuardApprovalEntity a, String user) {
+    return hasRevealed(a, user);
+  }
+
   /** 入链 → 插解除行，同一事务；入链失败抛 503，事务随之回滚。 */
   private void record(GuardApprovalEntity a, String user, InputViewRenderer.RenderedView revealed) {
     AppendedRecord appended;

@@ -47,6 +47,8 @@ public class GuardApprovalEntity extends PanacheEntityBase {
   @Column(name = "input_revealed") public Boolean inputRevealed;
   /** 审批时的输入状态：available / unavailable / purged / integrity_failed / too_large；未决为 null。 */
   @Column(name = "input_status", length = 16) public String inputStatus;
+  /** 计算快照哈希时审批人本人是否已解除（不落库，供加锁迁移内复核，ADR 0042 §12 D6）。 */
+  @jakarta.persistence.Transient public transient boolean revealedAtHash;
 
   public static Optional<GuardApprovalEntity> findByDecision(UUID decisionId) {
     return find("decisionId = ?1", decisionId).firstResultOptional();

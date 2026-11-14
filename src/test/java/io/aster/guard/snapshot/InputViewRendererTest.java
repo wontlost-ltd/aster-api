@@ -187,4 +187,23 @@ class InputViewRendererTest {
     String rendered = v.input().get("context").toString();
     assertThat(rendered).contains("g=ok").doesNotContain("deep");
   }
+
+  @Test
+  void malformedMarkedValueIsUnknownEvenWhenRevealed() {
+    Map<String, Object> ctx = sample();
+    ctx.put("email", Map.of("hidden", "secret@x.io"));
+    InputViewRenderer.RenderedView v = render(ctx, true);
+    assertThat(context(v).get("email")).isEqualTo(InputViewRenderer.unknown());
+    assertThat(v.input().toString()).doesNotContain("secret@x.io");
+    ctx.put("email", List.of(Map.of("k", "secret@x.io")));
+    assertThat(render(ctx, true).input().toString()).doesNotContain("secret@x.io");
+  }
+
+  @Test
+  void nullMarkedValueIsNotCountedAsRevealed() {
+    Map<String, Object> ctx = sample();
+    ctx.put("email", null);
+    ctx.put("items", List.of());
+    assertThat(render(ctx, true).revealedFields()).isZero();
+  }
 }

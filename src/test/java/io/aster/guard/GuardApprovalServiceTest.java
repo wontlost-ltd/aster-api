@@ -647,4 +647,30 @@ class GuardApprovalServiceTest {
     assertThat(service.expireDue(now)).isEqualTo(1);
     verify(store, times(1)).completeApproval(any(), any());
   }
+
+  // ---- ADR 0042 §12 D6：锁内复核解除状态 ----
+
+  @Test
+  void ownRevealCommittedBeforeLockIsSnapshotMismatch() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    when(snapshots.hashesFor(any(), any()))
+        .thenReturn(new InputSnapshotService.ApproverHashes(InputSnapshotService.AVAILABLE, "m".repeat(64), null));
+    when(snapshots.revealedNow(any(), any())).thenReturn(true);
+    assertThatThrownBy(() -> service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null,
+        "m".repeat(64)))
+        .isInstanceOfSatisfying(GuardApprovalConflictException.class,
+            e -> assertThat(e.code()).isEqualTo("input_snapshot_mismatch"));
+  }
+
+  @Test
+  void unchangedRevealStateRecordsMatchedSnapshot() throws Exception {
+    GuardApprovalEntity a = pending(DPO);
+    when(snapshots.hashesFor(any(), any()))
+        .thenReturn(new InputSnapshotService.ApproverHashes(InputSnapshotService.AVAILABLE, "m".repeat(64), null));
+    when(snapshots.revealedNow(any(), any())).thenReturn(false);
+    service.decideApproval(TENANT, a.id, "dpo-1", null, List.of(DPO), true, null, "m".repeat(64));
+    assertThat(a.inputSnapshotMatched).isTrue();
+    assertThat(a.inputRevealed).isFalse();
+    assertThat(a.inputSnapshotHash).isEqualTo("m".repeat(64));
+  }
 }

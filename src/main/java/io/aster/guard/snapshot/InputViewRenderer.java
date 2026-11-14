@@ -150,20 +150,33 @@ public final class InputViewRenderer {
       return unknown();
     }
 
-    /** 已声明叶子：标量或标量数组（整体一个叶子）；声明为标量却传了对象 → unknown。 */
+    /**
+     * 已声明叶子：标量或标量数组（整体一个叶子）。形状不符（对象、或数组里含对象 / 数组）→ unknown，
+     * 解除视图同样不还原——解除只作用于形状与声明一致的值，未声明的结构任何人都看不到。
+     * {@code revealedFields} 只计实际还原的非 null 值。
+     */
     private Object leaf(Object value, String path) {
+      if (!scalarShaped(value)) {
+        return unknown();
+      }
       PiiMark mark = marks.get(path);
       if (mark != null) {
         if (!revealed) {
           return masked(mark);
         }
-        revealedFields++;
+        if (value != null) {
+          revealedFields++;
+        }
         return value;
       }
-      if (value instanceof Map<?, ?>) {
-        return unknown();
-      }
       return plain(value);
+    }
+
+    private static boolean scalarShaped(Object value) {
+      if (value instanceof Map<?, ?>) {
+        return false;
+      }
+      return !(value instanceof List<?> list) || list.stream().noneMatch(i -> i instanceof Map<?, ?> || i instanceof List<?>);
     }
 
     /** 第二层正则：只作用于 String（含标量数组的元素），规范 UUID 豁免，与收据同一判定。 */
@@ -173,7 +186,7 @@ public final class InputViewRenderer {
       }
       if (value instanceof List<?> list) {
         List<Object> out = new ArrayList<>(list.size());
-        list.forEach(item -> out.add(item instanceof Map<?, ?> || item instanceof List<?> ? unknown() : plain(item)));
+        list.forEach(item -> out.add(plain(item)));
         return out;
       }
       return value;
