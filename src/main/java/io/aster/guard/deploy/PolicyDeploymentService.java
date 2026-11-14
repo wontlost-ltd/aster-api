@@ -128,7 +128,9 @@ public class PolicyDeploymentService {
     lock("guard-deploy:" + tenantId + ':' + d.cloudPolicyId());
     lock("guard-deploy-address:" + tenantId + ':' + d.moduleName() + '.' + d.functionName());
     List<PolicyCatalog> owned = ownedCatalogs(tenantId, d.cloudPolicyId());
-    rejectStale(owned, d.generation());
+    if (rejectStale(owned, d.generation()) && !deployedAt(owned, d)) {
+      throw sameGenerationConflict();
+    }
     PolicyCatalog target = targetCatalog(tenantId, d);
     for (PolicyCatalog other : owned) {
       if (!other.id.equals(target.id)) {
@@ -166,7 +168,9 @@ public class PolicyDeploymentService {
     if (owned.isEmpty()) {
       throw new Rejection(new Rejected(404, "not_found", "无此部署", null));
     }
-    rejectStale(owned, generation);
+    if (rejectStale(owned, generation) && owned.stream().anyMatch(c -> c.defaultVersionId != null)) {
+      throw sameGenerationConflict();
+    }
     boolean changed = false;
     for (PolicyCatalog catalog : owned) {
       changed |= versionService.withdrawCatalog(catalog);
@@ -238,13 +242,33 @@ public class PolicyDeploymentService {
     return PolicyCatalog.<PolicyCatalog>find("tenantId = ?1 and externalRef = ?2", tenantId, cloudPolicyId).list();
   }
 
-  private static void rejectStale(List<PolicyCatalog> owned, long generation) {
+  /**
+   * 代际门：更小的代际 409 {@code stale_generation}。
+   *
+   * @return 是否与已存代际相等——相等只允许是同一意图的重放（崩溃或响应丢失后的重试），由调用方核对
+   */
+  private static boolean rejectStale(List<PolicyCatalog> owned, long generation) {
     long stored = owned.stream().map(c -> c.externalGeneration).filter(g -> g != null)
         .mapToLong(Long::longValue).max().orElse(0L);
     if (generation < stored) {
       throw new Rejection(new Rejected(409, "stale_generation", "已有更新的部署代际",
           Map.of("generation", stored)));
     }
+    return generation == stored;
+  }
+
+  /** 同代际重放的意图核对：该 cloud 策略当前正好以同一 cloud 版本、同一地址处于部署状态。 */
+  private static boolean deployedAt(List<PolicyCatalog> owned, PolicyDeployment d) {
+    return owned.stream()
+        .filter(c -> c.defaultVersionId != null)
+        .anyMatch(c -> d.moduleName().equals(c.moduleName) && d.functionName().equals(c.functionName)
+            && PolicyVersion.<PolicyVersion>findByIdOptional(c.defaultVersionId)
+                .map(v -> d.cloudVersionId().equals(v.externalRef)).orElse(false));
+  }
+
+  /** 同一代际只能代表一个意图；意图不同说明 cloud 侧代际分配出错，拒绝而不是覆盖。 */
+  private static Rejection sameGenerationConflict() {
+    return new Rejection(new Rejected(409, "generation_conflict", "同一部署代际已用于另一意图", null));
   }
 
   private void lock(String key) {

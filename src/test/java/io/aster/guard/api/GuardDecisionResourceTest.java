@@ -517,14 +517,14 @@ class GuardDecisionResourceTest {
   }
 
   @Test
-  void GET回读等于POST响应且跨租户404() {
+  void GET回读等于POST响应且跨租户404() throws Exception {
     Response created = post(TENANT, allowBody(), null);
     String id = created.jsonPath().getString("decisionId");
 
     Response read = get(TENANT, id);
 
     assertThat(read.statusCode()).isEqualTo(200);
-    assertThat(read.asString()).isEqualTo(created.asString());
+    assertThat(withoutPolicyAddress(read.asString(), ALLOW_MODULE, FUNCTION)).isEqualTo(json(created.asString()));
     assertThat(get(OTHER_TENANT, id).statusCode()).isEqualTo(404);
     assertThat(get(TENANT, "not-a-uuid").statusCode()).isEqualTo(404);
   }
@@ -851,5 +851,19 @@ class GuardDecisionResourceTest {
     } catch (Exception e) {
       throw new IllegalArgumentException(json, e);
     }
+  }
+
+  /** 回读比创建多出策略地址（ADR 0054 §11 D12）；去掉这两项后与创建 / 审批响应逐字段相同。 */
+  private static com.fasterxml.jackson.databind.JsonNode withoutPolicyAddress(String json, String module, String function)
+      throws com.fasterxml.jackson.core.JsonProcessingException {
+    var node = (com.fasterxml.jackson.databind.node.ObjectNode) new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+    assertThat(node.remove("policyModule").asText()).isEqualTo(module);
+    assertThat(node.remove("policyFunction").asText()).isEqualTo(function);
+    return node;
+  }
+
+  private static com.fasterxml.jackson.databind.JsonNode json(String json)
+      throws com.fasterxml.jackson.core.JsonProcessingException {
+    return new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
   }
 }

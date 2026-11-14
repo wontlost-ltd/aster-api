@@ -231,7 +231,8 @@ class ResolverMigrationServiceTest {
         List<Long> ids = seed(prefix + "p", List.of(OK_SRC), List.of(VersionStatus.APPROVED));
         PolicyVersion before = load(ids.get(0));
         PolicyCompiler broken = Mockito.mock(PolicyCompiler.class);
-        Mockito.when(broken.compile(ArgumentMatchers.anyString(), ArgumentMatchers.any(), ArgumentMatchers.any()))
+        Mockito.when(broken.compile(ArgumentMatchers.anyString(), ArgumentMatchers.any(), ArgumentMatchers.any(),
+            ArgumentMatchers.any(), ArgumentMatchers.anyBoolean()))
             .thenReturn(CompilationResult.failure("CNL 编译失败: boom"));
         QuarkusMock.installMockForType(broken, PolicyCompiler.class);
 

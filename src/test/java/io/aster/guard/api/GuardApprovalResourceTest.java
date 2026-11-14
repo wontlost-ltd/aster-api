@@ -190,7 +190,7 @@ public class GuardApprovalResourceTest {
   }
 
   @Test
-  void 列表含待审批_DPO批准后决策为ALLOW() {
+  void 列表含待审批_DPO批准后决策为ALLOW() throws Exception {
     String[] ids = createPending();
 
     Response listed = list(null);
@@ -211,7 +211,7 @@ public class GuardApprovalResourceTest {
     assertThat(approved.jsonPath().getString("approval.status")).isEqualTo("APPROVED");
     Response read = getDecision(ids[0]);
     assertThat(read.jsonPath().getString("effectiveOutcome")).isEqualTo("ALLOW");
-    assertThat(read.asString()).isEqualTo(approved.asString());
+    assertThat(withoutPolicyAddress(read.asString(), DeployedMapParamProbeTest.MODULE, DeployedMapParamProbeTest.FUNCTION)).isEqualTo(json(approved.asString()));
     GuardApprovalEntity row = approvalRow(ids[1]);
     assertThat(row.status).isEqualTo(GuardApprovalStatus.APPROVED);
     assertThat(row.decidedBy).isEqualTo("dpo-1");
@@ -668,5 +668,19 @@ public class GuardApprovalResourceTest {
     assertThat(approved.jsonPath().getBoolean("items[0].inputSnapshotMatched")).isTrue();
     assertThat(approved.jsonPath().getBoolean("items[0].inputRevealed")).isFalse();
     assertThat(approved.jsonPath().getString("items[0].inputStatus")).isEqualTo("available");
+  }
+
+  /** 回读比创建多出策略地址（ADR 0054 §11 D12）；去掉这两项后与创建 / 审批响应逐字段相同。 */
+  private static com.fasterxml.jackson.databind.JsonNode withoutPolicyAddress(String json, String module, String function)
+      throws com.fasterxml.jackson.core.JsonProcessingException {
+    var node = (com.fasterxml.jackson.databind.node.ObjectNode) new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+    assertThat(node.remove("policyModule").asText()).isEqualTo(module);
+    assertThat(node.remove("policyFunction").asText()).isEqualTo(function);
+    return node;
+  }
+
+  private static com.fasterxml.jackson.databind.JsonNode json(String json)
+      throws com.fasterxml.jackson.core.JsonProcessingException {
+    return new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
   }
 }

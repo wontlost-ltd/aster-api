@@ -46,7 +46,7 @@ public record PolicyDeployment(
 
   /**
    * 拒绝：{@code status} 为 HTTP 状态码，{@code error} 为错误码，{@code detail} 为附加字段（可为 null）。
-   * 码表：400 {@code invalid_deployment}；404（无此部署，空体）；409 {@code stale_generation | address_conflict |
+   * 码表：400 {@code invalid_deployment}；404（无此部署，空体）；409 {@code stale_generation | generation_conflict | address_conflict |
    * deployment_mismatch | concurrent_activation}；422 {@code compile_failed | function_not_found | vocabulary_invalid |
    * stability_blocked}。
    */

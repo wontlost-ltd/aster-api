@@ -260,6 +260,21 @@ class PolicyDeploymentServiceTest {
   }
 
   @Test
+  void sameGenerationWithDifferentIntentIs409Conflict() {
+    Deployed v1 = ok(deploy("cp-1", 5, "cv-1", allow(MODULE, "R-1")));
+    rejected(deploy("cp-1", 5, "cv-2", allow(MODULE, "R-2")), 409, "generation_conflict");
+    String moved = MODULE + "c";
+    String source = allow(moved, "R-1");
+    rejected(service.deploy(TENANT, USER, new PolicyDeployment("cp-1", 5, "cv-3", 1, moved, FUNCTION, source,
+        "en-US", null, null, PolicyDeploymentService.sha256(source))), 409, "generation_conflict");
+    rejected(service.withdraw(TENANT, USER, "cp-1", 5), 409, "generation_conflict");
+    assertThat(activeVersion().id).isEqualTo(v1.policyVersionId());
+    assertThat(service.withdraw(TENANT, USER, "cp-1", 6)).isInstanceOf(Withdrawn.class);
+    rejected(deploy("cp-1", 6, "cv-1", allow(MODULE, "R-1")), 409, "generation_conflict");
+    assertThat(service.withdraw(TENANT, USER, "cp-1", 6)).isInstanceOf(Withdrawn.class);
+  }
+
+  @Test
   void deployedPolicyResolvesForDecisionsAndWithdrawMakesItPolicyNotFound() {
     Deployed d = ok(deploy("cp-1", 1, "cv-1", allow(MODULE, "R-1")));
     var allowed = decide();
@@ -303,10 +318,14 @@ class PolicyDeploymentServiceTest {
 
   @Test
   void deployAndWithdrawAppendAuditEvents() {
+    // 审计链只追加不删除：只看本用例之后写入的事件。
+    long before = QuarkusTransaction.requiringNew().call(() -> AuditLog.<AuditLog>find(
+        "tenantId = ?1 order by id desc", TENANT).firstResultOptional().map(a -> a.id).orElse(0L));
     Deployed d = ok(deploy("cp-1", 1, "cv-1", allow(MODULE, "R-1")));
     service.withdraw(TENANT, USER, "cp-1", 2);
     List<AuditLog> events = QuarkusTransaction.requiringNew().call(() -> AuditLog.<AuditLog>find(
-        "tenantId = ?1 and eventType in ('POLICY_DEPLOYED', 'POLICY_WITHDRAWN') order by id", TENANT).list());
+        "tenantId = ?1 and id > ?2 and eventType in ('POLICY_DEPLOYED', 'POLICY_WITHDRAWN') order by id", TENANT, before)
+        .list());
     assertThat(events).extracting(e -> e.eventType).containsExactly("POLICY_DEPLOYED", "POLICY_WITHDRAWN");
     assertThat(events.get(0).metadata).contains("\"cloudPolicyId\":\"cp-1\"").contains("\"cloudVersionId\":\"cv-1\"")
         .contains("\"policyVersionId\":" + d.policyVersionId());

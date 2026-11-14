@@ -27,6 +27,7 @@ PUT 请求体：
 |---|---|---|
 | 400 | `invalid_deployment` | 字段缺失或越界、`sourceSha256` 与源码不符、源码 `Module` 头与 `moduleName` 不符、重复键 |
 | 409 | `stale_generation` | 已有更大的 `generation`（响应带 `generation`）；cloud 视为已被更新的请求取代 |
+| 409 | `generation_conflict` | 同一 `generation` 已用于另一意图（另一版本 / 地址 / 撤回）；同代际只允许原样重放 |
 | 409 | `address_conflict` | 同租户另一策略（含 aster-api 原生策略）已占用该 `module.function` |
 | 409 | `deployment_mismatch` | 同一 `cloudVersionId` 已以不同源码 / 地址部署过 |
 | 409 | `concurrent_activation` | 同一策略的另一次激活并发提交；可重试 |
