@@ -15,7 +15,7 @@ import java.time.Instant;
 import java.util.Optional;
 
 /**
- * 可审批评估的分类行（ADR 0042 §12 D1）：评估事件发布之后写入，先写者为准、从不更新；
+ * 可审批评估（及要求 verifiedInputs 的 ALLOW，ADR 0046 §11.8）的分类行（ADR 0042 §12 D1）：评估事件发布之后写入，先写者为准、从不更新；
  * from-evidence 用 {@code input_hash} 核对输入，用 {@code classification} 打码。
  */
 @RegisterForReflection

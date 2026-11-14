@@ -136,7 +136,8 @@ public class GuardDecisionResource {
   }
 
   /**
-   * 从证据开决策（ADR 0042 §3.1）：仅内部 HMAC 通道，收据即评估事件。
+   * 从证据开决策（ADR 0042 §3.1）：仅内部 HMAC 通道，收据即评估事件。受理可审批结论，以及档案要求 verifiedInputs
+   * 时的 ALLOW（ADR 0046 §11.8：过来源门后 ALLOW 并签执行收据，否则 DENY）。
    * 路径已由 {@code InternalCallerFilter} 恒要求 HMAC，这里再按验签章兜底；内部调用不计量配额。
    */
   @POST
