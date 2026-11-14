@@ -59,8 +59,14 @@ public class EvaluationClassificationWriter {
       return;
     }
     if (Context.isOnEventLoopThread()) {
-      Infrastructure.getDefaultWorkerPool().execute(
-          () -> write(tenantId, correlationId, requestContext, classification));
+      try {
+        Infrastructure.getDefaultWorkerPool().execute(
+            () -> write(tenantId, correlationId, requestContext, classification));
+      } catch (RuntimeException rejected) {
+        writeFailed.increment();
+        LOG.warnf("评估分类行写入未能调度，from-evidence 将按 unbound 处理: tenant=%s correlationId=%s: %s",
+            tenantId, correlationId, rejected.toString());
+      }
       return;
     }
     write(tenantId, correlationId, requestContext, classification);
