@@ -112,11 +112,13 @@ public class GuardApprovalResource {
   /** 非法 UUID 与跨租户一律 404 approval_not_found，不泄露审批是否存在。 */
   private Response decide(String id, boolean approve, Map<String, String> body) {
     String comment = body == null ? null : body.get("comment");
+    // 审批人所见输入视图的快照哈希（ADR 0042 §12 D6）；旧 SDK 不带
+    String inputSnapshotHash = body == null ? null : body.get("inputSnapshotHash");
     try {
       UUID approvalId = parseId(id);
       GuardDecisionResponse r = service.decideApproval(identityResolver.tenantId(), approvalId,
           identityResolver.performedBy(), identityResolver.apiKeyId(), identityResolver.businessRoles(), approve,
-          comment);
+          comment, inputSnapshotHash);
       return Response.ok(r).build();
     } catch (GuardApprovalConflictException e) {
       return error(statusOf(e.code()), e.code(), e.getMessage(), e.details());

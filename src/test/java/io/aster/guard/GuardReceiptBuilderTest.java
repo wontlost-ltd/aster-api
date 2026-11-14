@@ -697,4 +697,75 @@ class GuardReceiptBuilderTest {
     assertThatNullPointerException()
         .isThrownBy(() -> builder.issuerRevokedEvent(null, "i", "k", "SYSTEM", List.of()));
   }
+
+  // ---- ADR 0042 §12 D5 / D6：审批快照键与解除事件 ----
+
+  private static GuardApprovalEntity decided(GuardApprovalStatus status) {
+    GuardApprovalEntity a = new GuardApprovalEntity();
+    a.id = UUID.fromString("abcdef12-1234-5678-9012-345678901234");
+    a.tenantId = "t1";
+    a.decisionId = UUID.fromString("12345678-1234-5678-9012-abcdef123456");
+    a.outcome = "REQUIRE_APPROVAL";
+    a.principalId = "agent-42";
+    a.status = status;
+    a.expiresAt = Instant.now().plusSeconds(3600);
+    a.inputSnapshotHash = "4111-1111-1111-1111" + "a".repeat(45);
+    a.inputSnapshotMatched = true;
+    a.inputRevealed = true;
+    a.inputStatus = "available";
+    return a;
+  }
+
+  @Test
+  void approvalEventCarriesSnapshotKeys() {
+    GuardApprovalEntity a = decided(GuardApprovalStatus.APPROVED);
+    a.decidedBy = "dpo-1";
+    assertThat(builder.approvalEvent(a, HASH).metadata())
+        .containsEntry("inputSnapshotHash", a.inputSnapshotHash)
+        .containsEntry("inputSnapshotMatched", true)
+        .containsEntry("inputRevealed", true)
+        .containsEntry("inputStatus", "available");
+  }
+
+  @Test
+  void unavailableInputApprovalEventHasNoHashKey() {
+    GuardApprovalEntity a = decided(GuardApprovalStatus.REJECTED);
+    a.decidedBy = "dpo-1";
+    a.inputSnapshotHash = null;
+    a.inputSnapshotMatched = false;
+    a.inputRevealed = false;
+    a.inputStatus = "unavailable";
+    assertThat(builder.approvalEvent(a, HASH).metadata()).doesNotContainKey("inputSnapshotHash")
+        .containsEntry("inputStatus", "unavailable").containsEntry("inputSnapshotMatched", false);
+  }
+
+  @Test
+  void expiryEventHasNoSnapshotKeys() {
+    GuardApprovalEntity a = decided(GuardApprovalStatus.EXPIRED);
+    assertThat(builder.approvalEvent(a, null).metadata())
+        .doesNotContainKeys("inputSnapshotHash", "inputSnapshotMatched", "inputRevealed", "inputStatus");
+  }
+
+  @Test
+  void approvalEventFitsBudgetWithSnapshotKeys() throws Exception {
+    GuardApprovalEntity a = decided(GuardApprovalStatus.REJECTED);
+    a.requiredRole = nasty(255);
+    a.decidedBy = nasty(255);
+    a.comment = "\"".repeat(1000);
+    AuditEvent event = builder.approvalEvent(a, HASH);
+    assertThat(appenderLength(event)).isLessThanOrEqualTo(GuardReceiptBuilder.METADATA_BUDGET);
+    // 快照哈希是身份键：逐字保留（卡号形态片段也不被脱敏改写），只可能缩短 comment
+    assertThat(event.metadata()).containsEntry("inputSnapshotHash", a.inputSnapshotHash)
+        .containsEntry("decidedBy", nasty(255)).containsEntry("requiredRole", nasty(255));
+  }
+
+  @Test
+  void inputRevealEventCarriesIdentifiersOnly() {
+    GuardApprovalEntity a = decided(GuardApprovalStatus.PENDING);
+    AuditEvent event = builder.inputRevealEvent(a, "dpo-1", 3, "v1", "b".repeat(64));
+    assertThat(event.eventType()).isEqualTo(EventType.ACTION_GUARD_INPUT_REVEAL);
+    assertThat(event.performedBy()).isEqualTo("dpo-1");
+    assertThat(event.metadata()).containsOnlyKeys("decisionId", "approvalId", "revealedFields", "maskRules",
+        "inputSnapshotHash").containsEntry("revealedFields", 3).containsEntry("decisionId", a.decisionId.toString());
+  }
 }

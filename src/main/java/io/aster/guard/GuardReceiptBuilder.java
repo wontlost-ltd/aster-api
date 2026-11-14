@@ -141,6 +141,13 @@ public class GuardReceiptBuilder {
     put(m, "comment", clip(a.comment, MAX_COMMENT));
     put(m, "decisionReceiptHash", decisionReceiptHash);
     put(m, "expiredReason", a.expiredReason);
+    // 审批快照键（ADR 0042 §12 D6）：过期事件（SYSTEM）不写；输入不可用时不写哈希键
+    if (a.status != GuardApprovalStatus.EXPIRED && a.inputStatus != null) {
+      put(m, "inputSnapshotHash", clip(a.inputSnapshotHash, DIGEST_LENGTH));
+      put(m, "inputSnapshotMatched", a.inputSnapshotMatched);
+      put(m, "inputRevealed", a.inputRevealed);
+      put(m, "inputStatus", clip(a.inputStatus, MAX_TEXT));
+    }
     String actor = a.decidedBy == null ? SYSTEM_ACTOR : clip(a.decidedBy, MAX_PERFORMED_BY);
     return new AuditEvent(EventType.ACTION_GUARD_APPROVAL, Instant.now(), a.tenantId,
         null, null, null, null, null, actor, a.status == GuardApprovalStatus.APPROVED, null, null,

@@ -94,6 +94,7 @@ class GuardApprovalResourceTest {
   @BeforeEach
   void setUp() {
     QuarkusTransaction.requiringNew().run(() -> {
+      io.aster.guard.snapshot.GuardInputRevealEntity.delete("tenantId = ?1", TENANT);
       io.aster.guard.snapshot.GuardDecisionInputEntity.delete("tenantId = ?1", TENANT);
       GuardApprovalEntity.delete("tenantId = ?1", TENANT);
       GuardReceiptEntity.delete("tenantId = ?1", TENANT);
@@ -541,5 +542,131 @@ class GuardApprovalResourceTest {
       Thread.currentThread().interrupt();
       throw new IllegalStateException(e);
     }
+  }
+
+  // ---- ADR 0042 §12 D6：审批记录所见输入视图的快照哈希 ----
+
+  private static Response inputView(String approvalId, String userId) {
+    return given().header("X-Tenant-Id", TENANT).header("X-User-Id", userId)
+        .when().get(APPROVALS + "/" + approvalId + "/input");
+  }
+
+  private static Response revealInput(String approvalId, String userId) {
+    return given().header("X-Tenant-Id", TENANT).header("X-User-Id", userId).header("X-User-Business-Roles", DPO)
+        .contentType(ContentType.JSON).when().post(APPROVALS + "/" + approvalId + "/input/reveal");
+  }
+
+  private static Response approveWithHash(String approvalId, String userId, String hash) {
+    Map<String, Object> body = new HashMap<>();
+    if (hash != null) {
+      body.put("inputSnapshotHash", hash);
+    }
+    return given().header("X-Tenant-Id", TENANT).header("X-User-Id", userId).header("X-User-Business-Roles", DPO)
+        .contentType(ContentType.JSON).body(body).when().post(APPROVALS + "/" + approvalId + "/approve");
+  }
+
+  /** 该决策的权威审批事件 metadata。 */
+  private static Map<String, Object> approvalEventMetadata(String approvalId) throws Exception {
+    GuardApprovalEntity row = approvalRow(approvalId);
+    io.aster.policy.entity.AuditLog log = QuarkusTransaction.requiringNew().call(() ->
+        io.aster.policy.entity.AuditLog.<io.aster.policy.entity.AuditLog>findById(row.receiptAuditId));
+    return new com.fasterxml.jackson.databind.ObjectMapper().readValue(log.metadata,
+        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { });
+  }
+
+  @Test
+  void maskedHashMatches() throws Exception {
+    String[] ids = createPending();
+    Response view = inputView(ids[1], "dpo-1");
+    assertThat(view.jsonPath().getString("status")).as(view.asString()).isEqualTo("available");
+    String hash = view.jsonPath().getString("inputSnapshotHash");
+
+    Response r = approveWithHash(ids[1], "dpo-1", hash);
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    GuardApprovalEntity row = approvalRow(ids[1]);
+    assertThat(row.inputSnapshotHash).isEqualTo(hash);
+    assertThat(row.inputSnapshotMatched).isTrue();
+    assertThat(row.inputRevealed).isFalse();
+    assertThat(row.inputStatus).isEqualTo("available");
+    assertThat(approvalEventMetadata(ids[1])).containsEntry("inputSnapshotHash", hash)
+        .containsEntry("inputSnapshotMatched", true).containsEntry("inputRevealed", false)
+        .containsEntry("inputStatus", "available");
+  }
+
+  @Test
+  void revealedHashMatchesOnlyAfterOwnReveal() {
+    String[] ids = createPending();
+    Response revealed = revealInput(ids[1], "dpo-1");
+    assertThat(revealed.statusCode()).as(revealed.asString()).isEqualTo(200);
+    String hRevealed = revealed.jsonPath().getString("inputSnapshotHash");
+    // 未解除的人提交别人解除视图的哈希 → 409
+    assertThat(approveWithHash(ids[1], "dpo-2", hRevealed).statusCode()).isEqualTo(409);
+
+    Response r = approveWithHash(ids[1], "dpo-1", hRevealed);
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    GuardApprovalEntity row = approvalRow(ids[1]);
+    assertThat(row.inputSnapshotMatched).isTrue();
+    assertThat(row.inputRevealed).isTrue();
+    assertThat(row.inputSnapshotHash).isEqualTo(hRevealed);
+  }
+
+  @Test
+  void otherApproversRevealDoesNotCountForMe() throws Exception {
+    String[] ids = createPending();
+    assertThat(revealInput(ids[1], "dpo-1").statusCode()).isEqualTo(200);
+    String hMasked = inputView(ids[1], "dpo-2").jsonPath().getString("inputSnapshotHash");
+
+    Response r = approveWithHash(ids[1], "dpo-2", hMasked);
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    assertThat(approvalEventMetadata(ids[1])).containsEntry("inputRevealed", false)
+        .containsEntry("inputSnapshotMatched", true);
+  }
+
+  @Test
+  void wrongHashIs409AndApprovalStaysPending() {
+    String[] ids = createPending();
+    Response r = approveWithHash(ids[1], "dpo-1", "0".repeat(64));
+    assertThat(r.statusCode()).isEqualTo(409);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("input_snapshot_mismatch");
+    assertThat(approvalRow(ids[1]).status).isEqualTo(GuardApprovalStatus.PENDING);
+  }
+
+  @Test
+  void missingHashRecordsMaskedUnmatched() {
+    String[] ids = createPending();
+    String hMasked = inputView(ids[1], "dpo-1").jsonPath().getString("inputSnapshotHash");
+    assertThat(approveWithHash(ids[1], "dpo-1", null).statusCode()).isEqualTo(200);
+    GuardApprovalEntity row = approvalRow(ids[1]);
+    assertThat(row.inputSnapshotHash).isEqualTo(hMasked);
+    assertThat(row.inputSnapshotMatched).isFalse();
+    assertThat(row.inputRevealed).isFalse();
+  }
+
+  @Test
+  void unavailableInputApprovesWithoutHashKeys() throws Exception {
+    String[] ids = createPending();
+    QuarkusTransaction.requiringNew().run(() -> io.aster.guard.snapshot.GuardDecisionInputEntity
+        .delete("decisionId", UUID.fromString(ids[0])));
+    assertThat(approveWithHash(ids[1], "dpo-1", "f".repeat(64)).statusCode()).isEqualTo(200);
+    GuardApprovalEntity row = approvalRow(ids[1]);
+    assertThat(row.inputStatus).isEqualTo("unavailable");
+    assertThat(row.inputSnapshotHash).isNull();
+    assertThat(approvalEventMetadata(ids[1])).doesNotContainKey("inputSnapshotHash")
+        .containsEntry("inputStatus", "unavailable");
+  }
+
+  @Test
+  void listItemCarriesSnapshotFields() {
+    String[] ids = createPending();
+    Response pending = list(null);
+    assertThat(pending.jsonPath().getString("items[0].inputStatus")).isEqualTo("available");
+    assertThat(pending.jsonPath().getString("items[0].inputSnapshotHash")).isNull();
+    String hash = inputView(ids[1], "dpo-1").jsonPath().getString("inputSnapshotHash");
+    approveWithHash(ids[1], "dpo-1", hash);
+    Response approved = list("APPROVED");
+    assertThat(approved.jsonPath().getString("items[0].inputSnapshotHash")).isEqualTo(hash);
+    assertThat(approved.jsonPath().getBoolean("items[0].inputSnapshotMatched")).isTrue();
+    assertThat(approved.jsonPath().getBoolean("items[0].inputRevealed")).isFalse();
+    assertThat(approved.jsonPath().getString("items[0].inputStatus")).isEqualTo("available");
   }
 }

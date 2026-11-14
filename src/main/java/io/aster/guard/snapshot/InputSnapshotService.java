@@ -143,6 +143,16 @@ public class InputSnapshotService {
     });
   }
 
+  /** 列表用：本租户中有输入行的决策 id（一次 in 查询，空输入不访问数据库）。 */
+  public Set<UUID> decisionsWithInput(String tenantId, java.util.Collection<UUID> decisionIds) {
+    if (decisionIds.isEmpty()) {
+      return Set.of();
+    }
+    return QuarkusTransaction.requiringNew().call(() -> GuardDecisionInputEntity
+        .<GuardDecisionInputEntity>list("tenantId = ?1 and decisionId in ?2", tenantId, decisionIds)
+        .stream().map(e -> e.decisionId).collect(java.util.stream.Collectors.toSet()));
+  }
+
   /** 审批快照哈希（A7）：该审批人的打码视图哈希与（已解除时）解除视图哈希。 */
   public record ApproverHashes(String status, String masked, String revealed) {
   }
