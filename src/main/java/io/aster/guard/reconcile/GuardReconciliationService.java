@@ -38,10 +38,13 @@ import java.util.TreeMap;
 @ApplicationScoped
 public class GuardReconciliationService {
   static final String TRY_LOCK = "SELECT pg_try_advisory_xact_lock(hashtextextended('guard-reconcile:' || :t, 0))";
-  /** 候选租户（计划 D3）：窗口内有收据或决策、有待对账上报、有 OPEN 孤儿。 */
+  /**
+   * 候选租户（计划 D3）：窗口内有收据、有决策事件（orphan_receipt 要扫只有事件而决策行未落库的租户）、有待对账上报、
+   * 有 OPEN 孤儿。决策事件先于决策行写入，有决策行的租户必有决策事件，不必另扫 guard_decisions。
+   */
   static final String CANDIDATE_TENANTS = "SELECT tenant_id FROM guard_receipts WHERE issued_at >= :since "
       + "OR consumed_at >= :since "
-      + "UNION SELECT tenant_id FROM guard_decisions WHERE created_at >= :since "
+      + "UNION SELECT tenant_id FROM audit_logs WHERE event_type = 'ACTION_GUARD_DECISION' AND timestamp >= :since "
       + "UNION SELECT tenant_id FROM guard_side_effects WHERE reconciled_at IS NULL "
       + "UNION SELECT tenant_id FROM guard_orphan_actions WHERE status = 'OPEN' "
       + "ORDER BY 1";

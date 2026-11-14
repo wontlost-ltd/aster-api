@@ -47,6 +47,7 @@ class GuardReconciliationServiceTest {
   @Inject GuardOrphanDetector detector;
   @Inject AuditChainVerifier verifier;
   @Inject EntityManager em;
+  @Inject io.aster.audit.chain.AuditChainAppender appender;
   @Inject MeterRegistry registry;
 
   @ConfigProperty(name = "aster.guard.result-grace") Duration grace;
@@ -209,6 +210,7 @@ class GuardReconciliationServiceTest {
     String pendingOnly = tenant("svc-cand-pending");
     String receiptOnly = tenant("svc-cand-receipt");
     String decisionOnly = tenant("svc-cand-decision");
+    String eventOnly = tenant("svc-cand-event");
     String stale = tenant("svc-cand-stale");
     QuarkusTransaction.requiringNew().run(() -> {
       GuardOrphanActionEntity o = GuardReconcilePersistenceTest.orphan(openOnly, OrphanKind.SIDE_EFFECT_MISMATCH,
@@ -223,6 +225,10 @@ class GuardReconciliationServiceTest {
     report(pendingOnly, effect("e-1", "crm", null, null, null));
     ReconcileFixture.allow(receiptOnly, 1);
     ReconcileFixture.pending(decisionOnly);
+    // #522：只有决策事件、决策行未落库的租户同样要被枚举，否则 orphan_receipt 永远扫不到
+    appender.appendSync(new io.aster.policy.event.AuditEvent(io.aster.policy.event.EventType.ACTION_GUARD_DECISION,
+        Instant.now(), eventOnly, "guard.probe", "decide", null, null, null, "user-race-loser", true, null, null,
+        java.util.Map.of("decisionId", UUID.randomUUID().toString()), null, null, null, null));
     // 窗口外：stale 只有一条非 OPEN 孤儿与一条早已对账的上报
     report(stale, effect("e-1", "crm", null, null, null));
     QuarkusTransaction.requiringNew().run(() -> em.createNativeQuery(
@@ -231,9 +237,10 @@ class GuardReconciliationServiceTest {
 
     List<String> candidates = service.candidateTenants(Instant.now().minus(Duration.ofDays(7)));
 
-    assertThat(candidates).contains(openOnly, pendingOnly, receiptOnly, decisionOnly).doesNotContain(stale);
+    assertThat(candidates).contains(openOnly, pendingOnly, receiptOnly, decisionOnly, eventOnly)
+        .doesNotContain(stale);
     assertThat(service.candidateTenants(Instant.now().plusSeconds(3600)))
-        .contains(openOnly, pendingOnly).doesNotContain(receiptOnly, decisionOnly, stale);
+        .contains(openOnly, pendingOnly).doesNotContain(receiptOnly, decisionOnly, eventOnly, stale);
   }
 
   @Test
