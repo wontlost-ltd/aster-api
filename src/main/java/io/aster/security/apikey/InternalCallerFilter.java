@@ -227,10 +227,12 @@ public class InternalCallerFilter {
         return p.equals(GUARD_FACT_ISSUERS_PATH) || p.startsWith(GUARD_FACT_ISSUERS_PATH + "/");
     }
 
-    /** 审批列表、审批批准 / 拒绝、单个决策回读、执行收据 consume / 结果回写：既接受 HMAC 内部调用，也接受 Bearer API key。 */
+    /** 审批列表、审批批准 / 拒绝、审批输入视图与原值解除、单个决策回读、执行收据 consume / 结果回写：既接受 HMAC 内部调用，也接受 Bearer API key。 */
     private static boolean isGuardDualChannel(String p) {
         return p.equals("/api/v1/guard/approvals")
             || p.matches("/api/v1/guard/approvals/[^/]+/(?:approve|reject)")
+            // 输入视图 GET /input 与原值解除 POST /input/reveal（#518）：身份与已验证业务角色同 approve / reject，取自 HMAC 签名头
+            || p.matches("/api/v1/guard/approvals/[^/]+/input(?:/reveal)?")
             || p.matches("/api/v1/guard/decisions/[^/]+")
             || p.matches("/api/v1/guard/receipts/[^/]+/(?:consume|result)");
     }
