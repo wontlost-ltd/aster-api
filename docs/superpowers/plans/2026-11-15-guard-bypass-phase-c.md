@@ -281,7 +281,28 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 - Modify: `apps/infrastructure/kube-system/manifests/kustomization.yaml`（列入）、`argocd/projects/infrastructure.yaml`（`clusterResourceWhitelist` 加 `admissionregistration.k8s.io` `ValidatingAdmissionPolicy` 与 `ValidatingAdmissionPolicyBinding`）
 - Modify: `scripts/guard-bypass/manifests.test.sh`（断言两个 policy 存在、绑定作用于 `aster-agents`、`validationActions` 为 `[Deny]`、`guard-probe-pod-scope` 的 `matchConditions` 只匹配探针 SA、ClusterRole 只有 `namespaces` `list`。CEL 规则的**行为**离线测不了，由 Step 4 的服务端 dry-run 核对，且那一步对本策略是必做）
 
-- [ ] Step 1：测试先行 → FAIL；Step 2：写清单 → PASS；Step 3（用户合并后、只读核对）：`kubectl get validatingadmissionpolicy guard-agents-secret-allowlist`、`kubectl get validatingadmissionpolicybinding` 存在，贴 PR；Step 4（用户，管理员 kubeconfig；`guard-probe-pod-scope` 部分必做，是 U-K6 的前置，用 `--as=system:serviceaccount:aster-guard:guard-bypass-probe` 模拟探针身份，所以**不需要先发放探针凭证**，没有先后循环）：`scripts/guard-bypass/vap-check.sh`（随本 PR 提交，固定六个服务端 dry-run，逐条打印期望与实际，任一不符退出 1）——① 管理员 `kubectl create secret generic x -n aster-agents --from-literal=a=b --dry-run=server` 被拒；以 `--as` 探针身份：② 创建合法探针 Pod（与 Task 6 生成的规格相同）**放行**；③ 创建带 `projected` 卷投射 `serviceAccountToken` 的 Pod 被拒；④ 创建 `secretKeyRef` 指向其它 Secret 名的 Pod 被拒；⑤ 删除带探针标签的 Pod **放行**；⑥ 删除无标签 Pod 被拒（⑤⑥ 需要真实对象：脚本以管理员先建一个带标签、一个无标签的 `registry.k8s.io/pause@sha256:<digest>` Pod，核对后删除）。输出贴 PR。提交 `feat(guard): aster-agents Secret 准入白名单与探针命名空间只读（ADR 0054 §12 D9）`。
+- [ ] Step 1：测试先行 → FAIL；Step 2：写清单 → PASS；Step 3（用户合并后、只读核对）：`kubectl get validatingadmissionpolicy guard-agents-secret-allowlist`、`kubectl get validatingadmissionpolicybinding` 存在，贴 PR；Step 4（用户，管理员 kubeconfig；`guard-probe-pod-scope` 部分必做，是 U-K6 的前置，用 `--as=system:serviceaccount:aster-guard:guard-bypass-probe` 模拟探针身份，所以**不需要先发放探针凭证**，没有先后循环）：`scripts/guard-bypass/vap-check.sh`（随本 PR 提交；表驱动，每条准入分支至少一个服务端 dry-run 用例，逐条打印期望与实际，任一不符退出 1；用例清单就是验收标准，增删规则须同步增删用例）。Pod 用例均以「合法探针 Pod」（与 Task 6 生成的规格相同）为基底，只改动一处：
+
+  | # | 身份 | 操作 | 期望 |
+  |---|---|---|---|
+  | S1 | 管理员 | 在 `aster-agents` 建名为 `x` 的 Opaque Secret | 拒 |
+  | S2 | 管理员 | 建 `kubernetes.io/service-account-token` 类型 Secret | 拒 |
+  | S3 | 管理员 | 更新（`kubectl label`）现有 `guard-demo-agent` | 放行 |
+  | P1 | 探针（`--as`） | 合法探针 Pod（含 `secretKeyRef guard-demo-agent`、`emptyDir`、`configMap` 卷） | 放行 |
+  | P2 | 探针 | 缺 `app.kubernetes.io/name` 标签 / 缺 `guard-bypass/run-id`（两例） | 拒 |
+  | P3 | 探针 | `serviceAccountName: other` | 拒 |
+  | P4 | 探针 | `automountServiceAccountToken` 缺省或 `true`（两例） | 拒 |
+  | P5 | 探针 | `projected` 卷（`serviceAccountToken` 源）/ `projected` 卷（`secret` 源）（两例） | 拒 |
+  | P6 | 探针 | `secret` 卷 `secretName: other`；`secret` 卷 `secretName: guard-demo-agent`（两例） | 拒 / 放行 |
+  | P7 | 探针 | `hostPath`、`persistentVolumeClaim`、`ephemeral`、`csi` 卷（四例） | 拒 |
+  | P8 | 探针 | `containers[0]` / `initContainers[0]` 的 `env[].valueFrom.secretKeyRef.name: other`（两例） | 拒 |
+  | P9 | 探针 | `containers[0]` / `initContainers[0]` 的 `envFrom[].secretRef.name: other`（两例） | 拒 |
+  | P10 | 探针 | 对已存在的探针 Pod 追加 `ephemeralContainers`（`kubectl debug` 等价的 `pods/ephemeralcontainers` 子资源）且其 `secretKeyRef: other` | 拒（探针身份本就没有该子资源的 RBAC；用例确认 403 而不是放行） |
+  | P11 | 管理员 | P8 同形 Pod（策略只匹配探针身份，管理员不受限） | 放行（证明 `matchConditions` 没有误伤其它身份） |
+  | D1 | 探针 | 删除带探针标签的 Pod | 放行 |
+  | D2 | 探针 | 删除无标签 Pod | 拒 |
+
+  D1 / D2 / P10 / S3 需要真实对象：脚本以管理员先建带标签与无标签的 `registry.k8s.io/pause@sha256:<digest>` Pod 各一个，核对后删除；其余用 `--dry-run=server`。CEL 对缺失字段（无 `volumes`、无 `env`、无 `initContainers`）的行为由 P1 的变体「无卷无 env」覆盖（放行）。输出贴 PR。提交 `feat(guard): aster-agents Secret 准入白名单与探针命名空间只读（ADR 0054 §12 D9）`。
 
 > 说明：ServiceAccount token 类 Secret 也被拒（`type` 必须 `Opaque`）；`kube-system-config` 应用 `prune: false`，删除这两个对象须手工，PR 描述写明回滚命令。
 
@@ -377,7 +398,7 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 - **U-K3**：合并 k3s PR 7a（受保护路径，人工）。
 - **U-K4**：合并 Deployment `replicas: 0 → 1` 的 PR。
 - **U-K5（本阶段最主要的新设置）**：在 k3s 建 Environment `guard-probe`，按 Task 8「Environment 配置」逐项设置（部署分支仅 `main`、不允许 tag、管理员不可绕过、必需审批人默认不设并知晓取舍）。**集群 API 不需要新暴露**：6443 已对公网开放、托管 runner 过去就这样连（§0），所以不需要 Cloudflare Tunnel / Access、Tailscale 或 SSH 跳板；若用户日后收紧 6443（见 O6），本工作流须随之改为 O6 的方案。
-- **U-K6**（前置：Task 7c 已合并且 `vap-check.sh` 六项全符；且用户以管理员凭证执行 `kubectl get secrets -n aster-agents -o name`，输出**恰为** `secret/guard-demo-agent`——准入策略只拦之后的 CREATE / UPDATE，不清理已存在的 Secret；多出的先删除再发放凭证，核对输出贴 Task 7c PR）：`bash scripts/guard-bypass/kubeconfig-for-probe.sh --server https://158.179.18.241:6443 | gh secret set GUARD_PROBE_KUBECONFIG --env guard-probe -R wontlost-ltd/k3s`（缺省 30 天）；日历提醒到期前轮换。
+- **U-K6**（前置：Task 7c 已合并且 `vap-check.sh` 全部用例符合期望；且用户以管理员凭证执行 `kubectl get secrets -n aster-agents -o name`，输出**恰为** `secret/guard-demo-agent`——准入策略只拦之后的 CREATE / UPDATE，不清理已存在的 Secret；多出的先删除再发放凭证，核对输出贴 Task 7c PR）：`bash scripts/guard-bypass/kubeconfig-for-probe.sh --server https://158.179.18.241:6443 | gh secret set GUARD_PROBE_KUBECONFIG --env guard-probe -R wontlost-ltd/k3s`（缺省 30 天）；日历提醒到期前轮换。
 - **U-K7**：Task 10 的反向记录窗口（约 15 分钟，管理员 kubeconfig）。
 - **U-K8（核实必做，开启可选）**：在发放探针凭证（U-K6）前核实 k3s 是否开启 apiserver 审计日志（三台 control-plane 的 `/etc/rancher/k3s/config.yaml` 中 `kube-apiserver-arg` 有无 `audit-log-path` / `audit-policy-file`），结论写进 Task 8 PR 与 runbook；若没有，可加一份只记录 `system:serviceaccount:aster-guard:guard-bypass-probe` 请求（Metadata 级）的审计策略，三台 control-plane 逐台重启 k3s。不做的话，集群侧审计只有 Pod 标签与 Argo / 事件。
 - **U-K9（建议，本计划顺带发现）**：删除 aster-api 仓遗留的 secret `KUBECONFIG` 与 `KUBECONFIG_B64`（2026-07-09 起无工作流使用；它们很可能是管理员凭证，留在公开仓的 secret 里只有风险）；并评估子网安全列表对 `0.0.0.0/0` 开放的 22 / 5432 / 6443（O6）。
