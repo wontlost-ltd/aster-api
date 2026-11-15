@@ -1,5 +1,6 @@
 package io.aster.guard.receipt;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -11,6 +12,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.Base64;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -20,6 +22,9 @@ class ExecutionReceiptSignerTest {
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Instant T0 = Instant.parse("2026-11-08T10:00:00Z");
   private static final String HASH = "a".repeat(64);
+  private static final String MODULE = "guard.customer";
+  private static final String FUNCTION = "decide";
+  private static final ReceiptPolicy POLICY = new ReceiptPolicy(MODULE, FUNCTION, 42L);
   private static final String CONFIG = "{\"revision\":1,\"keys\":["
       + "{\"kid\":\"k1\",\"privateKey\":\"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE\"},"
       + "{\"kid\":\"k2\",\"privateKey\":\"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI\"}]}";
@@ -57,7 +62,7 @@ class ExecutionReceiptSignerTest {
   private final ExecutionReceiptSigner signer = new ExecutionReceiptSigner(keys, Duration.ofMinutes(5), clock);
 
   private ExecutionReceipt sign() {
-    return signer.sign("dec-1", "tenant-1", HASH, 42L, T0);
+    return signer.sign("dec-1", "tenant-1", HASH, POLICY, T0);
   }
 
   @Test
@@ -80,14 +85,14 @@ class ExecutionReceiptSignerTest {
     ExecutionReceipt.Payload p = r.payload();
     String tamperedHash = HASH.substring(0, 63) + "b";
     ExecutionReceipt.Payload changedHash = new ExecutionReceipt.Payload(tamperedHash, p.decisionId(), p.expiresAt(),
-        p.issuedAt(), p.kid(), p.outcome(), p.policyVersionId(), p.tenantId(), p.v());
+        p.issuedAt(), p.kid(), p.outcome(), p.policyFunction(), p.policyModule(), p.policyVersionId(), p.tenantId(), p.v());
     assertThat(signer.verify(new ExecutionReceipt(r.kid(), changedHash, r.revision(), r.signature()))).isFalse();
 
     ExecutionReceipt.Payload changedTenant = new ExecutionReceipt.Payload(p.actionHash(), p.decisionId(), p.expiresAt(),
-        p.issuedAt(), p.kid(), p.outcome(), p.policyVersionId(), "tenant-2", p.v());
+        p.issuedAt(), p.kid(), p.outcome(), p.policyFunction(), p.policyModule(), p.policyVersionId(), "tenant-2", p.v());
     assertThat(signer.verify(new ExecutionReceipt(r.kid(), changedTenant, r.revision(), r.signature()))).isFalse();
 
-    ExecutionReceipt other = signer.sign("dec-2", "tenant-1", HASH, 42L, T0);
+    ExecutionReceipt other = signer.sign("dec-2", "tenant-1", HASH, POLICY, T0);
     assertThat(signer.verify(new ExecutionReceipt(r.kid(), p, r.revision(), other.signature()))).isFalse();
 
     byte[] sig = Base64.getUrlDecoder().decode(r.signature());
@@ -97,7 +102,7 @@ class ExecutionReceiptSignerTest {
     assertThat(signer.verify(new ExecutionReceipt(r.kid(), p, r.revision(), "not-base64!"))).isFalse();
 
     ExecutionReceipt.Payload otherKid = new ExecutionReceipt.Payload(p.actionHash(), p.decisionId(), p.expiresAt(),
-        p.issuedAt(), "k2", p.outcome(), p.policyVersionId(), p.tenantId(), p.v());
+        p.issuedAt(), "k2", p.outcome(), p.policyFunction(), p.policyModule(), p.policyVersionId(), p.tenantId(), p.v());
     assertThat(signer.verify(new ExecutionReceipt("k2", otherKid, r.revision(), r.signature()))).isFalse();
     assertThat(signer.verify(new ExecutionReceipt("k2", p, r.revision(), r.signature()))).isFalse();
     assertThat(signer.verify(new ExecutionReceipt("unknown", p, r.revision(), r.signature()))).isFalse();
@@ -109,7 +114,8 @@ class ExecutionReceiptSignerTest {
     assertThat(r.kid()).isEqualTo("k1");
     assertThat(JSON.writeValueAsString(r.payload())).isEqualTo(
         "{\"actionHash\":\"" + HASH + "\",\"decisionId\":\"dec-1\",\"expiresAt\":\"2026-11-08T10:05:00Z\","
-            + "\"issuedAt\":\"2026-11-08T10:00:00Z\",\"kid\":\"k1\",\"outcome\":\"ALLOW\",\"policyVersionId\":42,"
+            + "\"issuedAt\":\"2026-11-08T10:00:00Z\",\"kid\":\"k1\",\"outcome\":\"ALLOW\",\"policyFunction\":\"decide\","
+            + "\"policyModule\":\"guard.customer\",\"policyVersionId\":42,"
             + "\"tenantId\":\"tenant-1\",\"v\":1}");
     assertThat(new String(JcsCanonicalizer.canonicalize(JSON.valueToTree(r.payload())), StandardCharsets.UTF_8))
         .isEqualTo(JSON.writeValueAsString(r.payload()));
@@ -125,10 +131,67 @@ class ExecutionReceiptSignerTest {
     assertThat(signer.verify(new ExecutionReceipt(r.kid(), r.payload(), 99L, r.signature()))).isTrue();
   }
 
+  /**
+   * #517（ADR 0040 §13 R68）：策略地址受签名覆盖——把收据「挪」到同租户另一个模块或函数（改 policyModule /
+   * policyFunction、删掉任一键）都验签失败；版本 id 同理。
+   */
+  @Test
+  void policyAddressIsCoveredBySignature() {
+    ExecutionReceipt r = sign();
+    ExecutionReceipt.Payload p = r.payload();
+    assertThat(p.policyModule()).isEqualTo(MODULE);
+    assertThat(p.policyFunction()).isEqualTo(FUNCTION);
+    assertThat(signer.verify(r)).isTrue();
+
+    List<ExecutionReceipt.Payload> moved = List.of(
+        new ExecutionReceipt.Payload(p.actionHash(), p.decisionId(), p.expiresAt(), p.issuedAt(), p.kid(), p.outcome(),
+            p.policyFunction(), "guard.lenient", p.policyVersionId(), p.tenantId(), p.v()),
+        new ExecutionReceipt.Payload(p.actionHash(), p.decisionId(), p.expiresAt(), p.issuedAt(), p.kid(), p.outcome(),
+            "decideLenient", p.policyModule(), p.policyVersionId(), p.tenantId(), p.v()),
+        new ExecutionReceipt.Payload(p.actionHash(), p.decisionId(), p.expiresAt(), p.issuedAt(), p.kid(), p.outcome(),
+            p.policyFunction(), null, p.policyVersionId(), p.tenantId(), p.v()),
+        new ExecutionReceipt.Payload(p.actionHash(), p.decisionId(), p.expiresAt(), p.issuedAt(), p.kid(), p.outcome(),
+            null, p.policyModule(), p.policyVersionId(), p.tenantId(), p.v()),
+        new ExecutionReceipt.Payload(p.actionHash(), p.decisionId(), p.expiresAt(), p.issuedAt(), p.kid(), p.outcome(),
+            p.policyFunction(), p.policyModule(), 43L, p.tenantId(), p.v()));
+    for (ExecutionReceipt.Payload changed : moved) {
+      assertThat(signer.verify(new ExecutionReceipt(r.kid(), changed, r.revision(), r.signature())))
+          .as(changed.toString()).isFalse();
+    }
+  }
+
+  /**
+   * 不认识地址键的执行方（aster-guard 0.2.0、本仓参考执行方）对收到的 payload 整体做 JCS 后验签：签名字节就是
+   * 带地址键的整份载荷，v 仍为 1——增量字段不改变验签配方。
+   */
+  @Test
+  void addressKeysStayInV1AndAreSignedAsReceived() throws Exception {
+    ExecutionReceipt r = sign();
+    assertThat(r.payload().v()).isEqualTo(1);
+    JsonNode received = JSON.readTree(JSON.writeValueAsString(r)).get("payload");
+    assertThat(received.has("policyModule")).isTrue();
+    assertThat(received.has("policyFunction")).isTrue();
+
+    Signature verifier = Signature.getInstance("Ed25519");
+    verifier.initVerify(keys.find("k1").orElseThrow().keyPair().getPublic());
+    verifier.update(JcsCanonicalizer.canonicalize(received));
+    assertThat(verifier.verify(Base64.getUrlDecoder().decode(r.signature()))).isTrue();
+  }
+
+  /** 评估事件未记地址（from-evidence 以空串落库）：空地址与 null 版本一样从签名载荷中省略。 */
+  @Test
+  void emptyPolicyAddressIsOmittedFromSignedPayload() {
+    ExecutionReceipt r = signer.sign("dec-1", "tenant-1", HASH, new ReceiptPolicy("", "", null), T0);
+    String canonical = new String(ExecutionReceiptSigner.payloadBytes(r.payload()), StandardCharsets.UTF_8);
+    assertThat(canonical).doesNotContain("policyModule").doesNotContain("policyFunction")
+        .doesNotContain("policyVersionId");
+    assertThat(signer.verify(r)).isTrue();
+  }
+
   /** 无已保存策略版本（evaluateSource 锚定的决策）：载荷省略 policyVersionId，签名与验签照常。 */
   @Test
   void nullPolicyVersionIsOmittedFromSignedPayload() throws Exception {
-    ExecutionReceipt r = signer.sign("dec-1", "tenant-1", HASH, null, T0);
+    ExecutionReceipt r = signer.sign("dec-1", "tenant-1", HASH, new ReceiptPolicy(MODULE, FUNCTION, null), T0);
     assertThat(r.payload().policyVersionId()).isNull();
     String canonical = new String(ExecutionReceiptSigner.payloadBytes(r.payload()), StandardCharsets.UTF_8);
     assertThat(canonical).doesNotContain("policyVersionId").isEqualTo(JSON.writeValueAsString(r.payload()));
@@ -145,13 +208,13 @@ class ExecutionReceiptSignerTest {
     ExecutionReceiptSigner expiring = new ExecutionReceiptSigner(ReceiptSigningKeys.parse(config, "k1", running),
         Duration.ofMinutes(5), running);
     assertThat(expiring.canSignNow()).isTrue();
-    assertThat(expiring.sign("d", "t", HASH, 1L, notAfter.minusMillis(1))).isNotNull();
+    assertThat(expiring.sign("d", "t", HASH, new ReceiptPolicy(MODULE, FUNCTION, 1L), notAfter.minusMillis(1))).isNotNull();
 
     running.set(notAfter);
     assertThat(expiring.canSignNow()).isFalse();
-    assertThatThrownBy(() -> expiring.sign("d", "t", HASH, 1L, notAfter))
+    assertThatThrownBy(() -> expiring.sign("d", "t", HASH, new ReceiptPolicy(MODULE, FUNCTION, 1L), notAfter))
         .isInstanceOf(IllegalStateException.class).hasMessageContaining("notAfter");
-    assertThatThrownBy(() -> expiring.sign("d", "t", HASH, 1L, notAfter.plusSeconds(60)))
+    assertThatThrownBy(() -> expiring.sign("d", "t", HASH, new ReceiptPolicy(MODULE, FUNCTION, 1L), notAfter.plusSeconds(60)))
         .isInstanceOf(IllegalStateException.class);
   }
 
@@ -162,7 +225,7 @@ class ExecutionReceiptSignerTest {
     assertThat(Instant.parse(r.payload().issuedAt())).isEqualTo(T0);
 
     ExecutionReceiptSigner longer = new ExecutionReceiptSigner(keys, Duration.ofSeconds(90), clock);
-    assertThat(longer.sign("d", "t", HASH, 1L, T0).payload().expiresAt()).isEqualTo("2026-11-08T10:01:30Z");
+    assertThat(longer.sign("d", "t", HASH, new ReceiptPolicy(MODULE, FUNCTION, 1L), T0).payload().expiresAt()).isEqualTo("2026-11-08T10:01:30Z");
   }
 
   /** 本地窗口 issuedAt − 60s ≤ now &lt; expiresAt（expiresAt 排他）。 */

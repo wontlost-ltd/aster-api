@@ -209,6 +209,8 @@ public class GuardFromEvidenceResourceTest {
     var receipt = ExecutionReceiptAssert.assertVerifiable(ok.asString(), signingKeys);
     assertThat(receipt.get("payload").get("actionHash").asText()).isEqualTo(ExecutionReceiptAssert.actionHashOf(body));
     assertThat(receipt.get("payload").get("policyVersionId").asLong()).isEqualTo(1730890123456L);
+    assertThat(receipt.get("payload").get("policyModule").asText()).isEqualTo("guard.customer");
+    assertThat(receipt.get("payload").get("policyFunction").asText()).isEqualTo("decide");
     Response read = signedGet("/api/v1/guard/decisions/" + decisionId, "", TENANT, "u-req");
     assertThat(ExecutionReceiptAssert.tree(read.asString()).get("executionReceipt")).isEqualTo(receipt);
     UUID id = UUID.fromString(decisionId);

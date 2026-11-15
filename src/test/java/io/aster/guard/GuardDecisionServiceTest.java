@@ -232,7 +232,8 @@ class GuardDecisionServiceTest {
     assertThat(receipt).isNotNull();
     assertThat(receipt.kid()).isEqualTo("k1");
     assertThat(receipt.payload()).isEqualTo(new ExecutionReceipt.Payload(ACTION_HASH, r.decisionId(),
-        "2026-11-08T01:05:00.987Z", "2026-11-08T01:00:00.987Z", "k1", "ALLOW", 1730890123456L, TENANT, 1));
+        "2026-11-08T01:05:00.987Z", "2026-11-08T01:00:00.987Z", "k1", "ALLOW", FUNCTION, MODULE, 1730890123456L, TENANT,
+        1));
     assertThat(signer.verify(receipt)).isTrue();
     GuardDecisionEntity e = savedDecision();
     assertThat(e.actionHash).isEqualTo(ACTION_HASH);
@@ -272,7 +273,7 @@ class GuardDecisionServiceTest {
   void signingFailureDeniesReceiptUnavailable() {
     verdict("ALLOW", null, null);
     ExecutionReceiptIssuer broken = mock(ExecutionReceiptIssuer.class);
-    when(broken.issueNow(any(), any(), any(), org.mockito.ArgumentMatchers.anyLong()))
+    when(broken.issueNow(any(), any(), any(), any()))
         .thenThrow(new ExecutionReceiptUnavailableException("down", new IllegalStateException()));
     service = serviceWith(broken);
 

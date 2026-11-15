@@ -356,6 +356,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 - **SDK `run` / 代理**：验签通过后再核对 `payload.policyVersionId` **存在**且等于同一响应的 `policyVersion.id`；不符或缺失 → `blocked` `receipt_invalid`（`detail: policy_mismatch`），不 consume。`run` 的决策请求本就带执行方配置的 `policyModule / policyFunction`，这一步把收据钉在该请求解析出的版本上，防止响应与收据错配。
 - **工具侧（`auth`）**：`verifyConsumeTicket` 必填 `policy: { module, function }`，回读的 `policyModule / policyFunction`（D1 回读字段）不等 → 拒绝 `policy_mismatch`；回读缺这两项（旧 aster-api）→ `guard_unavailable`（fail-closed）。
 - 绕过套件（#466）加一例：换模块取得的 ALLOW 被工具侧拒绝。
+- 服务端补齐（ADR 0040 §13 R68，#517，PROPOSED）：执行收据载荷签名覆盖 `policyModule / policyFunction`（`v` 仍为 1）；0.3.0 的 `run` / 代理改为核对签名覆盖的地址等于自身配置，缺失或不符即 `policy_mismatch`。升级顺序与 0.2.0 兼容性见该节。
 
 ### 11.4 只有被消耗的收据才是授权（#510 / ADR 0046 §11.8）
 
