@@ -238,7 +238,7 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 **PR 7a（信任根，人工合并）Files:**
 - Modify: `.github/image-pin/allowed-images.yaml`（两条：`image: docker.io/wontlost/aster-guard-mcp` / `docker.io/wontlost/aster-guard-demo-tool`，`sourceRepo: aster-cloud/aster-guard`，`workflowFile: image.yml`，`sourceRef: refs/heads/main`，`deployBinding: kustomization`）
 - Create: `apps/infrastructure/policy-controller/policies/cluster-image-policy-aster-guard-mcp{,-reject-tag}.yaml`、`…-aster-guard-demo-tool{,-reject-tag}.yaml`（与 `aster-ai-workspace` 两份同形，`metadata.name` 为 `wontlost-aster-guard-mcp` 等）；`policies/kustomization.yaml` 列入
-- 验证：`bash scripts/image-pin/verify-cip-sync.sh` → 退出 0（7 仓 → 14 CIP）。
+- 验证：`bash scripts/image-pin/verify-cip-sync.sh` → 退出 0（`origin/main` 现为 7 仓 / 14 CIP，本 PR 新增 2 仓 → **9 仓 / 18 CIP**）。
 
 **PR 7b（应用）Files:**
 - Create `apps/aster-lang/tools/`：`namespace.yaml`（PSA restricted + sigstore include + `app.kubernetes.io/part-of: aster-lang`）、`deployment.yaml`（`demo-tool`，`replicas: 0` 起步，`strategy: Recreate`，env 见 Task 3，`ASTER_API_BASE_URL=http://aster-api.aster-cloud.svc.cluster.local`、`ASTER_GUARD_POLICY=guard.demo/decide`、`TICKET_CHECK` **不写**（缺省 on），readiness / liveness `GET /healthz`，`/tmp` emptyDir）、`service.yaml`（8080）、`network-policy.yaml`（`demo-tool-ingress`：`podSelector {app: demo-tool}`，`from` 仅 `aster-guard`，端口 8080；**列入 resources**，文件头注释写明这是 aster-lang 下首个启用的策略、为何只用 namespace-only 且不写 egress，引用 ADR 0054 §12 D2）、`external-secrets.yaml`（`demo-tool-guard` ← Vault `secret/apps/aster-guard-demo` 的 `tool-api-key`、`tenant-id`）、`image-lock.yaml`、`kustomization.yaml`（`namespace: aster-tools`，`images` 一条全零占位 digest，同 ai 约定）。
@@ -246,7 +246,7 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 - Create `apps/aster-lang/agents/`：`namespace.yaml`、`resource-quota.yaml`（`pods: "4"`、`requests.cpu: 500m`、`requests.memory: 512Mi`、`limits.cpu: "1"`、`limits.memory: 1Gi`）、`limit-range.yaml`（容器缺省 `50m / 64Mi`，上限 `200m / 128Mi`）、`role-probe.yaml`（`pods`: create get list watch delete；`pods/log`: get；`rbac.authorization.k8s.io` `rolebindings`: list；`apps` `deployments` 不需要）、`rolebinding-probe.yaml`（subject `ServiceAccount guard-bypass-probe`，`namespace: aster-guard`）、`external-secrets.yaml`（`guard-demo-agent` ← `agent-token`）、`kustomization.yaml`。
 - `apps/aster-lang/tools/` 另加 `role-probe-read.yaml` + `rolebinding-probe-read.yaml`（`pods` get list、`networking.k8s.io` `networkpolicies` get list、`apps` `deployments` get list、`services` get）。
 - Modify: `argocd/projects/aster-lang.yaml`（destinations 加三命名空间；`namespaceResourceWhitelist` 加 `ResourceQuota`、`LimitRange`，注释说明只为 `aster-agents`）、`.github/image-pin/apps.yaml`（`guard`、`tools` 两条，`lock` / `kust` 指向上面）、`scripts/image-pin/verify-registry-sync.sh` 若需要同步则同步。
-- Create: `scripts/guard-bypass/manifests.test.sh`：`kustomize build` 三个目录；断言：三命名空间 PSA restricted 与 sigstore include；`tools` 渲染结果的策略 `policy_union_violations` 为空；渲染结果不含 `TICKET_CHECK` 值 `off`；所有 Pod 模板满足 restricted 字段；`demo-tool` `replicas ≤ 1` 且 `Recreate`；`guard-bypass-probe` 的 Role 不含 `secrets`、`pods/exec`、`pods/attach`、`*` 动词或资源；`aster-agents` 内无指向本命名空间 SA 的 RoleBinding；CronJob 镜像带 `@sha256`。接入 `verify-gate-selftests.yml`。
+- Create: `scripts/guard-bypass/manifests.test.sh`：`kustomize build` 三个目录；断言：三命名空间 PSA restricted 与 sigstore include；`tools` 渲染结果的策略 `policy_union_violations` 为空；渲染结果不含 `TICKET_CHECK` 值 `off`；所有 Pod 模板满足 restricted 字段；`demo-tool` `replicas ≤ 1` 且 `Recreate`；`guard-bypass-probe` 的 Role 不含 `secrets`、`pods/exec`、`pods/attach`、`*` 动词或资源；`aster-agents` 内无指向本命名空间 SA 的 RoleBinding；`apps/aster-lang/agents` 中可产生 Secret 的对象恰为 `ExternalSecret guard-demo-agent`；CronJob 镜像带 `@sha256`。接入 `verify-gate-selftests.yml`。
 
 - [ ] Step 1：写 `manifests.test.sh` → 运行 FAIL（目录不存在）。
 - [ ] Step 2：写清单 → `bash scripts/guard-bypass/manifests.test.sh` PASS；`bash scripts/image-pin/verify-no-floating-tags.sh`、`verify-registry-sync.sh` PASS。
@@ -262,7 +262,7 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 **Interfaces:**
 - 工作流：`on: push: branches [main], paths ['apps/aster-lang/agents/**','apps/aster-lang/guard/**','apps/aster-lang/tools/**','scripts/guard-bypass/**']`；`schedule: '17 3 * * *'`；`workflow_dispatch`。**无** `pull_request`。`permissions: contents: read`。`concurrency: { group: guard-bypass-probe, cancel-in-progress: false }`。
   - `probe` job：`runs-on: [self-hosted, linux, ARM64, guard-probe]`，`environment: guard-probe`，`timeout-minutes: 45`。步骤：checkout（`persist-credentials: false`）→ 安装 pin 版本并校验 sha256 的 `kubectl`、`kustomize`、`yq`、`jq` 到 `$RUNNER_TEMP` → 把 `secrets.GUARD_PROBE_KUBECONFIG` 写入 `$RUNNER_TEMP/kubeconfig`（`umask 077`，job 结束删除）→ `token-expiry`：解 JWT `exp`，剩余 < 14 天 `::warning::`、已过期 exit 3 → `converge`：最多 15 分钟轮询，直到线上 `demo-tool` / `aster-guard-mcp` Pod 的 `imageID` digest 等于本 commit `kustomize build` 的镜像 digest、两个 Deployment `availableReplicas == 1`、线上 `demo-tool-ingress` 规格等于渲染结果（jq 规范化后比较），记录收敛时刻 → `direct-connect-probe.sh network --agents-ns aster-agents --tool-ns aster-tools --tool-selector app=demo-tool --tool-svc demo-tool:8080 --admit-ns aster-guard --probe-image <从渲染的 CronJob 读取> --positive-url http://aster-guard-mcp.aster-guard.svc.cluster.local:8080/healthz --canary-proxy http://aster-guard-mcp.aster-guard.svc.cluster.local:8080/mcp --canary-secret guard-demo-agent --run-id ${{ github.run_id }}-${{ github.run_attempt }}` → `direct-connect-probe.sh auth-status --guard-ns aster-guard --cronjob guard-auth-probe --since <收敛时刻>` → 两个 JSON 摘要写 `$GITHUB_STEP_SUMMARY` 并上传为制品 `guard-bypass-probe-<run_id>`。
-  - `watchdog` job：`runs-on: ubuntu-latest`，仅 `schedule` 触发，`needs` 无；用 `GITHUB_TOKEN` 查本工作流在 main 上最近一次 `conclusion == success` 的 `probe` 运行，距今 > 36 h 即失败（runner 离线时 `probe` 会排队而非失败，这一步让「没有证据」变红）。
+  - `watchdog` job：`runs-on: ubuntu-latest`，仅 `schedule` 触发，job 级 `permissions: { actions: read }`；用 `GITHUB_TOKEN` 调 `GET /repos/wontlost-ltd/k3s/actions/workflows/guard-bypass-probe.yml/runs?branch=main&status=success&per_page=1`，最近一次成功距今 > 36 h、无任何成功运行、或查询本身失败（非 2xx / 空响应）均判失败（runner 离线时 `probe` 会排队而非失败，这一步让「没有证据」变红；查不到不能当作有证据）。判定写成 `scripts/guard-bypass/watchdog.sh <now-epoch> <api-json-file|->`，`workflow.test.sh` 覆盖 `watchdog_recent_success_passes / watchdog_stale_fails / watchdog_api_error_fails / watchdog_no_runs_fails`。
 - `run-guard-probe-runner.sh`：复用 `localhost/aster-runner:2.336.0` 镜像，`RUNNER_GROUP=guard-probe`、`RUNNER_LABELS=self-hosted,linux,ARM64,guard-probe`、`CONTAINER_NAME=guard-probe-runner`、ephemeral 守护循环同 `run-runner.sh`；与之相比**不挂** podman socket、**不用** `--network host`，加 `--cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 1g`。
 - `workflow.test.sh`（k3s）：yq 断言无 `pull_request` / `pull_request_target`；`probe` 有 `environment: guard-probe` 与 `guard-probe` 标签；checkout `persist-credentials: false`；kubeconfig 只在写入步骤出现且未被 `echo`；工具下载均有 sha256 校验；`token_expiry_warning`（以过期 / 10 天 / 60 天三个伪造 JWT 跑 token-expiry 步骤抽出的脚本函数）。
 
@@ -275,28 +275,35 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 ### Task 9：上线与首个探针记录（用户与实施者协作）
 
 - [ ] Step 1（用户）：完成 §5 全部用户动作，合并 Deployment `replicas: 1` 的 PR。
-- [ ] Step 2（实施者，只读）：`kubectl get pods -n aster-guard -n aster-tools`、`kubectl describe networkpolicy -n aster-tools demo-tool-ingress`、`kubectl get jobs -n aster-guard -l` CronJob 名 → 贴 #466。
-- [ ] Step 3：`guard-bypass-probe` 工作流在该次 main 推送上 `probe` job 成功（两个摘要 `verdict: pass`），把运行 URL 与摘要贴 #466。若 `verdict: inconclusive`，按摘要定位（正向对照 / 金丝雀 / DNS），不得以重跑代替排查；连续三次 inconclusive 回到设计复盘（`.claude/operations-log.md` 记录）。
+- [ ] Step 2（实施者，只读）：`kubectl get pods -n aster-guard`、`kubectl get pods -n aster-tools`、`kubectl describe networkpolicy -n aster-tools demo-tool-ingress`、`kubectl get cronjob,jobs -n aster-guard` → 贴 #466。
+- [ ] Step 3：`guard-bypass-probe` 工作流在该次 main 推送上 `probe` job 成功（两个摘要 `verdict: pass`），把运行 URL 与摘要贴 #466，分开写三个断言：网络层「模型命名空间直连被挡」、票据层「放行位置无票据 / 伪造票据被拒且 `unticketed == 0`」、正向「持有效票据的 `demo_echo` 经代理执行、`demo_delete` 被 DENY」（金丝雀）——前两个是隔离，第三个证明前两个不是因为链路坏了。若 `verdict: inconclusive`，按摘要定位（正向对照 / 金丝雀 / DNS），不得以重跑代替排查；连续三次 inconclusive 回到设计复盘（`.claude/operations-log.md` 记录）。
 
 ### Task 10：两条反向记录（非生产副本，用户执行）
 
 **Files（k3s，先于本任务随 Task 6 的 PR 一起交付更好；单列于此因为只在验收时运行）：** Create `scripts/guard-bypass/redteam-window.sh`、`scripts/guard-bypass/redteam-window.test.sh`
 
 **Interfaces:**
-- `redteam-window.sh --kubeconfig <path> [--ttl-minutes 20] [--dry-run]`：只能用集群管理员凭证（建命名空间），**不经 Argo**。生成 `RUN=$(date +%s)`；以 `kustomize build apps/aster-lang/tools` 为源，用 yq 把 `aster-tools / aster-guard / aster-agents` 全文映射到 `aster-rt-$RUN-{tools,guard,agents}`（含 `namespaceSelector` 值与 Service DNS），去掉 ExternalSecret，改由脚本创建字面量 Secret `ASTER_GUARD_TOOL_API_KEY=redteam-dummy`；命名空间加标签 `guard-bypass/redteam-expires=<epoch>`；`trap` 删除三个命名空间，并另起 `sleep <ttl>` 的后台看门狗兜底删除。依次：
+- `redteam-window.sh --kubeconfig <path> [--ttl-minutes 20] [--dry-run]`：只能用集群管理员凭证（建命名空间），**不经 Argo**。生成 `RUN=$(date +%s)`；分别 `kustomize build apps/aster-lang/{agents,guard,tools}`，按下表取舍后用 yq 把 `aster-tools / aster-guard / aster-agents` 全文映射到 `aster-rt-$RUN-{tools,guard,agents}`（含 `namespaceSelector` 值、Service DNS、环境变量里的 URL）；镜像 digest 原样保留（副本与生产同一镜像）。
+
+  | 来源 | 保留并改写 | 跳过（理由） |
+  |---|---|---|
+  | `agents` | `Namespace`、`ResourceQuota`、`LimitRange` | `Role / RoleBinding`（副本由管理员直接起 Pod）、`ExternalSecret`（副本不跑金丝雀） |
+  | `guard` | `Namespace`、`ConfigMap guard-auth-probe-script`；把 `CronJob guard-auth-probe` 的 `jobTemplate` 实例化为按需 `Job`（每次票据探针一份） | 代理 `Deployment / Service`、`ExternalSecret`、`ServiceAccount`、`Role / RoleBinding`、`CronJob` 本身（副本只需要「放行位置」，不验证代理） |
+  | `tools` | `Namespace`、`Deployment demo-tool`、`Service`、`NetworkPolicy demo-tool-ingress` | `ExternalSecret`（改由脚本建字面量 Secret：`ASTER_GUARD_TOOL_API_KEY=redteam-dummy`、`ASTER_GUARD_TENANT_ID=redteam`）、`Role / RoleBinding` |
+
+  命名空间加标签 `guard-bypass/redteam-expires=<epoch>`；`trap` 删除三个命名空间，并另起 `sleep <ttl>` 的后台看门狗兜底删除。依次：
   1. **基线**（两层开）：网络探针（`network`，`--agents-ns aster-rt-$RUN-agents`，无金丝雀，`--positive-url https://kubernetes.default.svc.cluster.local/livez`）期望 0；在 `aster-rt-$RUN-guard` 起一次 `auth-probe.sh` Pod（脚本从 `apps/aster-lang/guard/probe/auth-probe.sh` 建 ConfigMap，Pod 规格与生产 CronJob 的 jobTemplate 相同）期望 0（伪造票据得 `guard_unavailable`，因为 dummy key）。
   2. **R-N（删网络策略）**：`kubectl delete networkpolicy -n aster-rt-$RUN-tools demo-tool-ingress` → 网络探针期望 **1**；票据探针仍期望 **0**（票据层独立成立）。
   3. **R-A（关票据核对）**：恢复策略，`kubectl set env deploy/demo-tool -n aster-rt-$RUN-tools TICKET_CHECK=off` 并等待就绪 → 网络探针期望 **0**（网络层独立成立）；票据探针期望 **1**（无票据调用被执行，`unticketed` 增加）。
   4. 打印六个摘要组成的表（场景 × 探针 × 期望 × 实际），任一实际 ≠ 期望则脚本退出 1。
-- `redteam-window.test.sh`：假 kubectl 断言映射后渲染结果不含 `\baster-(tools|guard|agents)\b`；`TICKET_CHECK=off` 只出现在 R-A 步骤；trap 删除三个命名空间；`--dry-run` 不调用任何写操作。
+- `redteam-window.test.sh`：假 kubectl 断言映射后渲染结果不含 `\baster-(tools|guard|agents)\b`；渲染结果中的资源种类恰为上表「保留」列；`TICKET_CHECK=off` 只出现在 R-A 步骤；trap 删除三个命名空间；`--dry-run` 只打印将执行的命令与映射后的清单，**零次**调用 kubectl（假 kubectl 调用计数为 0）。
 
 - [ ] Step 1：测试先行 → 实现 → `bash scripts/guard-bypass/redteam-window.test.sh` PASS（随 Task 6 PR 提交）。
 - [ ] Step 2（用户，约 15 分钟窗口）：`bash scripts/guard-bypass/redteam-window.sh --kubeconfig ~/.kube/k3s-config`，结束后 `kubectl get ns -l guard-bypass/redteam-expires` 为空；把六行表与两条反向摘要贴 #466。生产命名空间不受影响（脚本不读写 `aster-agents / aster-guard / aster-tools`，由 `redteam-window.test.sh` 断言）。
 
 ### Task 11：登记验证结果（aster-api docs + test PR）
 
-**Files:** Modify `src/test/java/io/aster/guard/bypass/B1DirectConnectToolBypassTest.java`、`src/test/java/io/aster/guard/bypass/README.md`、`docs/adr/0054-guard-execution-point.md`（§7 场景表第 1 条；§12 状态行）、`docs/superpowers/plans/2026-11-14-guard-bypass-suite.md`（阶段 C 节首加一行指向本计划，Task C1 / C2 标「由 2026-11-15 计划取代」）
-
+**Files:** Modify `src/test/java/io/aster/guard/bypass/B1DirectConnectToolBypassTest.java`、`src/test/java/io/aster/guard/bypass/README.md`、`docs/adr/0054-guard-execution-point.md`（§7 场景表第 1 条；§12 状态行）
 - [ ] Step 1：`B1DirectConnectToolBypassTest` **保持 `@Disabled`**，原因改为：`"部署层由 k3s guard-bypass-probe 工作流判定（ADR 0054 §12 D7/D9）：最近记录见 aster-api#466；JUnit 无集群凭证，不在此重复"`，类注释同步。理由：必需检查 `Guard bypass suite (#466)` 跑在 public 仓 CI 上，不应持有集群凭证；把部署层判定搬进 JUnit 只会变成另一个需要 skip 的环境依赖。
 - [ ] Step 2：`README.md` 场景矩阵第 1 条（部署层）改为「已验证（部署层）：k3s 探针 + 两条反向记录，见 #466 评论 <链接>」；「后续阶段的启用条件」中阶段 C 一条改为已完成。
 - [ ] Step 3：ADR 0054 §7 表第 1 条断言列后加「——**已验证**（2026-MM-DD，#466 评论 <链接>）」。
@@ -308,7 +315,7 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 
 | 主体 | 权限 | 能做到的最坏事 | 约束 |
 |---|---|---|---|
-| SA `aster-guard/guard-bypass-probe` | `aster-agents`：`pods` create/get/list/watch/delete、`pods/log` get、`rolebindings` list；`aster-tools`：`pods / services / deployments / networkpolicies` get list；`aster-guard`：`pods / pods/log / jobs / cronjobs / deployments` get list。无 Secret、无 exec / attach / portforward、无 cluster 范围 | 在 `aster-agents` 起任意镜像的 Pod：消耗算力（ResourceQuota 封顶 4 Pod / 1 CPU / 1 Gi）、以 Agent 身份调用代理（可挂 `guard-demo-agent`，这本来就是金丝雀用的身份，所有调用仍经 Guard 决策）、从模型命名空间向外发起网络连接（与任何被攻破的 Agent 相同，无新增）；读三命名空间的工作负载规格（不含 Secret） | PSA restricted 禁 hostNetwork / hostPath / 特权；`aster-agents` 不得有带权限的 SA（探针静态检查 + manifests 测试）；它**不能**进入 `aster-guard`（被工具策略放行的命名空间）起 Pod，这正是票据层探针改用 CronJob 的原因 |
+| SA `aster-guard/guard-bypass-probe`（`pods/create` 等于**间接读取** `aster-agents` 内全部 Secret：Pod 可用 `secretKeyRef` / Secret 卷挂载，不需要 `secrets/get`。探针无权枚举 Secret，所以「该命名空间只有一个 Secret」由 git 侧持续保证——`manifests.test.sh` 断言 `apps/aster-lang/agents` 中可产生 Secret 的对象恰为 `ExternalSecret guard-demo-agent`、没有 `Secret` 种类；手工在该命名空间建 Secret 属违规，新 Agent 凭证进入时须重新评审本表） | `aster-agents`：`pods` create/get/list/watch/delete、`pods/log` get、`rolebindings` list；`aster-tools`：`pods / services / deployments / networkpolicies` get list；`aster-guard`：`pods / pods/log / jobs / cronjobs / deployments` get list。无 Secret、无 exec / attach / portforward、无 cluster 范围 | 在 `aster-agents` 起任意镜像的 Pod：消耗算力（ResourceQuota 封顶 4 Pod / 1 CPU / 1 Gi）、以 Agent 身份调用代理（可挂 `guard-demo-agent`，这本来就是金丝雀用的身份，所有调用仍经 Guard 决策）、从模型命名空间向外发起网络连接（与任何被攻破的 Agent 相同，无新增）；读三命名空间的工作负载规格（不含 Secret） | PSA restricted 禁 hostNetwork / hostPath / 特权；`aster-agents` 不得有带权限的 SA（探针静态检查 + manifests 测试）；它**不能**进入 `aster-guard`（被工具策略放行的命名空间）起 Pod，这正是票据层探针改用 CronJob 的原因 |
 | kubeconfig（Environment `guard-probe` secret） | 同上 SA | 泄露即上行 | `kubectl create token guard-bypass-probe -n aster-guard --duration=2160h`（90 天）；只在 main 分支的该工作流可读；到期前 14 天告警；轮换 = 重新生成并覆盖 secret |
 | runner 组 `guard-probe` | 只跑 `wontlost-ltd/k3s/.github/workflows/guard-bypass-probe.yml@refs/heads/main` | 能修改 main 上该工作流的人（k3s 写权限 + 通过 main ruleset）即可在用户 Mac 的容器里执行任意代码 | 容器无 podman socket、无 host network、cap-drop ALL、ephemeral；与 CI runner（`local-mac`，root + socket）分组；fork PR 与非 main ref 无法调度到该组 |
 | CronJob `guard-auth-probe` | 默认 SA、`automountServiceAccountToken: false`，不挂任何 Secret | 无 API 权限；能从放行位置访问工具——与代理同等网络位置，但不持有任何票据或 key | Pod 由 CronJob 控制器创建，探针身份不因此获得 `aster-guard` 的 `pods/create`（若获得，可挂载代理的 Guard key 与 agents 登记） |
@@ -349,4 +356,4 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 
 - 规格覆盖：U3-1 两层 → Task 1（`--isolation` 列表）、Task 3（票据）、Task 7（策略）；kube-router 缺陷 → Global Constraints 策略形状、`lib.sh`、Review Focus 1；U3-2 演示工具与 HTTP 代理 → Task 1–4、命名空间与命名见 ADR §12 D3；U3-3 runner SA → Task 7 RBAC、Task 8、§3、O1；每层独立通过 → Task 9（生产两处探针）；反向记录与安全关闭方式、执行人 → Task 10、ADR §12 D8；各仓改动 → §2；`B1DirectConnectToolBypassTest` → Task 11 Step 1；探针脚本与 `.test.sh` → Task 6；安全评审 → §3；发版与用户动作 → Task 5、§5；验收四项（#466 exit-0 记录、两条反向记录、§7 第 1 条标已验证、#466 可关闭）→ Task 9–11。Review Focus 六类失败（kube-router、DNS / egress、探针镜像 digest、PSA、遗留 Pod、SA token）分别落在 Review Focus 1–5 与 Global Constraints「镜像」「Pod 安全」。
 - 类型一致：`UpstreamSpec / Isolation / AgentEntry / startHttpProxy / createToolNameCache / EffectLog / TicketRejection` 在 Task 1–3 同名；探针参数与工作流调用逐字一致；命名见 Global Constraints。
-- 取代关系：本计划取代 `2026-11-14-guard-bypass-suite.md` 的 Task C1（探针接口改为子命令 `network` / `auth-status`、退出码加 3、Pod 不用 `--rm -i`）与 Task C2，由 Task 11 Step 4 回写指针。
+- 取代关系：本计划取代 `2026-11-14-guard-bypass-suite.md` 的 Task C1（探针接口改为子命令 `network` / `auth-status`、退出码加 3、Pod 不用 `--rm -i`）与 Task C2，旧计划阶段 C 节首已在本 PR 中加取代指针（避免实施期间被当作仍有效）。
