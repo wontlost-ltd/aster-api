@@ -1,6 +1,6 @@
 # ADR 0042：审批闭环 —— 经验证的业务角色、从证据开决策、cloud 审批收件箱（AI 治理方向·子项目 3b）
 
-- 状态：**ACCEPTED**（2026-10-09）；§11 R59 ACCEPTED（2026-11-08）；§12（R59 实施前定稿修订，#460）**ACCEPTED**（2026-11-14）
+- 状态：**ACCEPTED**（2026-10-09）；§11 R59 ACCEPTED（2026-11-08）；§12（R59 实施前定稿修订，#460）**ACCEPTED**（2026-11-14）；§12.6（F9 日志面输入展示）**ACCEPTED**（2026-11-16）
 - 提出：2026-10-09；实施计划 `docs/superpowers/plans/2026-10-09-approval-closure.md`；栈验收见 §9.1
 - 决策者：用户已拍板「业务角色挂在团队成员上由 owner/admin 授予；cloud 以证据链收据为锚开决策，不重复评估；收件箱走内部 HMAC v3 通道并签正用户与角色；角色持有者可审、管理员只读、站内通知不发邮件」
 - 相关：ADR 0040（Action Guard：决策、待审批、四眼、§10 开放问题第一条）、ADR 0041（证据链补齐：correlationId 列、收据接口、复核者 `guard-approval`）、aster-cloud ADR 0015（团队作用域 API key 身份：verify 响应与快照）、ADR 0039（Verdict 四态与 `role`）
@@ -370,7 +370,7 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 | F6 | §11 D4 把 14(4)(a) 改判写成 cloud 代码改动，但条款判定由控制注册表**数据**驱动（`regulatory-mapping.ts` `judge`；`controls-registry.json:19` 中 14(4)(a) 为 `evidenced: []`、`partial: ["whatIf.comparable"]`）。改判需要新的证据来源名，再加一次注册表升版（locales 真相源 + core / ts / cloud 副本，走 ADR 0053 列车）。§11 还按「`inputSnapshotHash` 非空」判 evidenced；旧 SDK 不取视图时服务端照样记哈希（`matched=false`），这样会把没看过输入的审批算成证据 | cloud `src/services/evidence/regulatory-mapping.ts`、`control-registry.ts` | 判定条件改为 `matched === true`；注册表改判与 #460 解耦（D9） |
 | F7 | 键名分歧：ADR 0041 §11 D3 写 `inputSnapshotAttested`，本 ADR §11 写 `inputSnapshotMatched` | 两处原文 | 以 `inputSnapshotMatched` 为准，定稿时回写 0041 |
 | F8 | cloud 证据包仍为 v5（`types.ts:113`），ADR 0041 §11 D4（`inputSource` / `guardInputSources`）与 §12 D3（`execution`）都没进包，三者都约定与 #460 一次升版 | cloud `src/services/evidence/` | v6 一次装齐（D9） |
-| F9 | cloud 执行日志页对能看到该策略的成员明文展示 `Execution.input` | cloud `policies/[id]/logs/logs-content.tsx:826` | 只在收件箱打码，兑现不了「无权角色看不到原值」；本节限定验收面并另开 issue（D11） |
+| F9 | cloud 执行日志页对能看到该策略的成员明文展示 `Execution.input` | cloud `policies/[id]/logs/logs-content.tsx:826` | 只在收件箱打码，兑现不了「无权角色看不到原值」；本节限定验收面并另开 issue（D11）；落地口径见 §12.6 |
 | F10 | `AuditChainAppender` 已豁免规范 UUID（`AuditChainAppender.java:84,212`），§11 D2「约 1/800 UUID 被信用卡正则误伤」已不成立；全局 `PIIResponseFilter` 只改写 `String` 实体 | `PIIResponseFilter.java` | 视图必须以对象实体返回，否则解除后的原值会被全局正则再改写一遍（D8 测试钉住） |
 
 ### 12.2 决策
@@ -530,3 +530,15 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 定稿时回写：ADR 0040 §3.3 / §5.2 脚注（§11 末段已约定）；ADR 0041 §11 D3 键名 `inputSnapshotAttested` → `inputSnapshotMatched`，§11 D4 / §12 D3 注明 v6 一次升版；ADR 0046 §11.7 第 2 条注明「撤销（ADR 0042 §12 D3）」。
 
 定稿裁定（2026-11-14，用户确认）：上表「已选默认」一列全部采用，无改动项——撤销 `catalog.piiMark`；from-evidence 输入不一致 409 `evidence_input_mismatch`、不消耗证据；证据包 v6 一并装入 ADR 0041 §12 D3 的 `execution`；14(4)(a) 改判推迟到注册表 1.4.0 列车（计划阶段 R）；执行日志页明文输入另开 issue（wontlost-ltd/aster-cloud#754）；解除留痕每人每审批首次一条事件；分类行保留 `P7D`、视图上限 1 MiB；ESCALATE 不可解除。上述回写已在同一 PR 完成。
+
+### 12.6 F9 落地：执行日志的输入展示（wontlost-ltd/aster-cloud#754、#770，2026-11-16）
+
+状态：**ACCEPTED**（2026-11-16 用户确认）。
+
+§12.2 D11 把执行日志页的明文输入留给 cloud 另行处理，本节记录其口径。
+
+- **谁能看原值：日志面没有人能看。** cloud 执行日志页与日志 API（`GET /api/policies/{id}/logs`，含 `mode=recent`）对**任何**请求者——执行人本人、策略 owner / admin、团队成员——只下发打码视图，日志面不提供解除。理由：解除的前提（审批 PENDING、已验证业务角色包含 `required_role`、按人入链，D5）在日志面都不存在；为日志另设一套解除与留痕会让「谁看过原值」分散到两处。执行人提交时在执行页看到的是自己这一次请求的响应，不经日志读路径。需要原值的场景只走审批面的解除端点。
+- **打码规则：D4 的 `maskRules: v1`，未声明键名更严。** 已声明无 `@pii` 明文，字符串再过一遍与 `PIIRedactor` 相同的正则（同一模式、顺序与替换串，规范 UUID 豁免）；`@pii` 替换为 `{ "$pii": { level, category } }`；形状不符或超过深度 8 的值替换为 `{ "$pii": { "level": "unknown" } }`；声明结构保留。未声明的键（多出的键、源码未标注类型的字段、非参数的顶层键）按 §11 D2「未声明的键名本身可能是 PII」连键名也不展示：同一对象里的全部未声明键合并为一项 `"$undeclared": { "$pii": { "level": "unknown" } }`。`InputViewRenderer` 目前在已声明记录内仍展示未声明键的键名（值为 `unknown`），与这句原文不一致，另行修正；修正前审批面在这一点上比日志面宽。
+- **标记来源：cloud 由被执行版本推导。** aster-api 只为 REQUIRE_APPROVAL / ESCALATE 存输入（§11 D1），日志里大多数执行（ALLOW / DENY / 值输出）在 api 侧没有视图可取，所以 issue 的方案 1（日志改调 api 视图）不可行。cloud 按执行行冻结的版本（`policyVersionRowId`）、入口 Rule、语言、关键词别名与执行同一份领域词汇，用 aster-lang-ts 求出 Core IR，按 D2 `InputClassifier` 的同一展开规则推导声明树与标记；路径以参数名为前缀（执行输入就是 `{ 参数名: 值 }`，没有外层 `context`）。取不到（历史行无版本引用、版本已删、解析失败、词汇加载失败）→ `marksSource: none`，没有已声明键，整个输入只剩一项 `$undeclared`（fail-closed）。两份实现（aster-api `InputClassifier` / `InputViewRenderer` 与 cloud `src/lib/execution-input/input-view.ts`）用同一组正反例测试对照；改规则须两边同时升 `maskRules`。
+- **不影响的读路径。** 只改展示投影：`Execution.input` 原样落库；What-If 重放、guard 登记、runner parity、回放 / 证据列（`canonicalInputHash` 等）照旧读原始输入；证据包本来就不含输入（D9）。
+- **不在本节：** 执行**输出**里可能出现由输入派生的值（如返回 `"Hello, John Smith!"`），返回类型没有字段级 `@pii` 时无法按声明打码，另行处理。
