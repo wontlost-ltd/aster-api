@@ -84,15 +84,20 @@ assert m, '!! 自检锚点未命中，变异未落地'
 bumped = f'{m.group(1)}v{m.group(2)}.{m.group(3)}.{int(m.group(4)) + 1}{m.group(5)}'
 open(p, 'w', encoding='utf-8').write(s[:m.start()] + bumped + s[m.end():])
 PY
+  # ★注入用例的输出必须整体捕获、断言后**中和**再回显：runner 会 trim 行首空白再识别
+  #   workflow command，原样（哪怕缩进）回显 `::error::` 都会在 PR 上生成一条假的 error
+  #   注解（#527 上的「v1.0.48 版本不一致」即此）。只有真实不一致才允许发 ::error::。
   rc=0
   out=$(scan "$SETTINGS" "$tmp/action.yml" 2>&1) || rc=$?
-  if [[ $rc -eq 0 ]]; then
-    echo "✗ 自检失败：注入了版本不一致却没报错，门禁形同虚设" >&2
-    echo "$out" >&2
+  # 必须是「检出不一致」（exit 1 且带不一致注解），exit 2 的解析失败不算抓到
+  if [[ $rc -ne 1 || "$out" != *"::error::版本不一致"* ]]; then
+    echo "✗ 自检失败：注入了版本不一致，门禁未按预期报不一致（exit=${rc}），门禁形同虚设" >&2
+    echo "$out" | sed -E 's/^[[:space:]]*::/[::]/; s/^/    /' >&2
     exit 1
   fi
-  echo "$out" | sed 's/^/    /'
-  echo "✓ 自检通过：门禁在不一致时确实变红（exit=${rc}）"
+  echo "$out" | sed -E 's/^[[:space:]]*::error::/[注入用例，预期报错] /; s/^/    /'
+  echo "✓ caught：注入的版本不一致被门禁抓到（exit=${rc}，注解已抑制）"
+  echo "✓ 自检通过：门禁在不一致时确实变红"
   exit 0
 fi
 

@@ -87,10 +87,12 @@ jobs:
       #   setup-aster-build 的 sibling-ref 默认值一致。1.0.29 发版实测：生态 bump
       #   只改了 settings.gradle，sibling-ref 仍停在 v1.0.28，于是 release train 的
       #   12 个制品全部发布成功后，最后一步 aster-api 部署才失败——发了一半的车。
-      #   先跑反向自检（门禁必须能变红），再跑正式检查。
+      #   先跑脚本离线测试（含「自检不得发假 ::error:: 注解」），再跑反向自检
+      #   （门禁必须能变红），最后跑正式检查。
       - name: 兄弟仓 ref 与 catalog 版本一致性（含反向自检）
         working-directory: aster-api
         run: |
+          bash scripts/ci/verify-sibling-ref-pin.test.sh
           ./scripts/ci/verify-sibling-ref-pin.sh --self-test
           ./scripts/ci/verify-sibling-ref-pin.sh
 
