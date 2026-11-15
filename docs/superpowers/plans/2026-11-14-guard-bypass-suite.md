@@ -432,6 +432,8 @@ Run: `./gradlew guardBypassTest`，Expected: 全部 `io.aster.guard.bypass.*` �
 
 ## 阶段 C（部署层：k3s 直连必须失败）
 
+> **已被取代（2026-11-15）：** 本节的 Task C1 / C2 由 `docs/superpowers/plans/2026-11-15-guard-bypass-phase-c.md`（ADR 0054 §12 R67）取代——探针接口、退出码、拓扑与验收以该计划为准；下文仅保留为历史记录，不得按下文实施。
+
 > **覆盖声明：** 阶段 A/B 的必需检查 `Guard bypass suite (#466)` **不覆盖** #466 第 1 条的部署层含义（模型触达不到原始工具）；`B1ApiDirectCallBypassTest` 只覆盖「绕过 Guard 直接打执行面 API」，`B1DirectConnectToolBypassTest` 在阶段 C 启用前恒为 skipped。阶段 C 启用前，#466 不得关闭，`bypass/README.md` 与 #466 评论中的矩阵把第 1 条标为「部署层未验证」。
 
 **前提：** 集群里存在「模型所在命名空间」与「受保护的 HTTP 工具端点」。今天两者都不存在：代理只有 stdio 形态（上游是子进程，天然满足 ADR 0054 §3.3 的 `network` 方式），HTTP 上游与 Streamable HTTP 代理属 ADR 0054 §8 ⑤。因此阶段 C 现在只能交付**探针与策略模板**，在第一个 HTTP 工具上线时随之启用。
