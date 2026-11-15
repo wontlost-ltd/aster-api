@@ -1,6 +1,6 @@
 # ADR 0056 修订 A1：1.0.48 双引擎 parity 清扫的语法裁决
 
-- 状态：**PROPOSED**（2026-11-16）
+- 状态：**ACCEPTED**（2026-11-16 用户确认）
 - 日期：2026-11-16
 - 修订对象：[ADR 0056](0056-type-inference-parity.md) §4.1（manifest 能力检查）；补充两引擎共同接受的语法边界（规则头、`X of` 参数、类型表里的逗号）
 - 相关：aster-lang-core#266、#245；aster-lang-ts#324、#304、#314、#320、#310、#309；aster-lang-test#174；Batch B（core#270 / ts#326 / test#208）遗留的 `X of` 分隔符分歧
