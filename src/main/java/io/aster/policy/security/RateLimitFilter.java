@@ -1,5 +1,6 @@
 package io.aster.policy.security;
 
+import io.aster.policy.i18n.MessagesPathMatcher;
 import io.aster.policy.tenant.TenantContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -23,7 +24,8 @@ import java.util.Optional;
  * REST API 限流过滤器
  *
  * 在 AUTHENTICATION 之后、AUTHORIZATION 之前执行，滑动窗口限流。
- * 分桶：经 HMAC 验签的内部调用按调用方 × 租户（独立额度），其余按租户或客户端 IP。
+ * 分桶：经 HMAC 验签的内部调用按调用方 × 租户（独立额度）；公开 i18n 读端点按客户端 IP
+ * 走独立的高额度桶；其余按租户或客户端 IP。
  *
  * 豁免路径：/q/*（健康检查等管理端点）、/internal/*
  */
@@ -72,6 +74,17 @@ public class RateLimitFilter {
     @ConfigProperty(name = "aster.ratelimit.internal.max-requests", defaultValue = "600")
     int internalMaxRequests;
 
+    /**
+     * 公开 i18n 读端点（{@code GET/HEAD /api/v1/messages-manifest}、{@code /api/v1/messages/{locale}}）
+     * 每个客户端 IP 的窗口额度（#533）。aster-cloud 跑在 Cloudflare Workers 上，服务端渲染每个页面
+     * 都会未签名地拉 manifest，客户端 IP 全是 Cloudflare 出口地址；与普通 REST 共用 60/min 的 IP 桶
+     * 会让全体 cloud 用户互相挤占。这两个端点公开、只读、直接吐内存（零 DB、零 Redis 读，manifest
+     * 仅对少量 locale 条目算一次 sha256），故单独给一个更高的每 IP 上限：既不再被普通流量挤占、
+     * 也不消耗普通桶，同时单个 IP 的滥用仍有上限。
+     */
+    @ConfigProperty(name = "aster.ratelimit.public-i18n.max-requests", defaultValue = "1200")
+    int publicI18nMaxRequests;
+
     /** 与 InternalCallerFilter 同一把内部调用密钥（ASTER_PLAN_GATE_HMAC_KEY）。 */
     @ConfigProperty(name = "aster.plan-gate.hmac-key")
     Optional<String> hmacKey;
@@ -93,6 +106,9 @@ public class RateLimitFilter {
     public Uni<Response> filter(ContainerRequestContext ctx) {
         if (!enabled || isExempt(ctx)) {
             return Uni.createFrom().nullItem();
+        }
+        if (isPublicI18nRead(ctx)) {
+            return Uni.createFrom().item(limit(ctx, publicI18nBucket(ctx)));
         }
         if (!TrialBypassPredicate.hasInternalCallerCredentials(ctx) || hmacKey.isEmpty()) {
             return Uni.createFrom().item(limit(ctx, defaultBucket(ctx)));
@@ -118,6 +134,22 @@ public class RateLimitFilter {
             return true;
         }
         return false;
+    }
+
+    /**
+     * 公开 i18n 读请求：仅 GET/HEAD，且路径精确匹配 {@link MessagesPathMatcher}（与 TenantFilter /
+     * RequestSignatureFilter 的 perimeter 豁免同一份匹配，拒多段子路径与 {@code .}/{@code ..}）。
+     * 其它方法（含 admin 写入口 {@code /api/v1/admin/messages}）一律仍走普通桶。
+     */
+    private static boolean isPublicI18nRead(ContainerRequestContext ctx) {
+        String method = ctx.getMethod();
+        return ("GET".equals(method) || "HEAD".equals(method))
+            && MessagesPathMatcher.isPublicMessagesReadPath(ctx.getUriInfo().getPath());
+    }
+
+    /** 公开 i18n 端点不涉及租户数据，始终按客户端 IP 分桶。 */
+    private Bucket publicI18nBucket(ContainerRequestContext ctx) {
+        return new Bucket("rest:public-i18n:ip:" + getClientIp(ctx), publicI18nMaxRequests);
     }
 
     /**
