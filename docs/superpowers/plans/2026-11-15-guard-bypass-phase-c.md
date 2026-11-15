@@ -327,7 +327,7 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
   2. **R-N（删网络策略）**：`kubectl delete networkpolicy -n aster-rt-$RUN-tools demo-tool-ingress` → 网络探针期望 **1**；票据探针仍期望 **0**（票据层独立成立）。
   3. **R-A（关票据核对）**：恢复策略，`kubectl set env deploy/demo-tool -n aster-rt-$RUN-tools TICKET_CHECK=off` 并等待就绪 → 网络探针期望 **0**（网络层独立成立）；票据探针期望 **1**，且脚本额外断言其摘要 `steps.missing == 200` 与 `markerExecuted == true`（工具副作用日志里有**本次探针标记**的无票据条目，不受副本中其它请求影响；副本里本来也只有探针在发请求）——只看退出码不够（`ticketCheck == "off"` 本身也会给 1），反向记录必须证明无票据调用**真的执行了**。
   4. 打印六个摘要组成的表（场景 × 探针 × 期望 × 实际），任一实际 ≠ 期望则脚本退出 1。
-- `redteam-window.test.sh`：假 kubectl 断言映射后渲染结果不含 `\baster-(tools|guard|agents)\b`；渲染结果中的资源种类恰为上表「保留」列；`TICKET_CHECK=off` 只出现在 R-A 步骤；trap 删除三个命名空间；`--dry-run` 在本地照常运行 `kustomize` 与 `yq` 渲染、打印将执行的 kubectl 命令与映射后的清单，**零次**调用 kubectl（假 kubectl 调用计数为 0，即零集群读写）；`expired_namespaces_are_swept_at_start`。
+- `redteam-window.test.sh`：假 kubectl 断言映射后渲染结果不含 `\baster-(tools|guard|agents)\b`；渲染结果中的资源种类恰为上表「保留」列；`TICKET_CHECK=off` 只出现在 R-A 步骤；trap 删除三个命名空间；`--dry-run` 在本地照常运行 `kustomize` 与 `yq` 渲染、打印将执行的 kubectl 命令与映射后的清单，**零次**调用 kubectl（假 kubectl 调用计数为 0，即零集群读写）（因此 dry-run 不做启动清扫，只打印「真实运行时将先清扫过期红队命名空间」）；`expired_namespaces_are_swept_at_start`（仅真实运行）。
 
 - [ ] Step 1：测试先行 → 实现 → `bash scripts/guard-bypass/redteam-window.test.sh` PASS（随 Task 6 PR 提交）。
 - [ ] Step 2（用户，约 15 分钟窗口；这是**真实**副本运行，会建删命名空间，与 Step 1 的 `--dry-run` 本地测试不同）：先 `bash scripts/guard-bypass/redteam-window.sh --kubeconfig ~/.kube/k3s-config --dry-run` 审阅将执行的命令与清单，再去掉 `--dry-run` 运行 `bash scripts/guard-bypass/redteam-window.sh --kubeconfig ~/.kube/k3s-config`，结束后 `kubectl get ns -l guard-bypass/redteam-expires` 为空；把六行表与两条反向摘要贴 #466。生产命名空间不受影响（脚本不读写 `aster-agents / aster-guard / aster-tools`，由 `redteam-window.test.sh` 断言）。
