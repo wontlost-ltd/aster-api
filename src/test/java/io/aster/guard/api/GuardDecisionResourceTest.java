@@ -511,9 +511,24 @@ class GuardDecisionResourceTest {
       }
       assertThat(statuses).hasSize(threads).containsOnly(200);
       assertThat(decisionIds).hasSize(1);
+      // #522：落败者拿到先到者的幂等重放，链上恰一条决策事件、恰一条执行收据行，且事件指向的决策行存在
+      String decisionId = decisionIds.iterator().next();
+      UUID id = UUID.fromString(decisionId);
+      List<AuditLog> events = decisionEvents(TENANT, "\"idempotencyKey\":\"" + key + "\"");
+      assertThat(events).extracting(e -> e.decisionId).containsExactly(decisionId);
+      assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.count("tenantId = ?1 and idempotencyKey = ?2",
+          TENANT, key))).isEqualTo(1);
+      assertThat(QuarkusTransaction.requiringNew().call(() -> GuardReceiptEntity.count("decisionId", id))).isEqualTo(1);
     } finally {
       pool.shutdownNow();
     }
+  }
+
+  /** 本租户 metadata 含给定片段的 ACTION_GUARD_DECISION 事件（片段带键名，唯一定位一次注册）。 */
+  static List<AuditLog> decisionEvents(String tenant, String metadataFragment) {
+    return QuarkusTransaction.requiringNew().call(() -> AuditLog.<AuditLog>list(
+        "tenantId = ?1 and eventType = 'ACTION_GUARD_DECISION' and metadata like ?2", tenant,
+        "%" + metadataFragment + "%"));
   }
 
   @Test

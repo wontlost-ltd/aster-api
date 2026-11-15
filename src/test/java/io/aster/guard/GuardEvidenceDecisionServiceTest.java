@@ -1,7 +1,6 @@
 package io.aster.guard;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.aster.audit.chain.AuditChainAppender;
 import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.api.GuardDecisionResponse.ReceiptView;
 import io.aster.guard.api.GuardFromEvidenceRequest;
@@ -57,7 +56,7 @@ class GuardEvidenceDecisionServiceTest {
   private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
   private final EvaluationClassificationWriter classificationWriter = mock(EvaluationClassificationWriter.class);
   private final GuardEvidenceDecisionService service = new GuardEvidenceDecisionService(store, decisionService,
-      new GuardActionMapper(), mock(AuditChainAppender.class), mock(GuardReceiptBuilder.class), objectMapper,
+      new GuardActionMapper(), mock(GuardReceiptBuilder.class), objectMapper,
       new FactVerifier(mock(FactIssuerStore.class), Clock.systemUTC()), evaluationService, profileRequirements, meters,
       Duration.ofHours(24), classificationWriter, mock(ExecutionReceiptIssuer.class));
 
@@ -288,7 +287,7 @@ class GuardEvidenceDecisionServiceTest {
 
   private GuardEvidenceDecisionService serviceWith(ControlRegistry registry) {
     return new GuardEvidenceDecisionService(store, decisionService, new GuardActionMapper(),
-        mock(AuditChainAppender.class), mock(GuardReceiptBuilder.class), objectMapper,
+        mock(GuardReceiptBuilder.class), objectMapper,
         new FactVerifier(mock(FactIssuerStore.class), Clock.systemUTC()), evaluationService,
         new ProfileRequirements(registry), meters, Duration.ofHours(24), mock(EvaluationClassificationWriter.class),
         mock(ExecutionReceiptIssuer.class));

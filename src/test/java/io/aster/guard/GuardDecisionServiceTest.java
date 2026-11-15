@@ -58,6 +58,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
@@ -112,6 +113,7 @@ class GuardDecisionServiceTest {
     when(repository.findActiveVersion(catalog.id)).thenReturn(Optional.of(version));
     when(store.findByIdempotencyKey(anyString(), anyString())).thenReturn(Optional.empty());
     when(appender.appendSync(any())).thenReturn(new AppendedRecord(88213L, HASH, PREV));
+    SequentialRegistrationStub.install(store, appender);
     when(evaluationService.ruleMetadata(TENANT, MODULE, FUNCTION, VERSION_ID)).thenReturn(RuleMetadata.NONE);
   }
 
@@ -121,7 +123,7 @@ class GuardDecisionServiceTest {
 
   /** {@code readClock}：重放 / 回读判定 factsStale 用的时刻（签发方表以 {@link #issuerStore} 代替）。 */
   private GuardDecisionService serviceWith(ExecutionReceiptIssuer issuer, Instant readClock) {
-    return new GuardDecisionService(evaluationService, repository, appender, store, new GuardActionMapper(),
+    return new GuardDecisionService(evaluationService, repository, store, new GuardActionMapper(),
         new GuardReceiptBuilder(), json, issuer, new FactVerifier(issuerStore, Clock.fixed(NOW, ZoneOffset.UTC)),
         new InputSourceResolver(issuerStore, Clock.fixed(readClock, ZoneOffset.UTC)), meters, Duration.ofHours(24),
         Supplier::get);
@@ -232,7 +234,8 @@ class GuardDecisionServiceTest {
     assertThat(receipt).isNotNull();
     assertThat(receipt.kid()).isEqualTo("k1");
     assertThat(receipt.payload()).isEqualTo(new ExecutionReceipt.Payload(ACTION_HASH, r.decisionId(),
-        "2026-11-08T01:05:00.987Z", "2026-11-08T01:00:00.987Z", "k1", "ALLOW", 1730890123456L, TENANT, 1));
+        "2026-11-08T01:05:00.987Z", "2026-11-08T01:00:00.987Z", "k1", "ALLOW", FUNCTION, MODULE, 1730890123456L, TENANT,
+        1));
     assertThat(signer.verify(receipt)).isTrue();
     GuardDecisionEntity e = savedDecision();
     assertThat(e.actionHash).isEqualTo(ACTION_HASH);
@@ -272,7 +275,7 @@ class GuardDecisionServiceTest {
   void signingFailureDeniesReceiptUnavailable() {
     verdict("ALLOW", null, null);
     ExecutionReceiptIssuer broken = mock(ExecutionReceiptIssuer.class);
-    when(broken.issueNow(any(), any(), any(), org.mockito.ArgumentMatchers.anyLong()))
+    when(broken.issueNow(any(), any(), any(), any()))
         .thenThrow(new ExecutionReceiptUnavailableException("down", new IllegalStateException()));
     service = serviceWith(broken);
 
@@ -608,6 +611,38 @@ class GuardDecisionServiceTest {
     assertThat(r).isEqualTo(winner);
     // 本请求的待审批行与决策行在同一事务里，冲突时一起回滚，不会留下孤儿审批。
     assertThat(savedApproval()).isNotNull();
+  }
+
+  /**
+   * #522：注册时锁内复查到同键先到者（并发落败）——本次不写任何行，按幂等重放返回先到者的决策；
+   * 注册以幂等键为去重键调用。
+   */
+  @Test
+  void 注册复查到同键先到者时返回其幂等重放且不写行() throws Exception {
+    verdict("ALLOW", null, null);
+    GuardDecisionResponse winner = new GuardDecisionResponse(null, List.of(), UUID.randomUUID().toString(), "ALLOW",
+        null, "ALLOW", null, null, null, null, null, null);
+    GuardDecisionEntity e = storedFor(request(), winner);
+    when(store.findByIdempotencyKey(TENANT, "idem-1")).thenReturn(Optional.empty(), Optional.of(e));
+    ArgumentCaptor<GuardDecisionRegistration.Key> keys = ArgumentCaptor.forClass(GuardDecisionRegistration.Key.class);
+    org.mockito.Mockito.doReturn(new GuardDecisionRegistration.Existing(e)).when(store)
+        .register(eq(TENANT), keys.capture(), any(), any());
+
+    GuardDecisionResponse r = service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, "idem-1");
+
+    assertThat(r).isEqualTo(winner);
+    assertThat(keys.getValue()).isEqualTo(GuardDecisionRegistration.Key.idempotency("idem-1"));
+    verify(store, never()).saveDecision(any(), any(), any(), any());
+  }
+
+  /** 未带幂等键：注册不加锁（key 为 null），照常写入。 */
+  @Test
+  void 无幂等键时注册不带去重键() {
+    verdict("ALLOW", null, null);
+
+    service.decide(TENANT, "user-1", "ak-1", request(), ACTION_HASH, null, null);
+
+    verify(store).register(eq(TENANT), isNull(), any(), any());
   }
 
   @Test

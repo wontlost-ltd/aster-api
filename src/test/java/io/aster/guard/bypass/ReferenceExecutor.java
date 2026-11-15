@@ -25,8 +25,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>本地验签顺序逐字照 ADR 0040 §12 D6：{@code kid} 在 {@code GET /api/v1/guard/keys} 的 JWKS 中（未命中刷新一次）
  * → Ed25519 签名作用于 {@code payload} 的 jcs-sha256/v1 字节串 → {@code payload.tenantId / decisionId / outcome}
- * → 时间窗 {@code issuedAt − 60s <= now < expiresAt} → {@code payload.actionHash} 等于本地对请求体原文自算的值。
- * 任一失败即 {@link Refused}（{@code stage = "local"}），不 consume。JWKS 只取自服务端端点，不读测试配置。
+ * → 时间窗 {@code issuedAt − 60s <= now < expiresAt} → {@code payload.actionHash} 等于本地对请求体原文自算的值
+ * → 配置了期望策略时，签名覆盖的 {@code payload.policyModule / policyFunction} 等于期望地址（ADR 0040 §13 R68，
+ * #517；缺键同样拒绝）。任一失败即 {@link Refused}（{@code stage = "local"}），不 consume。JWKS 只取自服务端端点，
+ * 不读测试配置。不配置期望策略的执行方即不读地址键的旧执行方（aster-guard 0.2.0 的直连核对）。
  *
  * <p>服务端没有「提交收据」入口（ADR 0040 §12 D6 末段）：伪造、篡改签名的收据被拒的判定点就是执行方本地，
  * 生产中由 aster-guard SDK（#464）承担；这里的实现是它的参照物。
@@ -39,6 +41,9 @@ public final class ReferenceExecutor {
 
   /** 执行方的结论。 */
   public sealed interface Outcome permits Executed, Refused {}
+
+  /** 执行方期望的策略地址：收据须出自该 {@code module.function}。 */
+  public record ExpectedPolicy(String module, String function) {}
 
   /** 已 consume 200 并执行（账本已写一条）。 */
   public record Executed(String decisionId, String attemptId) implements Outcome {}
@@ -56,10 +61,18 @@ public final class ReferenceExecutor {
   private final SideEffectLedger ledger;
   private final Clock clock;
   private final String executorId;
+  private final ExpectedPolicy expectedPolicy;
   private final AtomicInteger jwksFetches = new AtomicInteger();
   private volatile Response lastConsume;
 
   public ReferenceExecutor(BypassFixture api, String apiKey, String tenantId, SideEffectLedger ledger, Clock clock) {
+    this(api, apiKey, tenantId, ledger, clock, null);
+  }
+
+  /** @param expectedPolicy 期望的策略地址；null 表示不核对地址 */
+  public ReferenceExecutor(BypassFixture api, String apiKey, String tenantId, SideEffectLedger ledger, Clock clock,
+                           ExpectedPolicy expectedPolicy) {
+    this.expectedPolicy = expectedPolicy;
     this.api = api;
     this.apiKey = apiKey;
     this.tenantId = tenantId;
@@ -159,6 +172,11 @@ public final class ReferenceExecutor {
     }
     if (!ExecutionReceiptAssert.actionHashOf(requestBody).equals(payload.path("actionHash").asText(null))) {
       return Optional.of("action_mismatch");
+    }
+    if (expectedPolicy != null
+        && (!expectedPolicy.module().equals(payload.path("policyModule").asText(null))
+        || !expectedPolicy.function().equals(payload.path("policyFunction").asText(null)))) {
+      return Optional.of("policy_mismatch");
     }
     return Optional.empty();
   }

@@ -722,3 +722,54 @@ D5 实施澄清（2026-11-12，ADR 0046 §11.6）：
 | 缺密钥时 | 启动失败 | 降级：ALLOW 不带 `executionReceipt`，consume 409 `receipt_unavailable` | 生产可能在无人察觉下全量不可执行 |
 | `/keys` 鉴权 | Bearer | 公开 | `shouldProtect` 多一个豁免 |
 | 旧 ALLOW 决策 | 不可 consume（`not_allowed`，`legacy: true`） | 回填签发 | 给当时无人验证的放行追加授权，不采 |
+
+## 13. 2026-11 修订：执行收据签名绑定策略地址（R68）
+
+状态：**ACCEPTED**（2026-11-16 用户确认）。定稿后与 §12 冲突时以本节为准。
+相关：wontlost-ltd/aster-api#517（本节）；ADR 0054 §11.3 D12（R66 的执行方侧缓解，本节在服务端补齐）；#466 绕过套件 `B8PolicySwitchBypassTest`。
+
+### 13.1 问题
+
+§12 D2 的 `actionHash` 只覆盖请求体 `action`，不含 `policyModule / policyFunction`；§12 D1 的签名载荷只有 `policyVersionId` 一项与策略有关，且它可缺省（evaluate-source 锚定的 from-evidence 决策）。同租户持 `MEMBER` key 的直连调用方把**同一动作**提交给另一个更宽松的已部署模块，拿到的 ALLOW 收据与执行方自算的 `actionHash` 完全相同、签名有效。R66（ADR 0054 §11.3 D12）的缓解都在执行方：SDK `run` 核对收据 `policyVersionId` 等于同一响应的 `policyVersion.id`，工具侧核对**回读**的 `policyModule / policyFunction`。前者只证明「收据与响应同源」，执行方事先并不知道期望的版本 id（每次部署都变）；后者依赖一次在线回读，离线持有收据的一方无从核对。收据自身没有签名覆盖「出自哪条策略」。
+
+### 13.2 决定：地址进签名载荷，`v` 仍为 1（增量字段）
+
+`executionReceipt.payload` 新增 `policyModule`、`policyFunction` 两键（决策行的 `policy_module / policy_function`，与 `GET /decisions/{id}` 回读字段同值），按字母序位于 `outcome` 与 `policyVersionId` 之间：
+
+```json
+"payload": {
+  "actionHash": "…", "decisionId": "…", "expiresAt": "…", "issuedAt": "…", "kid": "2026-11a",
+  "outcome": "ALLOW", "policyFunction": "decide", "policyModule": "guard.customer",
+  "policyVersionId": 1730890123456, "tenantId": "t-…", "v": 1
+}
+```
+
+- 三条签发路径（直接 ALLOW、审批转 ALLOW、from-evidence）都写入；与 `policyVersionId` 同样按 NON_EMPTY，空串 / null 不写、不进签名字节（from-evidence 的评估事件未记地址时以空串落库）。
+- 签名配方不变（Ed25519 作用于 payload 的 JCS 字节串）；**整份收到的 payload** 进签名，新增键自动受签名覆盖，改写或删除任一地址键即验签失败。
+- 已签发并存储的收据（`response_json`）不重签：幂等重放与回读原样返回无地址键的旧收据，它们在 TTL（`PT5M`）后自然失效。
+
+否决的选项：
+
+| 选项 | 结论 |
+|---|---|
+| (a) 地址进 `actionHash`（`jcs-sha256/v2`，哈希输入改为 `{action, policyModule, policyFunction}`） | 否决。`actionHash` 是执行方**自算**、consume 逐字节比对的值：0.2.0 按 v1 自算，服务端改算 v2 后它的每一次 consume 都 409 `action_mismatch`、本地核对全部 `action_hash_mismatch`——不是降级而是全量停摆；还要两仓同时换共享向量、`guard_receipts.action_hash` 新旧口径并存。地址本就不是「将要执行什么」，混进动作哈希也模糊了 §12 D2「执行方核对的是自己将执行什么」的语义。 |
+| (b) 载荷升 `v: 2` | 否决。0.2.0 `isReceiptShape` 要求 `p.v === 1`，升版即 0.2.0 全部 `malformed` 拒绝，必须先升客户端、再升服务端，且服务端须按客户端版本双发。新增键不改变任何既有字段的含义，没有升版的理由。 |
+| (c) consume 请求带期望地址、服务端比对 | 不采。期望地址由执行方自报：诚实执行方在本地核对签名覆盖的地址即得到同一保证，不诚实的执行方不会报；它只多一个 409 分支，不增加安全性。 |
+
+### 13.3 兼容与升级顺序
+
+- **aster-guard 0.2.0 不受影响**（已核对 `src/receipt.ts`）：验签对收到的 `receipt.payload` 整体 `canonicalize`，新增键在签名字节内，验签通过；`isReceiptShape` 只检查已知键的类型，不拒绝未知键；`v === 1` 不变。#466 阶段 B 用例（`ProxyHarnessSelfTest`、`B2ProxyDenyBypassTest`、`B6PromptInjectionBypassTest`）以钉死的已发布 0.2.0 代理跑新服务端，即此兼容性的回归证明。
+- **证据包 v6 不受影响**：aster-cloud 证据导出读的是链收据与 `/api/v1/audit/receipts` 的 consume / result 事件，不解析执行收据载荷。
+- **0.2.0 仍有 #517 缺口**：它不读地址键，只做 R66 的版本 id 核对。关闭缺口须升级客户端（aster-guard 0.3.0，另行发布）：
+  1. `verifyExecutionReceipt` 的期望值增 `policy: { module, function }`（`GuardClient.run` 与代理取自身配置的 `policyModule / policyFunction`），核对 `payload.policyModule / policyFunction` **存在且相等**，不符或缺失 → `receipt_invalid`（`detail: policy_mismatch`），不 consume。R66 的 `policyVersionId` 核对保留。
+  2. 工具侧 `verifyConsumeTicket`（`auth` 模式）可改为对回读响应里的 `executionReceipt` 离线验签后核对签名覆盖的地址，回读的 `policyModule / policyFunction` 仅作对照；仍缺地址键 → `guard_unavailable`（fail-closed）。
+  3. 本仓参考执行方 `ReferenceExecutor` 已按 1 实现（`ExpectedPolicy`），作为 SDK 的参照物。
+- **顺序**：① 部署含本修订的 aster-api（增量字段，0.2.0 照常）→ ② 等待至少一个 TTL（5 分钟），让无地址键的未消耗旧收据全部过期 → ③ 发布并升级 aster-guard 0.3.0（缺键即拒）。0.3.0 的最低服务端版本即 ① 的 aster-api；自托管或回滚到 ① 之前的 aster-api 时，执行方须同时钉回 0.2.x，否则全部 `policy_mismatch`（fail-closed，不会误放行）。
+- **回滚 aster-api**：旧代码按 §12 的 `Payload` 反序列化 `response_json` 时丢弃这两键，重放 / 回读得到的收据验签失败（执行方拒绝，fail-closed）；影响上界是回滚时刻仍在 TTL 内的收据。新增键不涉及迁移，无需回滚 schema。
+
+### 13.4 验收
+
+1. `ExecutionReceiptSignerTest`：载荷按字母序含 `policyFunction / policyModule`、`v == 1`；改写 / 删除任一地址键或改 `policyVersionId` → 验签失败；对 Jackson 往返后的 payload 整体 JCS 验签通过（不读地址键的执行方视角）；空地址省略。
+2. `GuardDecisionServiceTest` / `GuardApprovalServiceTest` / `GuardFromEvidenceResourceTest`：三条签发路径的载荷带决策行的地址。
+3. `B8PolicySwitchBypassTest`（`guardBypassTest`）：同一动作在执行方期望的严格模块 DENY、换到同租户宽松模块 ALLOW 且 `actionHash` 相同；不核对地址的执行方本地全部通过（缺口仍在旧客户端）；核对地址的执行方本地拒绝 `policy_mismatch`、未 consume、无副作用；改写地址键 → `bad_signature`；期望模块的收据照常执行恰一次。
+4. #466 阶段 B（已发布 0.2.0 代理）用例在新服务端全部通过。

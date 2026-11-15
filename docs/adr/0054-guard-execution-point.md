@@ -282,7 +282,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 | `result_without_consume` | 有结果而未有效消耗（行级判定；复核失败的结果事件按 ADR 0041 §12 D1 读作未生效，是合法状态，不按事件判） | critical | 否 |
 | `orphan_receipt` | 链上有 `ACTION_GUARD_DECISION` 事件（`timestamp ∈ [since, cutoff)`），而本租户无对应决策行：同一幂等键 / 证据相关键并发登记的落败方已先把决策事件写入链、决策行随唯一约束冲突未落库（#522），或进程在两步之间崩溃 | info | 是：检出满 `allow-unconsumed-ttl`（同样从 `detected_at` 起算）→ `RESOLVED / aged_out` |
 
-`orphan_receipt` 不可执行（无决策行即无收据行，consume 一律 404），只是链上噪声；单列一类是为了让它不混入任何 critical 类别、不触发绕过告警，也不被重复计数（同一决策事件只记一行）。根因修复（决策事件与决策行同事务写入）由 #522 承担。
+`orphan_receipt` 不可执行（无决策行即无收据行，consume 一律 404），只是链上噪声；单列一类是为了让它不混入任何 critical 类别、不触发绕过告警，也不被重复计数（同一决策事件只记一行）。根因修复（决策事件与决策行同事务写入）由 #522 承担：已实施——`GuardDecisionStore#register` 在同一事务内先取 `(租户, 幂等键 / 证据相关键)` 事务级咨询锁、锁内复查同键决策行，再以 `appendInCurrentTransaction` 追加决策事件并写决策行，并发落败方得到先到者的幂等重放；事件追加失败整体回滚后改判 DENY `receipt_unavailable` 单独写行（不入链）。此后新决策不再产生本类孤儿，检测器保留：覆盖修复前的存量事件，回归时也能在治理页看到。
 
 状态 `OPEN | RESOLVED | ACKNOWLEDGED`，解除方式 `late_result | aged_out | acknowledged`。同一事实（`tenant, kind, subject`）永远只有一行，跨多轮对账不重复；OPEN 孤儿不随保留期删除。某租户一次对账有新孤儿或有解除时写一条链事件 `GUARD_RECONCILIATION`（`performedBy=SYSTEM`；metadata `runId, windowStart, windowEnd, newOrphans, resolvedOrphans, openOrphans, newByKind, newOrphanIds[≤64]`，超出加 `newOrphansTruncated: true`）；无变化的对账不入链。
 
@@ -356,6 +356,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 - **SDK `run` / 代理**：验签通过后再核对 `payload.policyVersionId` **存在**且等于同一响应的 `policyVersion.id`；不符或缺失 → `blocked` `receipt_invalid`（`detail: policy_mismatch`），不 consume。`run` 的决策请求本就带执行方配置的 `policyModule / policyFunction`，这一步把收据钉在该请求解析出的版本上，防止响应与收据错配。
 - **工具侧（`auth`）**：`verifyConsumeTicket` 必填 `policy: { module, function }`，回读的 `policyModule / policyFunction`（D1 回读字段）不等 → 拒绝 `policy_mismatch`；回读缺这两项（旧 aster-api）→ `guard_unavailable`（fail-closed）。
 - 绕过套件（#466）加一例：换模块取得的 ALLOW 被工具侧拒绝。
+- 服务端补齐（ADR 0040 §13 R68，#517，ACCEPTED 2026-11-16）：执行收据载荷签名覆盖 `policyModule / policyFunction`（`v` 仍为 1）；0.3.0 的 `run` / 代理改为核对签名覆盖的地址等于自身配置，缺失或不符即 `policy_mismatch`。升级顺序与 0.2.0 兼容性见该节。
 
 ### 11.4 只有被消耗的收据才是授权（#510 / ADR 0046 §11.8）
 
@@ -396,3 +397,7 @@ from-evidence 的 ALLOW 收据同样只在被某个执行方 consume 后才授�
   - 合入的变更：k3s #1252、#1256、#1257、#1258、#1259、#1260、#1269 / #1270（pin）、#1271、#1272；aster-guard #4、#5、#6。
 - **前置条件发现（firewalld masquerade）**：上线时发现各节点 firewalld 的 `trusted` 区开着 `masquerade`，跨节点 Pod 流量到达时源地址被改写为发送节点的 flannel 地址，kube-router 的命名空间 ipset 匹配不上，于是**被放行的**跨节点路径也被策略丢弃；这也意味着此前集群内所有基于命名空间 / Pod 的 NetworkPolicy 只在同节点内生效。因此关闭该 masquerade 是 D2「namespace-only」网络策略跨节点成立的前提（已在全部节点去除）。k3s#1271 为回归守卫：探针覆盖「被放行的跨节点」路径，该问题复发会使探针变红。节点开通流程若含 `--add-masquerade` 也须去除。
 - **U-K8（apiserver 审计日志）**：已核实**未开启**。残余风险：探针 token 若泄露，其 API 调用无法事后还原。该风险**接受并记录**：爆炸半径受 30 天 TTL（硬上限 90 天）与准入策略 `guard-probe-pod-scope` / `guard-agents-secret-allowlist` 约束（见 D9、计划 §3）。跟进项（可选，不阻塞 #466，计划 U-K8 / O5）：为 `system:serviceaccount:aster-guard:guard-bypass-probe` 加 Metadata 级审计策略（三台 control-plane 逐台重启 k3s），或改用 GitHub OIDC 认证以去掉长期凭证。
+
+### 12.2 后续：审计日志与 OIDC 凭证（指针）
+
+U-K8（apiserver 审计日志）与 O5（探针凭证改用 GitHub OIDC）的落地设计见 **ADR 0057**（ACCEPTED，2026-11-16）。两项都改 control-plane 主机配置、作用于全集群，所以另立 ADR。ADR 0057 迁移步骤 M4 完成后，再由其计划的最后一个任务改写 §12 D9 的凭证描述与 §12.1 的 U-K8 残余风险。在此之前，D9 与 §12.1 的现行文字继续有效。

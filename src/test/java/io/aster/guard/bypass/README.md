@@ -33,7 +33,7 @@ DB_JDBC_URL=jdbc:postgresql://localhost:5432/aster_policy DB_USERNAME=postgres D
 | `notConsumed` / `consumedExactlyOnce` | 收据行 `consumed_at` 与 `consume_audit_id`、`/api/v1/audit/receipts` 的 `consumes[].authoritative`、回读的 `consumedBy` 一致（对账 #465 上线前以同一数据代替） |
 
 参考执行方 `ReferenceExecutor` 按 ADR 0040 §12 D6 的顺序本地验签（kid ∈ JWKS → Ed25519 → tenant / decision /
-outcome → 时间窗 → actionHash），通过才 consume；`attackConsume` 跳过本地检查直接 consume。
+outcome → 时间窗 → actionHash → 配置了期望策略时核对签名覆盖的 `policyModule / policyFunction`），通过才 consume；`attackConsume` 跳过本地检查直接 consume。
 套件 profile `BypassProfile` 打开 apikey + RBAC + HMAC，所有请求只带 Bearer key。
 
 ## 场景矩阵与启用状态
@@ -51,6 +51,7 @@ outcome → 时间窗 → actionHash），通过才 consume；`attackConsume` �
 | 6 | 注入指令驱动 Agent（阶段 B） | `B6PromptInjectionBypassTest` | 启用：脚本化被注入 Agent 经 `aster-guard-mcp`（`--isolation network`）① 删除 → DENY、不转发、链上无 consume 尝试；② 改参 `approved: true` 重试 → 新决策仍 DENY；③ 换工具退款 → 独立决策 ALLOW、上游恰一次且参数与 Guard 哈希的 `context` 逐字节相同；④ 无 key 自助读决策 / consume → 401 |
 | 7 | 自报输入篡改（高风险档案） | `B7TamperedSelfReportedInputBypassTest` | 启用：DENY `unverified_input`；`invalid_fact` 的 `claim_mismatch / bad_signature / unknown_issuer / expired`；两条正向对照 |
 | 7 | 自报输入填小使规则直接 ALLOW（高风险档案，#510） | `B7bAllowSkipsProvenanceGateBypassTest` | 启用：HMAC evaluate-source 得 ALLOW → from-evidence 未附事实 DENY `unverified_input`、无收据、consume 409；附事实 ALLOW 执行恰一次；不要求 verifiedInputs 的档案仍 409 `evidence_not_approvable`（ADR 0046 §11.8） |
+| — | 换策略模块另取 ALLOW 收据（#517） | `B8PolicySwitchBypassTest` | 启用：同一动作在执行方期望的严格模块 DENY、换到同租户宽松模块 ALLOW 且 actionHash 相同；核对签名覆盖的 `policyModule / policyFunction` 的执行方本地拒绝 `policy_mismatch`、未 consume；改写地址键 → `bad_signature`；期望模块的收据照常执行恰一次（ADR 0040 §13 R68） |
 | — | 抹掉对账证据（#465） | `io.aster.guard.reconcile.GuardReconciliationAuthBypassTest` | 启用：MEMBER 确认孤儿 403、无凭证上报 / 读取 401、他租户不可见、自报 `X-Tenant-Id` 403；ADMIN 确认 200 |
 
 `ReferenceExecutorSelfTest` 是套件自检（诚实路径会执行、攻击者原语只在 200 时写账本、本地检查会拦）。

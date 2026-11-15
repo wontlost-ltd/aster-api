@@ -35,7 +35,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
@@ -132,6 +131,8 @@ class GuardApprovalServiceTest {
     d.requestedBy = REQUESTER;
     d.requestedApiKeyId = REQUESTER_KEY;
     d.actionHash = ACTION_HASH;
+    d.policyModule = "guard.customer";
+    d.policyFunction = "decide";
     d.policyVersionId = POLICY_VERSION_ID;
     return d;
   }
@@ -413,6 +414,8 @@ class GuardApprovalServiceTest {
     assertThat(receipt.payload().expiresAt()).isEqualTo("2026-11-08T10:15:00.123Z");
     assertThat(receipt.payload().actionHash()).isEqualTo(ACTION_HASH);
     assertThat(receipt.payload().policyVersionId()).isEqualTo(POLICY_VERSION_ID);
+    assertThat(receipt.payload().policyModule()).isEqualTo("guard.customer");
+    assertThat(receipt.payload().policyFunction()).isEqualTo("decide");
     assertThat(receipt.payload().decisionId()).isEqualTo(a.decisionId.toString());
     assertThat(receipt.payload().tenantId()).isEqualTo(TENANT);
     assertThat(signer.verify(receipt)).isTrue();
@@ -539,7 +542,7 @@ class GuardApprovalServiceTest {
     GuardApprovalEntity a = pending(DPO);
     ExecutionReceiptIssuer broken = mock(ExecutionReceiptIssuer.class);
     when(broken.available()).thenReturn(true);
-    when(broken.issue(any(), any(), any(), anyLong(), any())).thenThrow(
+    when(broken.issue(any(), any(), any(), any(), any())).thenThrow(
         new io.aster.guard.receipt.ExecutionReceiptUnavailableException("down", null));
     service = new GuardApprovalService(store, appender, new GuardReceiptBuilder(), json, broken, NO_FACT_ISSUERS,
         snapshots);

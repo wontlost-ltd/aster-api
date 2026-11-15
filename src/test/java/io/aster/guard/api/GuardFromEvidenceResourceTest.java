@@ -37,10 +37,18 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -160,6 +168,47 @@ public class GuardFromEvidenceResourceTest {
     assertThat(get.jsonPath().getLong("receipt.auditId")).isEqualTo(r1.jsonPath().getLong("receipt.auditId"));
   }
 
+  /**
+   * #522：同一证据相关键的并发 from-evidence 注册。链追加与决策行写入在同一事务、同一 (tenant, correlationId)
+   * 咨询锁内完成：全部 200 且为同一决策（落败者得到先到者的幂等重放），链上恰一条决策事件、恰一个决策行，
+   * 不留指向不存在决策的孤儿收据。
+   */
+  @Test
+  void concurrentFromEvidenceOnSameCorrelationIdRegistersOnceWithoutOrphanReceipt() throws Exception {
+    String cid = newCid();
+    appendEvaluation(TENANT, cid, "REQUIRE_APPROVAL", DPO);
+    int threads = 8;
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    CountDownLatch start = new CountDownLatch(1);
+    try {
+      List<Future<Response>> futures = new ArrayList<>();
+      for (int i = 0; i < threads; i++) {
+        futures.add(pool.submit(() -> {
+          start.await();
+          return signedPost(FROM_EVIDENCE, body(cid), TENANT, "u-req", List.of());
+        }));
+      }
+      start.countDown();
+      Set<String> decisionIds = new HashSet<>();
+      for (Future<Response> f : futures) {
+        Response r = f.get(60, TimeUnit.SECONDS);
+        assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+        decisionIds.add(r.jsonPath().getString("decisionId"));
+      }
+      assertThat(decisionIds).hasSize(1);
+      String decisionId = decisionIds.iterator().next();
+      List<AuditLog> events = GuardDecisionResourceTest.decisionEvents(TENANT,
+          "\"evidenceCorrelationId\":\"" + cid + "\"");
+      assertThat(events).extracting(e -> e.decisionId).containsExactly(decisionId);
+      assertThat(QuarkusTransaction.requiringNew().call(() -> GuardDecisionEntity.count(
+          "tenantId = ?1 and evidenceCorrelationId = ?2", TENANT, cid))).isEqualTo(1);
+      assertThat(QuarkusTransaction.requiringNew().call(() -> GuardApprovalEntity.count(
+          "decisionId", UUID.fromString(decisionId)))).isEqualTo(1);
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
   @Test
   void 从证据开决策写决策收据行_批准后按decisionId取回审批() {
     String cid = newCid();
@@ -209,6 +258,8 @@ public class GuardFromEvidenceResourceTest {
     var receipt = ExecutionReceiptAssert.assertVerifiable(ok.asString(), signingKeys);
     assertThat(receipt.get("payload").get("actionHash").asText()).isEqualTo(ExecutionReceiptAssert.actionHashOf(body));
     assertThat(receipt.get("payload").get("policyVersionId").asLong()).isEqualTo(1730890123456L);
+    assertThat(receipt.get("payload").get("policyModule").asText()).isEqualTo("guard.customer");
+    assertThat(receipt.get("payload").get("policyFunction").asText()).isEqualTo("decide");
     Response read = signedGet("/api/v1/guard/decisions/" + decisionId, "", TENANT, "u-req");
     assertThat(ExecutionReceiptAssert.tree(read.asString()).get("executionReceipt")).isEqualTo(receipt);
     UUID id = UUID.fromString(decisionId);

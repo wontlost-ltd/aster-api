@@ -46,7 +46,8 @@ public final class InternalCallerSigning {
                                               String body, String tenant, String role, String userId,
                                               List<String> roles) {
         long ts = System.currentTimeMillis() / 1000;
-        String nonce = "sig-v3-" + System.nanoTime();
+        // 并发线程可能取到相同的 nanoTime（时钟粒度），用随机 UUID 保证每次唯一，避免被判 nonce 重放
+        String nonce = "sig-v3-" + java.util.UUID.randomUUID();
         String canonical = canonical(method, path, query, ts, nonce, body, tenant, role, userId, roles);
 
         Map<String, String> h = new LinkedHashMap<>();
