@@ -8,6 +8,7 @@ import io.aster.guard.api.GuardDecisionResponse;
 import io.aster.guard.provenance.InputSourceResolver;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
+import io.aster.guard.receipt.ReceiptPolicy;
 import io.aster.guard.snapshot.InputSnapshotService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -336,7 +337,7 @@ public class GuardApprovalService {
           return new GuardDecisionStore.ApprovalWrite(json.writeJson(base), null);
         }
         ExecutionReceiptIssuer.Issued issued = receiptIssuer.issue(decision.id, decision.tenantId, decision.actionHash,
-            decision.policyVersionId, now);
+            new ReceiptPolicy(decision.policyModule, decision.policyFunction, decision.policyVersionId), now);
         written.set(base.withExecutionReceipt(issued.receipt()));
         return new GuardDecisionStore.ApprovalWrite(json.writeJson(written.get()), issued.row());
       });

@@ -65,17 +65,17 @@ public class ExecutionReceiptSigner {
   }
 
   /**
-   * 用 active key 签发收据；{@code expiresAt = issuedAt + ttl}（排他）。{@code policyVersionId} 为 null 时载荷不含该键。
-   * 外层 {@code revision} 取当前密钥配置修订号。
+   * 用 active key 签发收据；{@code expiresAt = issuedAt + ttl}（排他）。{@code policy} 的地址与版本写入签名载荷，
+   * 缺失项（null / 空串）载荷不含该键。外层 {@code revision} 取当前密钥配置修订号。
    *
    * @throws IllegalStateException active key 在 {@code issuedAt} 时已到 notAfter，或签名失败
    */
-  public ExecutionReceipt sign(String decisionId, String tenantId, String actionHash, Long policyVersionId,
+  public ExecutionReceipt sign(String decisionId, String tenantId, String actionHash, ReceiptPolicy policy,
                                Instant issuedAt) {
     ReceiptSigningKeys.SigningKey key = requireUsableActive(issuedAt);
     ExecutionReceipt.Payload payload = new ExecutionReceipt.Payload(actionHash, decisionId,
-        issuedAt.plus(ttl).toString(), issuedAt.toString(), key.kid(), OUTCOME_ALLOW, policyVersionId, tenantId,
-        PAYLOAD_VERSION);
+        issuedAt.plus(ttl).toString(), issuedAt.toString(), key.kid(), OUTCOME_ALLOW, policy.function(),
+        policy.module(), policy.versionId(), tenantId, PAYLOAD_VERSION);
     try {
       Signature signer = Signature.getInstance("Ed25519");
       signer.initSign(key.keyPair().getPrivate());

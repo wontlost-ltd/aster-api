@@ -34,8 +34,8 @@ public class ExecutionReceiptIssuer {
   }
 
   /** 以注入时钟的当前时刻签发（直接 ALLOW）。 */
-  public Issued issueNow(UUID decisionId, String tenantId, String actionHash, Long policyVersionId) {
-    return issue(decisionId, tenantId, actionHash, policyVersionId, clock.instant());
+  public Issued issueNow(UUID decisionId, String tenantId, String actionHash, ReceiptPolicy policy) {
+    return issue(decisionId, tenantId, actionHash, policy, clock.instant());
   }
 
   /**
@@ -46,20 +46,20 @@ public class ExecutionReceiptIssuer {
   }
 
   /**
-   * 以给定时刻签发（审批转 ALLOW 时为加锁后的 now）。{@code policyVersionId} 可为 null（决策没有已保存的策略版本，
-   * 如 aster-cloud {@code evaluateSource} 锚定的 from-evidence 决策）：载荷省略该键，收据照常签发。
+   * 以给定时刻签发（审批转 ALLOW 时为加锁后的 now）。{@code policy} 的版本 id 可为 null（决策没有已保存的策略版本，
+   * 如 aster-cloud {@code evaluateSource} 锚定的 from-evidence 决策）：载荷省略该键，收据照常签发；策略地址同理。
    *
    * @throws ExecutionReceiptUnavailableException actionHash 缺失、active key 已到期或签名失败；调用方按 fail-closed
    *                                              处理，不得放行
    */
-  public Issued issue(UUID decisionId, String tenantId, String actionHash, Long policyVersionId, Instant at) {
+  public Issued issue(UUID decisionId, String tenantId, String actionHash, ReceiptPolicy policy, Instant at) {
     Instant issuedAt = at.truncatedTo(ChronoUnit.MILLIS);
     ExecutionReceipt receipt;
     try {
-      if (actionHash == null) {
-        throw new IllegalArgumentException("actionHash 缺失");
+      if (actionHash == null || policy == null) {
+        throw new IllegalArgumentException("actionHash 或策略绑定缺失");
       }
-      receipt = signer.sign(decisionId.toString(), tenantId, actionHash, policyVersionId, issuedAt);
+      receipt = signer.sign(decisionId.toString(), tenantId, actionHash, policy, issuedAt);
     } catch (RuntimeException e) {
       throw new ExecutionReceiptUnavailableException("执行收据签发失败: decision=" + decisionId, e);
     }

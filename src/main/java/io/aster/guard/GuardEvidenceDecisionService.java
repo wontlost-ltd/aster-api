@@ -16,6 +16,7 @@ import io.aster.guard.provenance.ProfileRequirements;
 import io.aster.guard.provenance.VerifiedInputsGate;
 import io.aster.guard.receipt.ExecutionReceiptIssuer;
 import io.aster.guard.receipt.ExecutionReceiptUnavailableException;
+import io.aster.guard.receipt.ReceiptPolicy;
 import io.aster.guard.snapshot.DecisionInputFactory;
 import io.aster.guard.snapshot.EvaluationClassificationWriter;
 import io.aster.guard.snapshot.GuardDecisionInputEntity;
@@ -243,7 +244,8 @@ public class GuardEvidenceDecisionService {
   private ExecutionReceiptIssuer.Issued issueReceipt(GuardDecisionDraft draft, UUID decisionId,
                                                      Map<String, Object> event) {
     try {
-      return receiptIssuer.issueNow(decisionId, draft.tenantId(), draft.actionHash(), policyVersionId(event));
+      return receiptIssuer.issueNow(decisionId, draft.tenantId(), draft.actionHash(),
+          new ReceiptPolicy(draft.policyModule(), draft.policyFunction(), policyVersionId(event)));
     } catch (ExecutionReceiptUnavailableException e) {
       LOG.errorf(e, "from-evidence 执行收据签发失败，按 DENY 处理: decision=%s", decisionId);
       return null;

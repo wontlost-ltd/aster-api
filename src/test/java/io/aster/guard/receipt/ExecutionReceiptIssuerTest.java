@@ -27,11 +27,14 @@ class ExecutionReceiptIssuerTest {
   void issueNowTruncatesToMillisAndRowMatchesPayload() {
     UUID id = UUID.randomUUID();
 
-    ExecutionReceiptIssuer.Issued issued = issuer.issueNow(id, "t1", HASH, 42L);
+    ExecutionReceiptIssuer.Issued issued = issuer.issueNow(id, "t1", HASH, new ReceiptPolicy("m", "f", 42L));
 
     ExecutionReceipt.Payload p = issued.receipt().payload();
     assertThat(p.issuedAt()).isEqualTo("2026-11-08T01:00:00.987Z");
     assertThat(p.expiresAt()).isEqualTo("2026-11-08T01:05:00.987Z");
+    assertThat(p.policyModule()).isEqualTo("m");
+    assertThat(p.policyFunction()).isEqualTo("f");
+    assertThat(p.policyVersionId()).isEqualTo(42L);
     assertThat(signer.verify(issued.receipt())).isTrue();
     GuardReceiptEntity row = issued.row();
     assertThat(row.decisionId).isEqualTo(id);
@@ -45,9 +48,11 @@ class ExecutionReceiptIssuerTest {
   void missingActionHashIsReceiptUnavailable() {
     UUID id = UUID.randomUUID();
 
-    assertThatThrownBy(() -> issuer.issueNow(id, "t1", null, 42L))
+    assertThatThrownBy(() -> issuer.issueNow(id, "t1", null, new ReceiptPolicy("m", "f", 42L)))
         .isInstanceOf(ExecutionReceiptUnavailableException.class);
-    assertThatThrownBy(() -> issuer.issue(id, "t1", null, null, NOW))
+    assertThatThrownBy(() -> issuer.issue(id, "t1", null, new ReceiptPolicy("m", "f", null), NOW))
+        .isInstanceOf(ExecutionReceiptUnavailableException.class);
+    assertThatThrownBy(() -> issuer.issue(id, "t1", HASH, null, NOW))
         .isInstanceOf(ExecutionReceiptUnavailableException.class);
   }
 
@@ -56,7 +61,7 @@ class ExecutionReceiptIssuerTest {
   void missingPolicyVersionStillIssues() {
     UUID id = UUID.randomUUID();
 
-    ExecutionReceiptIssuer.Issued issued = issuer.issue(id, "t1", HASH, null, NOW);
+    ExecutionReceiptIssuer.Issued issued = issuer.issue(id, "t1", HASH, new ReceiptPolicy("m", "f", null), NOW);
 
     assertThat(issued.receipt().payload().policyVersionId()).isNull();
     assertThat(issued.receipt().payload().actionHash()).isEqualTo(HASH);

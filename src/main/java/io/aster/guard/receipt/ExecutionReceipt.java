@@ -18,10 +18,17 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 public record ExecutionReceipt(String kid, Payload payload, Long revision, String signature) {
 
   /**
-   * 被签名的载荷，字段按字母序：{@code actionHash, decisionId, expiresAt, issuedAt, kid, outcome, policyVersionId,
-   * tenantId, v}。时间为 ISO-8601 UTC 字符串；{@code expiresAt} 排他（有效当且仅当 {@code now < expiresAt}）。
-   * {@code policyVersionId} 可选：决策没有已保存的策略版本时（aster-cloud {@code evaluateSource} 锚定的 from-evidence
-   * 决策）为 null，按 NON_EMPTY 不写出、不进入签名字节；此时收据仍以 actionHash / decisionId / tenantId / 时间窗绑定。
+   * 被签名的载荷，字段按字母序：{@code actionHash, decisionId, expiresAt, issuedAt, kid, outcome, policyFunction,
+   * policyModule, policyVersionId, tenantId, v}。时间为 ISO-8601 UTC 字符串；{@code expiresAt} 排他（有效当且仅当
+   * {@code now < expiresAt}）。
+   *
+   * <p>{@code policyModule / policyFunction}（ADR 0040 §13 R68，#517）把签发它的策略地址纳入签名：actionHash 只覆盖
+   * {@code action}，同租户换一个策略模块会得到同一 actionHash 的 ALLOW，执行方只有核对签名覆盖的地址才能确认收据出自
+   * 自己期望的策略。两键是 {@code v: 1} 内的<b>增量字段</b>：执行方对收到的 payload 整体做 JCS 再验签，新增键自动受签名覆盖，
+   * 不读它们的 0.2.0 执行方照常验签通过。本修订之前签发并存储的收据没有这两键，重放与回读原样返回。
+   *
+   * <p>{@code policyVersionId} 与地址均可选：决策没有已保存的策略版本时（aster-cloud {@code evaluateSource} 锚定的
+   * from-evidence 决策）版本为 null，评估事件未记地址时地址为空串，按 NON_EMPTY 不写出、不进入签名字节。
    */
   @JsonPropertyOrder(alphabetic = true)
   @JsonInclude(JsonInclude.Include.NON_EMPTY)
@@ -31,6 +38,8 @@ public record ExecutionReceipt(String kid, Payload payload, Long revision, Strin
                         String issuedAt,
                         String kid,
                         String outcome,
+                        String policyFunction,
+                        String policyModule,
                         Long policyVersionId,
                         String tenantId,
                         Integer v) {
