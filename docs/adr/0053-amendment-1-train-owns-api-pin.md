@@ -1,6 +1,6 @@
 # ADR 0053 修订 A1：列车在 L4 接管 aster-api 的 pin bump
 
-- 状态：**PROPOSED**（2026-11-15，待用户接受）
+- 状态：**ACCEPTED**（2026-11-15）
 - 日期：2026-11-15
 - 修订对象：[ADR 0053](0053-release-train-artifact-reuse.md) §6（deploy 等待）、§7（stale gate，含「列车不推进任何参与仓 main」的断言）、§13（迁移）
 - 相关：ADR 0023（发布列车）、aster-api#499 / #506 / #527（手工 pin PR）、platform#82（列车 dispatch 必须带 trainId）、#337（sibling-ref 与 settings 两处 pin 一致性门禁）
