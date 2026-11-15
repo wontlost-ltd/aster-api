@@ -190,7 +190,7 @@ result:  { decisionId, attemptId, executorId, status: executed|failed|aborted, f
 
 | # | 场景 | 断言 |
 |---|---|---|
-| 1 | 不经代理直连上游（**部署层**，按 `--isolation` 选断言；§3.3） | 连接被拒 / 401；工具侧无副作用 |
+| 1 | 不经代理直连上游（**部署层**，按 `--isolation` 选断言；§3.3） | 连接被拒 / 401；工具侧无副作用——**已验证**（2026-11-16，[#466 评论](https://github.com/wontlost-ltd/aster-api/issues/466#issuecomment-6899245972)，反向记录见[此评论](https://github.com/wontlost-ltd/aster-api/issues/466#issuecomment-6899602342)；§12.1） |
 | 1b | `auth` 模式票据核对（工具侧夹具；R66 起票据在 `_meta`，另含 D2 envelope 不符、D11 同票据并发重放、D12 换策略模块）：缺票据 / 票据畸形；错 `attemptId`；票据对应另一租户决策（用另一租户 key 签发）；参数被改（重算 `actionHash` 不符）；`consumedAt` 超 ttl；已写 result 的票据重放；Guard 不可达 / 超时 / 5xx | 每种都 401、无副作用；只有「票据正确 + 哈希相等 + attempt 相等 + 时间在窗内 + 未写 result + Guard 200」执行 |
 | 2 | 规则 DENY 后调用 | 返回 `status: denied`；`sideEffects` 空；链上有 DECISION、无 CONSUME_ATTEMPT |
 | 2b | DENY 后模型尝试其它可用工具 / 路径：同一会话里对白名单内另一工具发起调用、对同一工具改参重试、直连上游（#466 第 2 条扩展） | 每次调用各得独立决策（新 decisionId）；被拒的不转发；直连按第 1 条失败；`sideEffects` 只含被 ALLOW 的那些；代理与 SDK 代码中不存在读取 `reason / poll / approvalId` 后分支执行的逻辑（静态断言：grep 这些字段只出现在返回构造处） |
@@ -386,3 +386,13 @@ from-evidence 的 ALLOW 收据同样只在被某个执行方 consume 后才授�
 | D9 | 自动执行：k3s 工作流 `guard-bypass-probe.yml` 在 `apps/aster-lang/{agents,guard,tools}/**`、`scripts/guard-bypass/**` 与该工作流文件本身推送 main 后、每日定时与手动触发时运行，跑在 **GitHub 托管 runner** 上（O1 用户裁定），凭 k3s Environment `guard-probe`（部署分支仅 `main`、管理员不可绕过；「仅该工作流引用」是仓库配置由测试守住，不是 GitHub 的工作流绑定，信任前提是 `main` 只经 PR ruleset 合入）中的 secret `GUARD_PROBE_KUBECONFIG` 直连公网 k3s API（6443 已对公网开放，不新增暴露）；该 kubeconfig 只含 ServiceAccount `aster-guard/guard-bypass-probe` 的绑定 token（缺省 30 天，签发结果 `exp - iat` 上限 90 天由生成脚本与工作流各校验一次；删除并重建 SA 后旧 UID 绑定的 token 失效，有约 60 秒宽限）；该 SA 只有 `aster-agents` 内的 `pods` create/get/list/watch/delete 与 `pods/log` get，其余为三命名空间内按计划权限表列出的只读，外加集群级 `namespaces` list（只用于发现遗留红队副本），无 Secrets API 权限（但 `pods/create` 可借 Pod 挂载间接读取 `aster-agents` 内的 Secret，故该命名空间只放演示 Agent token，集群侧由 `ValidatingAdmissionPolicy` 拒绝该命名空间内其它 Secret，并把该身份的 Pod 创建限定为探针形状（不得投射 token 或引用其它 Secret）、删除限定为带探针标签的 Pod，见计划 §3 与 Task 7c）。#466 第 1 条以「部署后那次 main 推送上探针运行的 `probe` job exit 0 + D8 的两条反向记录」为验收；此后的持续口径由 watchdog 判定：main 上最近一次已完成运行的 `probe` job 成功且距今 ≤ 36 h | k3s 与 aster-api 均为 public 仓，现有 `local-mac` self-hosted runner 组 `allows_public_repositories: false` 且无 Linux runner 在线；托管 runner 不依赖用户机器、不在其上执行代码，凭证权限小到泄露也只能在 `aster-agents` 起探针形状的 Pod、删探针 Pod（RBAC 本身允许删该命名空间任意 Pod，由准入策略 `guard-probe-pod-scope` 收窄，该策略缺失时最坏是删光 `aster-agents` 的 Pod）。本条的安全结论以 Task 7c 两个准入策略已部署且 `vap-check.sh` 全部用例通过为前提，未满足前不得发放探针凭证。后续可改为 GitHub OIDC 直接认证、去掉长期凭证（计划 O5） | §7 第 1 条验收口径；U3 第 3 条的「self-hosted runner」 |
 
 §7 场景表第 1 条在 D9 验收记录贴到 #466 后标「已验证（部署层）」，由实施计划的最后一个任务修改本文件。
+
+### 12.1 验收结果（2026-11-16）
+
+- 状态：**场景 1 部署层已验证**。记录不在此复述，只链接：
+  - 生产首个探针记录（网络层与票据层均 pass，含三项上线修复）：[#466 评论](https://github.com/wontlost-ltd/aster-api/issues/466#issuecomment-6899245972)；k3s 工作流 `guard-bypass-probe.yml` 运行 43746736433，CronJob `aster-guard/guard-auth-probe` 通过。
+  - 红队窗口反向记录（D8，六行均符合预期）：[#466 评论](https://github.com/wontlost-ltd/aster-api/issues/466#issuecomment-6899602342)。
+  - `vap-check` 生产记录（两个准入策略）：[k3s#1258 评论](https://github.com/wontlost-ltd/k3s/pull/1258#issuecomment-6893725766)。
+  - 合入的变更：k3s #1252、#1256、#1257、#1258、#1259、#1260、#1269 / #1270（pin）、#1271、#1272；aster-guard #4、#5、#6。
+- **前置条件发现（firewalld masquerade）**：上线时发现各节点 firewalld 的 `trusted` 区开着 `masquerade`，跨节点 Pod 流量到达时源地址被改写为发送节点的 flannel 地址，kube-router 的命名空间 ipset 匹配不上，于是**被放行的**跨节点路径也被策略丢弃；这也意味着此前集群内所有基于命名空间 / Pod 的 NetworkPolicy 只在同节点内生效。因此关闭该 masquerade 是 D2「namespace-only」网络策略跨节点成立的前提（已在全部节点去除）。k3s#1271 为回归守卫：探针覆盖「被放行的跨节点」路径，该问题复发会使探针变红。节点开通流程若含 `--add-masquerade` 也须去除。
+- **U-K8（apiserver 审计日志）**：已核实**未开启**。残余风险：探针 token 若泄露，其 API 调用无法事后还原。该风险**接受并记录**：爆炸半径受 30 天 TTL（硬上限 90 天）与准入策略 `guard-probe-pod-scope` / `guard-agents-secret-allowlist` 约束（见 D9、计划 §3）。跟进项（可选，不阻塞 #466，计划 U-K8 / O5）：为 `system:serviceaccount:aster-guard:guard-bypass-probe` 加 Metadata 级审计策略（三台 control-plane 逐台重启 k3s），或改用 GitHub OIDC 认证以去掉长期凭证。
