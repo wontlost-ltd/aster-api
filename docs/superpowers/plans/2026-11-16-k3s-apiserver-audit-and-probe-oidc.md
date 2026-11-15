@@ -110,14 +110,14 @@
 **Interfaces:**
 - `node.sh check | status | preflight <c> | apply <c> [--no-restart] [--no-auto-rollback] | verify <c> [--since <epoch>] | rollback <c>`；`<c>` 是逗号列表，取值 `audit`、`oidc`。退出码：0 成功；1 核对失败，或 apply 失败且已回滚；2 用法错误；4 apply 失败且回滚也失败（需要人工处理）。
 - 测试注入点：`NODE_ROOT`（文件系统根前缀，缺省为空）、`SYSTEMCTL`、`FIREWALL_CMD`、`JOURNALCTL`、`CURL`、`K3S_KUBECTL`、`DF`、`NODE_NAME`、`NODE_WAIT_TIMEOUT`（缺省 300）、`NODE_POLL`（缺省 5）、`NODE_BUNDLE`（缺省为脚本所在目录）。
-- `check`：firewalld 运行中时，`trusted` 区的运行时与永久配置都必须没有 masquerade（其它区有 masquerade 只 warn）；按组件输出 `installed / absent / drift`，drift 判 fail；`config.yaml` 及 `config.yaml.d/` 中非本组件文件里的 `audit-` / `oidc-` / `authentication-config` 计数为 0；本机有 `k3s.service`。
+- `check`：firewalld 运行中时，`trusted` 区的运行时与永久配置都必须没有 masquerade（`firewall-cmd --query-masquerade` 退出码 0 = 开、1 = 未开，其它退出码按查询失败判 fail；其它区有 masquerade 只 warn）；按组件输出 `installed / absent / drift`，drift 判 fail；`config.yaml` 及 `config.yaml.d/` 中非本组件文件里的 `audit-` / `oidc-` / `authentication-config` 计数为 0；本机有 `k3s.service`。
 - `status`：本节点名；etcd 成员（经 `https://127.0.0.1:2379` grpc-gateway，使用 k3s 的 etcd 客户端证书）及 leader；`kubernetes` 端点 IP 数；已安装组件；审计日志目录占用。
 - `preflight`：`check` 通过；端点为 3 个；etcd 成员为 3 个且都已启动，本地 `/health` 为 true；`/var/lib/rancher` 可用空间 ≥ 2 GiB（audit）；`$CURL` 取 GitHub 发现文档，`issuer` 必须为常量（oidc）。
 - `apply`：preflight → 备份 → 安装 → 重启 → 等待（本地 `readyz` 返回 200、端点为 3 个、本节点 Ready）→ verify；失败则 rollback。
 - `verify`：`k3s` active；本地 `readyz` 为 200；`--since` 之后的 journal 中，`Running kube-apiserver` 行带上了组件参数；audit：日志文件存在且非空，最后一行含 `"apiVersion":"audit.k8s.io/v1"`；oidc：`--since` 之后没有 `oidc authenticator` 错误行。
 - `rollback`：删除组件文件，有备份则恢复，重启并等待就绪。
 
-- [ ] Step 1：写测试（假二进制目录加临时根目录）→ FAIL：`check_passes_on_clean_host`、`check_fails_on_trusted_masquerade_runtime`、`check_fails_on_trusted_masquerade_permanent`、`check_warns_other_zone_masquerade`、`check_fails_on_drift`、`check_fails_on_conflicting_config_keys`（断言输出不含假 `config.yaml` 中的 token 值）、`check_skips_firewall_when_inactive`、`preflight_fails_when_endpoints_lt_3`、`preflight_fails_when_etcd_member_unstarted`、`preflight_fails_low_disk`、`preflight_oidc_needs_github_discovery`、`apply_installs_files_0600_and_restarts`、`apply_no_restart_only_stages`、`apply_rolls_back_when_not_ready`、`apply_rolls_back_when_verify_fails`、`apply_refuses_on_preflight_failure`（不安装任何文件，不重启）、`rollback_removes_files_and_restarts`、`verify_audit_requires_flag_and_events`、`verify_oidc_fails_on_authenticator_error`、`usage_errors_exit_2`。
+- [ ] Step 1：写测试（假二进制目录加临时根目录）→ FAIL：`check_passes_on_clean_host`、`check_fails_when_firewalld_query_errors`、`check_fails_on_trusted_masquerade_runtime`、`check_fails_on_trusted_masquerade_permanent`、`check_warns_other_zone_masquerade`、`check_fails_on_drift`、`check_fails_on_conflicting_config_keys`（断言输出不含假 `config.yaml` 中的 token 值）、`check_skips_firewall_when_inactive`、`preflight_fails_when_endpoints_lt_3`、`preflight_fails_when_etcd_member_unstarted`、`preflight_fails_low_disk`、`preflight_oidc_needs_github_discovery`、`apply_installs_files_0600_and_restarts`、`apply_no_restart_only_stages`、`apply_rolls_back_when_not_ready`、`apply_rolls_back_when_verify_fails`、`apply_refuses_on_preflight_failure`（不安装任何文件，不重启）、`rollback_removes_files_and_restarts`、`verify_audit_requires_flag_and_events`、`verify_oidc_fails_on_authenticator_error`、`usage_errors_exit_2`。
 - [ ] Step 2：实现 → PASS；`shellcheck hosts/k3s-server/*.sh` 无输出。
 - [ ] Step 3：提交 `feat(hosts): k3s server 主机配置安装 / 核对 / 回滚脚本（含 firewalld masquerade 守卫，ADR 0057 §5）`。
 
@@ -159,14 +159,14 @@
 - Create: `docs/runbooks/k3s-server-host-config.md`
 - Modify: `docs/runbooks/guard-bypass-probe.md`（§3 签发改为「静态路径（M4 前）」；新增「OIDC 迁移 M0–M5」；§6 审计改为查询方法；§5 失败表加 OIDC 三行）
 
-- [ ] Step 1：手册写清：节点清单、分发命令、滚动顺序、每一步的期望输出、回滚、审计查询、磁盘核对、firewalld 守卫、维护窗口避开 03:17 UTC。
+- [ ] Step 1：手册写清：节点清单、分发命令、滚动顺序、每一步的期望输出、回滚、审计查询、磁盘与保留天数核对（份数上限先到，约 8–22 天）、firewalld 守卫（查询失败也判 fail）、维护窗口避开 03:17 UTC 且窗口内不手动触发探针（窗口内失败为预期，结束后重跑）。
 - [ ] Step 2：全量测试，`shellcheck`，`actionlint`；开 PR。PR 描述含用户步骤 U-H1–U-H6（§3），以及各项验证的命令与输出。
 - [ ] Step 3：提交 `docs(runbooks): k3s server 主机配置与探针 OIDC 迁移手册（ADR 0057）`；Codex 审查 ≥ 90。
 
 ## 阶段 H：节点与 GitHub（用户执行，Task 6 的 PR 合并之后）
 
 ### Task 7：审计（U-H1、U-H2）
-- [ ] 按 `docs/runbooks/k3s-server-host-config.md` §3 对三台节点逐台执行 `node.sh apply audit`。每台完成后执行 Mac 侧核对，三台都完成后执行 `node.sh check`。
+- [ ] 按 `docs/runbooks/k3s-server-host-config.md` §3 对三台节点逐台执行 `node.sh apply audit`。每台完成后执行 Mac 侧核对，三台都完成后执行 `node.sh check`。窗口结束后手动触发一次探针，确认变绿。
 - [ ] 24 小时后，在每台节点上执行 `node.sh status`，记录审计日志的实际速率，贴到 #466。
 
 ### Task 8：OIDC（U-H3–U-H5）

@@ -12,11 +12,11 @@
 
 ## 0. TL;DR
 
-1. **审计（U-K8）**：三台 control-plane 的 kube-apiserver 开启文件审计日志。缺省记 Metadata 级。以下请求记 RequestResponse：探针身份（SA 与 OIDC 两个用户名）的**写**请求、`aster-agents` 的 Pod 写入、RBAC 与准入配置的写入。Secret、ConfigMap、TokenReview、`serviceaccounts/token` 永远只记 Metadata，而且这条规则排在所有记录请求体的规则之前。以下高频噪声不记：lease 心跳、事件写入、系统组件的读、所有身份的 watch（探针除外）、健康检查与 discovery。日志写在本地 `/var/lib/rancher/k3s/server/logs/audit.log`，保留规则为 100 MB 轮转、gzip、保留 20 份、最长 30 天，每节点磁盘占用上限约 0.5 GB。集群目前没有日志后端（OTel collector 的 logs 管道只接 `debug` exporter，没有 Loki），所以**不外送**。
+1. **审计（U-K8）**：三台 control-plane 的 kube-apiserver 开启文件审计日志。缺省记 Metadata 级。以下请求记 RequestResponse：探针身份（SA 与 OIDC 两个用户名）的**写**请求、`aster-agents` 的 Pod 写入、RBAC 与准入配置的写入。Secret、ConfigMap、TokenReview、`serviceaccounts/token` 永远只记 Metadata，而且这条规则排在所有记录请求体的规则之前。以下高频噪声不记：lease 心跳、事件写入、系统组件的读、所有身份的 watch（探针除外）、健康检查与 discovery。日志写在本地 `/var/lib/rancher/k3s/server/logs/audit.log`，保留规则为 100 MB 轮转、gzip、保留 20 份、最长 30 天。按估算的日增量，份数上限先到，可保留约 8–22 天；磁盘占用预计约 0.5 GB（gzip 后，属估算），未压缩的硬上限约 2.1 GB。集群目前没有日志后端（OTel collector 的 logs 管道只接 `debug` exporter，没有 Loki），所以**不外送**。
 2. **OIDC（O5）**：kube-apiserver 加 `--authentication-config`，使用 `apiserver.config.k8s.io/v1` 的 `AuthenticationConfiguration`（k8s 1.34 GA，集群是 v1.35.0+k3s1）。JWT 发行方为 `https://token.actions.githubusercontent.com`，audience 为 `k3s-guard-probe`。CEL 规则要求以下 claim 同时成立：`repository`、`repository_id`、`repository_owner_id`、`job_workflow_ref`（`…/guard-bypass-probe.yml@refs/heads/main`）、`ref`、`environment == guard-probe`、`sub`、`runner_environment == github-hosted`、`event_name`。通过后映射为固定用户名 `github-actions:wontlost-ltd/k3s:guard-probe`，并把 `run_id` / `sha` 等写入 `user.extra`，审计日志据此可以回溯到具体运行。现有三条 RoleBinding 与一条 ClusterRoleBinding 各加这个 User subject，权限与 SA 完全相同；`guard-probe-pod-scope` 的 `matchConditions` 改成匹配两个用户名。
 3. **工作流**：只有 `probe` job 有 `id-token: write`。凭证模式由 Environment 变量 `GUARD_PROBE_AUTH` 决定：`static`（缺省，行为与今天完全一致）、`dual`（探针仍用静态 SA token，同时断言 OIDC 身份、RBAC 与准入匹配）、`oidc`（只用 OIDC）。OIDC 的 kubeconfig 不含 exec 插件：`server` 与集群 CA（公开证书，入库）加上 `tokenFile`。token 文件在每次调用 kubectl 前按需刷新。因此 k3s PR 可以先合并，apiserver 改好之前也不影响静态路径。
 4. **主机配置入库**：k3s 仓新增 `hosts/k3s-server/`，包含两个 `config.yaml.d` drop-in（以 `kube-apiserver-arg+:` 追加，不改手写的 `config.yaml`）、审计策略、认证配置，以及节点脚本 `node.sh`。`node.sh` 提供 `check / preflight / apply / verify / rollback / status` 子命令，用户经 ssh 运行。`check` 同时守住 #466 的 firewalld 教训：`trusted` 区（运行时与永久配置）不得开 masquerade，已安装文件不得与仓库漂移。
-5. **滚动重启**：每次只动一台节点。顺序是先非 etcd leader、最后 leader，并避开探针定时运行的 03:17 UTC。每台节点重启前要通过 preflight：3 个 apiserver 端点就绪、etcd 3 个成员都已启动且本地健康、磁盘余量足够、GitHub 发现文档可达（仅 oidc 组件需要）。重启后 `verify` 必须通过才动下一台。失败时 `node.sh` 自动回滚该节点（删除 drop-in 后再重启），其余两台节点保持仲裁。
+5. **滚动重启**：每次只动一台节点。顺序是先非 etcd leader、最后 leader，并避开探针定时运行的 03:17 UTC；窗口期间不手动触发探针，窗口内的失败为预期，结束后重跑一次。每台节点重启前要通过 preflight：3 个 apiserver 端点就绪、etcd 3 个成员都已启动且本地健康、磁盘余量足够、GitHub 发现文档可达（仅 oidc 组件需要）。重启后 `verify` 必须通过才动下一台。失败时 `node.sh` 自动回滚该节点（删除 drop-in 后再重启），其余两台节点保持仲裁。
 
 ## 1. 现状（2026-11-16，只读核对）
 
@@ -44,7 +44,7 @@
 | D3 | 探针两个身份的**所有**请求都记，并排在噪声排除规则之前：写入记 RequestResponse，读 / watch / 越权失败记 Metadata | 泄露时要界定影响面，所以失败的越权尝试与 watch 也要留证。读请求的响应体（Pod 列表）没有额外取证价值，每天的轮询却有几百次，所以不记 |
 | D4 | 以下请求记 RequestResponse（与身份无关）：`aster-agents` 的 `pods`、`pods/ephemeralcontainers`、`pods/eviction` 写入；全集群 RBAC 四类对象与 `admissionregistration.k8s.io` 下所有对象的写入 | 这几类对象决定探针的爆炸半径：谁给探针加了权限、谁删改了准入策略、`aster-agents` 里起了什么 Pod。它们本身就低频 |
 | D5 | 不记的噪声：`coordination.k8s.io/leases` 的 get / update / watch；`events`（core 与 `events.k8s.io`）的写入；§1 所列系统用户与组 `system:nodes` 的 get / list / watch；所有身份的 watch（探针身份除外，D3 已先命中）；`/healthz*`、`/livez*`、`/readyz*`、`/version`、`/metrics` 与 discovery（`/api*`、`/apis*`、`/openapi*`） | lease 心跳与续约是最大的请求源（约 15/s）。watch 是长连接，每次重连都会产生一条记录。系统组件的读请求没有取证价值。代价是：非探针身份的 watch 不留痕，接受 |
-| D6 | 日志后端是本地文件 `/var/lib/rancher/k3s/server/logs/audit.log`（目录 0700），参数为 `audit-log-format=json`、`maxsize=100`、`maxbackup=20`、`maxage=30`、`audit-log-compress=true`，模式保持缺省 `blocking`。**不外送**：集群没有日志后端（§1） | 按 §3 的估算，每节点每天 50–200 MB 原始日志。20 份 × 100 MB 原始 ≈ 10–40 天，30 天的 maxage 先到。gzip 后磁盘占用约 0.5 GB（含正在写的文件），不到最紧的 master-2 可用空间的 10%。外送要在 1 vCPU 的 master 上加 DaemonSet 并新建 Loki，与本 ADR 的问题不相称；留作 Q1 |
+| D6 | 日志后端是本地文件 `/var/lib/rancher/k3s/server/logs/audit.log`（目录 0700），参数为 `audit-log-format=json`、`maxsize=100`、`maxbackup=20`、`maxage=30`、`audit-log-compress=true`，模式保持缺省 `blocking`。**不外送**：集群没有日志后端（§1） | 按 §3 的估算，每节点每天 90–260 MB 原始日志。20 份 × 100 MB 共 2 GB 原始日志，份数上限先于 30 天的 maxage 到达，可保留约 8–22 天，足以覆盖探针每日运行之后一周以上的追查。磁盘占用：gzip 后预计约 0.5 GB（压缩比按约 8 倍估算，属估算值，以 `node.sh status` 实测为准），不到最紧的 master-2 可用空间的 10%；未压缩的硬上限是 21 × 100 MB ≈ 2.1 GB，所以 preflight 要求可用空间 ≥ 2 GiB。保留天数实测低于 7 天就调大 maxbackup。外送要在 1 vCPU 的 master 上加 DaemonSet 并新建 Loki，与本 ADR 的问题不相称；留作 Q1 |
 | D7 | 结构化认证配置见 §4.1：一个 JWT 发行方，CEL 规则同时校验仓库名与不可变 ID、`job_workflow_ref`、`ref`、`environment`、`sub`、`runner_environment`、`event_name` 和 token 有效期上限。用户名是常量形状 `github-actions:wontlost-ltd/k3s:guard-probe`，不映射组。`userValidationRules` 禁止 `system:` 前缀的用户名与组，并要求用户名恰为该值 | 只用 `repository` 校验，删库后同名重建就能冒用，所以加上 `repository_id` / `repository_owner_id`。只用 `environment`，同仓库其它工作流挂同一个 Environment 也能取得身份，所以加 `job_workflow_ref` 并钉到 main。用户名固定，RBAC、VAP 和审计查询才能逐字一致。没有映射组，任何身份都不会因为组成员资格而多拿权限 |
 | D8 | RBAC 与准入的**身份并集**：四条绑定各加 `kind: User, name: github-actions:wontlost-ltd/k3s:guard-probe`；`guard-probe-pod-scope` 的 `matchConditions` 改为 `request.userInfo.username in [SA, OIDC 用户]`。`vap-check.sh` 对两个身份各跑一遍探针用例 | 新身份必须先受准入策略约束，才能拿到 `pods/create`；两处改动在同一个提交里。apiserver 加 `--authentication-config` 之前，这个用户名无法通过认证，所以合并 k3s PR 不扩大任何人的权限 |
 | D9 | 工作流按 §4.2 改：`id-token: write` 只加在 `probe` job；`GUARD_PROBE_AUTH` 取 `static | dual | oidc`，缺省 `static`，其它值判 3；OIDC kubeconfig 用 `tokenFile`，不用 exec 插件；身份断言仍是 `kubectl auth whoami` | 有了模式开关，k3s PR 可以先于 apiserver 改动合并，静态路径逐字节不变。`dual` 先证明 OIDC 端到端可用，再切换到 `oidc`。GitHub OIDC token 的有效期没有文档承诺（公开样本从 5 分钟到 6 小时不等），所以每次调用 kubectl 前按需刷新，不依赖有效期长短 |
@@ -71,7 +71,7 @@
 | 11 | RBAC 四类对象、`admissionregistration.k8s.io/*` 的写入 | RequestResponse |
 | 12 | 其余所有请求 | Metadata |
 
-**容量估算**：排除第 5–9 条后，全集群约 3–5 req/s，单台最忙的 apiserver 约 1–2 req/s。Metadata 事件按 1–1.5 KB 计，每节点每天约 90–260 MB 原始日志（RequestResponse 只占几 MB）。按 D6 的参数，磁盘占用上限约为当前文件 100 MB，加 20 份压缩备份 × 约 12 MB，再加轮转瞬间的 100 MB，约 0.45 GB。preflight 要求 `/var/lib/rancher` 可用空间 ≥ 2 GiB。上线一周后用 `node.sh status` 核对实际速率，偏离估算 2 倍以上就调整 maxbackup。
+**容量估算**：排除第 5–9 条后，全集群约 3–5 req/s，单台最忙的 apiserver 约 1–2 req/s。Metadata 事件按 1–1.5 KB 计，每节点每天约 90–260 MB 原始日志（RequestResponse 只占几 MB）。保留期由份数决定：2 GB ÷ 90–260 MB/天 ≈ 8–22 天（maxage 30 天不会先到）。按 D6 的参数，预计磁盘占用为当前文件 100 MB，加 20 份压缩备份 × 约 12 MB，再加轮转瞬间的 100 MB，约 0.45 GB（估算）；压缩失效时的硬上限约 2.1 GB。preflight 要求 `/var/lib/rancher` 可用空间 ≥ 2 GiB。上线一周后用 `node.sh status` 核对实际速率，偏离估算 2 倍以上就调整 maxbackup。
 
 **查询**（节点上，用户执行；日志可能含 Pod 规格，不要整份外传）：`zcat -f /var/lib/rancher/k3s/server/logs/audit*.log* | jq -c 'select(.user.username=="github-actions:wontlost-ltd/k3s:guard-probe") | {t:.requestReceivedTimestamp, run:.user.extra["aster-lang.dev/gha-run-id"], v:.verb, r:.objectRef, code:.responseStatus.code, ip:.sourceIPs}'`。审计日志分散在三台节点上（请求落在哪台 apiserver，就记在哪台），还原一个凭证的全部调用，需要合并三台的日志。
 
@@ -122,7 +122,7 @@ hosts/k3s-server/
 
 ## 6. 滚动重启（摘要；逐条命令见 k3s `docs/runbooks/k3s-server-host-config.md`）
 
-1. 维护窗口避开 03:17 UTC 的探针。先在 Mac 上执行 `kubectl get nodes` 与 `kubectl get endpoints kubernetes -n default`，确认 3 个 master 都 Ready、端点是 3 个 IP；然后在 master-1 上执行 `k3s etcd-snapshot save --name pre-aster-host`。
+1. 维护窗口避开 03:17 UTC 的探针。窗口期间不手动触发 `guard-bypass-probe`，也不合并会触发它的 PR：master-1 重启时，探针的 API 地址不可达，运行会以 3 退出，这是预期内的失败；窗口结束后重跑一次，确认变绿。然后在 Mac 上执行 `kubectl get nodes` 与 `kubectl get endpoints kubernetes -n default`，确认 3 个 master 都 Ready、端点是 3 个 IP；然后在 master-1 上执行 `k3s etcd-snapshot save --name pre-aster-host`。
 2. 在三台节点上分别执行 `node.sh status`，记下 etcd leader，顺序为两台非 leader 在前、leader 最后。
 3. 对第一台执行 `node.sh apply audit`，它会依次完成 preflight、安装、重启、等待、verify。verify 包括：`k3s` active；本地 `/readyz` 返回 200；k3s 日志中 `Running kube-apiserver` 那一行带上了新参数；`audit.log` 在增长，最后一行是 `audit.k8s.io/v1` Event；端点恢复为 3 个；本节点 Ready。
 4. 在 Mac 上再看一次 `kubectl get nodes` 与 endpoints，确认之后才处理下一台。
@@ -145,9 +145,9 @@ hosts/k3s-server/
 | 风险 | 缓解 |
 |---|---|
 | 认证配置或审计策略无效，apiserver 起不来 | 离线测试覆盖形状与身份一致性；每次只动一台；`node.sh` 自动回滚；另外两台保持仲裁 |
-| 审计日志写满根分区（最紧的一台可用 5.7 GiB） | 有 maxbackup / maxage 上限，并开启 gzip；preflight 要求可用空间 ≥ 2 GiB；`status` 报告实际占用 |
+| 审计日志写满根分区（最紧的一台可用 5.7 GiB） | 有 maxbackup / maxage 上限，并开启 gzip；未压缩硬上限约 2.1 GB，preflight 要求可用空间 ≥ 2 GiB；`status` 报告实际占用 |
 | 审计的 `blocking` 模式拖慢 1 vCPU 的 apiserver | 排除规则去掉了约四分之三的请求；verify 之后观察 `apiserver_request_duration_seconds`，若 p99 上升超过 20%，改用 `audit-log-mode=batch` |
-| master-1 重启期间探针连不上 API（kubeconfig 指向 master-1 的公网 IP） | 维护窗口避开 03:17 UTC；必要时手动重跑 |
+| master-1 重启期间探针连不上 API（kubeconfig 指向 master-1 的公网 IP） | 维护窗口避开 03:17 UTC，窗口内不手动触发、不合并会触发探针的 PR；窗口内的失败为预期，结束后必须重跑一次并确认绿（watchdog 口径为 36 小时） |
 | 审计日志只存在本地：节点丢失，它的日志也随之丢失；攻击者拿到 root 后可以删日志 | 接受（Q1）；探针凭证本身拿不到节点 root |
 | GitHub 改变 OIDC claim 或 `sub` 模板，探针认证失败 | 失败即关闭（判 3）；规则改动无需重启（自动重读） |
 | 手工改动再次引入 masquerade 或文件漂移 | `node.sh check`（Q2 讨论是否定期运行） |
