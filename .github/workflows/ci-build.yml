@@ -39,8 +39,10 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     outputs:
       guard-bypass: ${{ steps.bypass.outcome }}
-    # ★纵深防护：即便 pick-runner 判断失误（或 runner group 策略变化导致本地 runner
-    #   接不到 job），也不能让 CI 挂到 GitHub 默认的 6h 作业上限，随后由 build-hosted 回落接手。
+    # ★纵深防护：timeout-minutes 只限制作业**开始运行之后**的时长（GitHub 默认 6h），
+    #   不覆盖排队时间——本地 runner 接不到 job 的排队由 pick-runner 预检兜底。本值保证
+    #   运行中卡死的作业（本地或托管）尽早失败；本地卡死时由 build-hosted 回落接手，
+    #   代价是回落最多推迟本值的时长（本地与托管共用同一份定义，见文件顶部注释）。
     # ★60 分钟（原 40）：#466 阶段 B 把绕过套件加进本作业后，托管 runner 实测 24–38.6 分钟
     #   （2026-11-14/15：单元测试 12–14.5 分钟、integrationTest 10–12 分钟、绕过套件含首次编译 8–10 分钟），
     #   40 分钟只剩不到 2 分钟余量，多个 PR 因此被取消后重跑。60 分钟留出约 50% 余量；
