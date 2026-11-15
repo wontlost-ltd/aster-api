@@ -396,3 +396,7 @@ from-evidence 的 ALLOW 收据同样只在被某个执行方 consume 后才授�
   - 合入的变更：k3s #1252、#1256、#1257、#1258、#1259、#1260、#1269 / #1270（pin）、#1271、#1272；aster-guard #4、#5、#6。
 - **前置条件发现（firewalld masquerade）**：上线时发现各节点 firewalld 的 `trusted` 区开着 `masquerade`，跨节点 Pod 流量到达时源地址被改写为发送节点的 flannel 地址，kube-router 的命名空间 ipset 匹配不上，于是**被放行的**跨节点路径也被策略丢弃；这也意味着此前集群内所有基于命名空间 / Pod 的 NetworkPolicy 只在同节点内生效。因此关闭该 masquerade 是 D2「namespace-only」网络策略跨节点成立的前提（已在全部节点去除）。k3s#1271 为回归守卫：探针覆盖「被放行的跨节点」路径，该问题复发会使探针变红。节点开通流程若含 `--add-masquerade` 也须去除。
 - **U-K8（apiserver 审计日志）**：已核实**未开启**。残余风险：探针 token 若泄露，其 API 调用无法事后还原。该风险**接受并记录**：爆炸半径受 30 天 TTL（硬上限 90 天）与准入策略 `guard-probe-pod-scope` / `guard-agents-secret-allowlist` 约束（见 D9、计划 §3）。跟进项（可选，不阻塞 #466，计划 U-K8 / O5）：为 `system:serviceaccount:aster-guard:guard-bypass-probe` 加 Metadata 级审计策略（三台 control-plane 逐台重启 k3s），或改用 GitHub OIDC 认证以去掉长期凭证。
+
+### 12.2 后续：审计日志与 OIDC 凭证（指针）
+
+U-K8（apiserver 审计日志）与 O5（探针凭证改用 GitHub OIDC）的落地设计见 **ADR 0057**（PROPOSED，2026-11-16）。两项都改 control-plane 主机配置、作用于全集群，所以另立 ADR。ADR 0057 迁移步骤 M4 完成后，再由其计划的最后一个任务改写 §12 D9 的凭证描述与 §12.1 的 U-K8 残余风险。在此之前，D9 与 §12.1 的现行文字继续有效。
