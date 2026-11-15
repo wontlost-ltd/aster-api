@@ -352,6 +352,12 @@ tasks.register('guardBypassTest', Test) {
     retry {
         maxRetries = 0
     }
+    // 阶段 B（ProxyHarness）运行 e2e/guard-bypass 的 Node 脚本与钉死的 npm 包：脚本、lockfile 或「是否强制要求 Node」
+    // 变化都必须让构建缓存失效，否则 CI 的 --build-cache 会复用旧结论（node_modules 由 lockfile 决定，不计入）
+    inputs.files(fileTree('e2e/guard-bypass') { exclude 'node_modules/**' })
+        .withPropertyName('guardBypassE2e')
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.property('guardBypassRequireNode', providers.environmentVariable('ASTER_GUARD_BYPASS_REQUIRE_NODE').orElse(''))
     // failOnNoDiscoveredTests 只在「没有候选测试类」时生效：测试类存在但全被标签过滤掉时 Gradle 仍报绿
     // （实测 Gradle 9.8.2）。这里按根套件的实际执行数兜底——标签被误删、类被误排除、用例全被 @Disabled
     // 时任务必须变红（skipped 不计入「已执行」）。

@@ -64,6 +64,42 @@ public final class BypassAssertions {
     assertThat(row.attemptId).isEqualTo(effects.get(0).attemptId());
   }
 
+  /**
+   * 「决策在、consume 缺」：链上该决策没有任何 consume 尝试（连被拒的尝试都没有），收据行未消耗。
+   * 用于代理层：被拒的调用里代理根本不应发出 consume。
+   */
+  public static void noConsumeAttempt(BypassFixture api, String key, String decisionId) {
+    notConsumed(api, key, decisionId);
+    Response r = api.auditReceipts(key, decisionId);
+    List<Map<String, Object>> consumes = r.jsonPath().getList("consumes");
+    assertThat(consumes == null ? List.of() : consumes).as("consume 尝试").isEmpty();
+  }
+
+  /**
+   * 代理执行恰好一次：收据行 {@code consume_audit_id} 非空且 {@code attempt_id} 等于代理回报的 attemptId；
+   * {@code consumes[]} 恰一条 {@code authoritative: true}（执行方为 {@code executorId}）、{@code results[]} 恰一条
+   * 权威的 {@code executed}，二者 attemptId 相同。上游账本的条数由调用方另行断言（代理层没有内存账本）。
+   */
+  public static void executedOnceBy(BypassFixture api, String key, String decisionId, String attemptId,
+                                    String executorId) {
+    GuardReceiptEntity row = BypassFixture.receiptRow(decisionId);
+    assertThat(row).as("收据行").isNotNull();
+    assertThat(row.consumeAuditId).as("consume_audit_id").isNotNull();
+    assertThat(row.attemptId).isEqualTo(attemptId);
+    List<Map<String, Object>> authoritative = authoritativeConsumes(api, key, decisionId);
+    assertThat(authoritative).hasSize(1);
+    assertThat(((Number) authoritative.get(0).get("auditId")).longValue()).isEqualTo(row.consumeAuditId);
+    assertThat(authoritative.get(0).get("attemptId")).isEqualTo(attemptId);
+    assertThat(authoritative.get(0).get("executorId")).isEqualTo(executorId);
+    Response r = api.auditReceipts(key, decisionId);
+    List<Map<String, Object>> results = r.jsonPath().getList("results");
+    assertThat(results).as("results[]").singleElement().satisfies(res -> {
+      assertThat(res.get("authoritative")).isEqualTo(true);
+      assertThat(res.get("status")).isEqualTo("executed");
+      assertThat(res.get("attemptId")).isEqualTo(attemptId);
+    });
+  }
+
   private static List<Map<String, Object>> authoritativeConsumes(BypassFixture api, String key, String decisionId) {
     Response r = api.auditReceipts(key, decisionId);
     assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);

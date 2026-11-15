@@ -1,0 +1,14 @@
+{
+  "name": "aster-api-guard-bypass-e2e",
+  "private": true,
+  "description": "#466 阶段 B：以已发布的 aster-guard-mcp 代理 + 脚本化被注入 Agent 驱动 guardBypassTest（只供 JUnit ProxyHarness 调用）",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@aster-cloud/aster-guard": "0.2.0",
+    "@modelcontextprotocol/sdk": "1.32.2"
+  },
+  "packageManager": "pnpm@10.31.0"
+}
