@@ -1,7 +1,9 @@
 package io.aster.guard;
 
+import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.guard.snapshot.GuardDecisionInputEntity;
+import io.aster.policy.event.AuditEvent;
 
 import java.time.Instant;
 import java.util.Collection;
@@ -49,6 +51,26 @@ public interface GuardDecisionStore {
    */
   void saveDecision(GuardDecisionEntity decision, GuardApprovalEntity approvalOrNull, GuardReceiptEntity receiptOrNull,
                     GuardDecisionInputEntity inputOrNull);
+
+  /**
+   * 原子注册一次决策（#522）：在<b>一个</b> {@code requiringNew} 事务内，
+   * <ol>
+   *   <li>{@code key} 非 null 时取事务级咨询锁 {@code (tenant, key)}，并在锁内复查同键决策行——已有即返回
+   *       {@link GuardDecisionRegistration.Existing}，本次不追加事件、不写行（并发落败者因此拿到先到者的幂等重放）；</li>
+   *   <li>以 {@code AuditChainAppender#appendInCurrentTransaction} 追加 {@code event}（租户链锁在注册锁之后取）；</li>
+   *   <li>以追加结果调用 {@code rows} 得到要写的行并写入，与事件一起提交。</li>
+   * </ol>
+   * 事件追加失败时整个事务回滚，再开一个事务（同样加锁复查）以 {@code rows.apply(null)} 写入「链不可用」的行
+   * （调用方据此改判 DENY {@code receipt_unavailable}，不建审批、不带执行收据）——链上不会出现没有决策行的决策事件，
+   * 也不会出现没有链收据却显示 ALLOW / PENDING 的决策行。
+   *
+   * @param key   去重键；null 表示无键（未带幂等键的 {@code POST /decisions}），不加锁、不复查
+   * @param event 决策事件（{@code ACTION_GUARD_DECISION}）
+   * @param rows  由已追加的链记录构造要写入的行；参数为 null 表示链不可用
+   * @throws GuardIdempotencyRaceException 唯一索引冲突（锁内复查之后不应发生，保留为兜底）
+   */
+  GuardDecisionRegistration.Result register(String tenantId, GuardDecisionRegistration.Key key, AuditEvent event,
+                                            Function<AppendedRecord, GuardDecisionRegistration.Rows> rows);
 
   /** 按租户限定查找审批；跨租户返回 empty。 */
   Optional<GuardApprovalEntity> findApproval(String tenantId, UUID approvalId);

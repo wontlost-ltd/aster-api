@@ -282,7 +282,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 | `result_without_consume` | 有结果而未有效消耗（行级判定；复核失败的结果事件按 ADR 0041 §12 D1 读作未生效，是合法状态，不按事件判） | critical | 否 |
 | `orphan_receipt` | 链上有 `ACTION_GUARD_DECISION` 事件（`timestamp ∈ [since, cutoff)`），而本租户无对应决策行：同一幂等键 / 证据相关键并发登记的落败方已先把决策事件写入链、决策行随唯一约束冲突未落库（#522），或进程在两步之间崩溃 | info | 是：检出满 `allow-unconsumed-ttl`（同样从 `detected_at` 起算）→ `RESOLVED / aged_out` |
 
-`orphan_receipt` 不可执行（无决策行即无收据行，consume 一律 404），只是链上噪声；单列一类是为了让它不混入任何 critical 类别、不触发绕过告警，也不被重复计数（同一决策事件只记一行）。根因修复（决策事件与决策行同事务写入）由 #522 承担。
+`orphan_receipt` 不可执行（无决策行即无收据行，consume 一律 404），只是链上噪声；单列一类是为了让它不混入任何 critical 类别、不触发绕过告警，也不被重复计数（同一决策事件只记一行）。根因修复（决策事件与决策行同事务写入）由 #522 承担：已实施——`GuardDecisionStore#register` 在同一事务内先取 `(租户, 幂等键 / 证据相关键)` 事务级咨询锁、锁内复查同键决策行，再以 `appendInCurrentTransaction` 追加决策事件并写决策行，并发落败方得到先到者的幂等重放；事件追加失败整体回滚后改判 DENY `receipt_unavailable` 单独写行（不入链）。此后新决策不再产生本类孤儿，检测器保留：覆盖修复前的存量事件，回归时也能在治理页看到。
 
 状态 `OPEN | RESOLVED | ACKNOWLEDGED`，解除方式 `late_result | aged_out | acknowledged`。同一事实（`tenant, kind, subject`）永远只有一行，跨多轮对账不重复；OPEN 孤儿不随保留期删除。某租户一次对账有新孤儿或有解除时写一条链事件 `GUARD_RECONCILIATION`（`performedBy=SYSTEM`；metadata `runId, windowStart, windowEnd, newOrphans, resolvedOrphans, openOrphans, newByKind, newOrphanIds[≤64]`，超出加 `newOrphansTruncated: true`）；无变化的对账不入链。
 

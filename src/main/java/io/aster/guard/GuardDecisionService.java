@@ -2,7 +2,6 @@ package io.aster.guard;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.aster.audit.chain.AuditChainAppender;
 import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.api.GuardActionRequest;
 import io.aster.guard.api.GuardDecisionResponse;
@@ -50,7 +49,8 @@ import static io.aster.guard.GuardText.isBlank;
 
 /**
  * Action Guard 决策编排（ADR 0040 §2–§5）：扁平化 → 签名事实验签与逐字段来源判定（§11 D2 / D4）→ 幂等查重（指纹比对）
- * → 解析活跃版本 → 档案来源门（§11 D5）→ 评估 → 同步收据 → 决策行与待审批行同一事务落库。
+ * → 解析活跃版本 → 档案来源门（§11 D5）→ 评估 → 决策事件（链收据）与决策行、待审批行在同一事务、同一 (租户, 幂等键)
+ * 咨询锁内注册（#522，{@link GuardDecisionStore#register}）。
  * 来源不传给规则，只进响应、决策行与收据。
  *
  * <p>fail-closed：非 Verdict、评估异常 / 超时、收据写入失败、执行收据签发失败一律判 DENY 并给出 reasonCode；
@@ -58,7 +58,7 @@ import static io.aster.guard.GuardText.isBlank;
  * ALLOW 在写链收据之前签发执行收据（ADR 0040 §12 D1 (1)），签发失败时入链的就已是 DENY，链与决策行一致。
  * 只有策略不存在与请求非法以异常形式外抛（404 / 400）。
  *
- * <p>阻塞方法：须在非事务的 worker 线程调用——收据追加与各次持久化各自开独立事务，
+ * <p>阻塞方法：须在非事务的 worker 线程调用——注册与各次读取各自开独立事务，
  * 外层若持有事务（尤其持有同租户链锁）会自死锁。
  */
 @ApplicationScoped
@@ -78,7 +78,6 @@ public class GuardDecisionService {
 
   private PolicyEvaluationService evaluationService;
   private PolicySourceRepository policySourceRepository;
-  private AuditChainAppender appender;
   private GuardDecisionStore store;
   private GuardActionMapper mapper;
   private GuardReceiptBuilder receiptBuilder;
@@ -97,25 +96,24 @@ public class GuardDecisionService {
 
   @Inject
   public GuardDecisionService(PolicyEvaluationService evaluationService, PolicySourceRepository policySourceRepository,
-                              AuditChainAppender appender, GuardDecisionStore store, GuardActionMapper mapper,
+                              GuardDecisionStore store, GuardActionMapper mapper,
                               GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
                               ExecutionReceiptIssuer receiptIssuer, FactVerifier factVerifier,
                               InputSourceResolver inputSourceResolver, MeterRegistry meterRegistry,
                               @ConfigProperty(name = "aster.guard.approval-ttl", defaultValue = "PT24H") Duration approvalTtl) {
-    this(evaluationService, policySourceRepository, appender, store, mapper, receiptBuilder, objectMapper, receiptIssuer,
+    this(evaluationService, policySourceRepository, store, mapper, receiptBuilder, objectMapper, receiptIssuer,
         factVerifier, inputSourceResolver, meterRegistry, approvalTtl,
         lookup -> QuarkusTransaction.requiringNew().call(lookup::get));
   }
 
   GuardDecisionService(PolicyEvaluationService evaluationService, PolicySourceRepository policySourceRepository,
-                       AuditChainAppender appender, GuardDecisionStore store, GuardActionMapper mapper,
+                       GuardDecisionStore store, GuardActionMapper mapper,
                        GuardReceiptBuilder receiptBuilder, ObjectMapper objectMapper,
                        ExecutionReceiptIssuer receiptIssuer, FactVerifier factVerifier,
                        InputSourceResolver inputSourceResolver, MeterRegistry meterRegistry, Duration approvalTtl,
                        VersionLookupTx versionLookupTx) {
     this.evaluationService = evaluationService;
     this.policySourceRepository = policySourceRepository;
-    this.appender = appender;
     this.store = store;
     this.mapper = mapper;
     this.receiptBuilder = receiptBuilder;
@@ -189,26 +187,46 @@ public class GuardDecisionService {
       draft = draft.deny(GuardReasonCode.RECEIPT_UNAVAILABLE);
     }
     UUID approvalId = draft.needsApproval() ? UUID.randomUUID() : null;
-    AppendedRecord receipt = appendReceipt(draft, decisionId, approvalId, performedBy);
-    if (receipt == null) {
-      draft = draft.deny(GuardReasonCode.RECEIPT_UNAVAILABLE);
-      approvalId = null;
-      issued = null;
-    }
-    Instant expiresAt = Instant.now().plus(approvalTtl);
-    GuardDecisionResponse response = buildResponse(decisionId, draft, receipt, approvalId, expiresAt,
-        issued == null ? null : issued.receipt());
-    GuardApprovalEntity approval = approvalId == null ? null : toApproval(approvalId, decisionId, draft, expiresAt);
-    // 输入快照只为真正建了审批行的决策写（ADR 0042 §12 D1）；门 DENY 与 receipt_unavailable 没有审批行，也不写
-    GuardDecisionInputEntity input = approval == null ? null
-        : DecisionInputFactory.direct(decisionId, tenantId, req.action(), draft.contextHash(), classificationOf(draft));
+    // 输入分类可能读引擎，在注册事务之外取：事务内只做锁、复查、链追加与写行
+    InputClassification classification = approvalId == null ? null : classificationOf(draft);
+    GuardDecisionDraft decided = draft;
+    GuardDecisionRegistration.Key key = idempotencyKey == null ? null : GuardDecisionRegistration.Key.idempotency(idempotencyKey);
+    GuardDecisionRegistration.Result registered;
     try {
-      store.saveDecision(assembler.toEntity(decisionId, draft, receipt, response, performedBy, apiKeyId), approval,
-          issued == null ? null : issued.row(), input);
+      registered = store.register(tenantId, key,
+          receiptBuilder.decisionEvent(decided, decisionId, approvalId, performedBy),
+          chain -> rows(req, decisionId, decided, chain, approvalId, issued, classification, performedBy, apiKeyId));
     } catch (GuardIdempotencyRaceException race) {
       return findByIdempotencyKey(tenantId, idempotencyKey, fingerprint).orElseThrow(() -> race);
     }
-    return response;
+    if (registered instanceof GuardDecisionRegistration.Registered written) {
+      return written.rows().response();
+    }
+    // 锁内复查到同键先到者（#522）：按幂等重放返回它（指纹不同照常 422）
+    return findByIdempotencyKey(tenantId, idempotencyKey, fingerprint)
+        .orElseThrow(() -> new IllegalStateException("注册复查到的同键决策回读不到: tenant=" + tenantId));
+  }
+
+  /**
+   * 注册事务内构造要写的行。{@code chain} 为 null 表示决策事件未能入链：改判 DENY {@code receipt_unavailable}，
+   * 不建审批、不带执行收据、不写输入快照（与链收据失败同一口径）。
+   */
+  private GuardDecisionRegistration.Rows rows(GuardActionRequest req, UUID decisionId, GuardDecisionDraft draft,
+                                              AppendedRecord chain, UUID approvalId,
+                                              ExecutionReceiptIssuer.Issued issued, InputClassification classification,
+                                              String performedBy, String apiKeyId) {
+    GuardDecisionDraft d = chain == null ? draft.deny(GuardReasonCode.RECEIPT_UNAVAILABLE) : draft;
+    UUID approval = chain == null ? null : approvalId;
+    ExecutionReceiptIssuer.Issued receipt = chain == null ? null : issued;
+    Instant expiresAt = Instant.now().plus(approvalTtl);
+    GuardDecisionResponse response = buildResponse(decisionId, d, chain, approval, expiresAt,
+        receipt == null ? null : receipt.receipt());
+    GuardApprovalEntity approvalRow = approval == null ? null : toApproval(approval, decisionId, d, expiresAt);
+    // 输入快照只为真正建了审批行的决策写（ADR 0042 §12 D1）；门 DENY 与 receipt_unavailable 没有审批行，也不写
+    GuardDecisionInputEntity input = approvalRow == null ? null
+        : DecisionInputFactory.direct(decisionId, d.tenantId(), req.action(), d.contextHash(), classification);
+    return new GuardDecisionRegistration.Rows(assembler.toEntity(decisionId, d, chain, response, performedBy, apiKeyId),
+        approvalRow, receipt == null ? null : receipt.row(), input, response);
   }
 
   /**
@@ -417,16 +435,6 @@ public class GuardDecisionService {
       return receiptIssuer.issueNow(decisionId, draft.tenantId(), draft.actionHash(), policyVersionId);
     } catch (ExecutionReceiptUnavailableException e) {
       LOG.errorf(e, "Action Guard 执行收据签发失败，按 DENY 处理: decision=%s", decisionId);
-      return null;
-    }
-  }
-
-  /** 同步写决策收据；失败返回 null，由调用方改判 DENY receipt_unavailable。 */
-  private AppendedRecord appendReceipt(GuardDecisionDraft draft, UUID decisionId, UUID approvalId, String performedBy) {
-    try {
-      return appender.appendSync(receiptBuilder.decisionEvent(draft, decisionId, approvalId, performedBy));
-    } catch (AuditChainAppender.AuditAppendException e) {
-      LOG.errorf(e, "Action Guard 收据写入失败，按 DENY 处理: decision=%s", decisionId);
       return null;
     }
   }
