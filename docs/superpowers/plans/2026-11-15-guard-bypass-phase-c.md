@@ -277,7 +277,7 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 `pods/create` 等于间接读取 `aster-agents` 内全部 Secret（§3）。git 测试只管得住 git 里的清单，管不住手工或其它控制器写入的 Secret，所以在集群侧加准入约束，并把它作为 U-K6（发放探针 kubeconfig）的前置条件。
 
 **Files（k3s）:**
-- Create: `apps/infrastructure/kube-system/manifests/guard-agents-secret-policy.yaml`：`ValidatingAdmissionPolicy guard-agents-secret-allowlist`（`matchConstraints`：`""` `secrets` 的 CREATE / UPDATE；`validations`：`object.metadata.name == 'guard-demo-agent' && object.type == 'Opaque'`，message 中文写明原因与 ADR 0054 §12 D9）+ `ValidatingAdmissionPolicyBinding`（`validationActions: [Deny]`，`matchResources.namespaceSelector.matchLabels."kubernetes.io/metadata.name": aster-agents`）；`guard-probe-pod-scope.yaml`：`ValidatingAdmissionPolicy guard-probe-pod-scope` + Binding（`namespaceSelector` 同上，`validationActions: [Deny]`），`matchConditions` 只对 `request.userInfo.username == 'system:serviceaccount:aster-guard:guard-bypass-probe'` 生效，规则：`pods` 的 DELETE 要求 `oldObject.metadata.labels['app.kubernetes.io/name'] == 'guard-bypass-probe'`（探针身份只能删探针 Pod，不能删同命名空间的 Agent Pod）；CREATE 要求 `object` 带同一标签与 `guard-bypass/run-id`、`spec.serviceAccountName` 为空或 `default`、`spec.automountServiceAccountToken == false`；卷类型只允许 `emptyDir`、`configMap` 与 `secret`（`secretName == 'guard-demo-agent'`），**`projected` 卷一律拒绝**（它可投射任意 Secret 与 `serviceAccountToken`），`ephemeral` / `csi` / `persistentVolumeClaim` 等也拒绝；`containers`、`initContainers`、`ephemeralContainers` 中每个 `env[].valueFrom.secretKeyRef.name` 与 `envFrom[].secretRef.name` 只能是 `guard-demo-agent`。由此探针 Pod 拿不到任何 ServiceAccount token（自动挂载关闭、投射被拒），`default` SA 有无绑定都不影响它；`aster-agents` 内 RoleBinding 的静态检查（Task 6）仍保留，防的是其它身份在该命名空间起的 Pod。`guard-bypass-probe-ns-read.yaml`：`ClusterRole guard-bypass-probe-ns-read`（`namespaces` list）+ `ClusterRoleBinding` → `ServiceAccount aster-guard/guard-bypass-probe`
+- Create: `apps/infrastructure/kube-system/manifests/guard-agents-secret-policy.yaml`：`ValidatingAdmissionPolicy guard-agents-secret-allowlist`（`matchConstraints`：`""` `secrets` 的 **CREATE**（不匹配 UPDATE：Secret 的名称与 `type` 都不可变，UPDATE 无法把一个 Secret 变成白名单外的名字或类型；策略生效前已存在的 Secret 由 U-K6 前置的清单核对处理）；`validations`：`object.metadata.name == 'guard-demo-agent' && object.type == 'Opaque'`，message 中文写明原因与 ADR 0054 §12 D9）+ `ValidatingAdmissionPolicyBinding`（`validationActions: [Deny]`，`matchResources.namespaceSelector.matchLabels."kubernetes.io/metadata.name": aster-agents`）；`guard-probe-pod-scope.yaml`：`ValidatingAdmissionPolicy guard-probe-pod-scope` + Binding（`namespaceSelector` 同上，`validationActions: [Deny]`），`matchConditions` 只对 `request.userInfo.username == 'system:serviceaccount:aster-guard:guard-bypass-probe'` 生效，规则：`pods` 的 DELETE 要求 `oldObject.metadata.labels['app.kubernetes.io/name'] == 'guard-bypass-probe'`（探针身份只能删探针 Pod，不能删同命名空间的 Agent Pod）；CREATE 要求 `object` 带同一标签与 `guard-bypass/run-id`、`spec.serviceAccountName` 为空或 `default`、`spec.automountServiceAccountToken == false`；卷类型只允许 `emptyDir`、`configMap` 与 `secret`（`secretName == 'guard-demo-agent'`），**`projected` 卷一律拒绝**（它可投射任意 Secret 与 `serviceAccountToken`），`ephemeral` / `csi` / `persistentVolumeClaim` 等也拒绝；`containers`、`initContainers` 中每个 `env[].valueFrom.secretKeyRef.name` 与 `envFrom[].secretRef.name` 只能是 `guard-demo-agent`。`ephemeralContainers` 不能在 CREATE 时设置，只能经 `pods/ephemeralcontainers` 子资源追加，而探针身份没有该子资源的 RBAC（权限表），所以由 RBAC 而非本策略拒绝。由此探针 Pod 拿不到任何 ServiceAccount token（自动挂载关闭、投射被拒），`default` SA 有无绑定都不影响它；`aster-agents` 内 RoleBinding 的静态检查（Task 6）仍保留，防的是其它身份在该命名空间起的 Pod。`guard-bypass-probe-ns-read.yaml`：`ClusterRole guard-bypass-probe-ns-read`（`namespaces` list）+ `ClusterRoleBinding` → `ServiceAccount aster-guard/guard-bypass-probe`
 - Modify: `apps/infrastructure/kube-system/manifests/kustomization.yaml`（列入）、`argocd/projects/infrastructure.yaml`（`clusterResourceWhitelist` 加 `admissionregistration.k8s.io` `ValidatingAdmissionPolicy` 与 `ValidatingAdmissionPolicyBinding`）
 - Modify: `scripts/guard-bypass/manifests.test.sh`（断言两个 policy 存在、绑定作用于 `aster-agents`、`validationActions` 为 `[Deny]`、`guard-probe-pod-scope` 的 `matchConditions` 只匹配探针 SA、ClusterRole 只有 `namespaces` `list`。CEL 规则的**行为**离线测不了，由 Step 4 的服务端 dry-run 核对，且那一步对本策略是必做）
 
@@ -287,7 +287,7 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
   |---|---|---|---|
   | S1 | 管理员 | 在 `aster-agents` 建名为 `x` 的 Opaque Secret | 拒 |
   | S2 | 管理员 | 建 `kubernetes.io/service-account-token` 类型 Secret | 拒 |
-  | S3 | 管理员 | 更新（`kubectl label`）现有 `guard-demo-agent` | 放行 |
+  | S3 | 管理员 | `kubectl create secret generic guard-demo-agent -n aster-agents --from-literal=k=v --dry-run=server` | 未被策略拒绝：成功或 `AlreadyExists`，错误信息中不得出现 `guard-agents-secret-allowlist` |
   | P1 | 探针（`--as`） | 合法探针 Pod（含 `secretKeyRef guard-demo-agent`、`emptyDir`、`configMap` 卷） | 放行 |
   | P2 | 探针 | 缺 `app.kubernetes.io/name` 标签 / 缺 `guard-bypass/run-id`（两例） | 拒 |
   | P3 | 探针 | `serviceAccountName: other` | 拒 |
@@ -297,12 +297,12 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
   | P7 | 探针 | `hostPath`、`persistentVolumeClaim`、`ephemeral`、`csi` 卷（四例） | 拒 |
   | P8 | 探针 | `containers[0]` / `initContainers[0]` 的 `env[].valueFrom.secretKeyRef.name: other`（两例） | 拒 |
   | P9 | 探针 | `containers[0]` / `initContainers[0]` 的 `envFrom[].secretRef.name: other`（两例） | 拒 |
-  | P10 | 探针 | 对已存在的探针 Pod 追加 `ephemeralContainers`（`kubectl debug` 等价的 `pods/ephemeralcontainers` 子资源）且其 `secretKeyRef: other` | 拒（探针身份本就没有该子资源的 RBAC；用例确认 403 而不是放行） |
+  | R1 | 探针 | 对已存在的探针 Pod 追加 `ephemeralContainers`（`pods/ephemeralcontainers` 子资源） | 403 Forbidden（**RBAC 用例**，不经准入策略；确认该路径被权限挡住） |
   | P11 | 管理员 | P8 同形 Pod（策略只匹配探针身份，管理员不受限） | 放行（证明 `matchConditions` 没有误伤其它身份） |
   | D1 | 探针 | 删除带探针标签的 Pod | 放行 |
   | D2 | 探针 | 删除无标签 Pod | 拒 |
 
-  D1 / D2 / P10 / S3 需要真实对象：脚本以管理员先建带标签与无标签的 `registry.k8s.io/pause@sha256:<digest>` Pod 各一个，核对后删除；其余用 `--dry-run=server`。CEL 对缺失字段（无 `volumes`、无 `env`、无 `initContainers`）的行为由 P1 的变体「无卷无 env」覆盖（放行）。输出贴 PR。提交 `feat(guard): aster-agents Secret 准入白名单与探针命名空间只读（ADR 0054 §12 D9）`。
+  D1 / D2 / R1 需要真实对象：脚本以管理员先建带标签与无标签的 `registry.k8s.io/pause@sha256:<digest>` Pod 各一个，核对后删除；其余用 `--dry-run=server`。CEL 对缺失字段（无 `volumes`、无 `env`、无 `initContainers`）的行为由 P1 的变体「无卷无 env」覆盖（放行）。输出贴 PR。提交 `feat(guard): aster-agents Secret 准入白名单与探针命名空间只读（ADR 0054 §12 D9）`。
 
 > 说明：ServiceAccount token 类 Secret 也被拒（`type` 必须 `Opaque`）；`kube-system-config` 应用 `prune: false`，删除这两个对象须手工，PR 描述写明回滚命令。
 
