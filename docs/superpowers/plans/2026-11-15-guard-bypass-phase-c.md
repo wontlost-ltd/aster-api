@@ -61,6 +61,7 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 - **镜像**：全部按 `@sha256` 引用（`verify-no-floating-tags.sh`）；两个自有镜像 linux/arm64、cosign keyless 身份 `https://github.com/aster-cloud/aster-guard/.github/workflows/image.yml@refs/heads/main`；探针镜像 `docker.io/curlimages/curl:<8.x 版本>@sha256:<多架构索引 digest>` 只写在 `apps/aster-lang/guard/cronjob-auth-probe.yaml` 一处，runner 侧从渲染结果读取。
 - **生产两层永不关闭**：演示工具的 `TICKET_CHECK=off` 只允许出现在 `redteam-window.sh` 生成的临时副本里；k3s 测试断言渲染结果中不存在该值，探针断言线上 Deployment 与 `/healthz` 均不报告 insecure。
 - **不碰集群 / 不读 Secret**：实施者只可 `KUBECONFIG=~/.kube/k3s-config kubectl get|describe`（非 Secret）；所有写集群、建 Vault 路径、GitHub 设置、发版、runner 注册由用户执行，步骤写在对应 PR 描述里。
+- **验证留痕**：每个 PR 描述贴出本地验证命令与输出；某项验证因工具缺失或环境限制未能执行时，在 PR 描述与 `.claude/operations-log.md` 记录原因与补测计划，不得写成通过。
 - 注释、文档、提交信息用简体中文；提交末尾 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`；PR 描述末尾 `🤖 Generated with [Claude Code](https://claude.com/claude-code)`，正文 `Refs wontlost-ltd/aster-api#466`。
 - 每个 aster-guard PR 前跑 `pnpm install --frozen-lockfile && pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build`；每个 k3s PR 前跑本计划新增的 `.test.sh` 与 `scripts/image-pin/verify-{no-floating-tags,cip-sync,registry-sync}.sh`、`actionlint`、`shellcheck`。
 
@@ -329,7 +330,7 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 - `redteam-window.test.sh`：假 kubectl 断言映射后渲染结果不含 `\baster-(tools|guard|agents)\b`；渲染结果中的资源种类恰为上表「保留」列；`TICKET_CHECK=off` 只出现在 R-A 步骤；trap 删除三个命名空间；`--dry-run` 在本地照常运行 `kustomize` 与 `yq` 渲染、打印将执行的 kubectl 命令与映射后的清单，**零次**调用 kubectl（假 kubectl 调用计数为 0，即零集群读写）；`expired_namespaces_are_swept_at_start`。
 
 - [ ] Step 1：测试先行 → 实现 → `bash scripts/guard-bypass/redteam-window.test.sh` PASS（随 Task 6 PR 提交）。
-- [ ] Step 2（用户，约 15 分钟窗口）：`bash scripts/guard-bypass/redteam-window.sh --kubeconfig ~/.kube/k3s-config`，结束后 `kubectl get ns -l guard-bypass/redteam-expires` 为空；把六行表与两条反向摘要贴 #466。生产命名空间不受影响（脚本不读写 `aster-agents / aster-guard / aster-tools`，由 `redteam-window.test.sh` 断言）。
+- [ ] Step 2（用户，约 15 分钟窗口；这是**真实**副本运行，会建删命名空间，与 Step 1 的 `--dry-run` 本地测试不同）：先 `bash scripts/guard-bypass/redteam-window.sh --kubeconfig ~/.kube/k3s-config --dry-run` 审阅将执行的命令与清单，再去掉 `--dry-run` 运行 `bash scripts/guard-bypass/redteam-window.sh --kubeconfig ~/.kube/k3s-config`，结束后 `kubectl get ns -l guard-bypass/redteam-expires` 为空；把六行表与两条反向摘要贴 #466。生产命名空间不受影响（脚本不读写 `aster-agents / aster-guard / aster-tools`，由 `redteam-window.test.sh` 断言）。
 
 ### Task 11：登记验证结果（aster-api docs + test PR）
 
@@ -373,7 +374,7 @@ aster-agents  ──(Bearer agent token)──►  aster-guard: aster-guard-mcp 
 - **U-K3**：合并 k3s PR 7a（受保护路径，人工）。
 - **U-K4**：合并 Deployment `replicas: 0 → 1` 的 PR。
 - **U-K5**：建 org runner 组 `guard-probe`：`visibility: selected`（仅 `wontlost-ltd/k3s`）、`allows_public_repositories: true`、`restricted_to_workflows: true`、`selected_workflows: ["wontlost-ltd/k3s/.github/workflows/guard-bypass-probe.yml@refs/heads/main"]`；在 Mac 上以 `run-guard-probe-runner.sh`（launchd plist）注册 runner。
-- **U-K6**（前置：Task 7c 已合并并核对生效）：`kubectl create token guard-bypass-probe -n aster-guard --duration=2160h` 生成 kubeconfig，存入 k3s Environment `guard-probe`（部署分支仅 `main`）的 secret `GUARD_PROBE_KUBECONFIG`；日历提醒 80 天后轮换。
+- **U-K6**（前置：Task 7c 已合并并核对生效；且用户以管理员凭证执行 `kubectl get secrets -n aster-agents -o name`，输出**恰为** `secret/guard-demo-agent`——准入策略只拦之后的 CREATE / UPDATE，不清理已存在的 Secret；多出的先删除再发放凭证，核对输出贴 Task 7c PR）：`kubectl create token guard-bypass-probe -n aster-guard --duration=2160h` 生成 kubeconfig，存入 k3s Environment `guard-probe`（部署分支仅 `main`）的 secret `GUARD_PROBE_KUBECONFIG`；日历提醒 80 天后轮换。
 - **U-K7**：Task 10 的反向记录窗口（约 15 分钟，管理员 kubeconfig）。
 
 ## 6. 待裁定
