@@ -1,6 +1,6 @@
 # ADR 0057：k3s control-plane 主机配置 —— apiserver 审计日志与探针的 GitHub OIDC 认证
 
-- 状态：**PROPOSED**（2026-11-16 提出，待用户确认）
+- 状态：**ACCEPTED**（2026-11-16）
 - 提出：2026-11-16；来源 ADR 0054 §12.1 的两个跟进项：U-K8（apiserver 审计日志）与 O5（探针凭证改 GitHub OIDC），见 wontlost-ltd/aster-api#466 阶段 C 计划 `docs/superpowers/plans/2026-11-15-guard-bypass-phase-c.md` §5 U-K8、§6 O5
 - 相关：ADR 0054 §12 D9（探针凭证、准入策略 `guard-probe-pod-scope` / `guard-agents-secret-allowlist`）、§12.1（firewalld masquerade 前置条件发现、U-K8 残余风险）
 - 实施计划：`docs/superpowers/plans/2026-11-16-k3s-apiserver-audit-and-probe-oidc.md`
