@@ -1,6 +1,6 @@
 # ADR 0042：审批闭环 —— 经验证的业务角色、从证据开决策、cloud 审批收件箱（AI 治理方向·子项目 3b）
 
-- 状态：**ACCEPTED**（2026-10-09）；§11 R59 ACCEPTED（2026-11-08）；§12（R59 实施前定稿修订，#460）**ACCEPTED**（2026-11-14）
+- 状态：**ACCEPTED**（2026-10-09）；§11 R59 ACCEPTED（2026-11-08）；§12（R59 实施前定稿修订，#460）**ACCEPTED**（2026-11-14）；§12.6（F9 日志面输入展示）**ACCEPTED**（2026-11-16）
 - 提出：2026-10-09；实施计划 `docs/superpowers/plans/2026-10-09-approval-closure.md`；栈验收见 §9.1
 - 决策者：用户已拍板「业务角色挂在团队成员上由 owner/admin 授予；cloud 以证据链收据为锚开决策，不重复评估；收件箱走内部 HMAC v3 通道并签正用户与角色；角色持有者可审、管理员只读、站内通知不发邮件」
 - 相关：ADR 0040（Action Guard：决策、待审批、四眼、§10 开放问题第一条）、ADR 0041（证据链补齐：correlationId 列、收据接口、复核者 `guard-approval`）、aster-cloud ADR 0015（团队作用域 API key 身份：verify 响应与快照）、ADR 0039（Verdict 四态与 `role`）
@@ -532,6 +532,8 @@ executions.metadata.guardDecisionId ← ；通知 guard.approval_requested → �
 定稿裁定（2026-11-14，用户确认）：上表「已选默认」一列全部采用，无改动项——撤销 `catalog.piiMark`；from-evidence 输入不一致 409 `evidence_input_mismatch`、不消耗证据；证据包 v6 一并装入 ADR 0041 §12 D3 的 `execution`；14(4)(a) 改判推迟到注册表 1.4.0 列车（计划阶段 R）；执行日志页明文输入另开 issue（wontlost-ltd/aster-cloud#754）；解除留痕每人每审批首次一条事件；分类行保留 `P7D`、视图上限 1 MiB；ESCALATE 不可解除。上述回写已在同一 PR 完成。
 
 ### 12.6 F9 落地：执行日志的输入展示（wontlost-ltd/aster-cloud#754、#770，2026-11-16）
+
+状态：**ACCEPTED**（2026-11-16 用户确认）。
 
 §12.2 D11 把执行日志页的明文输入留给 cloud 另行处理，本节记录其口径。
 
