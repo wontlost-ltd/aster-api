@@ -1,14 +1,18 @@
 package io.aster.guard;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.aster.audit.chain.AuditChainAppender;
+import io.aster.audit.chain.AuditChainAppender.AppendedRecord;
 import io.aster.guard.provenance.GuardFactIssuerEntity;
 import io.aster.guard.receipt.GuardReceiptEntity;
 import io.aster.guard.snapshot.GuardDecisionInputEntity;
+import io.aster.policy.event.AuditEvent;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.LockModeType;
 import org.hibernate.exception.ConstraintViolationException;
+import org.jboss.logging.Logger;
 
 import java.sql.SQLException;
 import java.time.Clock;
@@ -18,6 +22,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /** {@link GuardDecisionStore} 的 Panache 实现：每次调用一个独立事务，返回的实体已脱管。 */
 @ApplicationScoped
@@ -28,12 +33,21 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
   static final String EVIDENCE_INDEX = "guard_decisions_evidence_uq";
   /** PostgreSQL unique_violation。 */
   private static final String UNIQUE_VIOLATION = "23505";
+  /**
+   * 决策注册咨询锁（#522）的命名空间：取双 int 形式 {@code pg_advisory_xact_lock(int, int)}，与审计链按租户的
+   * 单 bigint 锁不在同一键空间；第二个键为 {@code hashtext(kind:tenant\nkey)}，哈希碰撞只让无关注册多等一次，不影响正确性。
+   */
+  static final String REGISTRATION_LOCK_NAMESPACE = "aster.guard.decision-registration";
+  private static final Logger LOG = Logger.getLogger(GuardDecisionJpaStore.class);
 
   /** 审批迁移「加锁后的 now」的来源：过期复核与审批转 ALLOW 的收据 issuedAt 取同一时刻。 */
   @Inject
   Clock clock;
 
   private GuardJson json;
+
+  @Inject
+  AuditChainAppender appender;
 
   @Inject
   void setObjectMapper(ObjectMapper objectMapper) {
@@ -79,6 +93,77 @@ public class GuardDecisionJpaStore implements GuardDecisionStore {
         throw new GuardIdempotencyRaceException(e);
       }
       throw e;
+    }
+  }
+
+  @Override
+  public GuardDecisionRegistration.Result register(String tenantId, GuardDecisionRegistration.Key key, AuditEvent event,
+                                                   Function<AppendedRecord, GuardDecisionRegistration.Rows> rows) {
+    try {
+      return QuarkusTransaction.requiringNew().call(() -> registerInTransaction(tenantId, key, () -> {
+        try {
+          return appender.appendInCurrentTransaction(event);
+        } catch (RuntimeException e) {
+          throw new ChainUnavailable(e);
+        }
+      }, rows));
+    } catch (RuntimeException e) {
+      if (!ChainUnavailable.in(e)) {
+        throw asRace(e);
+      }
+      LOG.errorf(e, "Action Guard 决策事件写入失败，事务已回滚，按 DENY receipt_unavailable 注册: tenant=%s", tenantId);
+    }
+    try {
+      return QuarkusTransaction.requiringNew().call(() -> registerInTransaction(tenantId, key, () -> null, rows));
+    } catch (RuntimeException e) {
+      throw asRace(e);
+    }
+  }
+
+  /** 锁 → 复查 → 链追加（{@code chain} 返回 null 表示链不可用）→ 写行；须在事务内调用。 */
+  private static GuardDecisionRegistration.Result registerInTransaction(
+      String tenantId, GuardDecisionRegistration.Key key, Supplier<AppendedRecord> chain,
+      Function<AppendedRecord, GuardDecisionRegistration.Rows> rows) {
+    if (key != null) {
+      lockRegistration(tenantId, key);
+      Optional<GuardDecisionEntity> existing = key.kind() == GuardDecisionRegistration.KeyKind.IDEMPOTENCY
+          ? GuardDecisionEntity.findByIdempotencyKey(tenantId, key.value())
+          : GuardDecisionEntity.findByEvidenceCorrelationId(tenantId, key.value());
+      if (existing.isPresent()) {
+        return new GuardDecisionRegistration.Existing(existing.get());
+      }
+    }
+    GuardDecisionRegistration.Rows written = rows.apply(chain.get());
+    persist(written.decision(), written.approval(), written.receipt(), written.input());
+    return new GuardDecisionRegistration.Registered(written);
+  }
+
+  /** 事务级咨询锁，提交或回滚时自动释放；同租户同键的注册在此串行，先于租户链锁获取。 */
+  private static void lockRegistration(String tenantId, GuardDecisionRegistration.Key key) {
+    GuardDecisionEntity.getEntityManager()
+        .createNativeQuery("SELECT pg_advisory_xact_lock(hashtext(?1), hashtext(?2))")
+        .setParameter(1, REGISTRATION_LOCK_NAMESPACE)
+        .setParameter(2, key.kind().name() + ":" + tenantId + "\n" + key.value())
+        .getSingleResult();
+  }
+
+  private static RuntimeException asRace(RuntimeException e) {
+    return isIdempotencyViolation(e) ? new GuardIdempotencyRaceException(e) : e;
+  }
+
+  /** 事件追加失败的标记：让 {@link #register} 区分「链不可用」（改判后重试写行）与其他失败（原样外抛）。 */
+  private static final class ChainUnavailable extends RuntimeException {
+    ChainUnavailable(Throwable cause) {
+      super(cause);
+    }
+
+    static boolean in(Throwable t) {
+      for (Throwable c = t; c != null; c = c.getCause()) {
+        if (c instanceof ChainUnavailable) {
+          return true;
+        }
+      }
+      return false;
     }
   }
 
