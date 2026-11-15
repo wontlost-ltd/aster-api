@@ -22,7 +22,7 @@ DB_JDBC_URL=jdbc:postgresql://localhost:5432/aster_policy DB_USERNAME=postgres D
 - 一个测试都没执行时任务失败（标签被误删、类被误排除都会变红）。
 - `check` 依赖本任务，`deploy.yml` 的 `./gradlew build` 因而在发版构建中同样运行。
 - CI 必需检查 `Guard bypass suite (#466)`（`ci.yml` 汇总作业）只判定本任务所在步骤；它**不**覆盖 aster-cloud
-  Playwright（本地栈手动运行）与部署层探针（阶段 C）。
+  Playwright（本地栈手动运行）与部署层探针（阶段 C，由 k3s 工作流判定，不在本仓 CI）。
 
 ## 三样断言（`BypassAssertions`）
 
@@ -41,7 +41,7 @@ outcome → 时间窗 → actionHash），通过才 consume；`attackConsume` �
 | # | #466 场景 | 类 | 状态 |
 |---|---|---|---|
 | 1 | 不经 Guard 直接调用（API 层） | `B1ApiDirectCallBypassTest` | 启用：无凭证 401、他租户 404（自报 `X-Tenant-Id` 403）、VIEWER 403、未 consume 回写 409 |
-| 1 | 不经 Guard 直接调用（部署层） | `B1DirectConnectToolBypassTest` | **部署层未验证**：`@Disabled`，阶段 C 由 k3s `scripts/guard-bypass/direct-connect-probe.sh` 判定 |
+| 1 | 不经 Guard 直接调用（部署层） | `B1DirectConnectToolBypassTest` | **已验证（部署层，生产，2026-11-16）**：`@Disabled` 保持，判定在 k3s `guard-bypass-probe` 工作流（网络层与票据层各自独立通过，运行 43746736433；CronJob `aster-guard/guard-auth-probe` 通过）与 `redteam-window.sh` 两条反向记录（六行均符合预期）。记录：[生产探针](https://github.com/wontlost-ltd/aster-api/issues/466#issuecomment-6899245972)、[红队反向](https://github.com/wontlost-ltd/aster-api/issues/466#issuecomment-6899602342)、[vap-check](https://github.com/wontlost-ltd/k3s/pull/1258#issuecomment-6893725766) |
 | 2 | DENY 后执行 | `B2ExecuteAfterDenyBypassTest` | 启用：DENY / PENDING / REJECTED 409 `not_allowed`、自批 403、同幂等键改动作 422 |
 | 3 | 收据改参 | `B3TamperedParamsBypassTest` | 启用：改金额 / 目标 / null 与 "" 与缺省 / 收据挪用 → 409 `action_mismatch` |
 | 4 | 收据重放 | `B4ReceiptReplayBypassTest` | 启用：二次 consume 409 `receipt_consumed`、8 线程并发恰一个 200、结果不可改写 |
@@ -72,7 +72,7 @@ aster-guard SDK 的夹具层（#464，ADR 0054 §7）证明同一性质。
   重新生成 lockfile，套件随之重跑（Gradle 任务以该目录为输入，构建缓存不会复用旧结论）。
   `deploy.yml` 的 `./gradlew build` 未安装 Node，发版构建里阶段 B 用例为 skipped（阶段 A 照常执行）；PR 的必需检查
   `Guard bypass suite (#466)` 覆盖阶段 B。
-- 阶段 C：集群中出现模型命名空间与第一个 HTTP 工具端点（ADR 0054 §8 ⑤）后，探针接入部署后 smoke，
-  `B1DirectConnectToolBypassTest` 的 `@Disabled` 原因改为指向探针运行记录；在此之前 #466 不关闭。
+- 阶段 C：**已完成**（2026-11-16）。部署层判定在 k3s `guard-bypass-probe` 工作流（main 推送 / 每日定时 / 手动），
+  `B1DirectConnectToolBypassTest` 保持 `@Disabled`，原因指向该工作流与 #466 记录（见上表第 1 条）。
 - aster-cloud 本地栈场景（C2–C7）见 aster-cloud `src/__tests__/e2e-browser/local-stack/guard-bypass.spec.ts`，
   不进任何 CI（跟进项 F1）。
