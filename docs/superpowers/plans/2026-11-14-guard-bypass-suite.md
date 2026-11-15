@@ -417,6 +417,17 @@ Run: `./gradlew guardBypassTest`，Expected: 全部 `io.aster.guard.bypass.*` �
 - [ ] Step 5：CI：`ci-build.yml` 在 bypass 步骤前加 `pnpm/action-setup`（`package_json_file: aster-api/e2e/guard-bypass/package.json`，与 aster-guard 仓 CI 同法取 `packageManager` 版本）、`actions/setup-node`（Node 24）与 `pnpm install --frozen-lockfile`（`working-directory: aster-api/e2e/guard-bypass`）；本地先跑同一命令确认 lockfile 可冻结安装，bypass 步骤 `env` 加 `ASTER_GUARD_BYPASS_REQUIRE_NODE: "1"`；提交 `test(guard-bypass): 阶段 B 注入指令与代理层 DENY / 重放（#466）`，开 PR。
 - [ ] Step 6（可选，不进必需检查）：`nightly.yml` 加一个真实模型版本（同一 `injected-agent` 换成调用 BYOK 模型的 Agent，读 secret `GUARD_BYPASS_LLM_KEY`；缺失即 skip）。是否要做由用户决定（O3）。
 
+**执行回写（2026-11-15，按 #464 / R66 定稿核对 aster-guard v0.2.0 `0ad812c` 后）：**
+- 代理 API key 环境变量为 `ASTER_GUARD_API_KEY`（R66 D8），不是上文的 `ASTER_API_KEY`；代理模式另须 `--tenant-id`（D8），
+  故 `ProxyHarness.start(baseUrl, apiKey, tenantId, policy, ledger)` 多一个 `tenantId` 参数；`--executor-id` 固定为
+  `aster-guard-mcp@guard-bypass`，`--approval-timeout 0`（PENDING 立即返回）。
+- 拒绝载荷 `asterGuard` 总在 `_meta`、上游未声明 `outputSchema` 时另放 `structuredContent`（D4）；规则 DENY 的理由在
+  `reason / ruleId`，`reasonCode` 只承载系统原因码，规则 DENY 不写——Task B2「reasonCode 非空」改为断言 `reason` 与 `ruleId`。
+- DENY 载荷没有 `poll`（只有 PENDING 有）：④ 由 Agent 按 §2.2 的 `poll` 形状以 decisionId 自行拼出同一 URL。
+- 代理层 B2 另加 `pendingIsNotForwardedEvenAfterApproval`（等审批超时 PENDING 不转发，DPO 随后批准仍不转发）。
+- `deploy.yml` 的 `./gradlew build` 未装 Node：发版构建里阶段 B 用例 skipped（未设 `ASTER_GUARD_BYPASS_REQUIRE_NODE`），
+  阶段 A 照常；阶段 B 由 PR 必需检查 `Guard bypass suite (#466)` 覆盖。
+
 ---
 
 ## 阶段 C（部署层：k3s 直连必须失败）
