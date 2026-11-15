@@ -173,14 +173,35 @@ jobs:
           docker pull redis:7-alpine &
           wait
 
+      # 绕过套件阶段 B（#466）：ProxyHarness 以 Node 运行 e2e/guard-bypass 的脚本化 Agent，拉起钉死版本的
+      # 已发布包 @aster-cloud/aster-guard（aster-guard-mcp）。pnpm 版本取自该目录 package.json 的 packageManager
+      # （与 aster-guard 仓 CI 同法）；lockfile 冻结安装，依赖经 setup-node 的 pnpm 缓存复用。
+      - name: Install pnpm (guard bypass e2e)
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: aster-api/e2e/guard-bypass/package.json
+
+      - name: Setup Node.js 24 (guard bypass e2e)
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: aster-api/e2e/guard-bypass/pnpm-lock.yaml
+
+      - name: Install guard bypass e2e dependencies
+        working-directory: aster-api/e2e/guard-bypass
+        run: pnpm install --frozen-lockfile
+
       # Guard 绕过红队套件（wontlost-ltd/aster-api#466）：JUnit 标签 guard-bypass，独立 Gradle 任务、retry 0。
       # 放在快测之前：安全门先给结论。outcome 经作业输出 guard-bypass 交给 ci.yml 的同名汇总作业，
       # 那是分支保护登记的必需检查；本步失败会让 build-local 失败并触发托管回落（语义同 ci-result）。
+      # ASTER_GUARD_BYPASS_REQUIRE_NODE=1：缺 Node 或 node_modules 时阶段 B 用例失败而不是跳过。
       - name: Guard bypass suite (#466)
         id: bypass
         working-directory: aster-api
         run: ./gradlew guardBypassTest --build-cache
         env:
+          ASTER_GUARD_BYPASS_REQUIRE_NODE: "1"
           TESTCONTAINERS_RYUK_DISABLED: "true"
           DB_JDBC_URL: "jdbc:postgresql://localhost:5432/aster_policy"
           DB_REACTIVE_URL: "postgresql://localhost:5432/aster_policy"
