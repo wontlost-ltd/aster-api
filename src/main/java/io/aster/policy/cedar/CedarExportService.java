@@ -34,6 +34,7 @@ import java.util.Optional;
 
 /**
  * Cedar 导出服务（ADR 0047 §5）：编译 → 核心导出 → Cedar 严格校验（E724）→ 逐探针比对 Aster 与 Cedar（E723）。
+ * {@link #check} 只走前两步，供页面判断是否提供导出（ADR 0047 §6）。
  *
  * <p>等价性是整个导出的保证：只有全部探针都满足各自的一致性规则，导出才可用。数值越界探针（{@link Probe#outOfDomain()}）
  * 只要求 Cedar 不比 Aster 更松；其余探针要求结论、原因、审批人逐项一致。探针按生成顺序比对，首个不一致写入 E723。
@@ -87,23 +88,80 @@ public class CedarExportService {
     public CedarExportOutcome exportSource(String source, String locale, String aliasSetJson,
                                            aster.core.identifier.VocabularyScopes scopes, String functionName,
                                            boolean allowStructural) {
+        Prepared p = prepare(source, locale, aliasSetJson, scopes, functionName, allowStructural);
+        if (!p.errors().isEmpty()) {
+            return new CedarExportOutcome(false, null, functionName, null, null, null, null, List.of(), 0, 0,
+                p.sourceHash(), p.errors());
+        }
+        CoreModel.Module module = p.module();
+        if (p.candidates().size() != 1) {
+            return new CedarExportOutcome(false, null, null, module.name, null, null, module.profile, List.of(), 0, 0,
+                p.sourceHash(), List.of(functionRequired(module, p.candidates())));
+        }
+        return verify(CedarExporter.export(module, p.candidates().get(0), p.sourceHash()), p.coreJson(),
+            p.sourceHash(), module.name);
+    }
+
+    /**
+     * 可导出检查（aster-cloud#786）：与 {@link #exportSource} 同一编译与候选规则选择，再对每个候选做核心翻译。
+     *
+     * <p>只是必要条件检查：不做 Cedar 严格校验（E724）与逐探针比对（E723），不写审计，代价与一次编译同级。
+     * E723/E724 属于编译器缺陷信号，只有真实导出才能发现，因此检查通过不保证导出一定成功，真实导出仍是唯一权威。
+     * 多个候选都能翻译时全部列出；真实导出届时会要求调用方指定其一（E720）。
+     *
+     * @param allowStructural 语义同 {@link #exportSource(String, String, String, aster.core.identifier.VocabularyScopes, String, boolean)}
+     */
+    public CedarExportCheck check(String source, String locale, String aliasSetJson,
+                                  aster.core.identifier.VocabularyScopes scopes, String functionName,
+                                  boolean allowStructural) {
+        Prepared p = prepare(source, locale, aliasSetJson, scopes, functionName, allowStructural);
+        if (!p.errors().isEmpty()) {
+            return CedarExportCheck.rejected(p.errors(), p.sourceHash());
+        }
+        if (p.candidates().isEmpty()) {
+            return CedarExportCheck.rejected(List.of(functionRequired(p.module(), p.candidates())), p.sourceHash());
+        }
+        List<CedarExport> exports = p.candidates().stream()
+            .map(fn -> CedarExporter.export(p.module(), fn, p.sourceHash()))
+            .toList();
+        List<String> rules = exports.stream().filter(CedarExport::exportable).map(CedarExport::functionName).toList();
+        if (!rules.isEmpty()) {
+            return new CedarExportCheck(true, rules, List.of(), p.sourceHash());
+        }
+        List<CompileDiagnostic> diagnostics = exports.stream()
+            .flatMap(e -> e.diagnostics().stream())
+            .map(CedarExportService::toCompileDiagnostic)
+            .toList();
+        return CedarExportCheck.rejected(diagnostics, p.sourceHash());
+    }
+
+    /**
+     * 导出与检查共用的前半段：编译、读入 Core IR、确定候选规则。
+     * 指定函数名时候选即该名；否则为全部通过 GuardShape 的函数（声明顺序）。{@code errors} 非空时其余字段无意义。
+     */
+    private record Prepared(String sourceHash, List<CompileDiagnostic> errors, String coreJson,
+                            CoreModel.Module module, List<String> candidates) {
+    }
+
+    private Prepared prepare(String source, String locale, String aliasSetJson,
+                             aster.core.identifier.VocabularyScopes scopes, String functionName,
+                             boolean allowStructural) {
         String sourceHash = sha256(source == null ? "" : source);
         CompilationResult compiled = compiler.compile(source, locale, aliasSetJson, scopes, allowStructural);
         List<CompileDiagnostic> errors = compileErrors(compiled);
         if (!errors.isEmpty()) {
-            return new CedarExportOutcome(false, null, functionName, null, null, null, null, List.of(), 0, 0,
-                sourceHash, errors);
+            return new Prepared(sourceHash, errors, null, null, List.of());
         }
         CoreModel.Module module = readModule(compiled.getCoreJson());
         boolean unnamed = functionName == null || functionName.isBlank();
-        List<String> candidates = unnamed ? guardFunctions(module) : List.of();
-        String fn = !unnamed ? functionName : candidates.size() == 1 ? candidates.get(0) : null;
-        if (fn == null) {
-            Diagnostic required = GuardShape.notExportable(module.name, functionRequiredReason(candidates), module.origin);
-            return new CedarExportOutcome(false, null, null, module.name, null, null, module.profile, List.of(), 0, 0,
-                sourceHash, List.of(toCompileDiagnostic(required)));
-        }
-        return verify(CedarExporter.export(module, fn, sourceHash), compiled.getCoreJson(), sourceHash, module.name);
+        List<String> candidates = unnamed ? guardFunctions(module) : List.of(functionName);
+        return new Prepared(sourceHash, List.of(), compiled.getCoreJson(), module, candidates);
+    }
+
+    // 未指定函数名且无法唯一确定导出规则时的 E720
+    private static CompileDiagnostic functionRequired(CoreModel.Module module, List<String> candidates) {
+        return toCompileDiagnostic(
+            GuardShape.notExportable(module.name, functionRequiredReason(candidates), module.origin));
     }
 
     /** 包可见：对给定导出执行严格校验与逐探针等价性检查，供测试注入被破坏的导出。 */
@@ -241,8 +299,7 @@ public class CedarExportService {
 
     // ---------- 辅助 ----------
 
-    // 未指定函数名时，只接受模块中唯一一个通过 guard 形状检查的函数
-    /** 模块中可通过 GuardShape 的函数名（声明顺序）。 */
+    /** 模块中可通过 GuardShape 的函数名（声明顺序）；未指定函数名时导出只接受其中唯一的一个。 */
     private static List<String> guardFunctions(CoreModel.Module module) {
         if (module.decls == null) {
             return List.of();
