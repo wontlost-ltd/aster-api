@@ -20,4 +20,13 @@ T1 把包格式写成可执行夹具时，发现 ADR 与计划有若干处没有
 | R9 | 值规范 JSON 嵌套层级上限 64（与 ts `SERIALIZE_MAX_DEPTH` 相同），超出与含孤立代理项的字符串为 `EVAL_ERROR`；Decimal 值为去掉末尾 0 的普通写法 | JVM 侧原本没有深度上限 |
 | R10 | manifest 中所有数字必须是 ±(2⁵³−1) 内的整数（schema 给出 maximum；用任意精度整数读入的实现也必须拒绝超出者）；zip 先按文件大小判 64 MiB 再读入 | 规范 JSON 的数字域只到安全整数；JVM 用 BigInteger 读入时不会自然失败 |
 
+### 补记（2026-11-17，aster-cloud/aster-lang-test#217，复评 N1–N5）
+
+R4–R6 的细化，不改变已裁决的方向；规则正文同样以 aster-lang-test `conformance/package-v1/README.md` 为准：
+
+- **R4 补**：A 包的普通 `verify`（不带 `--recompile` / `--probes`）在 `integrity` 之后增加 `ir` 检查项，严格读入 `compiled/core.json`，失败为 `PKG_UNSUPPORTED_IR`，与 `run` 一致（ADR §4.1 `verify` 的「运行时兼容」）。B 包的普通 `verify` 仍不本地编译。
+- **R5 补**：本地头与中央目录两个方向的不一致都拒绝（各有夹具）；deflate 条目的压缩数据必须恰好是一个完整的 deflate 流，最终块之后、`csize` 之内还有字节即 `PKG_INTEGRITY`（Node `inflateRawSync` 静默忽略这些字节，两侧必须显式比较已消耗的输入字节数）；zip 目录条目按路径规则校验后忽略。
+- **R6 补**：本计划中凡引用模式之处不再写出以 `$` 收尾的字面量，确切模式以 schema 为准。
+- **R9 补**：读入侧（严格 JSON）数容器层数（至多 64 层嵌套），写出侧（值规范 JSON）数值所在层级（空容器本身算一个值），两种计数不同，见 VALUE-FORMS.md。
+
 ADR 0031（错误码单一来源）：`PROBE_MISMATCH` 是 CLI 退出信封里的码，不是编译诊断码，不进 E 码表；若日后要在平台侧展示，再按 ADR 0031 登记。
