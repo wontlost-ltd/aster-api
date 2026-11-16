@@ -181,7 +181,7 @@ JVM CLI 用生产同一配置（`HostAccess.EXPLICIT`、`IOAccess.NONE`、禁线
 |---|---|---|
 | E730 | 任一函数**声明**了 IO 类能力（Http/Network/Sql/Time/Files/Secrets/Process/AiModel/Payment/Inventory）或 IO 效果 | 两引擎都无真实 IO；`Time` 还破坏可复现。CPU 类（Cpu、Crypto）允许 |
 | E731 | 存在 workflow、`Async` 效果或 `Await` 表达式 | ts 解释器不支持 await；Truffle workflow 依赖 EventStore |
-| E732 | 任一 `Name`（不论出现在调用目标、实参还是其他位置）解析不到：模块内函数、局部 / 参数 / lambda 绑定、类型构造器、或**目标引擎导出白名单**中的 builtin。白名单 = 目标引擎已实现的纯 builtin（Node：ts `BUILTIN_ARITY` 键集；JRE：Truffle `Builtins` 去掉 `IO.*`），以生成文件随引擎发布，并由 parity 测试保证两份表与实现同步 | 闭世界、失败即拒：解析不了的名字一律视为不可导出；包能导出就必须能跑完 |
+| E732 | 任一 `Name`（不论出现在调用目标、实参还是其他位置）解析不到：模块内函数、局部 / 参数 / lambda 绑定、类型构造器、或**目标引擎导出白名单**中的 builtin。白名单 = 目标引擎已实现的纯 builtin，含以 `Call(Name(op))` 出现的运算符（Node：ts `BUILTIN_ARITY` 键 ∪ `BUILTIN_OPS` ∪ `NAMED_BUILTIN_OPS` 中值非 null 的键；JRE：Truffle `Builtins` 注册名去掉 `IO.*`），名字先按引擎自身的别名归一（ts `callTargetBuiltin`、truffle `Builtins.canonicalName`）再查表，以生成文件随引擎发布，并由 parity 测试保证两份表与实现同步 | 闭世界、失败即拒：解析不了的名字一律视为不可导出；包能导出就必须能跑完 |
 | E733 | 入口参数或返回类型无法生成 JSON Schema（函数类型等） | `run --input` 无法表达 |
 
 另：无可执行版本 → cloud 409（§12.1 Q5 定案：同 ADR 0047 §6，只导出 secure-execute 默认会执行的 APPROVED 版本；不导出草稿，否则等于绕过审批）。超限 → E734（§9）。
