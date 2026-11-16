@@ -118,7 +118,7 @@ interface CapabilityDescriptor {
 | `structural_alias` | 3 | `capability.structural_alias.enabled`（**true**，保持现状） | 无 | 否 | 否 |
 | `ai_workspace` | 3 | `capability.ai_workspace.enabled`（**true**，保持现状） | 无 | 否 | 是（现状如此） |
 
-`PlanCapabilities` 新增 `structuredAuthoring: boolean`：free = false；trial、pro、team（遗留）、enterprise = true。trial 与 `customLexicon` 一样视同 Pro（trial 过期由 `resolvePlan` 自动降级）。
+`PlanCapabilities` 新增 `structuredAuthoring: boolean`：free = false；trial、pro、team（遗留）、enterprise = true。**本 ADR 的决定**：trial 与 `customLexicon` 一样视同 Pro（trial 过期由 `resolvePlan` 自动降级）。理由：D1 要求的是「付费档位的能力」，trial 是付费档位的试用；与词汇门禁口径一致，避免同一套餐在两个功能上表现不同。
 
 ### 4.2 数据模型
 
@@ -165,7 +165,7 @@ interface CapabilityDescriptor {
 - 每个能力一个 `PlatformSetting` 布尔键（§4.1 表），加入 `PLATFORM_SETTING_KEYS` 白名单与 `DEFAULTS`，在 `FeatureFlagsCard` 显示。`structured_authoring` 默认 OFF，管理员显式打开。
 - 团队委派另有一个全局键 `capability.structured_authoring.team_delegation.enabled`（默认 true）：平台管理员一键关掉所有团队 owner 的委派，而不必逐个团队改额度。
 - 读失败按现有约定 fail-OFF（取默认值；`structured_authoring` 的默认值是 OFF）。
-- `POST /api/admin/platform-settings` 对 `capability.*` 键做布尔类型校验，并写审计 `platform_setting.update`（§4.9）。
+- **新增**：`POST /api/admin/platform-settings` 对 `capability.*` 键做布尔类型校验，并写审计 `platform_setting.update`（§4.9，metadata 含键、旧值、新值）。其余既有键的写入行为不变（今天只有 `auth.dbEpoch` 写审计）。
 
 开关只决定「现在是否可用」，不触碰授权行：关掉再打开，所有授权原样恢复。
 
@@ -185,7 +185,22 @@ interface CapabilityDescriptor {
    - d. 活跃的团队 owner 委派授权，且本人仍是 `delegatingTeamId` 的非 viewer 成员，且该团队的额度行存在、`ownerGrantingEnabled = true`，且全局委派键为 true；
    - 都没有 → `denial = 'not_granted'`。
 
-第 4 步是一条 SQL（授权表左联 `TeamMember` 与 `CapabilityTeamAllotment`），返回全部命中的来源（`direct` / `team:<id>` / `delegated:<id>` / `admin`），管理页和编辑器据此显示「通过哪个来源获得」。
+**参数的分工**：`teamId` **只用于第 3 步**（决定按谁的套餐判定）；第 4 步的授权匹配**与当前资源无关**，查的是该用户名下的全部授权与全部团队成员关系。第 4 步是一条 SQL：
+
+```sql
+SELECT g.id, g."userId", g."teamId", g."delegatingTeamId"
+FROM "CapabilityGrant" g
+LEFT JOIN "TeamMember" mt ON mt."teamId" = g."teamId"           AND mt."userId" = $user AND mt.role <> 'viewer'
+LEFT JOIN "TeamMember" md ON md."teamId" = g."delegatingTeamId" AND md."userId" = $user AND md.role <> 'viewer'
+LEFT JOIN "CapabilityTeamAllotment" a ON a.capability = g.capability AND a."teamId" = g."delegatingTeamId"
+WHERE g.capability = $cap AND g."revokedAt" IS NULL
+  AND (  (g."userId" = $user AND g."delegatingTeamId" IS NULL)                        -- b
+      OR (g."teamId" IS NOT NULL AND mt.id IS NOT NULL)                               -- c
+      OR (g."userId" = $user AND md.id IS NOT NULL AND a."ownerGrantingEnabled"
+          AND $delegationSwitchOn) )                                                  -- d
+```
+
+返回全部命中的来源（`direct` / `team:<id>` / `delegated:<id>`，加第 4a 步的 `admin`），管理页和编辑器据此显示「通过哪个来源获得」。来源有多条时任一即可，彼此之间没有优先级；套餐只判一次（第 3 步），不按来源分别判定。
 
 **团队授权的作用范围**：团队授权与委派授权让成员**本人**获得能力，不限于该团队的策略；但第 3 步的套餐按当前资源判定。因此 Pro 团队里的 Free 成员在团队策略上可用，在自己的个人策略上不可用——这与 ADR 0015 §5 / `team-plan.ts` 的「团队资源看 owner 套餐，个人资源看本人套餐」一致，不另造规则。
 
@@ -201,7 +216,7 @@ interface CapabilityDescriptor {
 |---|---|
 | 谁可以委派 | `Team.ownerId` 本人（与 `team-plan.ts` 的 owner 定义一致）。团队 `admin` 角色**不能**（见 §14 Q1） |
 | 能委派给谁 | 本团队的非 viewer 成员；只能是个人，不能是别的团队 |
-| 座位上限 | `CapabilityTeamAllotment.seatCap`，由平台管理员按团队设定；没有额度行 = 0。只计该团队「活跃且对象仍是成员」的委派授权 |
+| 座位上限 | `CapabilityTeamAllotment.seatCap`，由平台管理员按团队设定；没有额度行 = 0。占座 = 该团队「`revokedAt IS NULL` 且对象仍是该团队成员（任何角色）」的委派行。被降为 viewer 而暂停的委派**仍占座**（行仍活跃，升回即恢复，不会出现恢复时无座的情况）；owner 想释放座位就撤销它 |
 | 并发 | 委派写入在事务内先 `lockTeamRow(tx, teamId)`（`team-plan.ts` 现有的 `SELECT … FOR UPDATE`），再计数、再插入，与转让所有权、接受邀请串行化，不会超座 |
 | 平台关闭委派 | 两级：全局键 `…team_delegation.enabled`，以及单个团队的 `ownerGrantingEnabled`。关闭后委派授权在解析中**暂停**（§4.4 第 4d 步不再命中），行不撤销；重新打开即恢复。关闭期间 owner 不能新增委派，可以撤销 |
 | 下调座位 | 新上限低于当前活跃委派数时返回 409 `seat_cap_below_active`（附当前数），由管理员或 owner 先撤销再下调；不自动挑人撤销 |
@@ -215,14 +230,16 @@ interface CapabilityDescriptor {
 | 管理员撤销用户授权 / 团队授权 | 该来源立即失效（下一次请求） | `revokedAt = now()`，`revokeReason = 'manual'` |
 | owner 撤销委派 | 同上，释放一个座位 | 同上 |
 | 成员被移出或离开团队 | 该团队的团队授权对其失效；其在该团队的委派授权失效 | 解析与 `TeamMember` 联查，**删除成员行即生效**；另在成员移除路由（`src/app/api/teams/[teamId]/members/[memberId]/route.ts`，与现有 `revokeTeamKeys` 同处）撤销其委派行，`revokeReason = 'member_removed'`，失败只告警（安全性不依赖这一步，只为座位统计与审计清晰） |
-| 成员降为 viewer | 团队授权与委派对其暂停 | 解析按角色过滤；委派行保留（升回后恢复） |
-| 团队删除 | 团队授权与该团队全部委派撤销，额度行删除 | 在团队删除事务（`src/app/api/teams/[teamId]/route.ts:177–194`）内执行，`revokeReason = 'team_deleted'` |
+| 成员降为 viewer / 升回 | 团队授权与委派对其暂停 / 恢复；委派仍占座（§4.6） | 只靠解析时的角色过滤，角色变更路由（`members/[memberId]/route.ts:104`、`transfer/route.ts:66–72`）**无需改动** |
+| 团队删除 | 团队授权与该团队全部委派撤销，额度行删除；该团队的策略按现有逻辑转为 owner 个人策略（`teamId = null`），此后对这些策略的判定按 owner 本人套餐与授权；已附的 layout 不受影响（只读查看不设门） | 在团队删除事务（`src/app/api/teams/[teamId]/route.ts:175–194`，先删成员、再把策略 `teamId` 置空、最后删团队）内同事务执行撤销，`revokeReason = 'team_deleted'` |
 | 团队转让所有权 | 委派保持；新 owner 接管管理 | 委派依据的是团队，不是前 owner 个人；`grantedBy` 保留历史 |
 | 平台或团队关闭委派 | 委派暂停，不撤销 | §4.6 |
 | 全局开关关闭、套餐降级 | 所有人失效，授权行不动 | §4.3、§4.5 |
 | 用户硬删除 | 用户主体行随 FK 级联删除；审计日志保留 | FK `ON DELETE CASCADE` |
 
 撤销只影响**今后的编写**，不影响已有内容（§6）。
+
+**需要改动的团队生命周期写路径（完整清单）**：成员移除与自行离开（同一路由 `members/[memberId]/route.ts:201`，事务外、与 `revokeTeamKeys` 同处，失败只告警）、团队删除（同事务）。角色变更与所有权转让不需要改动。所有路径的正确性都不依赖这些清理成功：解析总是联查 `TeamMember` 现读；计座（委派写入时的检查与 `GET /api/teams/[teamId]/capabilities/…/grants`）同样联查成员关系，所以清理失败既不会让离队者保留能力，也不会多占座位，只是留下一条未写撤销原因的历史行；不需要后台补偿任务。
 
 ### 4.8 缓存与失效
 
@@ -269,7 +286,7 @@ interface CapabilityDescriptor {
 | 位置 | 判定 |
 |---|---|
 | §4.10 全部写接口 | 平台管理员或团队 owner 身份；`requireLicenseWriteOk` |
-| 策略保存的三条建版本路径（`POST /api/policies`、`PUT /api/policies/[id]`、`POST /api/v1/policies/[id]/versions`），统一在 `createVersion` 内判定 | 提交或沿用 layout 时 `resolveEntitlement(…, {teamId: policy.teamId})` 必须为真，否则 403 `structured_authoring_required`（§7.5） |
+| 策略保存的三条建版本路径（`POST /api/policies`、`PUT /api/policies/[id]`、`POST /api/v1/policies/[id]/versions`） | **新增的 layout 门禁**：路由在事务外调用 `resolveEntitlement(userId, 'structured_authoring', {teamId: policy.teamId})`（与今天在事务外读 `getStructuralAliasGrant` 同一位置与理由），把结果作为 `allowLayout` 传入 `createVersion`；`createVersion` 是三态规则与校验（§7.5）的唯一实现点，`allowLayout` 为假而请求带 layout 时抛出，路由转 403 `structured_authoring_required`。**既有的结构词别名门禁**（`allowStructural`）位置与语义不变，两者互不影响 |
 | 阶段 1 若为编辑器标签新增后端接口（例如按角色列出作用域内词汇的接口） | 每个接口入口判定同一能力；现有词汇管理接口不变（仍只看套餐） |
 | 编辑器页的服务端渲染 | 无权时不下发标签页数据与 props，界面与今天逐字节一致（cloud#793 验收） |
 
@@ -290,9 +307,11 @@ interface CapabilityDescriptor {
 
 ## 6. 撤销后的既有内容（对照代码）
 
+下表按能力分开：撤销 `structured_authoring` 只关掉编辑器辅助与 layout 写入；撤销 `structural_alias`（阶段 3 后）沿用今天的规则，只阻断「含结构词别名的新版本」；撤销 `ai_workspace` 只关掉工作台入口。三者互不连带。
+
 | 内容 | 撤销、降级或全局关闭之后 | 依据 |
 |---|---|---|
-| 用了结构体、类型别名、导入别名、词汇的策略 | 照常有效、可编译、可执行；可以继续编辑与保存新版本（只是没有编写辅助） | 编译与执行路径不读任何编写授权（§1.4）；本 ADR 不新增 |
+| 撤销 `structured_authoring`：用了结构体、类型别名、导入别名、词汇的策略 | 照常有效、可编译、可执行；可以继续编辑与保存新版本（只是没有编写辅助） | 编译与执行路径不读 `structured_authoring`（§1.4）；本 ADR 不新增 |
 | 已附 layout 的版本 | 版本不变，layout 仍可只读查看；执行、证据、Cedar 导出本来就不读 layout | §7.2、§7.7 |
 | 无权用户在有 layout 的策略上建新版本 | 新版本不带 layout，响应带 `layoutDropped: true`，编辑器保存前提示；不拒绝保存 | §7.5 三态规则。拒绝保存会让无权队友改不了团队策略，比丢掉显示层更糟 |
 | 结构词别名（阶段 3 后） | 行为不变：已冻结版本执行时「冻结即信任」；撤销后不能再基于结构词别名产出新版本 | `execute/route.ts:360`、`[id]/route.ts:257–266` 的现有规则，阶段 3 只替换判定函数 |
@@ -324,7 +343,7 @@ LayoutMap 是**同一份 canonical 源码的第二种排版**，只给人看：
 | `createdBy` / `createdAt` | |
 
 - 与 `createVersion` 在同一事务插入；**只插入，不更新、不删除**，没有修改接口。想换 layout 就建新版本——与 `aliasSet`「不可变」的既有约定一致。
-- 读取（显示 display 前）重新验证 `sha256(layout) = layoutSha256` 且 `toCanonical(parse(layout)) = content`；任一不符则不渲染 display，只显示 canonical 与「显示层数据不一致」提示，并记错误日志。这样直接改库篡改 layout 会被看见，而不是被静默展示。
+- 读取（显示 display 前）重新验证 `sha256(layout) = layoutSha256` 且 `toCanonical(parse(layout)) = content`；任一不符则不渲染 display，只显示 canonical 与「显示层数据不一致」提示，并记错误日志。这是**一致性检测**：能发现损坏、迁移错误与只改了一列的直接改库，但有库写权限的人同时改 layout 与哈希就能通过。本 ADR 不为显示层提供抗蓄意篡改的保证——不需要：layout 改不了执行内容，往返校验保证 display 的内容 span 就是 `content`，而 `content` 自身由 envelope 保护。
 
 **为什么不进 `computeSourceEnvelope`**：envelope 的定义是「完整编译输入」（content、aliasSet、locale、toolchainId、scopesJson，ADR 0022 §11.5、ADR 0051 §7），layout 不是编译输入。放进去要改 cloud `src/lib/policy-alias.ts` 与 Java `PolicyVersion.computeSourceEnvelope`、改共享向量 `envelope-vectors.json`、给存量行重算 envelope，并让「改显示层」变成「改编译身份」，而它们本来无关。layout 与编译的关系已由往返校验机械保证。**结论：两侧 envelope 逐字节不变**，阶段 2 加一条测试：同一版本附与不附 layout，`sourceEnvelopeSha256` 相同。
 
@@ -395,7 +414,7 @@ interface PolicyLayout { v: 1; spans: LayoutSpan[] }
 3. **显示层文字始终可辨认**：display 视图里，结构 span 的 display 文字用独立样式渲染，悬停显示对应的 canonical；内容 span 正常渲染。读者总能分清哪些字是只给人看的。
 4. **值与名字不能藏**：§7.5 `layout_structural_hides_value`。
 5. **下游不读 layout**：执行、证据导出、Cedar 导出（ADR 0047）、What-If、回放、Guard 部署只读 `content`。
-6. **篡改可见**：§7.2 读取时复验。
+6. **不一致可见**：§7.2 读取时复验（一致性检测，不是防篡改签名）。
 7. **词汇宏另有入口**：内容 span 原样显示的是源码写法；词汇字面量宏（如 guyong 演示把触发词解析为另一句字符串）改变的是编译含义而不是排版，LayoutMap 既不制造也不消除它。评审者通过 §8.2 的词汇规范预览看到宏展开后的值；这一点写进评审面板的说明。
 
 ### 7.8 诊断与 trace 位置映射
@@ -473,7 +492,7 @@ interface PolicyLayout { v: 1; spans: LayoutSpan[] }
 
 ### 9.3 阶段 3：迁移旧开关（D2；首期不实施）
 
-按扩张 → 回填 → 切读 → 收缩四步，每步可单独回退：
+**阶段 3 不新建表**：目标表 `CapabilityGrant` 在阶段 1 第 1 步已由迁移 PR 创建并上线（其 `source` 已含 `migration`、`grantedBy` 已可为空），所以 3a 的双写在部署时目标表已存在，符合「迁移先行」规则。若届时需要改表（例如新增列），则在 3a 之前再加一个只含迁移的 PR（记为 3-0）。之后按扩张 → 回填 → 切读 → 收缩四步，每步可单独回退：
 
 | 步 | PR 类型 | 内容 | 回退 |
 |---|---|---|---|
@@ -547,5 +566,4 @@ interface PolicyLayout { v: 1; spans: LayoutSpan[] }
 
 1. **团队 `admin` 角色能否委派？** 本 ADR 只允许 `Team.ownerId`（D5 的字面意思）。若要放开给 admin，只需改 §4.6 的身份判定。
 2. **阶段 3 后，结构词别名与 AI 工作台是否也开放团队 owner 委派？** 本 ADR 默认关闭（注册项 `teamDelegation: false`）。
-3. **trial 是否算「Pro」？** 本 ADR 按 `customLexicon` 的先例算（trial 期间可用，到期自动失效）。
-4. **能力的产品名称**：键名暂定 `structured_authoring`，界面文案待定。
+3. **能力的产品名称**：键名暂定 `structured_authoring`，界面文案待定。
