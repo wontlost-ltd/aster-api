@@ -35,6 +35,9 @@ public final class ParseBudget {
      */
     private static volatile long testCheckDelayNanos;
 
+    /** 仅供测试：测试停顿实际发生的次数（停顿关闭时不计数），用来不靠墙钟断言「某次解析碰到了几次停顿」。 */
+    private static final AtomicLong TEST_PAUSES = new AtomicLong();
+
     /** 进程启动以来因超出预算而中止的解析次数（宿主据此注册指标）。 */
     private static final AtomicLong EXCEEDED = new AtomicLong();
 
@@ -58,6 +61,11 @@ public final class ParseBudget {
      */
     static void slowChecksForTesting(Duration delay) {
         testCheckDelayNanos = delay == null || delay.isNegative() ? 0 : delay.toNanos();
+    }
+
+    /** 仅供测试：测试停顿累计发生次数。 */
+    static long testPausesForTesting() {
+        return TEST_PAUSES.get();
     }
 
     /** 当前进程级默认预算。 */
@@ -101,6 +109,7 @@ public final class ParseBudget {
     void checkPeriodic() {
         long delay = testCheckDelayNanos;
         if (delay > 0) {
+            TEST_PAUSES.incrementAndGet();
             LockSupport.parkNanos(delay);
         }
         check();

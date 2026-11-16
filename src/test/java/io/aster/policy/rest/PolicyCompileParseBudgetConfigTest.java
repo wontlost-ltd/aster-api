@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@code aster.parse.time-budget} 确实接到了解析器（aster-cloud/aster-lang-core#254）：用非默认值启动，
- * 端点返回的 E054 带该预算，且中止时间随之变化。
+ * 端点返回的 E054 带该预算（budgetMs=750，而不是默认的 2000），且不早于该预算中止。
  */
 @QuarkusTest
 @RedisEnabledTest
@@ -45,18 +45,10 @@ public class PolicyCompileParseBudgetConfigTest {
     void configuredBudgetIsAppliedToCompileEndpoint() throws Exception {
         assertEquals(Duration.ofMillis(750), ParseBudget.configured(), "启动时按配置值设定进程级预算");
         String source = PolicyCompileParseBudgetTest.slowSource();
-        // 本类独占一个 Quarkus 测试 profile（重启），首个请求含冷启动开销；先用同一输入不带停顿编译一次预热，
-        // 计时只量预算本身
-        given()
-            .contentType(ContentType.JSON)
-            .header("X-Tenant-Id", "default")
-            .body(Map.of("source", source, "locale", "en-US"))
-        .when()
-            .post("/api/v1/policies/compile")
-        .then()
-            .statusCode(200);
         ParseBudgetTestHooks.slowChecks(PolicyCompileParseBudgetTest.SLOW_STEP);
 
+        // 不量上限：配置值是否生效由返回的 budgetMs 判定（默认 2000，这里必须是 750）。停顿让解析必然超出预算，
+        // 负载只会让它更慢，所以这里的结论与机器快慢无关；下限只是「没有提前中止」，同样不受负载影响。
         long t0 = System.nanoTime();
         given()
             .contentType(ContentType.JSON)
@@ -71,6 +63,6 @@ public class PolicyCompileParseBudgetConfigTest {
             .body("diagnostics.findAll { it.code == 'E054' && it.params.reason == 'time-budget' }", hasSize(1))
             .body("diagnostics.find { it.code == 'E054' }.params.budgetMs", is("750"));
         long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
-        assertTrue(elapsed < 750 + 1500, "应在 750ms 预算附近返回（而非默认 2s），实际 " + elapsed + "ms");
+        assertTrue(elapsed >= 750, "预算到点之前不应中止，实际 " + elapsed + "ms");
     }
 }

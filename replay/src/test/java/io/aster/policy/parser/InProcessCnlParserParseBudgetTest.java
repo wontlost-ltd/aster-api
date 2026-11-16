@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 语法分析时间预算（aster-cloud/aster-lang-core#254 兜底）。
  *
- * <p>慢解析的来源：一条合法的长布尔链（{@link #slowSource()}）加上 {@link ParseBudget#slowChecksForTesting}
+ * <p>慢解析的来源：一份由大量浅规则组成的合法策略（{@link #slowSource()}）加上 {@link ParseBudget#slowChecksForTesting}
  * 的周期检查停顿。此前用的 {@code sll-pathological-types.aster}（混合类型嵌套，SLL 约 46s）依赖 core 1.0.47
  * 及更早版本的预测缺陷；core 1.0.48 修复了类型预测（aster-lang-core#270），该输入几毫秒内就报语法错误，
  * 再也到不了预算。测试验证的是预算机制本身（按时中止、带码 E054、计数、释放线程、不污染共享 DFA），
@@ -56,16 +56,23 @@ class InProcessCnlParserParseBudgetTest {
     }
 
     /**
-     * 慢解析输入：一条约 12KB 的合法布尔链（在匿名编译端点 16KB 的源码上限之内）。预测要做数千次 adaptivePredict，
-     * 新旧引擎上都有数十次以上的周期检查（DFA 变热后按 adaptivePredict 计），配合 {@link #SLOW_STEP} 稳定超出预算。
+     * 慢解析输入：160 条浅规则（约 12KB，在匿名编译端点 16KB 的源码上限之内）。预测要做数千次 adaptivePredict，
+     * 新旧引擎上都有数十次周期检查（DFA 变热后按 adaptivePredict 计），配合 {@link #SLOW_STEP} 必然超出预算——
+     * 负载只会让它更慢，结论不受机器快慢影响。刻意不用一条长表达式：几百层的二元表达式能解析成功，但端点在
+     * 序列化后的 Core IR schema 校验里会栈溢出（返回 500），任何「先让它编译成功」的步骤都会踩到。
      */
     static String slowSource() {
-        StringBuilder b = new StringBuilder("Module m.\n\nRule f given x as Int, produce Bool:\n  Return x greater than 0");
-        for (int i = 1; i < 600; i++) {
-            b.append(i % 2 == 0 ? " and " : " or ").append("x less than ").append(i);
+        StringBuilder b = new StringBuilder("Module m.\n");
+        for (int i = 0; i < SLOW_RULES; i++) {
+            b.append("\nRule f").append(i).append(" given x as Int, produce Bool:\n  Return x greater than ")
+                .append(i).append(" and x less than ").append(i + 10).append(".\n");
         }
-        return b.append(".\n").toString();
+        return b.toString();
     }
+
+    /** {@link #slowSource()} 的规则条数与总行数（每条规则 3 行：空行、规则头、Return）。 */
+    static final int SLOW_RULES = 160;
+    static final int SLOW_LINES = 1 + 3 * SLOW_RULES;
 
     private static final String NORMAL = """
         Module loan.
@@ -85,7 +92,7 @@ class InProcessCnlParserParseBudgetTest {
     }
 
     private static void assertBudgetE054(InProcessCnlParser.CnlParseException e, long budgetMs) {
-        assertBudgetE054(e, budgetMs, 4);   // slowSource() 共 4 行
+        assertBudgetE054(e, budgetMs, SLOW_LINES);
     }
 
     private static void assertBudgetE054(InProcessCnlParser.CnlParseException e, long budgetMs, int line) {
@@ -195,14 +202,14 @@ class InProcessCnlParserParseBudgetTest {
 
     @Test
     void normalPolicyIsNotSlowedByTheTestStep() {
-        // 端点并发用例假设「停顿开着时正常请求基本不受影响」（它断言正常请求 < 1000ms）：十几行的正常策略
-        // 约百次 adaptivePredict，至多碰到一两次周期检查（实测一次）。这里把该假设钉住：停顿 100ms 时不超过 3 个停顿。
-        InProcessCnlParser.parse(NORMAL, "en-US");   // 预热 DFA 与类加载，计时只量解析
+        // 端点并发用例假设「停顿开着时正常请求基本不受影响」：十几行的正常策略约百次 adaptivePredict，
+        // 至多碰到一两次周期检查（实测一次）。按停顿次数断言，不量墙钟，负载下结论不变。
+        InProcessCnlParser.parse(NORMAL, "en-US");   // 预热 DFA：之后的预测次数与首次解析无关
         ParseBudget.slowChecksForTesting(SLOW_STEP);
-        long t0 = System.nanoTime();
+        long before = ParseBudget.testPausesForTesting();
         assertEquals("loan", InProcessCnlParser.parse(NORMAL, "en-US").moduleName());
-        long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
-        assertTrue(elapsed < 3 * SLOW_STEP.toMillis(), "正常策略至多触发一两次周期检查停顿，实际 " + elapsed + "ms");
+        long pauses = ParseBudget.testPausesForTesting() - before;
+        assertTrue(pauses <= 2, "正常策略至多触发两次周期检查停顿，实际 " + pauses + " 次");
     }
 
     @Test

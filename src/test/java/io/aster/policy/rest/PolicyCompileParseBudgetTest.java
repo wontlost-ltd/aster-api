@@ -69,19 +69,24 @@ public class PolicyCompileParseBudgetTest {
     }
 
     /**
-     * 慢解析输入：约 12KB 的合法布尔链（在匿名编译端点 16KB 的源码上限之内），配合 {@link ParseBudgetTestHooks#slowChecks} 的周期检查停顿，
+     * 慢解析输入：160 条浅规则（约 12KB，在匿名编译端点 16KB 的源码上限之内；不用长表达式，见 replay 同名方法），配合 {@link ParseBudgetTestHooks#slowChecks} 的周期检查停顿，
      * 在新旧引擎上都稳定超出预算（与 replay 的 InProcessCnlParserParseBudgetTest#slowSource 同形）。
      * 此前用的 sll-pathological-types.aster 依赖 core 1.0.47 及更早版本的类型预测缺陷，core 1.0.48
      * （aster-lang-core#270）上几毫秒就报语法错误；aster-api 的 pin 由列车只改两处版本号（ADR 0053 修订 A1），
      * 测试必须对 pin 前后的引擎都成立。
      */
     static String slowSource() {
-        StringBuilder b = new StringBuilder("Module m.\n\nRule f given x as Int, produce Bool:\n  Return x greater than 0");
-        for (int i = 1; i < 600; i++) {
-            b.append(i % 2 == 0 ? " and " : " or ").append("x less than ").append(i);
+        StringBuilder b = new StringBuilder("Module m.\n");
+        for (int i = 0; i < SLOW_RULES; i++) {
+            b.append("\nRule f").append(i).append(" given x as Int, produce Bool:\n  Return x greater than ")
+                .append(i).append(" and x less than ").append(i + 10).append(".\n");
         }
-        return b.append(".\n").toString();
+        return b.toString();
     }
+
+    /** {@link #slowSource()} 的规则条数（与 replay 同形）。 */
+    static final int SLOW_RULES = 160;
+
 
     /** 周期检查停顿：见 replay 的 InProcessCnlParserParseBudgetTest#SLOW_STEP。 */
     static final Duration SLOW_STEP = Duration.ofMillis(100);
