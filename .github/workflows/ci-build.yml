@@ -4,6 +4,11 @@ name: CI build (reusable)
 # "本地 runner 优先 / 失败回落 GitHub 托管" 带来的重复：调用方 ci.yml 会最多调用
 # 两次本文件（先 self-hosted、失败再 hosted），两次共用同一份步骤定义。
 #
+# ★并行拆分（ADR 0053 修订 A2 §8）：原来一个 job 串行跑三套测试（托管实测 24–38.6 分钟），
+#   L4 的 pin PR 每次都在关键路径上等它。现拆成 checks / guard-bypass / unit / integration
+#   并行，verify 等 unit 与 integration 的 jacoco 数据做覆盖率与 assemble。被调 workflow 的
+#   结论仍是全部 job 的结论，ci.yml 的 ci-result、Guard bypass suite (#466) 与两个必需检查名不变。
+#
 # ★不要把步骤复制到 ci.yml 里。12 个步骤 × 2 份必然漂移，而本仓多次踩过
 #   "单一真相源被复制后两边发散" 的坑（error_codes / ui-messages / 双 Devanagari lexer）。
 #
@@ -25,7 +30,7 @@ on:
       # 由 ci.yml 的汇总作业 `Guard bypass suite (#466)` 判定（scripts/ci/guard-bypass-verdict.sh）。
       guard-bypass:
         description: Guard 绕过套件步骤的 outcome
-        value: ${{ jobs.build.outputs.guard-bypass }}
+        value: ${{ jobs.guard-bypass.outputs.guard-bypass }}
     # 不声明 secrets：本 workflow 的步骤不引用任何 secrets（已核实）。codecov-action
     # 在 public 仓走 tokenless 上传，且该步已设 fail_ci_if_error: false +
     # continue-on-error，不是门禁。★转私后若 codecov 需要 token，在此显式加
@@ -35,54 +40,12 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  # 秒级的静态与脚本门禁，与测试并行。任一失败即整次 CI 失败（与拆分前语义相同）。
+  checks:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
-    outputs:
-      guard-bypass: ${{ steps.bypass.outcome }}
-    # ★纵深防护：timeout-minutes 只限制作业**开始运行之后**的时长（GitHub 默认 6h），
-    #   不覆盖排队时间——本地 runner 接不到 job 的排队由 pick-runner 预检兜底。本值保证
-    #   运行中卡死的作业（本地或托管）尽早失败；本地卡死时由 build-hosted 回落接手，
-    #   代价是回落最多推迟本值的时长（本地与托管共用同一份定义，见文件顶部注释）。
-    # ★60 分钟（原 40）：#466 阶段 B 把绕过套件加进本作业后，托管 runner 实测 24–38.6 分钟
-    #   （2026-11-14/15：单元测试 12–14.5 分钟、integrationTest 10–12 分钟、绕过套件含首次编译 8–10 分钟），
-    #   40 分钟只剩不到 2 分钟余量，多个 PR 因此被取消后重跑。60 分钟留出约 50% 余量；
-    #   一旦常态逼近 45 分钟，应先拆作业 / 合并 Quarkus 测试 profile 提速，而不是继续加大超时。
-    timeout-minutes: 60
-    # 真实 PostgreSQL service，固定在 localhost:5432。部分 @QuarkusTest DB 测试
-    # （AuditHashChain/Idempotency/Prisma/Timer 等）连 application.properties 的
-    # 默认 ${DB_JDBC_URL:...localhost:5432}，而 PostgresTestResource 的
-    # testcontainer 端口注入对它们不可靠（Flyway 早期解析时序）。提供固定 5432
-    # 的 service 让这些测试稳定可用；Testcontainers 仍服务于 integrationTest。
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: aster_policy
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-      # 固定 localhost:6379 Redis。用 MockProfile 的 IT（MixpanelClientIT /
-      # PlanGateServiceIT 等）不走 RedisTestResource，redis 配置取
-      # application.properties 默认 localhost:6379；无此 service 时它们报
-      # `redis read failed: Connection refused localhost:6379` 噪声。
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+    # 含 actionlint 下载与自建 runner 上可能的 jq/yq 安装，留足网络慢时的余量。
+    timeout-minutes: 20
     steps:
-      # 先检出 aster-api 本体（拿到下面的 local composite action 文件），再由该 action
-      # 检出全部兄弟仓 + JDK + 发布版本目录。去重了原来逐字重复的 9×checkout + setup-java。
       - uses: actions/checkout@v7
         with:
           path: aster-api
@@ -125,15 +88,6 @@ jobs:
           # 既有的 info 级提示（SC2086 等）也判失败——那是另一项治理，不在本门禁范围。
           "$RUNNER_TEMP/actionlint" -color -shellcheck=
 
-      # PrismaDatabaseE2ETest 用独立的 aster_test 库（其 profile 指向它）。
-      - name: Create aster_test database
-        run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE aster_test;" || true
-
-      # ★刻意不传 cross-repo-token（见文件顶部 on.pull_request 注释）：7 个兄弟仓均为
-      #   public，composite action 回退 github.token 即可 checkout。fork PR 的 job 里
-      #   因此不存在任何跨仓凭据可窃取——这是结构性消除攻击面，不是靠条件语句遮挡。
-      #   同理不设 require-cross-repo-token（那会要求 PAT 非空而立即 fail）。
       # ★Quarkus plugin 与 quarkus-bom 必须同版本（build.gradle:4 的不变式）。
       #   此前只有注释、没有门禁，dependabot 会把两者拆成**不同版本**的两个 PR
       #   （#286 → plugin 3.39.0；#284 → BOM 3.38.3），任何组合都得不到一致的版本对，
@@ -156,6 +110,50 @@ jobs:
           fi
           echo "✓ Quarkus plugin/BOM 一致：$PLUGIN"
 
+
+  # Guard 绕过红队套件（#466）。输出 guard-bypass 是该步骤的 outcome，经本 workflow 的同名输出交给
+  # ci.yml 的必需检查 `Guard bypass suite (#466)`（scripts/ci/guard-bypass-verdict.sh）。
+  guard-bypass:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    # ★timeout-minutes 只限制作业开始运行之后的时长（不含排队）。拆分前单 job 为 60 分钟（托管实测
+    #   24–38.6 分钟）；拆分后每个 job 只跑一套测试，各给约 2 倍于实测的上限。
+    timeout-minutes: 25
+    outputs:
+      guard-bypass: ${{ steps.bypass.outcome }}
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aster_policy
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      # 固定 localhost:6379 Redis。用 MockProfile 的 IT（MixpanelClientIT /
+      # PlanGateServiceIT 等）不走 RedisTestResource，redis 配置取
+      # application.properties 默认 localhost:6379；无此 service 时它们报
+      # `redis read failed: Connection refused localhost:6379` 噪声。
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: aster-api
+
+      # ★刻意不传 cross-repo-token（见 ci.yml 顶部 on.pull_request 注释）：7 个兄弟仓均为
+      #   public，composite action 回退 github.token 即可 checkout。
       - name: Setup Aster build (siblings + JDK + version catalog)
         uses: ./aster-api/.github/actions/setup-aster-build
 
@@ -212,7 +210,82 @@ jobs:
           DB_USERNAME: "postgres"
           DB_PASSWORD: "postgres"
 
-      # 测试分层：先跑快测拿到反馈，再跑慢测做完整覆盖
+      # 诊断制品（非致命，见原单 job 版本的说明）：每个测试 job 上传自己的 test-results-*。
+      - name: Summarize failed tests (no checks:write needed)
+        if: always()
+        working-directory: aster-api
+        continue-on-error: true
+        run: python3 scripts/ci/summarize-failed-tests.py build/test-results >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Test Results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          overwrite: true
+          name: test-results-guard-bypass-${{ inputs.runs-on == '["ubuntu-latest"]' && 'hosted' || 'local' }}
+          path: aster-api/build/test-results
+
+  unit:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aster_policy
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      # 固定 localhost:6379 Redis。用 MockProfile 的 IT（MixpanelClientIT /
+      # PlanGateServiceIT 等）不走 RedisTestResource，redis 配置取
+      # application.properties 默认 localhost:6379；无此 service 时它们报
+      # `redis read failed: Connection refused localhost:6379` 噪声。
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: aster-api
+
+      # PrismaDatabaseE2ETest 用独立的 aster_test 库（其 profile 指向它）。
+      - name: Create aster_test database
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE aster_test;" || true
+
+      - name: Setup Aster build (siblings + JDK + version catalog)
+        uses: ./aster-api/.github/actions/setup-aster-build
+
+      # Testcontainers 复用：CI 内单 job 多 test class 重用容器，加速集成测试
+      # 安全：CI 容器在 job 结束自动销毁，reuse 仅限 job 生命周期内
+      - name: Configure Testcontainers reuse
+        run: |
+          mkdir -p $HOME
+          cat > $HOME/.testcontainers.properties <<EOF
+          testcontainers.reuse.enable=true
+          checks.disable=true
+          ryuk.disabled=true
+          EOF
+
+      # 预拉镜像让 Testcontainers 启动更稳；postgres:17-alpine 与 PostgresTestResource.java 一致
+      - name: Pre-pull test images
+        run: |
+          docker pull postgres:17-alpine &
+          docker pull redis:7-alpine &
+          wait
+
       - name: Unit Tests (fast feedback)
         working-directory: aster-api
         run: ./gradlew test --build-cache
@@ -225,11 +298,147 @@ jobs:
           DB_USERNAME: "postgres"
           DB_PASSWORD: "postgres"
 
+      # 覆盖率数据交给 verify 聚合（只在本 run 内传递，1 天即过期）。
+      - name: Upload jacoco test.exec
+        uses: actions/upload-artifact@v7
+        with:
+          name: jacoco-test-${{ inputs.runs-on == '["ubuntu-latest"]' && 'hosted' || 'local' }}
+          path: aster-api/build/jacoco/test.exec
+          if-no-files-found: error
+          retention-days: 1
+          # 只重跑失败 job 时（列车对超时自动重跑一次、或人工 rerun --failed），重跑的 job 覆盖上一次
+          # attempt 的同名制品；未重跑的 job 的制品原样保留，verify 照样能取到两份。
+          overwrite: true
+      # 诊断制品（非致命，见原单 job 版本的说明）：每个测试 job 上传自己的 test-results-*。
+      - name: Summarize failed tests (no checks:write needed)
+        if: always()
+        working-directory: aster-api
+        continue-on-error: true
+        run: python3 scripts/ci/summarize-failed-tests.py build/test-results >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Test Results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          overwrite: true
+          name: test-results-unit-${{ inputs.runs-on == '["ubuntu-latest"]' && 'hosted' || 'local' }}
+          path: aster-api/build/test-results
+
+  integration:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 30
+    # MockProfile 的 IT（MixpanelClientIT / PlanGateServiceIT 等）连默认 localhost:6379，需要 Redis service。
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aster_policy
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      # 固定 localhost:6379 Redis。用 MockProfile 的 IT（MixpanelClientIT /
+      # PlanGateServiceIT 等）不走 RedisTestResource，redis 配置取
+      # application.properties 默认 localhost:6379；无此 service 时它们报
+      # `redis read failed: Connection refused localhost:6379` 噪声。
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: aster-api
+
+      # ★刻意不传 cross-repo-token（见 ci.yml 顶部 on.pull_request 注释）：7 个兄弟仓均为
+      #   public，composite action 回退 github.token 即可 checkout。
+      - name: Setup Aster build (siblings + JDK + version catalog)
+        uses: ./aster-api/.github/actions/setup-aster-build
+
+      # Testcontainers 复用：CI 内单 job 多 test class 重用容器，加速集成测试
+      # 安全：CI 容器在 job 结束自动销毁，reuse 仅限 job 生命周期内
+      - name: Configure Testcontainers reuse
+        run: |
+          mkdir -p $HOME
+          cat > $HOME/.testcontainers.properties <<EOF
+          testcontainers.reuse.enable=true
+          checks.disable=true
+          ryuk.disabled=true
+          EOF
+
+      # 预拉镜像让 Testcontainers 启动更稳；postgres:17-alpine 与 PostgresTestResource.java 一致
+      - name: Pre-pull test images
+        run: |
+          docker pull postgres:17-alpine &
+          docker pull redis:7-alpine &
+          wait
+
       - name: Integration Tests (Testcontainers)
         working-directory: aster-api
         run: ./gradlew integrationTest --build-cache
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
+
+      # 覆盖率数据交给 verify 聚合（只在本 run 内传递，1 天即过期）。
+      - name: Upload jacoco integrationTest.exec
+        uses: actions/upload-artifact@v7
+        with:
+          name: jacoco-integrationTest-${{ inputs.runs-on == '["ubuntu-latest"]' && 'hosted' || 'local' }}
+          path: aster-api/build/jacoco/integrationTest.exec
+          if-no-files-found: error
+          retention-days: 1
+          # 只重跑失败 job 时（列车对超时自动重跑一次、或人工 rerun --failed），重跑的 job 覆盖上一次
+          # attempt 的同名制品；未重跑的 job 的制品原样保留，verify 照样能取到两份。
+          overwrite: true
+      # 诊断制品（非致命，见原单 job 版本的说明）：每个测试 job 上传自己的 test-results-*。
+      - name: Summarize failed tests (no checks:write needed)
+        if: always()
+        working-directory: aster-api
+        continue-on-error: true
+        run: python3 scripts/ci/summarize-failed-tests.py build/test-results >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Test Results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          overwrite: true
+          name: test-results-integration-${{ inputs.runs-on == '["ubuntu-latest"]' && 'hosted' || 'local' }}
+          path: aster-api/build/test-results
+
+  # 覆盖率聚合与 assemble：等 unit 与 integration 都成功后，下载两份 exec 到原位置，
+  # 其余与拆分前完全相同（含「exec 缺失/为空即失败」的前置断言）。
+  # 本 job 重新编译 class：jacoco 按 class 字节匹配 exec，同源码同 JDK 编译结果一致；万一不一致，
+  # 覆盖率会偏低、校验失败（fail-closed），不会假过。
+  verify:
+    needs: [unit, integration]
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: aster-api
+
+      # ★刻意不传 cross-repo-token（见 ci.yml 顶部 on.pull_request 注释）：7 个兄弟仓均为
+      #   public，composite action 回退 github.token 即可 checkout。
+      - name: Setup Aster build (siblings + JDK + version catalog)
+        uses: ./aster-api/.github/actions/setup-aster-build
+
+      - name: Download jacoco exec
+        uses: actions/download-artifact@v8
+        with:
+          pattern: jacoco-*-${{ inputs.runs-on == '["ubuntu-latest"]' && 'hosted' || 'local' }}
+          path: aster-api/build/jacoco
+          merge-multiple: true
 
       # 聚合 test + integrationTest 的覆盖率，verification 在指定包上做强约束。
       # ★-x test -x integrationTest（时长优化）：jacocoTestReport dependsOn 'test'，此步是
@@ -276,15 +485,3 @@ jobs:
         working-directory: aster-api
         continue-on-error: true
         run: python3 scripts/ci/summarize-failed-tests.py build/test-results >> "$GITHUB_STEP_SUMMARY"
-
-      # 诊断制品：组织级 Actions 存储配额是全 repo 共享的，配额耗尽时
-      # upload-artifact 会硬失败（"Artifact storage quota has been hit"）并
-      # 把整个 job 拖挂。test-results 仅供查阅，门禁由上面的测试步骤本身把守，
-      # 故上传降级为非致命。
-      - name: Upload Test Results
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-results
-          path: aster-api/build/test-results
