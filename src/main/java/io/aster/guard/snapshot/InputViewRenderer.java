@@ -24,8 +24,10 @@ import java.util.UUID;
  * <ul>
  *   <li>已声明叶子、无 {@code @pii}：明文，其中的 String 再过一遍 {@link PIIRedactor}（规范 UUID 豁免）；</li>
  *   <li>已声明叶子、带 {@code @pii}：替换为 {@code {"$pii":{"level","category"}}}；解除视图还原原值；</li>
- *   <li>未声明（多出的键、与声明形状不符、超过深度 8）：整个子树替换为 {@code {"$pii":{"level":"unknown"}}}，键名也不展示，
- *       任何人都不能解除；</li>
+ *   <li>未声明（与声明形状不符、超过深度 8）：整个值替换为 {@code {"$pii":{"level":"unknown"}}}，任何人都不能解除；</li>
+ *   <li>未声明的键（多出的键、源码未标注类型的字段，以及键名含 {@code . [ ]} 或控制字符而路径有歧义的键）：键名也不展示
+ *       （ADR 0042 §11 D2、§12.6），同一对象里的全部未声明键合并为一项 {@code "$undeclared": {"$pii":{"level":"unknown"}}}，
+ *       与 cloud 执行日志面（aster-cloud#770）同一结构；</li>
  *   <li>声明为记录（含记录列表）的节点保留结构：对象键与数组长度可见。</li>
  * </ul>
  *
@@ -38,6 +40,8 @@ public final class InputViewRenderer {
   /** 与 guard context 深度上限一致：{@code context} 自身为第 1 层。 */
   static final int MAX_DEPTH = 8;
   static final String PII_KEY = "$pii";
+  /** 同一对象里全部未声明键合并后的键名；与 aster-cloud {@code UNDECLARED_KEY} 同值。 */
+  static final String UNDECLARED_KEY = "$undeclared";
 
   private InputViewRenderer() {
   }
@@ -99,6 +103,20 @@ public final class InputViewRenderer {
     return Map.of(PII_KEY, inner);
   }
 
+  /** 非空、不含点与方括号、不含控制字符：否则路径无法无歧义地拆回键（如键 {@code "a.b"} 会冒充路径 {@code a.b}）。 */
+  static boolean representableKey(String key) {
+    if (key.isEmpty()) {
+      return false;
+    }
+    for (int i = 0; i < key.length(); i++) {
+      char ch = key.charAt(i);
+      if (ch == '.' || ch == '[' || ch == ']' || ch <= 0x1f) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /** 一次渲染的遍历状态。 */
   private static final class Walker {
     private final Set<String> declared;
@@ -136,9 +154,7 @@ public final class InputViewRenderer {
         return leaf(value, path);
       }
       if (value instanceof Map<?, ?> map && ("context".equals(path) || containers.contains(path))) {
-        Map<String, Object> out = new LinkedHashMap<>();
-        map.forEach((k, v) -> out.put(String.valueOf(k), node(v, path + "." + k, depth + 1)));
-        return out;
+        return object(map, path, depth + 1);
       }
       if (value instanceof List<?> list && containers.contains(path + "[]")) {
         List<Object> out = new ArrayList<>(list.size());
@@ -148,6 +164,29 @@ public final class InputViewRenderer {
         return out;
       }
       return unknown();
+    }
+
+    /**
+     * 对象：已声明（叶子或容器）的键保留键名并递归；其余键名不展示，合并为一项 {@link #UNDECLARED_KEY}。
+     * 键的相对顺序保持输入顺序，{@code $undeclared} 排在最后（哈希按排序 JSON 计算，不受顺序影响）。
+     */
+    private Map<String, Object> object(Map<?, ?> map, String path, int depth) {
+      Map<String, Object> out = new LinkedHashMap<>();
+      boolean undeclared = false;
+      for (Map.Entry<?, ?> e : map.entrySet()) {
+        String key = String.valueOf(e.getKey());
+        String child = path + "." + key;
+        if (representableKey(key)
+            && (declared.contains(child) || containers.contains(child) || containers.contains(child + "[]"))) {
+          out.put(key, node(e.getValue(), child, depth));
+        } else {
+          undeclared = true;
+        }
+      }
+      if (undeclared) {
+        out.put(UNDECLARED_KEY, unknown());
+      }
+      return out;
     }
 
     /**
