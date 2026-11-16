@@ -1,6 +1,6 @@
 # ADR 0059：可执行策略包导出 —— Node / JRE × 自带运行时 / 通用 CLI
 
-- 状态：**PROPOSED**（2026-11-16；§12 的待定项须用户确认）
+- 状态：**ACCEPTED**（2026-11-16，用户授权按推荐方案裁决；许可证一致性待用户裁决，阻塞 P3）
 - 提出：2026-11-16；来源 wontlost-ltd/aster-cloud#797（用户需求原文：「Add the function to export ready to execute policy (node and jre, orgininal policy with dedicated runtime or original policy, metadata and common compiler and run cli)」）
 - 相关：ADR 0047（Cedar 导出：只导出可执行版本、探针等价性、`POLICY_EXPORTED` 审计事件，本 ADR 沿用）、ADR 0055（Core IR v2 规范字节）、ADR 0056（双引擎推断统一，豁免表已清空）、ADR 0051 §7（5 段 source envelope）、ADR 0040 §11–§12（Ed25519 + `jcs-sha256/v1` 签名配方、JWKS）、ADR 0054（Guard 执行点）、ADR 0053 / A1（发布列车与 aster-api pin）、ADR 0031（错误码单一来源）
 - 范围：只定格式、命令、边界与分期，不含实现；实施计划另写
@@ -49,7 +49,7 @@ aster-lang-ts `af00965`、aster-lang-core `98851d1`、aster-lang-truffle `bb28d9
 | 双引擎一致性：IR 逐字节门 `VALUE_EXEMPTIONS = []`；eval 门（每 case 两引擎输出一致且等于 golden）PR-blocking；`EVAL-EXEMPTIONS.md` 记载 2026-11-14 实测 960/960 case identical、可求值样本 215/215 有 golden（`ci.yml:478-482` 注释仍是 2026-07 的 255/255，未随之更新） | aster-lang-test `scripts/parity-tier1.mjs:742`，`EVAL-EXEMPTIONS.md`，`.github/workflows/ci.yml:483-488` | 只覆盖语料，不是对任意策略的证明 |
 | 编译输入的完整身份：5 段 envelope（content、aliasSet、locale、toolchainId、词汇作用域） | aster-api `PolicyVersion.java:453`；cloud `src/lib/policy-alias.ts:101` | — |
 | cloud 版本存在 cloud 库，调用 aster-api 走源码模式；`findDefaultExecutableVersion` + `loadStoredVersionCompileContext`（冻结词汇） | cloud `src/services/policy/default-executable-version.ts:22`，`src/lib/execution-input/index.ts:173` | — |
-| Cedar 导出：cloud `POST /api/policies/[id]/export/cedar` → aster-api `exportCedar`；无计划门，只有访问 + 限流；无可执行版本 409 | cloud `src/app/api/policies/[id]/export/cedar/route.ts:111-157` | 导出按钮正由 cloud#786 / PR #790 移入详情页右上按钮组 |
+| Cedar 导出：cloud `POST /api/policies/[id]/export/cedar` → aster-api `exportCedar`；无计划门，只有访问 + 限流；无可执行版本 409 | cloud `src/app/api/policies/[id]/export/cedar/route.ts:111-157` | 导出按钮已由 cloud#786 / PR #790（2026-11-16 合并）移入详情页右上按钮组 |
 | 计划门：`PlanCapabilities`（`evidenceExport` 等），服务端 `hasFeatureAccess(userId, cap)`；证据包导出是唯一按计划门控的导出 | cloud `src/lib/plans.ts:66-79,135`，`src/lib/usage.ts:223`，`src/app/api/reports/route.ts:64-71` | — |
 | Ed25519 + JCS 签名与 JWKS 验签（JDK 内建 `EdDSA`；SDK 侧 `node:crypto`） | ADR 0040 §12；aster-guard `src/hash/jcs.ts`、`src/receipt.ts` | 无「导出」用途的密钥 |
 | aster-guard 0.3.0：`GuardClient` + `aster-guard-mcp`，全是平台客户端 | aster-guard `src/client.ts`、`src/mcp/*` | 无本地求值能力；不是运行器 |
@@ -184,7 +184,7 @@ JVM CLI 用生产同一配置（`HostAccess.EXPLICIT`、`IOAccess.NONE`、禁线
 | E732 | 任一 `Name`（不论出现在调用目标、实参还是其他位置）解析不到：模块内函数、局部 / 参数 / lambda 绑定、类型构造器、或**目标引擎导出白名单**中的 builtin。白名单 = 目标引擎已实现的纯 builtin（Node：ts `BUILTIN_ARITY` 键集；JRE：Truffle `Builtins` 去掉 `IO.*`），以生成文件随引擎发布，并由 parity 测试保证两份表与实现同步 | 闭世界、失败即拒：解析不了的名字一律视为不可导出；包能导出就必须能跑完 |
 | E733 | 入口参数或返回类型无法生成 JSON Schema（函数类型等） | `run --input` 无法表达 |
 
-另：无可执行版本 → cloud 409（建议缺省，待 §12.1 Q5 确认：同 ADR 0047 §6，只导出 secure-execute 默认会执行的 APPROVED 版本；不导出草稿，否则等于绕过审批）。超限 → E734（§9）。
+另：无可执行版本 → cloud 409（§12.1 Q5 定案：同 ADR 0047 §6，只导出 secure-execute 默认会执行的 APPROVED 版本；不导出草稿，否则等于绕过审批）。超限 → E734（§9）。
 
 ### 5.2 平台外行为
 
@@ -226,7 +226,7 @@ zip 只由 aster-api 一处实现（`java.util.zip`，JDK 版本随镜像固定�
 
 - **aster-api**：`POST /api/v1/policies/export/package`，入参同 Cedar 源码模式（`source, locale, aliasSet, allowStructural, vocabulary, functionName, claimedRef`）+ `target, mode, uiLocale`。成功返回 `application/zip`（`Content-Disposition` 含根目录名；响应头 `X-Aster-Package-Sha256` 为整个 zip 的 SHA-256。因哈希要先于正文发出，aster-api 先在内存组装完整 zip 再发送，上限见 §9；cloud 原样转发正文与该头）；不可导出返回 200 JSON `{exportable:false, diagnostics}`（与 Cedar 一致）。另提供 `POST …/export/package/check`（与 aster-api#548 的 Cedar check 同形）：返回 `{exportable, diagnostics, coreIr, probes, probesSha256, runtime}`，供按钮显示与 §5.3 的 Node 比对。`export/package` 对 `target=node` 额外接受 `{nodeProbes:{probesSha256, count, agreed, tsVersion}}`。鉴权与 Cedar 相同：HMAC 内部调用或 API Key。
 - **aster-cloud**：`POST /api/policies/[id]/export/package`：会话 → 限流（复用 `EVALUATE_SOURCE` 桶）→ `loadPolicyForAction(…, 'view')` → 计划门（§10）→ `findDefaultExecutableVersion` → `loadStoredVersionCompileContext` → `PolicyApiClient.exportPackageCheck` →（Node）§5.3 探针比对 → `PolicyApiClient.exportPackage` → 字节流原样转发。cloud 不组装 zip（Workers 内存 / CPU 限制）。
-- **UI**：在 PR #790 确立的右上按钮组里，把「导出为 Cedar」扩成「导出」下拉：Cedar / Node 包（A、B）/ JRE 包（A、B），每项一行说明；不可导出时显示诊断。四语文案（hi 用英文）。
+- **UI**：在 PR #790（已合并）确立的右上按钮组里，把「导出为 Cedar」扩成「导出」下拉：Cedar / Node 包（A、B）/ JRE 包（A、B），每项一行说明；不可导出时显示诊断。四语文案（hi 用英文）。
 
 ## 8. 审计
 
@@ -259,7 +259,7 @@ cloud 新增 `PlanCapabilities.policyExport`（服务端 `hasFeatureAccess`；�
 | R3 | truffle 主依赖 `quarkus-core` 让 fat jar 变大，且可能不需要 | P0 核实并移出 CLI 依赖闭包 |
 | R4 | JVM 构件只在 GitHub Packages（需 token） | CLI jar 走公开 Release 资产；Maven Central 见 Q5 |
 | R5 | 要求 Java 25 / Node 24，客户环境未必有 | manifest `requires` + README；`run.sh` 启动前检查版本并给出清晰错误 |
-| R6 | ts `package.json` `license: MIT` 与 `LICENSE`（Apache-2.0）不一致，A 包需附正确许可证 | 实施前在 aster-lang-ts 修正元数据；A 包 `LICENSES/` 由构建生成（Apache-2.0、UPL-1.0、ANTLR BSD、Jackson Apache-2.0、decimal.js MIT 等） |
+| R6 | ts `package.json` `license: MIT` 与 `LICENSE`（Apache-2.0）不一致，A 包需附正确许可证 | 待用户裁决（§12.1a L1，阻塞 P3）；裁决后在 aster-lang-ts 修正元数据；A 包 `LICENSES/` 由构建生成（Apache-2.0、UPL-1.0、ANTLR BSD、Jackson Apache-2.0、decimal.js MIT 等） |
 | R7 | 包离线运行后平台无法撤销、无法审计 | 明示（§5.2）；Q7 |
 | R8 | B 包换 CLI 版本后 IR 漂移 | §4.2 默认拒绝 |
 | R8b | A 包被整体替换（含 CLI）后自检必然通过 | §6.2「A 包的信任自举」：来源只由包外验证者或 zip 哈希证明，README 首段写明 |
@@ -268,20 +268,26 @@ cloud 新增 `PlanCapabilities.policyExport`（服务端 `hasFeatureAccess`；�
 
 ---
 
-## 12. 待定项与已定缺省
+## 12. 裁决记录
 
-### 12.1 需用户决定（括号内为建议缺省）
+### 12.1 已裁决（2026-11-16，用户授权按推荐方案裁决）
 
-1. **计划门**：哪些计划能导出？（trial / pro / enterprise 可导出全部四种；free 不可。理由：导出是平台外执行，属付费价值；Cedar 不变）
-2. **JRE 的 A 是否内含 JRE**（jlink 按 OS / 架构出镜像，真正零安装）？（v1 不含，只要求已装 JRE 25；jlink / Node SEA / native-image 放 P4）
-3. **Node / Java 下限**：沿用 ts 的 `>=24` 与工具链 Java 25？（是；不为导出单独降级）
-4. **JVM CLI 是否上 Maven Central**？（v1 只发 Release 资产；Central 与「消除 GitHub Packages 读 token」一并另立任务）
-5. **是否允许导出未批准版本**（如草稿，用于测试）？（不允许，与 Cedar 一致）
-6. **包是否带有效期**（`notAfter`，CLI 过期拒跑）？（不带：离线无法可靠强制，反而给人「可撤销」的错觉；用版本号与 `claimedRef.status` 表达）
-7. **无签名包**：on-prem 未配置导出密钥时，是否仍允许导出（产物需 `--allow-unsigned` 才能运行）？（允许，UI 明示；SaaS 恒签名）
-8. **依赖签名事实的策略**：档案声明了签名事实来源（`factSources` 非空）的策略，平台外无法验证事实来源，是否仍允许导出？（允许，manifest 与 README 标明「事实未验证」；若用户认为此类策略离开平台即失去治理意义，则改为 E736 拒绝）
+| # | 问题 | 裁决 |
+|---|---|---|
+| Q1 | 计划门 | trial / pro / enterprise 可导出全部四种组合；free 不可；Cedar 导出保持不门控 |
+| Q2 | JRE 的 A 是否内含 JRE | v1 不含，要求已装 JRE；jlink / Node SEA / native-image 放 P4 |
+| Q3 | Node / Java 下限 | Node ≥ 24，Java ≥ 25 |
+| Q4 | JVM CLI 分发 | 先发 GitHub Release 资产；Maven Central 后续另立任务 |
+| Q5 | 未批准版本 | 只导出 APPROVED 版本（§5.1 的规则由建议缺省转为定案） |
+| Q6 | 有效期 | 不带 `notAfter` |
+| Q7 | 无签名包 | on-prem 未配置导出密钥时允许导出；运行须 `--allow-unsigned` |
+| Q8 | 依赖签名事实的策略 | 允许导出，manifest 与 README 标明「事实未验证」（facts unverified）；E736 不启用 |
 
-### 12.2 本 ADR 已定、用户可推翻
+### 12.1a 待用户裁决（阻塞 P3）
+
+- **L1 许可证一致性**：aster-lang-ts `package.json` 声明 `license: MIT`，仓库 `LICENSE` 文件是 Apache-2.0（§11 R6）。以哪一个为准是法律决定，由用户裁决。**只阻塞 P3**（A 包把 `aster.mjs` 与 `LICENSES/` 一并分发）；P0–P2 不分发捆绑运行时，可照常推进。P1 只在 ts 仓记录该不一致，不改 `license` 字段。
+
+### 12.2 本 ADR 自定缺省（用户 2026-11-16 确认维持）
 
 | 项 | 已定 | 位置 |
 |---|---|---|
@@ -297,9 +303,9 @@ cloud 新增 `PlanCapabilities.policyExport`（服务端 `hasFeatureAccess`；�
 | 期 | 内容 | 仓 |
 |---|---|---|
 | P0 实测 | fat jar 体积与 stock JRE 回退运行；`quarkus-core` 去留；esbuild 单文件 runner 体积；ts `evaluate(readCoreIr(…))` 与 aster-api `/evaluate-json` 值序列化一致性 | truffle、ts |
-| P1 CLI | 包格式 v1 规范 schema（双副本 + parity）；签名向量；导出 builtin 白名单生成文件；把 aster-api 的入参转换 / 结果序列化抽到 truffle 公共类；两侧 `compile / run / verify / inspect / version`（Node 求值在 Worker 线程）；aster-lang-ts Release 附 `aster.mjs.sha256`、truffle Release 附 `aster-cli-<ver>.jar.sha256`，发布 workflow 生成并回读校验；aster-lang-test 增加「同一包两 CLI 结果一致」黄金用例并入 CI；truffle Release 资产；ts license 元数据修正 | ts、truffle、test、locales（错误码） |
+| P1 CLI | 包格式 v1 规范 schema（双副本 + parity）；签名向量；导出 builtin 白名单生成文件；把 aster-api 的入参转换 / 结果序列化抽到 truffle 公共类；两侧 `compile / run / verify / inspect / version`（Node 求值在 Worker 线程）；aster-lang-ts Release 附 `aster.mjs.sha256`、truffle Release 附 `aster-cli-<ver>.jar.sha256`，发布 workflow 生成并回读校验；aster-lang-test 增加「同一包两 CLI 结果一致」黄金用例并入 CI；truffle Release 资产；记录 ts license 不一致（修正待 §12.1a L1） | ts、truffle、test、locales（错误码） |
 | P2 B 导出 | aster-api `export/package`（B）、check 端点、E730–E735、签名与 JWKS、审计；cloud 路由、计划门、下拉菜单、四语 | aster-api、cloud、core（静态检查若放 core） |
-| P3 A 导出 | 运行时锁文件与镜像内置、`run.sh / run.cmd`、`LICENSES/`、可复现性测试；本地全栈 Playwright 一次 | aster-api、cloud |
+| P3 A 导出（前置：§12.1a L1 已裁决） | 运行时锁文件与镜像内置、`run.sh / run.cmd`、`LICENSES/`、可复现性测试；本地全栈 Playwright 一次 | aster-api、cloud |
 | P4 后续 | jlink / Node SEA / native-image 单文件；Maven Central；JIT 版 JRE 包；容器镜像形态 | — |
 
 ## 14. 不选的方案
