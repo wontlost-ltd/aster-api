@@ -30,15 +30,16 @@ validation、hi 的测试本来就少（Gradle 日志 `7 actionable tasks: 7 exe
 
 ### 1.2 比时长更要紧的两件事
 
-1. **发出去的 commit，main CI 是红的。** 查发布 tag 指向的 commit 在 main 上的 `ci.yml` push run：
+1. **发出去的 commit，main CI 的必需检查不是绿的。** 查发布 tag 指向的 commit 在 main 上的 `ci.yml` push run，按 job 看结论（`gh api …/actions/runs/<id>/jobs?filter=latest`）：
 
-   | 列车 | core | test | 其余引擎仓 |
-   |---|---|---|---|
-   | 1.0.46 | cancelled（attempt 2） | success | success（truffle 为 attempt 2） |
-   | 1.0.47 | **failure** | **failure** | success |
-   | 1.0.48 | **failure** | **failure**（parity job） | success |
+   | 列车 | core 必需 job `build` | test 必需 job（Node / JDK） | test 非必需 job `Strict tier1 parity` | 其余引擎仓必需 job |
+   |---|---|---|---|---|
+   | 1.0.46 | **cancelled**（attempt 2，run 43507977119） | success | success | success（truffle 为 attempt 2） |
+   | 1.0.47 | **failure**（run 43642344293） | success | failure | success |
+   | 1.0.48 | **failure**（run 43802427901） | success | failure | success |
 
-   失败原因都是同一个：生态 lockstep 的 pin PR 逐仓依次合并，先合的仓的 main CI 检出后合仓的旧 main，于是找不到旧版本的 catalog（core 1.0.48 run 43802427901：`Could not find cloud.aster-lang:aster-lang-platform:1.0.47`，因为 locales main 的 pin 在 33 秒后才 bump）。所有仓都合完之后重跑一次就会绿，但没有人重跑，列车也不检查，core 与 test 就这样用红 CI 的 commit 连续发了两版。core 发布 run 的注释写着「测试已在 PR CI 阶段跑过」，这个前提从未被验证过。
+   core 连续三版发布的 commit，其分支保护必需检查都没有通过。1.0.47 与 1.0.48 的失败原因相同：生态 lockstep 的 pin PR 逐仓依次合并，先合的仓的 main CI 检出后合仓的旧 main，于是找不到旧版本的 catalog（core 1.0.48：`Could not find cloud.aster-lang:aster-lang-platform:1.0.47`，因为 locales main 的 pin 在 33 秒后才 bump）。所有仓都合完之后重跑一次就会绿，但没有人重跑，列车也不检查。core 发布 run 的注释写着「测试已在 PR CI 阶段跑过」，这个前提从未被验证过。test 的情况不同：两个必需 job 都绿，红的是非必需的 parity job（同一原因）。按本修订的定义（§2.1 第 5 条），test 这两版会放行并告警，不会被拦。
+
 2. **发布 run 自己的测试环境会坏，而且只在发版时坏。** ts 2.0.0（eco-1.0.46）的发布 run 两次失败：第一次单测读不到 aster-lang-test 的语料 loader（#318），第二次读不到 aster-lang-locales 的 Core IR schema（#319）。两次都是 `ci.yml` 已经补上、`release.yml` 漏改；每次都要删 tag、修 workflow、`fromLayer=4` 续跑。发布 run 里维护一份测试环境副本，本身就是故障源。
 
 ADR 0053 §11 第 2 条否决「ts 发布复用 main CI 结果」，理由是墙钟收益为 0（ts 被 L4 的 aster-api 遮住）。这个理由今天仍然成立（§7），但它只算了时间。上面两件事说明，按 commit 校验 main CI 是正确性要求，不是提速手段。
@@ -118,7 +119,7 @@ forceTests 是给「main CI 因外部原因暂时无法变绿、但必须发版�
 
 ## 4. 剩余风险
 
-- **兄弟仓输入不同**。main CI 检出的是它运行时各兄弟仓的 main；发布 run 按 `checkout-sibling` 规则 1 检出兄弟仓的同名 tag。两者只有在兄弟仓自那以后没有新合入时才一致。preflight 的重跑（§2.2）在不一致最常见的场景（pin 竞态）下消除了差异，但一个早就绿了的 run 不会被重跑。被否决的「新鲜度」规则见 §9。兜底有三层：locales / hi 的 `verify*` 任务在发布 run 里仍按 tag 源码校验；L4 的 aster-api pin PR 用全部七个引擎仓的 `vX` tag 跑完整 `ci-result` 与 `Guard bypass suite (#466)`，它是 aster-api 对新引擎版本的唯一测试，也是规则集的必需检查，本修订不动它；各仓的 tier1 parity job 在 push main 时全量运行。
+- **兄弟仓输入不同**。main CI 检出的是它运行时各兄弟仓的 main；发布 run 按 `checkout-sibling` 规则 1 检出兄弟仓的同名 tag。两者只有在兄弟仓自那以后没有新合入时才一致。preflight 的重跑（§2.2）在不一致最常见的场景（pin 竞态）下消除了差异，但一个早就绿了的 run 不会被重跑。被否决的「新鲜度」规则见 §9。兜底有两层会拦截：locales / hi 的 `verify*` 任务在发布 run 里仍按 tag 源码校验；L4 的 aster-api pin PR 用全部七个引擎仓的 `vX` tag 跑完整 `ci-result` 与 `Guard bypass suite (#466)`，它是 aster-api 对新引擎版本的唯一测试，也是规则集的必需检查，本修订不动它。各仓的 tier1 parity job 在 push main 时全量运行，但它不是分支保护的必需检查，失败时门禁只告警、不拦发布（§2.1 第 5 条）。它的作用是让问题在 preflight 的 job summary 与告警里可见，不是一道拦截门。若要它拦发布，应先把它加进分支保护，再同步 `.github/main-ci-gate.json`。
 - **发现问题的时间点后移**。过去 runtime 的测试若在发布 run 里失败，runtime 不会发布（但同层的 core 已经发了）。现在同类问题要么在 preflight 就被拦下（main CI 红），要么只能在 L4 被发现，而那时引擎制品已全部发布（forward-only，ADR 0023）。过去发布 run 里的失败同样只能停车、不能回收，所以这不是新增的不可逆性。
 - **preflight 变慢**。需要重跑时，preflight 要多等最慢那个仓的重跑（core 的 build job 约 1–2 分钟，ts 的 test (24) 约 3–5 分钟）。在 1.0.47 与 1.0.48 中都会发生。
 - **配置与 job 名漂移**。改了 `ci.yml` 的 job 名却没改 `.github/main-ci-gate.json`，preflight 会报「缺失」并停车。失败方向是安全的。
@@ -141,7 +142,7 @@ forceTests 是给「main CI 因外部原因暂时无法变绿、但必须发版�
 
 ## 7. 预期收益（按 1.0.47 / 1.0.48 实测估算）
 
-各层 step 并行（ADR 0053 §2），墙钟由每层最慢的 step 决定。门禁本身约 5 秒（两到四次 API 调用），jar 冒烟约 2 秒。
+各层 step 并行（ADR 0053 §2），墙钟由每层最慢的 step 决定。下表的「1.0.48 关键路径」是实测，「本修订之后」是估算：以实测为基线，减去被去掉的步骤，再加上新步骤的预估耗时（门禁约 5 秒，即两到四次 API 调用；jar 冒烟约 2 秒；`build -x test` 按本地实测约 10 秒）。要等 eco-1.0.49 跑完才能验证。
 
 | 层 | 1.0.48 关键路径 | 本修订之后 | 墙钟变化 |
 |---|---|---|---|
@@ -155,7 +156,7 @@ forceTests 是给「main CI 因外部原因暂时无法变绿、但必须发版�
 结论：**L0–L3 的墙钟基本不变**（±10 秒），runner 用量每趟列车约省 3.5 分钟（ts 约 2.4 分钟、runtime 约 1 分钟，减去十个门禁步骤约 1 分钟）。墙钟上真正有分量的是：
 
 1. 不再出现 ts 2.0.0 那样只在发布 run 里坏的测试环境。那一次两轮修复加续跑，耗时以小时计。
-2. 列车不再发出 main CI 是红的 commit（1.0.47、1.0.48 的 core 与 test）。
+2. 列车不再发出必需检查不是绿的 commit：core 1.0.46–1.0.48 这三版都会在 preflight 被拦下，或在自动重跑后变绿再发。test 只是非必需的 parity 红，会放行并告警。
 
 若要缩短墙钟，应缩短 L4 的关键路径，见 §8 与 §10。
 

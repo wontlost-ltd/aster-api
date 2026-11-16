@@ -144,7 +144,7 @@
 
 **Files:** Create `docs/adr/0053-amendment-2-release-requires-main-ci.md`、`docs/superpowers/plans/2026-11-16-release-requires-main-ci.md`；Modify `docs/adr/0053-release-train-artifact-reuse.md`（头部「修订」一行加 A2）
 
-- [ ] 写 ADR（PROPOSED）与计划；ADR 中的时长全部来自 `gh api …/jobs` 实测
+- [ ] 写 ADR（PROPOSED）与计划；ADR 中的历史时长全部来自 `gh api …/jobs` 实测，§7 的未来时长标为估算；「main CI 红」按必需 job 而不是 run 结论描述（test 1.0.47/1.0.48 只是非必需的 parity 红）
 - [ ] draft PR，不合并
 
 ### Task 8（可选）：aster-api CI 拆成并行 job
