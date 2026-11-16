@@ -43,7 +43,8 @@ jobs:
   # 秒级的静态与脚本门禁，与测试并行。任一失败即整次 CI 失败（与拆分前语义相同）。
   checks:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
-    timeout-minutes: 15
+    # 含 actionlint 下载与自建 runner 上可能的 jq/yq 安装，留足网络慢时的余量。
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
@@ -484,4 +485,3 @@ jobs:
         working-directory: aster-api
         continue-on-error: true
         run: python3 scripts/ci/summarize-failed-tests.py build/test-results >> "$GITHUB_STEP_SUMMARY"
-
