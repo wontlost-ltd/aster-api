@@ -5,6 +5,7 @@ import io.aster.policy.compiler.PolicyCompiler;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.policy.parser.ParseBudget;
+import io.aster.policy.parser.ParseBudgetTestHooks;
 import io.aster.policy.test.RedisEnabledTest;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.test.junit.QuarkusTest;
@@ -33,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 编译端点的解析时间预算（aster-cloud/aster-lang-core#254 兜底）。
  *
- * <p>慢输入为 {@link #slowSource()} 加 {@link ParseBudget#slowChecksForTesting} 的周期检查停顿（新旧引擎都成立）。
+ * <p>慢输入为 {@link #slowSource()} 加 {@link ParseBudgetTestHooks#slowChecks} 的周期检查停顿（新旧引擎都成立）。
  * 端点必须在预算附近返回 200 + 带码 E054（{@code reason=time-budget}），不占住工作线程；
  * 几个慢请求并发时正常请求不受阻（在匿名解析许可池容量之内）；按版本编译的超时结果不进编译缓存。
  */
@@ -64,11 +65,11 @@ public class PolicyCompileParseBudgetTest {
     @AfterEach
     void restoreConfiguredBudget() {
         ParseBudget.configure(ParseBudget.DEFAULT_BUDGET);
-        ParseBudget.slowChecksForTesting(null);
+        ParseBudgetTestHooks.slowChecks(null);
     }
 
     /**
-     * 慢解析输入：约 12KB 的合法布尔链（在匿名编译端点 16KB 的源码上限之内），配合 {@link ParseBudget#slowChecksForTesting} 的周期检查停顿，
+     * 慢解析输入：约 12KB 的合法布尔链（在匿名编译端点 16KB 的源码上限之内），配合 {@link ParseBudgetTestHooks#slowChecks} 的周期检查停顿，
      * 在新旧引擎上都稳定超出预算（与 replay 的 InProcessCnlParserParseBudgetTest#slowSource 同形）。
      * 此前用的 sll-pathological-types.aster 依赖 core 1.0.47 及更早版本的类型预测缺陷，core 1.0.48
      * （aster-lang-core#270）上几毫秒就报语法错误；aster-api 的 pin 由列车只改两处版本号（ADR 0053 修订 A1），
@@ -119,7 +120,7 @@ public class PolicyCompileParseBudgetTest {
     void slowSourceReturnsCodedE054WithinDefaultBudget() {
         assertEquals(ParseBudget.DEFAULT_BUDGET, ParseBudget.configured(), "启动时按 aster.parse.time-budget=2s 配置");
         String source = slowSource();
-        ParseBudget.slowChecksForTesting(SLOW_STEP);
+        ParseBudgetTestHooks.slowChecks(SLOW_STEP);
         double metricBefore = exceededMetric();
 
         long t0 = System.nanoTime();
@@ -158,7 +159,7 @@ public class PolicyCompileParseBudgetTest {
         // 正常请求不会因许可耗尽被 503，验证的是「慢请求不占住线程 / 不拖慢别人」
         ParseBudget.configure(Duration.ofMillis(1000));
         String source = slowSource();
-        ParseBudget.slowChecksForTesting(SLOW_STEP);
+        ParseBudgetTestHooks.slowChecks(SLOW_STEP);
         int slowCount = 3;
         ExecutorService clients = Executors.newFixedThreadPool(slowCount);
         try {
@@ -192,7 +193,7 @@ public class PolicyCompileParseBudgetTest {
         ParseBudget.configure(Duration.ofMillis(300));
         PolicyVersion version = new PolicyVersion();
         version.content = slowSource();
-        ParseBudget.slowChecksForTesting(SLOW_STEP);
+        ParseBudgetTestHooks.slowChecks(SLOW_STEP);
         version.locale = "en-US";
         Long versionId = 9_254_000_001L;   // 不落库：compile(id, source) 零 DB 访问
         PolicyCompiler.VersionSource source = new PolicyCompiler.VersionSource(version, null);

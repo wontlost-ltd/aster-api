@@ -1,6 +1,7 @@
 package io.aster.policy.rest;
 
 import io.aster.policy.parser.ParseBudget;
+import io.aster.policy.parser.ParseBudgetTestHooks;
 import io.aster.policy.test.RedisEnabledTest;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
@@ -37,7 +38,7 @@ public class PolicyCompileParseBudgetConfigTest {
 
     @AfterEach
     void restoreSlowChecks() {
-        ParseBudget.slowChecksForTesting(null);
+        ParseBudgetTestHooks.slowChecks(null);
     }
 
     @Test
@@ -54,7 +55,7 @@ public class PolicyCompileParseBudgetConfigTest {
             .post("/api/v1/policies/compile")
         .then()
             .statusCode(200);
-        ParseBudget.slowChecksForTesting(PolicyCompileParseBudgetTest.SLOW_STEP);
+        ParseBudgetTestHooks.slowChecks(PolicyCompileParseBudgetTest.SLOW_STEP);
 
         long t0 = System.nanoTime();
         given()

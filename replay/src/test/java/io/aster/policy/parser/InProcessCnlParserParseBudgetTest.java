@@ -160,7 +160,8 @@ class InProcessCnlParserParseBudgetTest {
             () -> parseWith(slow, Duration.ofMillis(200), PredictionMode.SLL));
         ParseBudget.slowChecksForTesting(null);
 
-        // ……之后共享 DFA 缓存上的正常解析与中止前完全一致
+        // ……之后共享 DFA 缓存上的正常解析与中止前完全一致；被中止的同一输入不带停顿也能照常解析完
+        assertDoesNotThrow(() -> InProcessCnlParser.parse(slow, "en-US"), "中止过的同一输入在共享 DFA 上仍能解析");
         InProcessCnlParser.ParseResult normal = InProcessCnlParser.parse(NORMAL, "en-US");
         assertEquals("loan", normal.moduleName());
         assertEquals(List.of("approve"), normal.functionNames());
@@ -190,6 +191,18 @@ class InProcessCnlParserParseBudgetTest {
         } finally {
             single.shutdownNow();
         }
+    }
+
+    @Test
+    void normalPolicyIsNotSlowedByTheTestStep() {
+        // 端点并发用例假设「停顿开着时正常请求基本不受影响」（它断言正常请求 < 1000ms）：十几行的正常策略
+        // 约百次 adaptivePredict，至多碰到一两次周期检查（实测一次）。这里把该假设钉住：停顿 100ms 时不超过 3 个停顿。
+        InProcessCnlParser.parse(NORMAL, "en-US");   // 预热 DFA 与类加载，计时只量解析
+        ParseBudget.slowChecksForTesting(SLOW_STEP);
+        long t0 = System.nanoTime();
+        assertEquals("loan", InProcessCnlParser.parse(NORMAL, "en-US").moduleName());
+        long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+        assertTrue(elapsed < 3 * SLOW_STEP.toMillis(), "正常策略至多触发一两次周期检查停顿，实际 " + elapsed + "ms");
     }
 
     @Test
