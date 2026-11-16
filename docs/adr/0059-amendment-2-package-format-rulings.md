@@ -25,7 +25,7 @@ T1 把包格式写成可执行夹具时，发现 ADR 与计划有若干处没有
 R4–R6 的细化，不改变已裁决的方向；规则正文同样以 aster-lang-test `conformance/package-v1/README.md` 为准：
 
 - **R4 补**：A 包的普通 `verify`（不带 `--recompile` / `--probes`）在 `integrity` 之后增加 `ir` 检查项，严格读入 `compiled/core.json`，失败为 `PKG_UNSUPPORTED_IR`，与 `run` 一致（ADR §4.1 `verify` 的「运行时兼容」）。B 包的普通 `verify` 仍不本地编译。
-- **R5 补**：本地头与中央目录两个方向的不一致都拒绝（各有夹具）；deflate 条目的压缩数据必须恰好是一个完整的 deflate 流，最终块之后、`csize` 之内还有字节即 `PKG_INTEGRITY`（Node `inflateRawSync` 静默忽略这些字节，两侧必须显式比较已消耗的输入字节数：Node 用 `node:zlib` 的 `info: true` 取 `engine.bytesWritten`，JVM 用 `Inflater.getBytesRead()`；fflate 不公开该计数，不能用于实现本条）；zip 目录条目按路径规则校验后忽略。
+- **R5 补**：本地头与中央目录两个方向的不一致都拒绝（各有夹具）；deflate 条目的压缩数据必须恰好是一个完整的 deflate 流，最终块之后、`csize` 之内还有字节即 `PKG_INTEGRITY`（Node `inflateRawSync` 静默忽略这些字节，两侧必须显式比较已消耗的输入字节数：Node 用 `node:zlib` 的 `info: true` 取 `engine.bytesWritten`，JVM 用 `Inflater.getBytesRead()`；fflate 不公开该计数，不能用于实现本条）；zip 目录条目按路径规则校验（去掉根与末尾 `/` 后为空的只允许是 `<root>/` 本身），并与文件条目同样做大小、CRC 与 deflate 消耗检查（声明大小必须为 0），只是不进入文件表（aster-cloud/aster-lang-test#218）。
 - **R6 补**：本计划与本修订中凡引用模式之处不再写出以 `$` 收尾的字面量，确切模式以 schema 为准；schema 之外的规则（`formatVersion`、`--timeout`、Long / Decimal 字符串）同样整体匹配、不接受末尾换行（Java `Matcher.find` 下 `$` 会接受），各有夹具。
 - **R9 补**：读入侧（严格 JSON）数容器层数（至多 64 层嵌套），写出侧（值规范 JSON）数值所在层级（空容器本身算一个值），两种计数不同，见 VALUE-FORMS.md。
 
