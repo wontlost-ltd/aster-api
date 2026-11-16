@@ -184,8 +184,9 @@ public class InternalCallerFilter {
         boolean isAuditReceipts = normalizedPath.equals("/api/v1/audit/receipts");
         // 回放逐项查询（ADR 0044 §4）：同收据先例的双通道。
         boolean isReplayItems = normalizedPath.equals("/api/v1/replay/items");
-        // Cedar 导出（ADR 0047 §6）：cloud 详情页走 HMAC，其它调用方走 Bearer，同收据先例。
-        boolean isCedarExport = normalizedPath.equals(CEDAR_EXPORT_PATH);
+        // Cedar 导出及其可导出检查（ADR 0047 §6、aster-cloud#786）：cloud 详情页走 HMAC，其它调用方走 Bearer，同收据先例。
+        boolean isCedarExport = normalizedPath.equals(CEDAR_EXPORT_PATH)
+            || normalizedPath.equals(CEDAR_EXPORT_CHECK_PATH);
         // 源码编译（aster-cloud#604）：cloud 保存门禁走 HMAC（只有验签通过才可能信任结构词别名），
         // 匿名 IDE/浏览器调用不带内部头，仍按匿名只读端点放行，同收据先例的双通道。
         boolean isCompile = normalizedPath.equals(COMPILE_PATH);
@@ -224,6 +225,7 @@ public class InternalCallerFilter {
     static final String GUARD_SIDE_EFFECTS_PATH = "/api/v1/guard/side-effects";
     static final String GUARD_RECONCILIATION_PATH = "/api/v1/guard/reconciliation";
     static final String CEDAR_EXPORT_PATH = "/api/v1/policies/export/cedar";
+    static final String CEDAR_EXPORT_CHECK_PATH = CEDAR_EXPORT_PATH + "/check";
     static final String COMPILE_PATH = "/api/v1/policies/compile";
 
     static final String GUARD_POLICY_DEPLOYMENTS_PATH = "/api/v1/guard/policy-deployments";

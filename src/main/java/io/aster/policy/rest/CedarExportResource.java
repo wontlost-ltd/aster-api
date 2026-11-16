@@ -3,12 +3,14 @@ package io.aster.policy.rest;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.common.JacksonMappers;
+import io.aster.policy.cedar.CedarExportCheck;
 import io.aster.policy.cedar.CedarExportOutcome;
 import io.aster.policy.cedar.CedarExportService;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import io.aster.policy.parser.CompileIdentity;
+import io.aster.policy.rest.model.CedarExportCheckResponse;
 import io.aster.policy.rest.model.CedarExportRequest;
 import io.aster.policy.rest.model.CedarExportResponse;
 import io.aster.policy.rest.model.CnlSourceLimits;
@@ -49,6 +51,8 @@ import java.util.regex.Pattern;
  *
  * <p>成功导出须先同步写入 {@code POLICY_EXPORTED} 审计事件再返回；入链失败则整次请求失败，
  * 不允许出现未留痕的导出。本方法跑在 worker 线程且不带事务，入链由追加器自开独立事务。
+ *
+ * <p>子路径 {@code /check} 为无副作用的可导出检查（aster-cloud#786），见 {@link #check}。
  */
 @Path("/api/v1/policies/export/cedar")
 @Produces(MediaType.APPLICATION_JSON)
@@ -84,6 +88,51 @@ public class CedarExportResource {
     @POST
     @Blocking
     public Response export(CedarExportRequest request, @Context ContainerRequestContext ctx) {
+        Response rejected = rejectRequest(request, ctx);
+        if (rejected != null) {
+            return rejected;
+        }
+        boolean allowStructural = allowStructural(request, ctx);
+        if (!gate.tryAcquire()) {
+            LOG.warnf("Cedar 导出拒绝：并发达到上限 %d，返回 503", gate.limit());
+            throw busy(gate.limit());
+        }
+        try {
+            return exportWithPermit(request, allowStructural);
+        } finally {
+            gate.release();
+        }
+    }
+
+    /**
+     * 可导出检查（aster-cloud#786）：供 cloud 详情页加载时决定是否显示「导出为 Cedar」。
+     *
+     * <p>鉴权、入参约束、结构词别名信任与版本模式的租户隔离均与 {@link #export} 相同；但只编译并做核心翻译，
+     * 不做 Cedar 严格校验与探针比对、不写审计、不占导出并发闸（代价与 /compile 同级）。这是必要条件检查：
+     * E723/E724 只有真实导出才能发现，真实导出仍是唯一权威。
+     *
+     * <p>独立路径而非导出请求体里的 dryRun 标志：旧版 aster-api 会忽略未知字段，把探测当成一次真实的留痕导出。
+     */
+    @POST
+    @Path("check")
+    @Blocking
+    public Response check(CedarExportRequest request, @Context ContainerRequestContext ctx) {
+        Response rejected = rejectRequest(request, ctx);
+        if (rejected != null) {
+            return rejected;
+        }
+        ExportInput input = resolveInput(request, allowStructural(request, ctx), identityResolver.tenantId());
+        if (input == null) {
+            return error(Response.Status.NOT_FOUND, "version not found");
+        }
+        CedarExportCheck check = exportService.check(input.source(), input.locale(), input.aliasSetJson(),
+            input.scopes(), input.functionName(), input.allowStructural());
+        return Response.ok(new CedarExportCheckResponse(check.exportable(), check.rules(), check.diagnostics(),
+            check.sourceHash(), CompileIdentity.scopesHash(input.scopes()))).build();
+    }
+
+    /** 导出与检查共用的前置拒绝：身份、入参、别名集与词汇表上限。全部通过返回 null。 */
+    private static Response rejectRequest(CedarExportRequest request, ContainerRequestContext ctx) {
         // 过滤器可被配置关闭（apikey.enabled=false），端点自身仍要求已验证身份，不退回自述的 X-Tenant-Id
         if (!hasVerifiedIdentity(ctx)) {
             return error(Response.Status.UNAUTHORIZED, "unauthenticated");
@@ -103,26 +152,21 @@ public class CedarExportResource {
             return Response.status(Response.Status.BAD_REQUEST)
                 .entity(Map.of("error", VocabularyBounds.ERROR_CODE, "message", vocabularyError)).build();
         }
-        // 结构词别名信任与 /compile 同一口径（aster-cloud#604）：请求体的 allowStructural 只是「请求」，
-        // 必须叠加「HMAC 已验签」才生效。cloud 只对已在服务端核对过授权、冻结进版本的别名集声明 true；
-        // API key 调用方即使传 true 也按未授权编译，结构词别名照旧被拒。
-        boolean allowStructural = Boolean.TRUE.equals(request.allowStructural())
-            && InternalCallerFilter.isHmacVerified(ctx);
-        if (!gate.tryAcquire()) {
-            LOG.warnf("Cedar 导出拒绝：并发达到上限 %d，返回 503", gate.limit());
-            throw busy(gate.limit());
-        }
-        try {
-            return exportWithPermit(request, allowStructural);
-        } finally {
-            gate.release();
-        }
+        return null;
+    }
+
+    /**
+     * 结构词别名信任与 /compile 同一口径（aster-cloud#604）：请求体的 allowStructural 只是「请求」，
+     * 必须叠加「HMAC 已验签」才生效。cloud 只对已在服务端核对过授权、冻结进版本的别名集声明 true；
+     * API key 调用方即使传 true 也按未授权编译，结构词别名照旧被拒。
+     */
+    private static boolean allowStructural(CedarExportRequest request, ContainerRequestContext ctx) {
+        return Boolean.TRUE.equals(request.allowStructural()) && InternalCallerFilter.isHmacVerified(ctx);
     }
 
     private Response exportWithPermit(CedarExportRequest request, boolean allowStructural) {
         String tenantId = identityResolver.tenantId();
-        ExportInput input = request.versionId() == null
-            ? fromSource(request, allowStructural) : fromVersion(request.versionId(), tenantId);
+        ExportInput input = resolveInput(request, allowStructural, tenantId);
         if (input == null) {
             return error(Response.Status.NOT_FOUND, "version not found");
         }
@@ -135,6 +179,12 @@ public class CedarExportResource {
             audit(outcome, scopesHash, input.versionId(), request.claimedRef(), tenantId);
         }
         return Response.ok(body).build();
+    }
+
+    /** 源码模式取自请求；版本模式在本租户内查找，找不到返回 null。 */
+    private static ExportInput resolveInput(CedarExportRequest request, boolean allowStructural, String tenantId) {
+        return request.versionId() == null
+            ? fromSource(request, allowStructural) : fromVersion(request.versionId(), tenantId);
     }
 
     /** HMAC 内部调用已验签，或 API key 已验证并写入租户属性。 */
