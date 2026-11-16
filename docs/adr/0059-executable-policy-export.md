@@ -205,7 +205,7 @@ JVM CLI 用生产同一配置（`HostAccess.EXPLICIT`、`IOAccess.NONE`、禁线
 
 ### 6.1 可复现
 
-zip 只由 aster-api 一处实现（`java.util.zip`，JDK 版本随镜像固定）：条目按路径字节序；mtime 固定 1980-01-01T00:00:00；权限 0644（`run.sh` 0755）；无 extra field；deflate 级别固定。影响字节的输入全集 = （源码 envelope 五段、版本 `claimedRef`、target、mode、uiLocale〔README 语言〕、运行时锁文件、探针生成器版本、`nodeCheck`〔cloud 导出与 API Key 导出不同〕、导出密钥 `kid`）；Ed25519 签名是确定性的，签名文件不含时间。元组相同 → zip 字节相同。测试分两条：①元组完全相同 → 两次导出的 zip SHA-256 相同；②元组中**体现在 manifest 里**的项（envelope、`claimedRef`、target、mode、运行时版本与哈希、`probesSha256`、`nodeCheck`、载荷哈希）任一改变 → manifest 哈希改变。`kid` 只影响 `manifest.sig.json`；uiLocale 只影响 README（经 `files[]` 间接改变 manifest）；探针生成器版本只在探针内容变了时才改变字节，不单独断言。
+zip 只由 aster-api 一处实现（`java.util.zip`，JDK 版本随镜像固定）：条目按路径字节序；mtime 固定 1980-01-01T00:00:00；权限 0644（`run.sh` 0755）；无 extra field；deflate 级别固定。影响字节的输入全集 = （源码 envelope 五段、版本 `claimedRef`、target、mode、uiLocale〔README 语言〕、运行时锁文件、探针生成器版本、`nodeCheck`〔cloud 导出与 API Key 导出不同〕、导出密钥 `kid`、导出端构建〔aster-api 镜像 digest，决定 JDK 与 zip 实现〕）；Ed25519 签名是确定性的，签名文件不含时间。元组相同 → zip 字节相同。测试分两条：①元组完全相同 → 两次导出的 zip SHA-256 相同；②元组中**体现在 manifest 里**的项（envelope、`claimedRef`、target、mode、运行时版本与哈希、`probesSha256`、`nodeCheck`、载荷哈希）任一改变 → manifest 哈希改变。`kid` 只影响 `manifest.sig.json`；uiLocale 只影响 README（经 `files[]` 间接改变 manifest）；探针生成器版本只在探针内容变了时才改变字节，不单独断言。
 
 ### 6.2 签名
 
@@ -215,6 +215,10 @@ zip 只由 aster-api 一处实现（`java.util.zip`，JDK 版本随镜像固定�
 - **信任锚**：包内不放公钥（自带公钥证明不了任何事）。CLI 发布时内置 SaaS 导出 JWKS 快照；`--pubkey <file>` / `--jwks <url>` 覆盖（on-prem 用自己的密钥）。`kid` 不在锚中 → 退出码 3。`run` 与 `verify` 都接受 `--pubkey` / `--jwks <file|url>`。**轮换**：新 `kid` 先进 JWKS 并随至少一个 CLI 版本（一次列车）发布，之后 aster-api 才开始用它签名；旧 `kid` 在 JWKS 中保留到其签过的包不再需要验证为止（不删除，只停用签名）。A 包自带 CLI，aster-api 导出时断言「签名 `kid` ∈ 所带 CLI 的内置锚」，不满足即中止导出，所以 A 包离线永远可验；B 包遇到旧 CLI 不认识的新 `kid`，提示升级 CLI 或用 `--jwks` 提供公钥。
 - **默认失败即拒**：`run` 与 `verify` 都要求签名有效；签名缺失只有在显式 `--allow-unsigned` 时继续，且输出带 `"signed": false`。SaaS 导出恒签名；未配置密钥的 on-prem 部署导出时 UI 明示「无签名包」。
 - 只有 `SHA256SUMS` 不构成来源证明（可被整体改写），它只用于定位损坏的文件。
+- **A 包的信任自举**：A 包的 `run.sh` 执行的是包内的 CLI，被篡改的包可以连 CLI 一起换掉，所以**包内 CLI 的自检只防意外损坏，不证明来源**。来源证明必须来自包外的验证者，二选一（README 首段写明）：
+  1. 用独立安装的 CLI 验证：`npx @aster-cloud/aster-lang-ts verify <pkg>`，或从 GitHub Release 下载并核对 `.sha256` 的 `aster-cli.jar`。独立验证者除验签外还检查 `runtime/*` 的哈希等于签名 manifest 中的 `runtime.cli.sha256`，且该值等于该版本在 npm（`dist.integrity`）/ Release（`.sha256`）公开发布的哈希——即包里带的运行时就是公开发布的那一个。
+  2. 核对整个 zip 的 SHA-256：cloud 下载时在界面与响应头 `X-Aster-Package-Sha256` 给出，并写入审计事件（§8）；用户可在平台内随时查回。
+  验证通过后，包内 CLI 才可视为可信，此后离线运行无需再联网。
 
 ---
 
@@ -258,6 +262,7 @@ cloud 新增 `PlanCapabilities.policyExport`（服务端 `hasFeatureAccess`；�
 | R6 | ts `package.json` `license: MIT` 与 `LICENSE`（Apache-2.0）不一致，A 包需附正确许可证 | 实施前在 aster-lang-ts 修正元数据；A 包 `LICENSES/` 由构建生成（Apache-2.0、UPL-1.0、ANTLR BSD、Jackson Apache-2.0、decimal.js MIT 等） |
 | R7 | 包离线运行后平台无法撤销、无法审计 | 明示（§5.2）；Q7 |
 | R8 | B 包换 CLI 版本后 IR 漂移 | §4.2 默认拒绝 |
+| R8b | A 包被整体替换（含 CLI）后自检必然通过 | §6.2「A 包的信任自举」：来源只由包外验证者或 zip 哈希证明，README 首段写明 |
 | R9 | 导出密钥泄露可伪造「平台签发」的包 | 专用密钥、`kid` 轮换、JWKS revision；与收据密钥隔离 |
 | R10 | aster-api 镜像增大（两份运行时约 20–30 MiB）；cloud 依赖的 ts 版本须与锁文件同步，否则 Node 导出 503 | 可接受；替代是导出时从 Release 拉取，引入联网与可用性依赖，不取。cloud 的 ts 依赖 bump 须与 aster-api 锁文件在同一列车步骤更新（P2 任务，现列车未覆盖 cloud 依赖） |
 
