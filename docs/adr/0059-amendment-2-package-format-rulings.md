@@ -1,6 +1,6 @@
 # ADR 0059 修订 2：包格式 v1 细则裁决（T1 实施与独立评审）
 
-- 状态：**PROPOSED**（待用户确认；实现已按本修订进行，见 aster-cloud/aster-lang-test#216）
+- 状态：**ACCEPTED**（2026-11-17，用户授权按推荐方案裁决；实现见 aster-cloud/aster-lang-test#216）
 - 日期：2026-11-17
 - 修订对象：[ADR 0059](0059-executable-policy-export.md) §3、§4.1、§6.2，以及实施计划 `docs/superpowers/plans/2026-11-16-adr0059-p0-p1.md` 的 Global Constraints、T2 Step 3、T4 Step 3
 - 唯一来源：aster-lang-test `conformance/package-v1/README.md`（规则正文）与同目录的 schema、`exit-codes.json`、夹具。本修订只记录裁决与理由，不复述条款。
