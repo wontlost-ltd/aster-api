@@ -1,6 +1,6 @@
 # ADR 0056 修订 A2：签名与类型别名语法的双引擎裁决（aster-lang-ts#328）
 
-- 状态：**PROPOSED**（裁决经用户确认；落地后改 ACCEPTED）
+- 状态：**ACCEPTED**（2026-11-16）
 - 日期：2026-11-16
 - 修订对象：[ADR 0056](0056-type-inference-parity.md)，接续[修订 A1](0056-amendment-1-parity-sweep-1048.md) §5 留下的分歧
 - 相关：aster-lang-ts#328
