@@ -2,6 +2,7 @@ package io.aster.policy.parser;
 
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * 单次解析的时间预算（aster-cloud/aster-lang-core#254 兜底）。
@@ -23,6 +24,20 @@ public final class ParseBudget {
 
     private static volatile long configuredNanos = DEFAULT_BUDGET.toNanos();
 
+    /**
+     * 仅供测试：每次周期检查（{@link #checkPeriodic()}）前额外停顿的纳秒数（0 = 不停顿，生产恒为 0）。
+     *
+     * <p>预算测试需要一个「解析确实很慢」的输入。此前用的是 core 文法上的病态类型嵌套，而 core 1.0.48
+     * （aster-lang-core#270 / #254）把它们修成了线性，同一输入从数十秒降到毫秒级——夹具随引擎版本失效，
+     * 而 aster-api 的 pin 由列车在 L4 只改两处版本号（ADR 0053 修订 A1），测试必须对新旧引擎都成立。
+     * 用这个停顿把任意需要若干次预测检查的输入变慢，预算的中止、计数、线程释放与缓存语义照旧在真实
+     * 墙钟上验证，不再依赖某个引擎版本的性能缺陷。
+     */
+    private static volatile long testCheckDelayNanos;
+
+    /** 仅供测试：测试停顿实际发生的次数（停顿关闭时不计数），用来不靠墙钟断言「某次解析碰到了几次停顿」。 */
+    private static final AtomicLong TEST_PAUSES = new AtomicLong();
+
     /** 进程启动以来因超出预算而中止的解析次数（宿主据此注册指标）。 */
     private static final AtomicLong EXCEEDED = new AtomicLong();
 
@@ -37,6 +52,20 @@ public final class ParseBudget {
     /** 设定进程级默认预算；null 恢复默认值，≤ 0 表示不限时。 */
     public static void configure(Duration budget) {
         configuredNanos = budget == null ? DEFAULT_BUDGET.toNanos() : budget.toNanos();
+    }
+
+    /**
+     * 仅供测试：设定每次周期检查前的停顿（null 或 ≤ 0 关闭）。包级可见，只有同包的测试（replay 的单测、
+     * aster-api 测试源里的 {@code ParseBudgetTestHooks}）能调用，生产代码无法触达。测试结束必须恢复为 null，
+     * 否则同一 JVM 里后续的解析都会变慢（两个模块的测试任务都是 maxParallelForks = 1、类内串行）。
+     */
+    static void slowChecksForTesting(Duration delay) {
+        testCheckDelayNanos = delay == null || delay.isNegative() ? 0 : delay.toNanos();
+    }
+
+    /** 仅供测试：测试停顿累计发生次数。 */
+    static long testPausesForTesting() {
+        return TEST_PAUSES.get();
     }
 
     /** 当前进程级默认预算。 */
@@ -70,6 +99,20 @@ public final class ParseBudget {
         if (budgetNanos > 0 && System.nanoTime() - startNanos > budgetNanos) {
             throw new Exceeded(this);
         }
+    }
+
+    /**
+     * 周期检查（每 1024 次 closure 调用、每 64 次 adaptivePredict 各一次，见 {@link BudgetedParserATNSimulator}）。
+     * 与 {@link #check()} 相同，只是先施加测试停顿：停顿只落在真正做了大量预测工作的解析上，
+     * 十几行的正常策略只有个位数的周期检查。
+     */
+    void checkPeriodic() {
+        long delay = testCheckDelayNanos;
+        if (delay > 0) {
+            TEST_PAUSES.incrementAndGet();
+            LockSupport.parkNanos(delay);
+        }
+        check();
     }
 
     /** 记一次超时中止（只在解析边界计一次，不在每个检查点计）。 */

@@ -7,9 +7,6 @@ import org.antlr.v4.runtime.atn.PredictionMode;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -26,23 +23,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 语法分析时间预算（aster-cloud/aster-lang-core#254 兜底）。
  *
- * <p>两类病态输入：
- * <ul>
- *   <li>core 报告的 {@code result of} 成功 / 失败分量交替嵌套：只在 LL 预测下指数级（实测 24 层 0.7s、
- *       28 层 2.4s、32 层约 9–11s），生产用 SLL 时为毫秒级；用测试接缝注入 LL 复现它，验证预算能在
- *       一次 {@code adaptivePredict} 内部中止。</li>
- *   <li>{@code sll-pathological-types.aster}：随机生成的混合类型嵌套（4.6KB、含语法错误），走生产
- *       SLL 路径不限时实测约 46s——证明 SLL 本身拦不住，生产入口必须带预算。</li>
- * </ul>
+ * <p>慢解析的来源：一份由大量浅规则组成的合法策略（{@link #slowSource()}）加上 {@link ParseBudget#slowChecksForTesting}
+ * 的周期检查停顿。此前用的 {@code sll-pathological-types.aster}（混合类型嵌套，SLL 约 46s）依赖 core 1.0.47
+ * 及更早版本的预测缺陷；core 1.0.48 修复了类型预测（aster-lang-core#270），该输入几毫秒内就报语法错误，
+ * 再也到不了预算。测试验证的是预算机制本身（按时中止、带码 E054、计数、释放线程、不污染共享 DFA），
+ * 而不是某个引擎版本的性能缺陷——aster-api 的 pin 由列车只改两处版本号（ADR 0053 修订 A1），
+ * 测试必须对 pin 前后的引擎都成立。
+ *
+ * <p>core#254 报告的 {@code result of} 交替嵌套在生产 SLL 下一直是毫秒级，作为「正常输入不受影响」的用例保留。
  */
 class InProcessCnlParserParseBudgetTest {
 
     /** 中止相对预算的允许超出量：检查间隔为每 1024 次 closure 调用，实测超出 0–3ms，留足 CI 抖动余量。 */
     private static final long MARGIN_MS = 750;
 
+    /** 每次周期检查的测试停顿：{@link #slowSource()} 在新旧引擎、冷热 DFA 上都有远多于「预算 / 停顿」次的周期检查。 */
+    private static final Duration SLOW_STEP = Duration.ofMillis(100);
+
     @AfterEach
     void restoreDefault() {
         ParseBudget.configure(null);
+        ParseBudget.slowChecksForTesting(null);
     }
 
     /** {@code result of} 成功 / 失败分量交替嵌套 {@code depth} 层，放在参数类型位置（后接逗号，预测最贵）。 */
@@ -54,12 +55,24 @@ class InProcessCnlParserParseBudgetTest {
         return "Module m.\n\nRule f given x as " + type + ", produce Int:\n  Return 1.\n";
     }
 
-    static String sllPathological() throws IOException {
-        try (InputStream in = InProcessCnlParserParseBudgetTest.class
-                .getResourceAsStream("/parse-budget/sll-pathological-types.aster")) {
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+    /**
+     * 慢解析输入：160 条浅规则（约 12KB，在匿名编译端点 16KB 的源码上限之内）。预测要做数千次 adaptivePredict，
+     * 新旧引擎上都有数十次周期检查（DFA 变热后按 adaptivePredict 计），配合 {@link #SLOW_STEP} 必然超出预算——
+     * 负载只会让它更慢，结论不受机器快慢影响。刻意不用一条长表达式：几百层的二元表达式能解析成功，但端点在
+     * 序列化后的 Core IR schema 校验里会栈溢出（返回 500），任何「先让它编译成功」的步骤都会踩到。
+     */
+    static String slowSource() {
+        StringBuilder b = new StringBuilder("Module m.\n");
+        for (int i = 0; i < SLOW_RULES; i++) {
+            b.append("\nRule f").append(i).append(" given x as Int, produce Bool:\n  Return x greater than ")
+                .append(i).append(" and x less than ").append(i + 10).append(".\n");
         }
+        return b.toString();
     }
+
+    /** {@link #slowSource()} 的规则条数与总行数（每条规则 3 行：空行、规则头、Return）。 */
+    static final int SLOW_RULES = 160;
+    static final int SLOW_LINES = 1 + 3 * SLOW_RULES;
 
     private static final String NORMAL = """
         Module loan.
@@ -79,6 +92,10 @@ class InProcessCnlParserParseBudgetTest {
     }
 
     private static void assertBudgetE054(InProcessCnlParser.CnlParseException e, long budgetMs) {
+        assertBudgetE054(e, budgetMs, SLOW_LINES);
+    }
+
+    private static void assertBudgetE054(InProcessCnlParser.CnlParseException e, long budgetMs, int line) {
         List<CnlErrorListener.Diagnostic> e054 = e.getDiagnostics().stream()
             .filter(d -> "E054".equals(d.code())).toList();
         assertEquals(1, e054.size(), "恰一条 E054，实际: " + e.getDiagnostics());
@@ -90,38 +107,40 @@ class InProcessCnlParserParseBudgetTest {
         assertEquals("Parsing took too long (budget " + budgetMs + " ms); simplify the policy", d.message(),
             "文案按 reason 取超时句型，不再是误导的「嵌套过深」（aster-lang-core#259）");
         assertTrue(e.getMessage().contains(d.message()), "异常摘要（getSummary）沿用同一条超时文案，实际: " + e.getMessage());
-        assertEquals(3, d.line(), "位置取中止时的当前 token（类型所在的第 3 行）");
+        assertTrue(d.line() >= 1 && d.line() <= line, "位置取中止时的当前 token（源码范围内），实际第 " + d.line() + " 行");
     }
 
     @Test
-    void alternatingResultUnderLlIsAbortedAtBudgetWithCodedE054() {
-        for (int depth : new int[]{28, 32}) {
+    void slowParseIsAbortedAtBudgetWithCodedE054UnderBothPredictionModes() {
+        String source = slowSource();
+        ParseBudget.slowChecksForTesting(SLOW_STEP);
+        for (PredictionMode mode : new PredictionMode[]{PredictionMode.LL, PredictionMode.SLL}) {
             long before = ParseBudget.exceededCount();
             long t0 = System.nanoTime();
             InProcessCnlParser.CnlParseException e = assertThrows(InProcessCnlParser.CnlParseException.class,
-                () -> parseWith(alternatingResult(depth), Duration.ofMillis(500), PredictionMode.LL));
+                () -> parseWith(source, Duration.ofMillis(500), mode));
             long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
 
             assertInstanceOf(InProcessCnlParser.BudgetExceededFailure.class, e);
             assertBudgetE054(e, 500);
             assertTrue(elapsed >= 450 && elapsed < 500 + MARGIN_MS,
-                depth + " 层：应在预算附近中止（不提前、不明显超出），实际 " + elapsed + "ms");
+                mode + "：应在预算附近中止（不提前、不明显超出），实际 " + elapsed + "ms");
             assertEquals(before + 1, ParseBudget.exceededCount(), "每次中止计数恰加一");
         }
     }
 
     @Test
-    void sllPathologicalInputOnProductionEntryIsAbortedAtConfiguredBudget() throws IOException {
-        String source = sllPathological();
+    void slowInputOnProductionEntryIsAbortedAtConfiguredBudget() {
+        String source = slowSource();
         ParseBudget.configure(Duration.ofMillis(500));
+        ParseBudget.slowChecksForTesting(SLOW_STEP);
 
         long t0 = System.nanoTime();
         InProcessCnlParser.CnlParseException e = assertThrows(InProcessCnlParser.CnlParseException.class,
             () -> InProcessCnlParser.parse(source, "en-US"));
         long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
 
-        assertInstanceOf(InProcessCnlParser.BudgetExceededFailure.class, e,
-            "生产入口（SLL）在该输入上不限时约 46s，必须被预算中止");
+        assertInstanceOf(InProcessCnlParser.BudgetExceededFailure.class, e, "生产入口（SLL）上的慢解析必须被预算中止");
         assertBudgetE054(e, 500);
         assertTrue(elapsed < 500 + MARGIN_MS, "应在预算附近中止，实际 " + elapsed + "ms");
     }
@@ -138,14 +157,18 @@ class InProcessCnlParserParseBudgetTest {
     }
 
     @Test
-    void normalPolicyIsUnaffectedAndSharedDfaIsNotPoisonedByAnAbort() throws IOException {
+    void normalPolicyIsUnaffectedAndSharedDfaIsNotPoisonedByAnAbort() {
         // 先让一次解析在预测中途被中止（LL 与 SLL 各一次）……
+        String slow = slowSource();
+        ParseBudget.slowChecksForTesting(SLOW_STEP);
         assertThrows(InProcessCnlParser.BudgetExceededFailure.class,
-            () -> parseWith(alternatingResult(32), Duration.ofMillis(200), PredictionMode.LL));
+            () -> parseWith(slow, Duration.ofMillis(200), PredictionMode.LL));
         assertThrows(InProcessCnlParser.BudgetExceededFailure.class,
-            () -> parseWith(sllPathological(), Duration.ofMillis(200), PredictionMode.SLL));
+            () -> parseWith(slow, Duration.ofMillis(200), PredictionMode.SLL));
+        ParseBudget.slowChecksForTesting(null);
 
-        // ……之后共享 DFA 缓存上的正常解析与中止前完全一致
+        // ……之后共享 DFA 缓存上的正常解析与中止前完全一致；被中止的同一输入不带停顿也能照常解析完
+        assertDoesNotThrow(() -> InProcessCnlParser.parse(slow, "en-US"), "中止过的同一输入在共享 DFA 上仍能解析");
         InProcessCnlParser.ParseResult normal = InProcessCnlParser.parse(NORMAL, "en-US");
         assertEquals("loan", normal.moduleName());
         assertEquals(List.of("approve"), normal.functionNames());
@@ -156,11 +179,13 @@ class InProcessCnlParserParseBudgetTest {
     @Test
     void abortedParseReleasesItsWorkerThread() throws Exception {
         // 单线程池：被中止的解析必须让出线程，后续正常解析才能在同一线程上完成
+        String source = slowSource();
+        ParseBudget.slowChecksForTesting(SLOW_STEP);
         ExecutorService single = Executors.newSingleThreadExecutor();
         try {
             Future<Throwable> slow = single.submit(() -> {
                 try {
-                    parseWith(alternatingResult(32), Duration.ofMillis(300), PredictionMode.LL);
+                    parseWith(source, Duration.ofMillis(300), PredictionMode.LL);
                     return null;
                 } catch (Throwable t) {
                     return t;
@@ -173,6 +198,18 @@ class InProcessCnlParserParseBudgetTest {
         } finally {
             single.shutdownNow();
         }
+    }
+
+    @Test
+    void normalPolicyIsNotSlowedByTheTestStep() {
+        // 端点并发用例假设「停顿开着时正常请求基本不受影响」：十几行的正常策略约百次 adaptivePredict，
+        // 至多碰到一两次周期检查（实测一次）。按停顿次数断言，不量墙钟，负载下结论不变。
+        InProcessCnlParser.parse(NORMAL, "en-US");   // 预热 DFA：之后的预测次数与首次解析无关
+        ParseBudget.slowChecksForTesting(SLOW_STEP);
+        long before = ParseBudget.testPausesForTesting();
+        assertEquals("loan", InProcessCnlParser.parse(NORMAL, "en-US").moduleName());
+        long pauses = ParseBudget.testPausesForTesting() - before;
+        assertTrue(pauses <= 2, "正常策略至多触发两次周期检查停顿，实际 " + pauses + " 次");
     }
 
     @Test

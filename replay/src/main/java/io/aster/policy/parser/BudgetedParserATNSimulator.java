@@ -25,8 +25,16 @@ final class BudgetedParserATNSimulator extends ParserATNSimulator {
     /** 每多少次 closure 调用检查一次时钟（2 的幂，用位与取模）。 */
     private static final int CHECK_INTERVAL = 1 << 10;
 
+    /**
+     * 每多少次 adaptivePredict 做一次周期检查（2 的幂）。DFA 缓存变热后同一形态的输入几乎不再走 closure，
+     * 周期检查只落在 closure 上会让「同一输入第二次解析」完全不经过它；按预测次数再计一路，
+     * 测试停顿（{@link ParseBudget#slowChecksForTesting}）才对冷热 DFA 都生效。
+     */
+    private static final int PREDICT_INTERVAL = 1 << 6;
+
     private final ParseBudget budget;
     private int calls;
+    private int predictions;
 
     BudgetedParserATNSimulator(Parser parser, ParserATNSimulator base, ParseBudget budget) {
         super(parser, base.atn, base.decisionToDFA, base.getSharedContextCache());
@@ -36,7 +44,11 @@ final class BudgetedParserATNSimulator extends ParserATNSimulator {
 
     @Override
     public int adaptivePredict(TokenStream input, int decision, ParserRuleContext outerContext) {
-        budget.check();
+        if ((++predictions & (PREDICT_INTERVAL - 1)) == 0) {
+            budget.checkPeriodic();
+        } else {
+            budget.check();
+        }
         return super.adaptivePredict(input, decision, outerContext);
     }
 
@@ -45,7 +57,7 @@ final class BudgetedParserATNSimulator extends ParserATNSimulator {
                                             boolean collectPredicates, boolean fullCtx, int depth,
                                             boolean treatEofAsEpsilon) {
         if ((++calls & (CHECK_INTERVAL - 1)) == 0) {
-            budget.check();
+            budget.checkPeriodic();
         }
         super.closureCheckingStopState(config, configs, closureBusy, collectPredicates, fullCtx, depth,
             treatEofAsEpsilon);
