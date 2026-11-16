@@ -216,7 +216,7 @@ zip 只由 aster-api 一处实现（`java.util.zip`，JDK 版本随镜像固定�
 - **默认失败即拒**：`run` 与 `verify` 都要求签名有效；签名缺失只有在显式 `--allow-unsigned` 时继续，且输出带 `"signed": false`。SaaS 导出恒签名；未配置密钥的 on-prem 部署导出时 UI 明示「无签名包」。
 - 只有 `SHA256SUMS` 不构成来源证明（可被整体改写），它只用于定位损坏的文件。
 - **A 包的信任自举**：A 包的 `run.sh` 执行的是包内的 CLI，被篡改的包可以连 CLI 一起换掉，所以**包内 CLI 的自检只防意外损坏，不证明来源**。来源证明必须来自包外的验证者，二选一（README 首段写明）：
-  1. 用独立安装的 CLI 验证：`npx @aster-cloud/aster-lang-ts verify <pkg>`，或从 GitHub Release 下载并核对 `.sha256` 的 `aster-cli.jar`。独立验证者除验签外还检查 `runtime/*` 的哈希等于签名 manifest 中的 `runtime.cli.sha256`，且该值等于该版本在 npm（`dist.integrity`）/ Release（`.sha256`）公开发布的哈希——即包里带的运行时就是公开发布的那一个。
+  1. 用独立安装的 CLI 验证：`npx @aster-cloud/aster-lang-ts verify <pkg>`，或从 GitHub Release 下载并核对 `.sha256` 的 `aster-cli.jar`。独立验证者除验签外还检查 `runtime/*` 的哈希等于签名 manifest 中的 `runtime.cli.sha256`，且该值等于公开发布的同一文件的哈希——即包里带的运行时就是公开发布的那一个。JRE：直接比对 Release 资产 `aster-cli-<ver>.jar.sha256`。Node：npm `dist.integrity` 是整个 tarball 的哈希，不能直接比；验证者先按 `dist.integrity` 校验下载的 tarball，再对解包出的 `dist/runner/aster.mjs` 求 SHA-256 与 `runtime.cli.sha256` 比对；另外 aster-lang-ts 在 GitHub Release 附 `aster.mjs.sha256`，供不想解包的人直接比对（P1 任务）。
   2. 核对整个 zip 的 SHA-256：cloud 下载时在界面与响应头 `X-Aster-Package-Sha256` 给出，并写入审计事件（§8）；用户可在平台内随时查回。
   验证通过后，包内 CLI 才可视为可信，此后离线运行无需再联网。
 
