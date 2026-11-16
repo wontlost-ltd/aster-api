@@ -24,7 +24,7 @@
 | 执行的是平台产物 | A 执行平台编出的规范 Core IR v2 字节；B 在本地重编译，**字节必须与 `manifest.coreIr.sha256` 相同**才运行 | 不提供绕过开关 |
 | 只导出纯策略 | 导出时闭世界检查：声明了 IO 类能力、workflow / await、任何解析不到「模块内函数 / 局部绑定 / 目标引擎已实现的纯 builtin」的名字，一律拒绝（E730–E733） | 不在包里模拟 IO、facts 签发或 Guard 收据 |
 | 包不是 Guard 执行点 | 结论按数据返回；`require_approval` / `escalate` 只是返回值；无收据、无审批、无审计链 | 不签发、不伪造执行收据 |
-| 可复现 + 可验签 | 确定性 zip；`SHA256SUMS`；manifest 经 `jcs-sha256/v1` 后由平台导出密钥 Ed25519 签名；`run` 与 `verify` 默认都验签（信任锚随 CLI 发布），无签名包须显式 `--allow-unsigned` | 不用 JWT/JWS；manifest 不含时间戳 |
+| 可复现 + 可验签 | 确定性 zip；manifest 列出全部载荷哈希，其 JCS 字节由平台导出密钥 Ed25519 签名；`run` 与 `verify` 默认都验签（信任锚随 CLI 发布），无签名包须显式 `--allow-unsigned` | 不用 JWT/JWS；manifest 不含时间戳 |
 
 ---
 
@@ -86,7 +86,7 @@ zip 根目录名为 `<moduleName>-v<version>-<target>-<mode>/`（`target ∈ {no
 
 - **B 不带 `compiled/`**：B 的语义就是「用通用编译器从原始源码得到同一产物」，IR 只以哈希出现在 manifest；本地编译结果与哈希不同即拒绝（§4.2）。
 - **A 也带 `policy/`**：原始源码是审计依据，`aster verify --recompile` 可在 A 包上用自带 CLI 重新编译比对。
-- `policy.aster` 为单文件：cloud 版本是单模块；跨模块导入（若将来支持）在 manifest `format` 升主版本时再定。
+- `policy.aster` 为单文件：cloud 版本是单模块；跨模块导入（若将来支持）在 `formatVersion` 升主版本时再定。
 
 ---
 
@@ -94,7 +94,8 @@ zip 根目录名为 `<moduleName>-v<version>-<target>-<mode>/`（`target ∈ {no
 
 ```json
 {
-  "format": "aster-policy-package/v1",
+  "format": "aster-policy-package",
+  "formatVersion": "1.0",
   "target": "node" | "jre",
   "mode": "a" | "b",
   "policy": {
@@ -128,7 +129,7 @@ zip 根目录名为 `<moduleName>-v<version>-<target>-<mode>/`（`target ∈ {no
 - **不含时间戳与随机量**：导出时间只进审计事件（§8），保证同一输入的 manifest 与 zip 逐字节相同（§6.1）。
 - `claimedRef` 沿用 ADR 0047 §6 语义：cloud 自述、aster-api 未核验；其真实性靠签名（签名方是平台）。
 - `governance.factSources` 仅提示：档案若声明了签名事实来源，包内**不**验证（§5.2）。
-- JSON Schema 文件随 CLI 一起发布（ts 与 JVM 各一份副本 + sibling parity 测试，ADR 0045 模式），CLI 读入 manifest 时严格校验。上面的示例只示意字段；规范 schema 在 P1 落地时须定死：`additionalProperties:false`（未知字段拒收，扩展只能升 `format` 次版本并由 CLI 显式声明支持）；`compiled/` 与 `runtime.cli.sha256` 在 A 必填、B 禁止；`entries` 恰有一个 `default:true`，`run` 未给 `--entry` 时取它；`files[].path` 只能是包根下的相对路径，禁止 `..`、绝对路径、反斜杠与符号链接（zip-slip）。
+- JSON Schema 文件随 CLI 一起发布（ts 与 JVM 各一份副本 + sibling parity 测试，ADR 0045 模式），CLI 读入 manifest 时严格校验。上面的示例只示意字段；规范 schema 在 P1 落地时须定死：`additionalProperties:false`（未知字段拒收，`formatVersion` 为 `主.次`：次版本只能新增可选字段，每个次版本有自己的严格 schema；CLI 接受主版本相同且次版本 ≤ 自身支持的最高次版本的包，更高次版本按「不受支持」拒绝（退出码 4），不做「忽略未知字段」的宽松读取；主版本变化即不兼容）；`compiled/` 与 `runtime.cli.sha256` 在 A 必填、B 禁止；`entries` 恰有一个 `default:true`，`run` 未给 `--entry` 时取它；`files[].path` 只能是包根下的相对路径，禁止 `..`、绝对路径、反斜杠与符号链接（zip-slip）。
 
 ---
 
@@ -139,12 +140,12 @@ zip 根目录名为 `<moduleName>-v<version>-<target>-<mode>/`（`target ∈ {no
 | 命令 | 作用 |
 |---|---|
 | `aster compile <pkg\|file.aster> [--locale] [--alias-set] [--vocabulary] [--out]` | 源码 → 规范 Core IR v2 字节；给包目录时编译输入一律取自 manifest |
-| `aster run <pkg> [--entry <fn>] --input <file\|-> [--timeout 5s] [--pubkey <file>] [--allow-unsigned]` | 完整性与签名检查（同 `verify` 的前两步，§6.2）→ 取 IR（A 读 `compiled/core.json`；B 本地编译并比对 `coreIr.sha256`）→ 按 `schema/input.json` 校验输入 → 求值 → stdout 输出 `{"ok":true,"value":…}` 或 `{"ok":false,"error":{code,message}}`（值序列化与 aster-api `/evaluate-json` 同一形态） |
+| `aster run <pkg> [--entry <fn>] --input <file\|-> [--timeout 5s] [--pubkey <file>\|--jwks <file\|url>] [--allow-unsigned]` | 完整性与签名检查（同 `verify` 的前两步，§6.2）→ 取 IR（A 读 `compiled/core.json`；B 本地编译并比对 `coreIr.sha256`）→ 按 `schema/input.json` 校验输入 → 求值 → stdout 输出 `{"ok":true,"value":…}` 或 `{"ok":false,"error":{code,message}}`（值序列化与 aster-api `/evaluate-json` 同一形态） |
 | `aster verify <pkg> [--jwks <url>\|--pubkey <file>] [--allow-unsigned] [--recompile] [--probes]` | 哈希、签名（§6.2）、manifest schema、运行时兼容；`--recompile` 重编译比对；`--probes` 跑 `tests/probes.json` |
 | `aster inspect <pkg>` | 打印入口、输入输出 schema、效果、治理提示、运行时要求 |
-| `aster version` | CLI 版本、引擎、支持的 `format` / Core IR 版本、toolchainId |
+| `aster version` | CLI 版本、引擎、支持的 `formatVersion` / Core IR 版本、toolchainId、内置信任锚的 `kid` 列表 |
 
-退出码：0 成功；1 策略求值错误（`ok:false`）；2 输入不合 schema；3 完整性 / 签名失败；4 包或 IR 不受支持（格式、版本、效果）；5 超时。`run` 不联网。
+退出码：0 成功；1 策略求值错误（`ok:false`）；2 输入不合 schema；3 完整性 / 签名失败；4 包或 IR 不受支持（格式、版本、效果）；5 超时。`run` 不联网，除非显式给出 `--jwks <url>`。
 
 ### 4.2 IR 一致才运行
 
@@ -152,7 +153,7 @@ B 在本地编译后字节与 `coreIr.sha256` 不同 → 退出码 4、错误码
 
 ### 4.3 沙箱与资源
 
-JVM CLI 用生产同一配置（`HostAccess.EXPLICIT`、`IOAccess.NONE`、禁线程 / 进程 / native），**不**沿用 `Runner` 的 `allowAllAccess`。wall-clock 超时（默认 5 s）：JVM 由看门狗线程 `Context.close(true)` 取消；Node 的 `evaluate` 是同步调用，同线程计时器无法打断，所以求值放进 `worker_threads` Worker，主线程超时后 `worker.terminate()`。ts 解释器的步数上限在 CLI 中设为不限（`maxSteps` 取 `Number.MAX_SAFE_INTEGER`），与 Truffle 一样只以 wall-clock 为界，避免两侧因内部计数口径不同而一边报错一边成功。顶层允许效果为空（全拒），与 `AsterRootNode` 现状一致。
+JVM CLI 用生产同一配置（`HostAccess.EXPLICIT`、`IOAccess.NONE`、禁线程 / 进程 / native），**不**沿用 `Runner` 的 `allowAllAccess`。wall-clock 超时（默认 5 s）：JVM 由看门狗线程 `Context.close(true)` 取消；Node 的 `evaluate` 是同步调用，同线程计时器无法打断，所以求值放进 `worker_threads` Worker，主线程超时后 `worker.terminate()`。ts 解释器的步数上限在 CLI 中设为不限（`maxSteps` 取 `Number.MAX_SAFE_INTEGER`），与 Truffle 一样只以 wall-clock 为界，避免两侧因内部计数口径不同而一边报错一边成功。ts 另有写死的调用深度上限 `MAX_CALL_DEPTH = 50`（`interpreter.ts:605`），Truffle 没有对应上限（只受 JVM 栈约束）：P1 把它改为 `evaluate` 选项，CLI 设为 10 000，并把 JS 栈溢出（`RangeError`）捕获为退出码 5 的资源耗尽；浏览器与 cloud 现有调用不变。深度递归仍可能在两侧于不同深度耗尽资源，这属于 §5.3 明确排除在承诺之外的资源类结果。顶层允许效果为空（全拒），与 `AsterRootNode` 现状一致。
 
 ### 4.4 实现落点与分发
 
@@ -163,7 +164,7 @@ JVM CLI 用生产同一配置（`HostAccess.EXPLICIT`、`IOAccess.NONE`、禁线
 | 版本 | 跟随 aster-lang-ts 版本（当前 3.x） | 跟随 truffle 版本（列车 lockstep，当前 1.0.48） |
 
 - **版本关系**：manifest `runtime.ecosystem` 记录平台目录版本（`asterLang`）；列车 `release-plan.json` 已把 ts 版本与 JVM 版本绑在同一列车上，CLI 不另立版本号。
-- **兼容规则**：CLI 接受 `format` 主版本相同、Core IR 版本受支持的包；A 包永远用自带 CLI，无兼容问题。
+- **兼容规则**：CLI 接受 `formatVersion` 规则（§3）允许、Core IR 版本受支持的包；A 包永远用自带 CLI，无兼容问题。
 - **aster-api 内置运行时产物**：A 包所需的 `aster.mjs` 与 `aster-cli.jar` 在 aster-api 镜像构建时按 `export-runtimes.lock.json`（版本 + sha256）取入，导出时不联网；锁文件由列车 L4 pin bump 一并更新（ADR 0053 A1）。
 
 ---
@@ -192,7 +193,7 @@ JVM CLI 用生产同一配置（`HostAccess.EXPLICIT`、`IOAccess.NONE`、禁线
 
 ### 5.3 双引擎结果一致性：能承诺什么
 
-- **JRE**：与生产同一引擎（Truffle）、同一 IR 字节，但宿主不同：输入 JSON → guest 值的转换与结果序列化在 aster-api 里（`TrufflePolicyRuntime` 的入参转换、`/evaluate-json` 的输出形态），CLI 必须**复用同一份代码**（P1 把它从 aster-api 抽到 truffle 的一个公共类，aster-api 改为依赖它），并以「同一批探针在 aster-api 与 jre CLI 上输出逐字节相同」的黄金测试守住。在此前提下承诺：正常完成的求值结果与平台一致；超时与资源耗尽不在承诺内（机器与 JIT 不同）。
+- **JRE**：与生产同一引擎（Truffle）、同一 IR 字节，但宿主不同：输入 JSON → guest 值的转换与结果序列化在 aster-api 里（`TrufflePolicyRuntime` 的入参转换、`/evaluate-json` 的输出形态），CLI 必须**复用同一份代码**（P1 把它从 aster-api 抽到 truffle 的一个公共类，aster-api 改为依赖它），并以「同一批探针在 aster-api 与 jre CLI 上输出逐字节相同」的黄金测试守住。在此前提下承诺：正常完成的求值结果与平台一致；超时与资源耗尽（含递归深度）不在承诺内（机器与 JIT 不同）。Node 同此口径：承诺只覆盖两侧都正常完成的求值。
 - **Node**：引擎是 ts 解释器，不是生产引擎。承诺的边界是：①IR 逐字节相同（A 由构造保证，B 由 §4.2 保证）；②语料级 eval 门（PR-blocking，最近一次记载 960/960 case）；③**每个导出包**的探针：导出时按 ADR 0047 §5 同一思路从输入 schema 生成探针（每个枚举值、数值字面量 ±1、可选字段存在 / 缺失，上限 256 条），由 aster-api Truffle 求出期望输出写入 `tests/probes.json`。aster-api 运行镜像没有 Node（`Dockerfile` 末段为 ubi-micro，Node 只在构建阶段），因此 Node 侧比对放在 cloud：cloud 先调 `check`（§7）拿到规范 IR 与探针，在 Worker 里用自身依赖的 `@aster-cloud/aster-lang-ts/browser`（`readCoreIr` + `evaluate`）逐条求值，任一不一致 → E735 拒绝导出；cloud 依赖的 ts 版本必须等于 `runtime.cli.version`，否则 503 `export_runtime_skew`（只在列车换版的窗口出现）。cloud 把探针集的 SHA-256 与比对结果交给 `export/package`，aster-api 重算哈希确认是同一批探针后写入审计（`nodeProbes.checkedBy:"aster-cloud"`，与 `claimedRef` 同为调用方自述）。`nodeProbes` 只接受 HMAC 已验签的内部调用方（cloud）；API Key 调用方传入一律忽略，manifest `tests.nodeCheck=null`。因此签名 manifest 中的 `nodeCheck` 只可能来自 cloud，且记录了比对方与 ts 版本，验签者可据此决定是否信任。用户侧 `aster verify --probes` 随时可复核。探针是抽样不是证明，README 写明。
 - 探针**不取**真实执行记录的输入（避免把客户数据写进可外传的包）。
 
@@ -206,10 +207,10 @@ zip 只由 aster-api 一处实现（`java.util.zip`，JDK 版本随镜像固定�
 
 ### 6.2 签名
 
-- `SHA256SUMS`（GNU 格式，LF）覆盖除自身与签名文件外所有文件；manifest `files[]` 与之一致。
+- 两个覆盖集，不自引用：**载荷** = 除 `manifest.json`、`manifest.sig.json`、`SHA256SUMS` 之外的全部文件，由 `manifest.files[]` 逐个列出（路径、sha256、size），签名经 manifest 间接覆盖它们；`SHA256SUMS`（GNU 格式，LF）= 载荷 + `manifest.json`，只为不装 CLI 的人用 `sha256sum -c` 自查。`verify` / `run` 的顺序：验签 manifest → 按 `files[]` 校验每个载荷文件且包内不得有 `files[]` 以外的文件（三个元文件除外）→ 校验 `SHA256SUMS` 与前两者一致，不一致按损坏处理（退出码 3）。
 - `manifest.sig.json`：`{ alg:"Ed25519", issuer, kid, sig }`。被签字节 = `manifest.json` 按 RFC 8785 JCS 规范化后的 **UTF-8 字节串本身**（不是其 SHA-256 摘要，不二次哈希），`sig` 为 64 字节签名的 base64url（无填充）——与 ADR 0040 §12 和 aster-guard `src/receipt.ts` 现行验签一致，`jcs.ts` 与 JDK `EdDSA` 可复用。`manifest.json` 文件本身也以 JCS 字节写出，验签时先确认文件字节等于其 JCS 形，杜绝「签名对、文件被重排」。P1 提供 ts / Java 共用的签名向量（含篡改用例）。
 - 密钥：aster-api 持有**专用导出密钥**（与 Guard 收据密钥分离），公钥经 `GET /api/v1/exports/keys`（JWKS，RFC 8037）发布。
-- **信任锚**：包内不放公钥（自带公钥证明不了任何事）。CLI 发布时内置 SaaS 导出 JWKS 快照；`--pubkey <file>` / `--jwks <url>` 覆盖（on-prem 用自己的密钥）。`kid` 不在锚中 → 退出码 3。
+- **信任锚**：包内不放公钥（自带公钥证明不了任何事）。CLI 发布时内置 SaaS 导出 JWKS 快照；`--pubkey <file>` / `--jwks <url>` 覆盖（on-prem 用自己的密钥）。`kid` 不在锚中 → 退出码 3。`run` 与 `verify` 都接受 `--pubkey` / `--jwks <file|url>`。**轮换**：新 `kid` 先进 JWKS 并随至少一个 CLI 版本（一次列车）发布，之后 aster-api 才开始用它签名；旧 `kid` 在 JWKS 中保留到其签过的包不再需要验证为止（不删除，只停用签名）。A 包自带 CLI，aster-api 导出时断言「签名 `kid` ∈ 所带 CLI 的内置锚」，不满足即中止导出，所以 A 包离线永远可验；B 包遇到旧 CLI 不认识的新 `kid`，提示升级 CLI 或用 `--jwks` 提供公钥。
 - **默认失败即拒**：`run` 与 `verify` 都要求签名有效；签名缺失只有在显式 `--allow-unsigned` 时继续，且输出带 `"signed": false`。SaaS 导出恒签名；未配置密钥的 on-prem 部署导出时 UI 明示「无签名包」。
 - 只有 `SHA256SUMS` 不构成来源证明（可被整体改写），它只用于定位损坏的文件。
 
@@ -260,20 +261,27 @@ cloud 新增 `PlanCapabilities.policyExport`（服务端 `hasFeatureAccess`；�
 
 ---
 
-## 12. 待定项（需用户决定；括号内为建议缺省）
+## 12. 待定项与已定缺省
+
+### 12.1 需用户决定（括号内为建议缺省）
 
 1. **计划门**：哪些计划能导出？（trial / pro / enterprise 可导出全部四种；free 不可。理由：导出是平台外执行，属付费价值；Cedar 不变）
-2. **签名密钥**：新建专用导出密钥，还是复用 Guard 收据密钥？（专用密钥，同一 JWKS 机制，独立端点）
-3. **JRE 的 A 是否内含 JRE**（jlink 按 OS / 架构出镜像，真正零安装）？（v1 不含，只要求已装 JRE 25；jlink / Node SEA / native-image 放 P4）
-4. **Node 下限**：沿用 ts 的 `>=24`？（是；不为导出单独降级）
-5. **JVM CLI 是否上 Maven Central**？（v1 只发 Release 资产；Central 与「消除 GitHub Packages 读 token」一并另立任务）
-6. **是否允许导出未批准版本**（如草稿，用于测试）？（不允许，与 Cedar 一致）
-7. **包是否带有效期**（`notAfter`，CLI 过期拒跑）？（不带：离线无法可靠强制，反而给人「可撤销」的错觉；用版本号与 `claimedRef.status` 表达）
-8. **E735 探针不一致时**：拒绝导出，还是降级为警告？（拒绝；与 Cedar E723 一致）
-9. **Node 探针比对放在哪**：cloud Worker 两步（§5.3），还是给 aster-api 运行镜像加 Node 由服务端独立完成？（cloud 两步：不增大 aster-api 镜像与攻击面；代价是比对结果对 aster-api 而言是调用方自述，已在审计中标注）
-10. **CLI 名称**：Node 侧复用 `aster` bin（与现有开发命令同处），还是另起 `aster-run`？（复用 `aster`，用户示例即此；开发用的 `jvm / class / jar / truffle` 在帮助中标为 dev-only）
-11. **无签名包**：on-prem 未配置导出密钥时，是否仍允许导出（产物需 `--allow-unsigned` 才能运行）？（允许，UI 明示；SaaS 恒签名）
-12. **依赖签名事实的策略**：档案声明了签名事实来源（`factSources` 非空）的策略，平台外无法验证事实来源，是否仍允许导出？（允许，manifest 与 README 标明「事实未验证」；若用户认为此类策略离开平台即失去治理意义，则改为 E736 拒绝）
+2. **JRE 的 A 是否内含 JRE**（jlink 按 OS / 架构出镜像，真正零安装）？（v1 不含，只要求已装 JRE 25；jlink / Node SEA / native-image 放 P4）
+3. **Node / Java 下限**：沿用 ts 的 `>=24` 与工具链 Java 25？（是；不为导出单独降级）
+4. **JVM CLI 是否上 Maven Central**？（v1 只发 Release 资产；Central 与「消除 GitHub Packages 读 token」一并另立任务）
+5. **是否允许导出未批准版本**（如草稿，用于测试）？（不允许，与 Cedar 一致）
+6. **包是否带有效期**（`notAfter`，CLI 过期拒跑）？（不带：离线无法可靠强制，反而给人「可撤销」的错觉；用版本号与 `claimedRef.status` 表达）
+7. **无签名包**：on-prem 未配置导出密钥时，是否仍允许导出（产物需 `--allow-unsigned` 才能运行）？（允许，UI 明示；SaaS 恒签名）
+8. **依赖签名事实的策略**：档案声明了签名事实来源（`factSources` 非空）的策略，平台外无法验证事实来源，是否仍允许导出？（允许，manifest 与 README 标明「事实未验证」；若用户认为此类策略离开平台即失去治理意义，则改为 E736 拒绝）
+
+### 12.2 本 ADR 已定、用户可推翻
+
+| 项 | 已定 | 位置 |
+|---|---|---|
+| 签名密钥 | 专用导出密钥，不复用 Guard 收据密钥 | §6.2 |
+| 探针不一致 | E735 拒绝导出，不降级为警告（同 Cedar E723） | §5.3 |
+| Node 探针比对位置 | cloud Worker 两步；不给 aster-api 运行镜像加 Node | §5.3、§7 |
+| CLI 名称 | Node 复用 `aster` bin；开发用 `jvm / class / jar / truffle` 在帮助中标为 dev-only | §4.4 |
 
 ---
 
