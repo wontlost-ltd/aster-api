@@ -11,7 +11,7 @@
 
 用户在策略详情页把一个**已批准版本**导出为可在平台外运行的策略包。两个平台 × 两种形态：
 
-| | **A 自带运行时**（下载即跑，只需已装 Node / JRE） | **B 轻量**（源码 + 元数据，用通用 CLI 编译并运行） |
+| | **A 自带运行时**（下载、首次包外验证一次后即可离线运行，只需已装 Node / JRE） | **B 轻量**（源码 + 元数据，用通用 CLI 编译并运行） |
 |---|---|---|
 | **Node** | `policy/` + `compiled/core.json` + `runtime/aster.mjs`（单文件、零依赖）+ `run.sh` / `run.cmd` | `policy/` + `manifest.json`；`npm i -g @aster-cloud/aster-lang-ts` 后 `aster run` |
 | **JRE** | 同上，运行时换成 `runtime/aster-cli.jar`（fat jar，Truffle 回退解释器） | 同上；从 aster-lang-truffle 的 GitHub Release 下载 `aster-cli-<ver>.jar` 后 `java -jar aster-cli.jar run` |
@@ -224,7 +224,7 @@ zip 只由 aster-api 一处实现（`java.util.zip`，JDK 版本随镜像固定�
 
 ## 7. 决策六：接口
 
-- **aster-api**：`POST /api/v1/policies/export/package`，入参同 Cedar 源码模式（`source, locale, aliasSet, allowStructural, vocabulary, functionName, claimedRef`）+ `target, mode, uiLocale`。成功返回 `application/zip`（流式，`Content-Disposition` 含根目录名）；不可导出返回 200 JSON `{exportable:false, diagnostics}`（与 Cedar 一致）。另提供 `POST …/export/package/check`（与 aster-api#548 的 Cedar check 同形）：返回 `{exportable, diagnostics, coreIr, probes, probesSha256, runtime}`，供按钮显示与 §5.3 的 Node 比对。`export/package` 对 `target=node` 额外接受 `{nodeProbes:{probesSha256, count, agreed, tsVersion}}`。鉴权与 Cedar 相同：HMAC 内部调用或 API Key。
+- **aster-api**：`POST /api/v1/policies/export/package`，入参同 Cedar 源码模式（`source, locale, aliasSet, allowStructural, vocabulary, functionName, claimedRef`）+ `target, mode, uiLocale`。成功返回 `application/zip`（`Content-Disposition` 含根目录名；响应头 `X-Aster-Package-Sha256` 为整个 zip 的 SHA-256。因哈希要先于正文发出，aster-api 先在内存组装完整 zip 再发送，上限见 §9；cloud 原样转发正文与该头）；不可导出返回 200 JSON `{exportable:false, diagnostics}`（与 Cedar 一致）。另提供 `POST …/export/package/check`（与 aster-api#548 的 Cedar check 同形）：返回 `{exportable, diagnostics, coreIr, probes, probesSha256, runtime}`，供按钮显示与 §5.3 的 Node 比对。`export/package` 对 `target=node` 额外接受 `{nodeProbes:{probesSha256, count, agreed, tsVersion}}`。鉴权与 Cedar 相同：HMAC 内部调用或 API Key。
 - **aster-cloud**：`POST /api/policies/[id]/export/package`：会话 → 限流（复用 `EVALUATE_SOURCE` 桶）→ `loadPolicyForAction(…, 'view')` → 计划门（§10）→ `findDefaultExecutableVersion` → `loadStoredVersionCompileContext` → `PolicyApiClient.exportPackageCheck` →（Node）§5.3 探针比对 → `PolicyApiClient.exportPackage` → 字节流原样转发。cloud 不组装 zip（Workers 内存 / CPU 限制）。
 - **UI**：在 PR #790 确立的右上按钮组里，把「导出为 Cedar」扩成「导出」下拉：Cedar / Node 包（A、B）/ JRE 包（A、B），每项一行说明；不可导出时显示诊断。四语文案（hi 用英文）。
 
@@ -297,7 +297,7 @@ cloud 新增 `PlanCapabilities.policyExport`（服务端 `hasFeatureAccess`；�
 | 期 | 内容 | 仓 |
 |---|---|---|
 | P0 实测 | fat jar 体积与 stock JRE 回退运行；`quarkus-core` 去留；esbuild 单文件 runner 体积；ts `evaluate(readCoreIr(…))` 与 aster-api `/evaluate-json` 值序列化一致性 | truffle、ts |
-| P1 CLI | 包格式 v1 规范 schema（双副本 + parity）；签名向量；导出 builtin 白名单生成文件；把 aster-api 的入参转换 / 结果序列化抽到 truffle 公共类；两侧 `compile / run / verify / inspect / version`（Node 求值在 Worker 线程）；aster-lang-test 增加「同一包两 CLI 结果一致」黄金用例并入 CI；truffle Release 资产；ts license 元数据修正 | ts、truffle、test、locales（错误码） |
+| P1 CLI | 包格式 v1 规范 schema（双副本 + parity）；签名向量；导出 builtin 白名单生成文件；把 aster-api 的入参转换 / 结果序列化抽到 truffle 公共类；两侧 `compile / run / verify / inspect / version`（Node 求值在 Worker 线程）；aster-lang-ts Release 附 `aster.mjs.sha256`、truffle Release 附 `aster-cli-<ver>.jar.sha256`，发布 workflow 生成并回读校验；aster-lang-test 增加「同一包两 CLI 结果一致」黄金用例并入 CI；truffle Release 资产；ts license 元数据修正 | ts、truffle、test、locales（错误码） |
 | P2 B 导出 | aster-api `export/package`（B）、check 端点、E730–E735、签名与 JWKS、审计；cloud 路由、计划门、下拉菜单、四语 | aster-api、cloud、core（静态检查若放 core） |
 | P3 A 导出 | 运行时锁文件与镜像内置、`run.sh / run.cmd`、`LICENSES/`、可复现性测试；本地全栈 Playwright 一次 | aster-api、cloud |
 | P4 后续 | jlink / Node SEA / native-image 单文件；Maven Central；JIT 版 JRE 包；容器镜像形态 | — |
