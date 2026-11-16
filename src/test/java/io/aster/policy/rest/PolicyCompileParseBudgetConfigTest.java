@@ -6,10 +6,9 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.http.ContentType;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -36,10 +35,26 @@ public class PolicyCompileParseBudgetConfigTest {
         }
     }
 
+    @AfterEach
+    void restoreSlowChecks() {
+        ParseBudget.slowChecksForTesting(null);
+    }
+
     @Test
     void configuredBudgetIsAppliedToCompileEndpoint() throws Exception {
         assertEquals(Duration.ofMillis(750), ParseBudget.configured(), "启动时按配置值设定进程级预算");
-        String source = Files.readString(Path.of("replay/src/test/resources/parse-budget/sll-pathological-types.aster"));
+        String source = PolicyCompileParseBudgetTest.slowSource();
+        // 本类独占一个 Quarkus 测试 profile（重启），首个请求含冷启动开销；先用同一输入不带停顿编译一次预热，
+        // 计时只量预算本身
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body(Map.of("source", source, "locale", "en-US"))
+        .when()
+            .post("/api/v1/policies/compile")
+        .then()
+            .statusCode(200);
+        ParseBudget.slowChecksForTesting(PolicyCompileParseBudgetTest.SLOW_STEP);
 
         long t0 = System.nanoTime();
         given()

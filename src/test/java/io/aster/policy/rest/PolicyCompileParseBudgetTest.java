@@ -14,9 +14,6 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * 编译端点的解析时间预算（aster-cloud/aster-lang-core#254 兜底）。
  *
- * <p>病态输入取 replay 模块的共享夹具 {@code sll-pathological-types.aster}（生产 SLL 路径不限时实测约 46s）。
+ * <p>慢输入为 {@link #slowSource()} 加 {@link ParseBudget#slowChecksForTesting} 的周期检查停顿（新旧引擎都成立）。
  * 端点必须在预算附近返回 200 + 带码 E054（{@code reason=time-budget}），不占住工作线程；
  * 几个慢请求并发时正常请求不受阻（在匿名解析许可池容量之内）；按版本编译的超时结果不进编译缓存。
  */
@@ -67,12 +64,26 @@ public class PolicyCompileParseBudgetTest {
     @AfterEach
     void restoreConfiguredBudget() {
         ParseBudget.configure(ParseBudget.DEFAULT_BUDGET);
+        ParseBudget.slowChecksForTesting(null);
     }
 
-    private static String pathological() throws IOException {
-        // 与 replay 单测共用同一份夹具（Gradle 以项目目录为测试工作目录）
-        return Files.readString(Path.of("replay/src/test/resources/parse-budget/sll-pathological-types.aster"));
+    /**
+     * 慢解析输入：约 12KB 的合法布尔链（在匿名编译端点 16KB 的源码上限之内），配合 {@link ParseBudget#slowChecksForTesting} 的周期检查停顿，
+     * 在新旧引擎上都稳定超出预算（与 replay 的 InProcessCnlParserParseBudgetTest#slowSource 同形）。
+     * 此前用的 sll-pathological-types.aster 依赖 core 1.0.47 及更早版本的类型预测缺陷，core 1.0.48
+     * （aster-lang-core#270）上几毫秒就报语法错误；aster-api 的 pin 由列车只改两处版本号（ADR 0053 修订 A1），
+     * 测试必须对 pin 前后的引擎都成立。
+     */
+    static String slowSource() {
+        StringBuilder b = new StringBuilder("Module m.\n\nRule f given x as Int, produce Bool:\n  Return x greater than 0");
+        for (int i = 1; i < 600; i++) {
+            b.append(i % 2 == 0 ? " and " : " or ").append("x less than ").append(i);
+        }
+        return b.append(".\n").toString();
     }
+
+    /** 周期检查停顿：见 replay 的 InProcessCnlParserParseBudgetTest#SLOW_STEP。 */
+    static final Duration SLOW_STEP = Duration.ofMillis(100);
 
     /** core#254 报告的形态：result of 成功 / 失败分量交替嵌套。 */
     private static String alternatingResult(int depth) {
@@ -105,9 +116,10 @@ public class PolicyCompileParseBudgetTest {
     }
 
     @Test
-    void pathologicalSourceReturnsCodedE054WithinDefaultBudget() throws IOException {
+    void slowSourceReturnsCodedE054WithinDefaultBudget() {
         assertEquals(ParseBudget.DEFAULT_BUDGET, ParseBudget.configured(), "启动时按 aster.parse.time-budget=2s 配置");
-        String source = pathological();
+        String source = slowSource();
+        ParseBudget.slowChecksForTesting(SLOW_STEP);
         double metricBefore = exceededMetric();
 
         long t0 = System.nanoTime();
@@ -145,7 +157,8 @@ public class PolicyCompileParseBudgetTest {
         // 慢请求数取 3：低于匿名解析许可池的下限（max(2, 2×核数) ≥ 4，单核 CI 也满足），
         // 正常请求不会因许可耗尽被 503，验证的是「慢请求不占住线程 / 不拖慢别人」
         ParseBudget.configure(Duration.ofMillis(1000));
-        String source = pathological();
+        String source = slowSource();
+        ParseBudget.slowChecksForTesting(SLOW_STEP);
         int slowCount = 3;
         ExecutorService clients = Executors.newFixedThreadPool(slowCount);
         try {
@@ -175,10 +188,11 @@ public class PolicyCompileParseBudgetTest {
     }
 
     @Test
-    void budgetExceededOnVersionPathIsNotCached() throws IOException {
+    void budgetExceededOnVersionPathIsNotCached() {
         ParseBudget.configure(Duration.ofMillis(300));
         PolicyVersion version = new PolicyVersion();
-        version.content = pathological();
+        version.content = slowSource();
+        ParseBudget.slowChecksForTesting(SLOW_STEP);
         version.locale = "en-US";
         Long versionId = 9_254_000_001L;   // 不落库：compile(id, source) 零 DB 访问
         PolicyCompiler.VersionSource source = new PolicyCompiler.VersionSource(version, null);
