@@ -197,10 +197,10 @@ WHERE g.capability = $cap AND g."revokedAt" IS NULL
   AND (  (g."userId" = $user AND g."delegatingTeamId" IS NULL)                        -- b
       OR (g."teamId" IS NOT NULL AND mt.id IS NOT NULL)                               -- c
       OR (g."userId" = $user AND md.id IS NOT NULL AND a."ownerGrantingEnabled"
-          AND $delegationSwitchOn) )                                                  -- d
+          AND $delegationAllowed AND $delegationSwitchOn) )                           -- d
 ```
 
-返回全部命中的来源（`direct` / `team:<id>` / `delegated:<id>`，加第 4a 步的 `admin`），管理页和编辑器据此显示「通过哪个来源获得」。来源有多条时任一即可，彼此之间没有优先级；套餐只判一次（第 3 步），不按来源分别判定。
+其中 `$delegationAllowed` = 注册项的 `teamDelegation`：为 false 的能力（阶段 3 的 `structural_alias`、`ai_workspace`）**任何委派行都不命中**，即使库里存在这样的行（例如手工写入）。返回全部命中的来源（`direct` / `team:<id>` / `delegated:<id>`，加第 4a 步的 `admin`），管理页和编辑器据此显示「通过哪个来源获得」。来源有多条时任一即可，彼此之间没有优先级；套餐只判一次（第 3 步），不按来源分别判定。
 
 **团队授权的作用范围**：团队授权与委派授权让成员**本人**获得能力，不限于该团队的策略；但第 3 步的套餐按当前资源判定。因此 Pro 团队里的 Free 成员在团队策略上可用，在自己的个人策略上不可用——这与 ADR 0015 §5 / `team-plan.ts` 的「团队资源看 owner 套餐，个人资源看本人套餐」一致，不另造规则。
 
@@ -272,8 +272,8 @@ WHERE g.capability = $cap AND g."revokedAt" IS NULL
 |---|---|---|
 | `GET /api/admin/capabilities/[capability]/grants?q=&subject=user\|team` | `requireAdmin` | 搜用户与团队；每个用户返回解析后的来源列表 |
 | `POST` / `DELETE` 同上 | `requireAdmin` + `requireLicenseWriteOk` | 授予 / 撤销用户或团队授权；400 非法载荷、404 能力或主体不存在 |
-| `PUT /api/admin/capabilities/[capability]/teams/[teamId]/allotment` | 同上 | 设 `seatCap`、`ownerGrantingEnabled`；409 `seat_cap_below_active` |
-| `GET` / `POST` / `DELETE /api/teams/[teamId]/capabilities/[capability]/grants` | 团队 owner + `requireLicenseWriteOk` | 委派；403 `team_delegation_disabled`、409 `seat_cap_reached`、400 `not_team_member` / `viewer_not_eligible` |
+| `PUT /api/admin/capabilities/[capability]/teams/[teamId]/allotment` | 同上 | 设 `seatCap`、`ownerGrantingEnabled`；409 `seat_cap_below_active`；能力的 `teamDelegation` 为 false 时 400 `delegation_not_supported` |
+| `GET` / `POST` / `DELETE /api/teams/[teamId]/capabilities/[capability]/grants` | 团队 owner + `requireLicenseWriteOk` | 委派；400 `delegation_not_supported`（能力不允许委派）、403 `team_delegation_disabled`、409 `seat_cap_reached`、400 `not_team_member` / `viewer_not_eligible` |
 
 页面：平台 `/admin/capabilities/structured-authoring`（仿 `/admin/ai-workspace-access`：用户 / 团队搜索、授予、撤销、来源列、团队额度编辑）；团队设置页新增「结构化编写座位」小节（仅 owner 可见）。编辑器页（`policies/new/page.tsx`、`policies/[id]/edit/page.tsx`）在服务端解析后以 `structuredAuthoring: { allowed, denial, sources }` 传入，与今天的 `allowStructuralAliases` 同路。i18n：en / zh / de。
 
@@ -344,6 +344,8 @@ LayoutMap 是**同一份 canonical 源码的第二种排版**，只给人看：
 
 - 与 `createVersion` 在同一事务插入；**只插入，不更新、不删除**，没有修改接口。想换 layout 就建新版本——与 `aliasSet`「不可变」的既有约定一致。
 - 读取（显示 display 前）重新验证 `sha256(layout) = layoutSha256` 且 `toCanonical(parse(layout)) = content`；任一不符则不渲染 display，只显示 canonical 与「显示层数据不一致」提示，并记错误日志。这是**一致性检测**：能发现损坏、迁移错误与只改了一列的直接改库，但有库写权限的人同时改 layout 与哈希就能通过。本 ADR 不为显示层提供抗蓄意篡改的保证——不需要：layout 改不了执行内容，往返校验保证 display 的内容 span 就是 `content`，而 `content` 自身由 envelope 保护。
+
+**读取契约**：只有一个服务层入口 `loadVersionLayout(versionId)`，返回 `{ status: 'none' } | { status: 'ok'; layout: PolicyLayout; layoutSha256 } | { status: 'inconsistent'; layoutSha256 }`。调用方是版本详情（编辑器加载、`GET /api/policies/[id]` 的活跃版本与按版本号读取）、评审面板、审批视图与版本对比；它们在各自已有的读权限检查之后调用，不另设门。API 响应新增可选字段 `layout`，形状即上述返回值；`inconsistent` 仍是 HTTP 200（版本本身完好，只是显示层不可用），界面只显示 canonical 与提示。版本列表、执行、导出接口不调用它。
 
 **为什么不进 `computeSourceEnvelope`**：envelope 的定义是「完整编译输入」（content、aliasSet、locale、toolchainId、scopesJson，ADR 0022 §11.5、ADR 0051 §7），layout 不是编译输入。放进去要改 cloud `src/lib/policy-alias.ts` 与 Java `PolicyVersion.computeSourceEnvelope`、改共享向量 `envelope-vectors.json`、给存量行重算 envelope，并让「改显示层」变成「改编译身份」，而它们本来无关。layout 与编译的关系已由往返校验机械保证。**结论：两侧 envelope 逐字节不变**，阶段 2 加一条测试：同一版本附与不附 layout，`sourceEnvelopeSha256` 相同。
 
@@ -419,7 +421,7 @@ interface PolicyLayout { v: 1; spans: LayoutSpan[] }
 
 ### 7.8 诊断与 trace 位置映射
 
-包导出 `canonicalToDisplay(layout, offset)` 与 `displayToCanonical(layout, offset)`：
+包导出 `canonicalToDisplay(layout, offset)` 与 `displayToCanonical(layout, offset)`。**偏移单位一律是 UTF-16 code unit**（即 JS 字符串下标；Monaco 与 LSP 默认的 `positionEncoding` 也是 UTF-16），行列由调用方按同一单位换算；换行不做归一化（`\r\n` 计 2）。`parseLayout` 拒绝把代理对拆在两个 span 之间的 layout，因此任何 span 边界都不会落在一个字符中间。§7.6 的字节上限是另一回事，按 UTF-8 计。§8.2 的 `mappings` 使用同一单位。
 
 - 落在内容 span 内的偏移：按 span 内相对位置一一对应。
 - 落在结构 span 内的偏移：映射到该 span 的整段 display 区间；display 为空串时映射到插入点（前后两个内容 span 之间的位置），界面在该处画一个标记。
