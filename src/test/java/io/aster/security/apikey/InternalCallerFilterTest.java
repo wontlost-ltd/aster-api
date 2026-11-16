@@ -748,6 +748,17 @@ class InternalCallerFilterTest {
             InternalCallerFilter.classify("/api/v1/policies/export/cedarX", false, false, false, false, true));
     }
 
+    // aster-cloud#786：可导出检查与导出同一双通道。
+    @Test
+    void cedarExportCheckRequiresHmacOnlyWithInternalCallerHeaders() {
+        assertEquals(Classification.REQUIRE_HMAC,
+            InternalCallerFilter.classify("/api/v1/policies/export/cedar/check", false, false, false, false, true));
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/policies/export/cedar/check", false, false, false, false, false));
+        assertEquals(Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/policies/export/cedar/checkX", false, false, false, false, true));
+    }
+
     // aster-cloud#604：源码编译双通道，带内部调用头才要求 HMAC，否则保持匿名只读放行。
     @Test
     void compileRequiresHmacOnlyWithInternalCallerHeaders() {

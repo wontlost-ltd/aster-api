@@ -367,4 +367,14 @@ class ApiKeyAuthFilterShouldProtectTest {
         assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/policies/export/cedar"));
         assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/policies/export/cedarX"));
     }
+
+    // aster-cloud#786：可导出检查与导出同一双通道保护。
+    @Test
+    void cedarExportCheckIsProtectedAndHmacBypassable() throws Exception {
+        assertTrue(call("/api/v1/policies/export/cedar/check"));
+        assertTrue(call("/api/v1/policies/export;x=1/cedar/check"));
+        assertTrue(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/policies/export/cedar/check"));
+        assertFalse(ApiKeyAuthFilter.isHmacBypassPath("/api/v1/policies/export/cedar/checkX"));
+        assertFalse(call("/api/v1/policies/export/cedar/other"));
+    }
 }

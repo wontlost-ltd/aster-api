@@ -112,7 +112,8 @@ Aster `allow` ⇔ Cedar `Allow`；其余结论 ⇔ Cedar `Deny` 且决定性策�
 - **API**：`POST /api/v1/policies/export/cedar`，入参二选一：`{policyId, versionId}`（已保存版本）或 `{source, locale, aliasSet}`（与编译端点一致）。
   出参：`{exportable, moduleName, policies, schema, schemaText, ruleId, profile, controls, probes:{count, agreed}, diagnostics, sourceHash}`；不可导出时 HTTP 200 + `exportable:false` + 诊断（`policies` / `schema` / `schemaText` 为 null）。
   `schemaText` 是经严格校验并计入审计 `schemaHash` 的 schema 原文，`policies` 同理对应 `policiesHash`；调用方原样保存这两个字符串即可按 SHA-256 与审计链对账。`schema` 是同一内容的解析形态，仅为兼容保留，重新序列化后键序与转义可能不同，哈希不再相等。`moduleName` 为编译器给出的模块名（编译失败时为 null），供下载文件命名。
-- **鉴权**：端点要求可验证身份（aster-cloud 的 HMAC 内部调用或 API Key），纳入 `ApiKeyAuthFilter` 与 `InternalCallerFilter` 的双通道保护；不接受匿名或仅凭 `X-Tenant-Id` 的调用。
+- **可导出检查（aster-cloud#786）**：`POST /api/v1/policies/export/cedar/check`，入参与导出相同（`claimedRef` 接受但忽略），入参校验、鉴权、角色、结构词别名信任与版本模式租户隔离均与导出一致。只做编译、与导出同一套候选规则选择（指定 `functionName` 即该规则，否则为全部通过 GuardShape 的规则）和逐候选的核心翻译；不做 Cedar 严格校验与探针比对，不写审计，不占导出并发闸，代价与 `/compile` 同级。出参 `{exportable, rules, diagnostics, sourceHash, scopesHash}`：`rules` 为翻译成功的规则规范名（声明顺序），`exportable` 恒等于其非空；多条可导出时全部列出，真实导出仍要求调用方指定其一。不可导出时 `diagnostics` 为编译错误、E720（无 guard 形态规则 / 指定函数不存在）或各候选的翻译诊断。它是必要条件检查：E723/E724 是编译器缺陷信号，只有真实导出才能发现，真实导出仍是唯一权威。用独立路径而非在导出请求体加 `dryRun`：旧版 aster-api 忽略未知字段，会把探测当作一次真实的留痕导出。aster-cloud 详情页加载时调用它决定是否显示「导出为 Cedar」，绝不以真实导出当探测。
+- **鉴权**：导出与可导出检查两个端点都要求可验证身份（aster-cloud 的 HMAC 内部调用或 API Key），纳入 `ApiKeyAuthFilter` 与 `InternalCallerFilter` 的双通道保护；不接受匿名或仅凭 `X-Tenant-Id` 的调用。
 - **审计**：每次成功导出都在审计哈希链追加 `POLICY_EXPORTED` 事件：源码 SHA-256、`target:"cedar"`、策略文本与 schema 各自 SHA-256、规则 id、探针条数；入参为已保存版本时附版本 id，调用方另可附自述引用（如 aster-cloud 的策略 id 与版本号，标为 `claimedRef`，未经 aster-api 核验）。哈希键加入审计元数据的身份键白名单，避免被 PII 脱敏误改。
 - **aster-cloud 版本不在 aster-api**：cloud 的策略版本存在 cloud 自己的库里，详情页导出走源码模式（源码、别名集、按内容检测的语言）并附 `claimedRef`。
 - **结构词别名**：源码模式可带 `allowStructural`，与编译端点同一信任口径——仅 HMAC 已验签的内部调用方声明 `true` 时，结构词别名（RETURN/IF 等）按已授权编译；API key 调用方传 `true` 被忽略。aster-cloud 只对创建版本时已核对授权、冻结进版本的别名集声明 `true`。版本模式恒按未授权编译（aster-api 自存版本保存时即按未授权校验，不含结构词别名）。（#400）
@@ -144,6 +145,7 @@ Aster `allow` ⇔ Cedar `Allow`；其余结论 ⇔ Cedar `Deny` 且决定性策�
 - **导出并发闸（用户批准，2026-10-13）**：导出含逐探针双引擎求值，属重计算；仿 `/evaluate-source` 的信号量模式，同时进行的导出数受 `aster.cedar.export.max-concurrent` 限制（默认 2），占满时立即返回 503 + `Retry-After: 1`，错误码 `cedar_export_busy`；aster-cloud 路由原样透传 503，面板显示服务端提示。限流只计请求数、不限并发工作量，故二者并存。
 - **下载件与审计对账**：面板原样下载响应中的 `policies` 与 `schemaText`，不做任何重新序列化，两个文件的 SHA-256 分别等于审计 `policiesHash` / `schemaHash`。§9.2 中「紧凑 JSON」的修复只在常见名称下成立：JS 会把整数形态的键提前，控制字符转义的大小写也与 Jackson 不同，因此终审后改为原样下载 `schemaText`。
 - **glibc malloc arena（终审 M3，2026-10-13）**：glibc 默认按线程分配 arena（上限 8×核数），原生分配（JIT、Truffle、Cedar FFI）会推高 RSS，`Dockerfile.jvm` 因此设 `MALLOC_ARENA_MAX=2`。压测条件：镜像 linux/arm64，`--memory 512m --cpus 0.5`，`JAVA_OPTS=-Xmx384m -Xms128m`（生产 Pod 规格），连 sdd-pg/sdd-redis；2 个并发线程持续导出 `guard-cedar-sample.aster`（HMAC 内部通道，关闭限流）约 2 分钟。结果：93 次导出全部 200，探针全部一致，没有 503；`podman stats` 峰值 363 MB，cgroup `memory.peak` 377 MB（≈360 MiB），java 进程 VmHWM 354 MiB；`oom_kill` 为 0，没有 OOMKill。对照组为同一镜像在进程内 unset 该变量（容器可见 5 核）：145 秒内 65 次导出全部成功，峰值 352 MB，cgroup 峰值 363 MB。在这一负载下两组差别不大，设该变量是预防性的：线程数更多或核数更多的节点上，arena 增长的风险更高。
+- **可导出检查端点（aster-cloud#786，2026-11-16）**：详情页需要在加载时就知道是否提供导出，而真实导出既重（并发闸、严格校验、最多 512 次双引擎探针）又在成功时写 `POLICY_EXPORTED` 审计，不能当探测用；因此新增 §6 所述 `/check` 子路径，与导出共用编译与候选选择代码（`CedarExportService.check`），不纳入导出并发闸。
 
 ### 9.2 栈验收记录（2026-10-13，本地 podman 全栈）
 
