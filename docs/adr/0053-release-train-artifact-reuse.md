@@ -4,7 +4,7 @@
 - 日期：2026-11-05
 - 相关：ADR 0023（多模块发布治理 / 发布列车）、aster-lang-platform#82 / #85 / #89、aster-lang-test#168
 - 实现：aster-cloud/aster-lang-platform PR（分支 `feat/train-artifact-reuse`）、wontlost-ltd/aster-api PR（同名分支）
-- 修订：[A1 列车在 L4 接管 aster-api 的 pin bump](0053-amendment-1-train-owns-api-pin.md)（ACCEPTED，2026-11-15；改动 §6/§7/§13）
+- 修订：[A1 列车在 L4 接管 aster-api 的 pin bump](0053-amendment-1-train-owns-api-pin.md)（ACCEPTED，2026-11-15；改动 §6/§7/§13）；[A2 发布 run 不再重跑测试，改为要求 main CI 已通过](0053-amendment-2-release-requires-main-ci.md)（PROPOSED，2026-11-16；改动 §1.1/§11/§13）
 
 ---
 
