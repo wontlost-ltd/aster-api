@@ -1,6 +1,6 @@
 # ADR 0053 修订 A2：发布 run 不再重跑测试，改为要求 main CI 已对发布的 commit 通过
 
-- 状态：**PROPOSED**（2026-11-16）
+- 状态：**ACCEPTED**（2026-11-16，含可选的 aster-api CI 拆分）
 - 日期：2026-11-16
 - 修订对象：[ADR 0053](0053-release-train-artifact-reuse.md) §1.1（引擎仓发布 run 的现状）、§11 第 2 条（「ts 发布复用 main CI 结果」被否决）、§13（迁移）；[修订 A1](0053-amendment-1-train-owns-api-pin.md) 不变
 - 相关：ADR 0023（发布列车）、aster-lang-ts#318 / #319（ts 2.0.0 发布 run 因测试环境两次失败）、eco-1.0.47（run 43648121415）、eco-1.0.48（run 43803509463）
