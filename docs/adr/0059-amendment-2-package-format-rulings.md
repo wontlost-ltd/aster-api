@@ -18,5 +18,6 @@ T1 把包格式写成可执行夹具时，发现 ADR 与计划有若干处没有
 | R7 | 输入类型映射：Int 为 int32（超出 `INPUT_INVALID`）；Long 为安全整数 token 或 int64 十进制字符串；Decimal 字符串至多 80 位数字；List / Map&lt;Text,V&gt; / Maybe（`null` 为 None）/ 无载荷 Enum（变体名）的形态；Result、非 Text 键 Map、嵌套 Maybe 不能作为输入（导出以 E733 拒绝）；严格 JSON（无 BOM、无重复键、无尾随内容、深度 ≤ 64、≤ 16 MiB） | Truffle Int 为 32 位（整数宽度一致性另见 aster-cloud/aster-lang-truffle#183）；ts decimal.js `precision: 80`；Jackson 与 `JSON.parse` 的缺省宽容度不同 |
 | R8 | 信任锚：原始 `--pubkey` 不看 kid；JWK 形态带 kid 时必须相符；锚文件不合法、`--jwks` 与 `--pubkey` 同时给出、重复选项、`--timeout` 语法错误一律 `USAGE` | 两侧参数解析库（cac / picocli）的缺省行为不同 |
 | R9 | 值规范 JSON 嵌套层级上限 64（与 ts `SERIALIZE_MAX_DEPTH` 相同），超出与含孤立代理项的字符串为 `EVAL_ERROR`；Decimal 值为去掉末尾 0 的普通写法 | JVM 侧原本没有深度上限 |
+| R10 | manifest 中所有数字必须是 ±(2⁵³−1) 内的整数（schema 给出 maximum；用任意精度整数读入的实现也必须拒绝超出者）；zip 先按文件大小判 64 MiB 再读入 | 规范 JSON 的数字域只到安全整数；JVM 用 BigInteger 读入时不会自然失败 |
 
 ADR 0031（错误码单一来源）：`PROBE_MISMATCH` 是 CLI 退出信封里的码，不是编译诊断码，不进 E 码表；若日后要在平台侧展示，再按 ADR 0031 登记。
