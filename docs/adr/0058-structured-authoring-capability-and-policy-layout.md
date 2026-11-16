@@ -548,7 +548,7 @@ interface PolicyLayout { v: 1; spans: LayoutSpan[] }
 - **LayoutMap**：§7.5 每个错误码的正反例；三态规则（沿用、丢弃并返回 `layoutDropped`、显式 null）；无权用户提交 layout 403；读取复验（篡改 `layout` 或 `content` 后不渲染 display）；`sourceEnvelopeSha256` 附与不附 layout 相同；演示编译测试改用包导出后仍通过；位置映射往返不变式。
 - **编辑器**：能力为假时快照逐字节不变；各标签页组件测试；插入动作在 en / de / zh 生成可编译源码。
 - **端到端**（本地栈）：授予用户 → 用表单建结构体 → 插入词汇术语 → 预览与编译结果一致；附 layout → 并排同步 → 审批者首先看到 canonical；撤销后已有策略仍可执行。
-- **本地验证命令**：cloud `pnpm run typecheck`、单元测试、集成测试（PG）、相关 e2e；aster-lang-ts `npm test` 与 golden 测试。
+- **本地验证命令**：cloud `pnpm exec tsc --noEmit`、单元测试、集成测试（PG）、相关 e2e；aster-lang-ts `npm test` 与 golden 测试。
 
 ---
 
