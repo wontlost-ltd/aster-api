@@ -1,6 +1,6 @@
 # ADR 0058：Cloud 结构化编写 —— 用户 / 团队能力授权模型与策略的 LayoutMap
 
-- 状态：**PROPOSED**（2026-11-16 起草，待 Codex 审核与用户确认）
+- 状态：**ACCEPTED**（2026-11-16，用户授权按推荐方案裁决；Codex 审核第三轮 94 分通过）
 - 提出：2026-11-16；来源 wontlost-ltd/aster-api#550（本 ADR 的 issue）与其「产品决策」评论，伞形 issue wontlost-ltd/aster-cloud#791
 - 决策者：产品负责人已于 2026-11-16 拍板六项（§3）；本 ADR 在其上补齐数据模型、执法点、LayoutMap 存储与分期
 - 相关：ADR 0014 / 0051（领域词汇；0051 R57 规定类型别名与导入别名的命名空间）、ADR 0022（关键词别名与 `StructuralAliasGrant`）、ADR 0049（AI 工作台准入 `User.aiWorkspaceEnabled`）、ADR 0015 §5 与 ADR 0017 §3（团队资源按团队 owner 的套餐计）、ADR 0028（显式块定界，互补）、ADR 0037 §10 与 ADR 0038（SourceIR 与 LayoutMap 正交；transform 层 DEFERRED）、ADR 0047（Cedar 导出）
@@ -564,8 +564,8 @@ interface PolicyLayout { v: 1; spans: LayoutSpan[] }
 
 ---
 
-## 14. 待用户确认的问题
+## 14. 已决问题（2026-11-16，用户授权按推荐方案裁决）
 
-1. **团队 `admin` 角色能否委派？** 本 ADR 只允许 `Team.ownerId`（D5 的字面意思）。若要放开给 admin，只需改 §4.6 的身份判定。
-2. **阶段 3 后，结构词别名与 AI 工作台是否也开放团队 owner 委派？** 本 ADR 默认关闭（注册项 `teamDelegation: false`）。
-3. **能力的产品名称**：键名暂定 `structured_authoring`，界面文案待定。
+1. **团队 `admin` 角色能否委派？** 否。只有 `Team.ownerId` 可以委派（§4.6）。日后需要时可放开，只改 §4.6 的身份判定。
+2. **阶段 3 后，结构词别名与 AI 工作台是否开放团队 owner 委派？** 否，保持关闭（注册项 `teamDelegation: false`，§4.1、§9.3）。
+3. **能力的产品名称**：「Structured Authoring」；zh「结构化编写」、de「Strukturiertes Verfassen」、hi「संरचित लेखन」。键名 `structured_authoring`。
