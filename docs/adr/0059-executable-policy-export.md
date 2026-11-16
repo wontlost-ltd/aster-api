@@ -140,12 +140,14 @@ zip 根目录名为 `<moduleName>-v<version>-<target>-<mode>/`（`target ∈ {no
 | 命令 | 作用 |
 |---|---|
 | `aster compile <pkg\|file.aster> [--locale] [--alias-set] [--vocabulary] [--out]` | 源码 → 规范 Core IR v2 字节；给包目录时编译输入一律取自 manifest |
-| `aster run <pkg> [--entry <fn>] --input <file\|-> [--timeout 5s] [--pubkey <file>\|--jwks <file\|url>] [--allow-unsigned]` | 完整性与签名检查（同 `verify` 的前两步，§6.2）→ 取 IR（A 读 `compiled/core.json`；B 本地编译并比对 `coreIr.sha256`）→ 按 `schema/input.json` 校验输入 → 求值 → stdout 输出 `{"ok":true,"value":…}` 或 `{"ok":false,"error":{code,message}}`（值序列化与 aster-api `/evaluate-json` 同一形态） |
+| `aster run <pkg> [--entry <fn>] --input <file\|-> [--timeout 5s] [--pubkey <file>\|--jwks <file\|url>] [--allow-unsigned]` | 完整性与签名检查（同 `verify` 的前两步，§6.2）→ 取 IR（A 读 `compiled/core.json`；B 本地编译并比对 `coreIr.sha256`）→ 按 `schema/input.json` 校验输入 → 求值 → stdout 输出固定信封（见下） |
 | `aster verify <pkg> [--jwks <url>\|--pubkey <file>] [--allow-unsigned] [--recompile] [--probes]` | 哈希、签名（§6.2）、manifest schema、运行时兼容；`--recompile` 重编译比对；`--probes` 跑 `tests/probes.json` |
 | `aster inspect <pkg>` | 打印入口、输入输出 schema、效果、治理提示、运行时要求 |
 | `aster version` | CLI 版本、引擎、支持的 `formatVersion` / Core IR 版本、toolchainId、内置信任锚的 `kid` 列表 |
 
-退出码：0 成功；1 策略求值错误（`ok:false`）；2 输入不合 schema；3 完整性 / 签名失败；4 包或 IR 不受支持（格式、版本、效果）；5 超时。`run` 不联网，除非显式给出 `--jwks <url>`。
+`run` 的 stdout 恒为同一信封，签名与否不改变形状：`{"ok":true,"value":<V>,"meta":M}` 或 `{"ok":false,"error":{"code":…,"message":…},"meta":M}`；`<V>` 的序列化与 aster-api `/evaluate-json` 结果里的值逐字节相同（§5.3 的共享编解码）；`M = {signed, entry, coreIrSha256, engine, cliVersion, irRecompiled}` 字段恒在。诊断与提示只写 stderr。
+
+退出码：0 成功；1 策略求值错误（`ok:false`）；2 输入不合 schema；3 完整性 / 签名失败；4 包或 IR 不受支持（格式、版本、效果）；5 超时或资源耗尽（`TIMEOUT` / `RESOURCE_EXHAUSTED`）。`run` 不联网，除非显式给出 `--jwks <url>`。
 
 ### 4.2 IR 一致才运行
 
@@ -153,7 +155,7 @@ B 在本地编译后字节与 `coreIr.sha256` 不同 → 退出码 4、错误码
 
 ### 4.3 沙箱与资源
 
-JVM CLI 用生产同一配置（`HostAccess.EXPLICIT`、`IOAccess.NONE`、禁线程 / 进程 / native），**不**沿用 `Runner` 的 `allowAllAccess`。wall-clock 超时（默认 5 s）：JVM 由看门狗线程 `Context.close(true)` 取消；Node 的 `evaluate` 是同步调用，同线程计时器无法打断，所以求值放进 `worker_threads` Worker，主线程超时后 `worker.terminate()`。ts 解释器的步数上限在 CLI 中设为不限（`maxSteps` 取 `Number.MAX_SAFE_INTEGER`），与 Truffle 一样只以 wall-clock 为界，避免两侧因内部计数口径不同而一边报错一边成功。ts 另有写死的调用深度上限 `MAX_CALL_DEPTH = 50`（`interpreter.ts:605`），Truffle 没有对应上限（只受 JVM 栈约束）：P1 把它改为 `evaluate` 选项，CLI 设为 10 000，并把 JS 栈溢出（`RangeError`）捕获为退出码 5 的资源耗尽；浏览器与 cloud 现有调用不变。深度递归仍可能在两侧于不同深度耗尽资源，这属于 §5.3 明确排除在承诺之外的资源类结果。顶层允许效果为空（全拒），与 `AsterRootNode` 现状一致。
+JVM CLI 用生产同一配置（`HostAccess.EXPLICIT`、`IOAccess.NONE`、禁线程 / 进程 / native），**不**沿用 `Runner` 的 `allowAllAccess`。wall-clock 超时（默认 5 s）：JVM 由看门狗线程 `Context.close(true)` 取消；Node 的 `evaluate` 是同步调用，同线程计时器无法打断，所以求值放进 `worker_threads` Worker，主线程超时后 `worker.terminate()`。ts 解释器的步数上限在 CLI 中设为不限（`maxSteps` 取 `Number.MAX_SAFE_INTEGER`），与 Truffle 一样只以 wall-clock 为界，避免两侧因内部计数口径不同而一边报错一边成功。ts 另有写死的调用深度上限 `MAX_CALL_DEPTH = 50`（`interpreter.ts:605`），Truffle 没有对应上限（只受 JVM 栈约束）：P1 把它改为 `evaluate` 选项，CLI 设为 10 000，资源耗尽在解释器内部归类：超过深度上限与在函数调用边界捕获到的 JS 栈溢出（V8 的 `RangeError: Maximum call stack size exceeded`，只认这一种，由解释器在调用边界识别）统一抛类型化的 `ResourceExhaustedError`，Worker 据此报 `error.code = "RESOURCE_EXHAUSTED"`、退出码 5；其他 `RangeError` 及一切求值错误仍是退出码 1；浏览器与 cloud 现有调用不变。深度递归仍可能在两侧于不同深度耗尽资源，这属于 §5.3 明确排除在承诺之外的资源类结果。顶层允许效果为空（全拒），与 `AsterRootNode` 现状一致。
 
 ### 4.4 实现落点与分发
 
@@ -182,7 +184,7 @@ JVM CLI 用生产同一配置（`HostAccess.EXPLICIT`、`IOAccess.NONE`、禁线
 | E732 | 任一 `Name`（不论出现在调用目标、实参还是其他位置）解析不到：模块内函数、局部 / 参数 / lambda 绑定、类型构造器、或**目标引擎导出白名单**中的 builtin。白名单 = 目标引擎已实现的纯 builtin（Node：ts `BUILTIN_ARITY` 键集；JRE：Truffle `Builtins` 去掉 `IO.*`），以生成文件随引擎发布，并由 parity 测试保证两份表与实现同步 | 闭世界、失败即拒：解析不了的名字一律视为不可导出；包能导出就必须能跑完 |
 | E733 | 入口参数或返回类型无法生成 JSON Schema（函数类型等） | `run --input` 无法表达 |
 
-另：无可执行版本 → cloud 409（同 ADR 0047 §6，只导出 secure-execute 默认会执行的 APPROVED 版本；不导出草稿，否则等于绕过审批）。超限 → E734（§9）。
+另：无可执行版本 → cloud 409（建议缺省，待 §12.1 Q5 确认：同 ADR 0047 §6，只导出 secure-execute 默认会执行的 APPROVED 版本；不导出草稿，否则等于绕过审批）。超限 → E734（§9）。
 
 ### 5.2 平台外行为
 
@@ -203,7 +205,7 @@ JVM CLI 用生产同一配置（`HostAccess.EXPLICIT`、`IOAccess.NONE`、禁线
 
 ### 6.1 可复现
 
-zip 只由 aster-api 一处实现（`java.util.zip`，JDK 版本随镜像固定）：条目按路径字节序；mtime 固定 1980-01-01T00:00:00；权限 0644（`run.sh` 0755）；无 extra field；deflate 级别固定。影响字节的输入全集 = （源码 envelope 五段、版本 `claimedRef`、target、mode、uiLocale〔README 语言〕、运行时锁文件、探针生成器版本、`nodeCheck`〔cloud 导出与 API Key 导出不同〕、导出密钥 `kid`）；Ed25519 签名是确定性的，签名文件不含时间。元组相同 → zip 字节相同。测试：同一元组导出两次 SHA-256 相同；改其中任一项，manifest 哈希随之变化。
+zip 只由 aster-api 一处实现（`java.util.zip`，JDK 版本随镜像固定）：条目按路径字节序；mtime 固定 1980-01-01T00:00:00；权限 0644（`run.sh` 0755）；无 extra field；deflate 级别固定。影响字节的输入全集 = （源码 envelope 五段、版本 `claimedRef`、target、mode、uiLocale〔README 语言〕、运行时锁文件、探针生成器版本、`nodeCheck`〔cloud 导出与 API Key 导出不同〕、导出密钥 `kid`）；Ed25519 签名是确定性的，签名文件不含时间。元组相同 → zip 字节相同。测试分两条：①元组完全相同 → 两次导出的 zip SHA-256 相同；②元组中**体现在 manifest 里**的项（envelope、`claimedRef`、target、mode、运行时版本与哈希、`probesSha256`、`nodeCheck`、载荷哈希）任一改变 → manifest 哈希改变。`kid` 只影响 `manifest.sig.json`；uiLocale 只影响 README（经 `files[]` 间接改变 manifest）；探针生成器版本只在探针内容变了时才改变字节，不单独断言。
 
 ### 6.2 签名
 
