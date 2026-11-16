@@ -150,7 +150,9 @@ class GuardApprovalInputResourceTest {
     assertThat(r.jsonPath().getMap("input.context.email")).isEqualTo(Map.of("$pii", Map.of("level", "L2",
         "category", "email")));
     assertThat(r.jsonPath().getInt("input.context.amount")).isEqualTo(250000);
-    assertThat(r.jsonPath().getMap("input.context.extra")).isEqualTo(Map.of("$pii", Map.of("level", "unknown")));
+    assertThat(r.jsonPath().getMap("input.context.extra")).isNull();
+    assertThat(r.jsonPath().getMap("input.context.$undeclared"))
+        .isEqualTo(Map.of("$pii", Map.of("level", "unknown")));
     assertThat(r.jsonPath().getString("inputSnapshotHash")).hasSize(64);
     assertThat(r.jsonPath().getString("marksSource")).isEqualTo("version");
     assertThat(r.jsonPath().getString("inputBinding")).isEqualTo("direct");
@@ -206,7 +208,9 @@ class GuardApprovalInputResourceTest {
     Response first = reveal(TENANT, a.id.toString(), "u-dpo", DPO);
     assertThat(first.statusCode()).as(first.asString()).isEqualTo(200);
     assertThat(first.jsonPath().getString("input.context.email")).isEqualTo("applicant@example.com");
-    assertThat(first.jsonPath().getMap("input.context.extra")).isEqualTo(Map.of("$pii", Map.of("level", "unknown")));
+    assertThat(first.jsonPath().getMap("input.context.extra")).isNull();
+    assertThat(first.jsonPath().getMap("input.context.$undeclared"))
+        .isEqualTo(Map.of("$pii", Map.of("level", "unknown")));
     assertThat(first.jsonPath().getBoolean("revealed")).isTrue();
     Response second = reveal(TENANT, a.id.toString(), "u-dpo", DPO);
     assertThat(second.statusCode()).isEqualTo(200);

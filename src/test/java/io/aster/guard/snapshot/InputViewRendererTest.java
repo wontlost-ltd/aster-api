@@ -91,11 +91,122 @@ class InputViewRendererTest {
     assertThat(items.get(1)).isEqualTo(InputViewRenderer.unknown());
   }
 
+  private static final Map<String, Object> UNKNOWN = Map.of("$pii", Map.of("level", "unknown"));
+
   @Test
-  void undeclaredSubtreeHidesKeys() {
-    Object extra = context(render(sample(), false)).get("extra");
-    assertThat(extra).isEqualTo(Map.of("$pii", Map.of("level", "unknown")));
-    assertThat(extra.toString()).doesNotContain("k@x.io");
+  void undeclaredKeysCollapseIntoSingleEntry() {
+    Map<String, Object> ctx = sample();
+    ctx.put("ssn-123-45-6789", "secret-a");
+    ctx.put("secret@x.io", Map.of("deep", "secret-b"));
+    InputViewRenderer.RenderedView v = render(ctx, false);
+    assertThat(context(v)).containsOnlyKeys("amount", "email", "items", "$undeclared");
+    assertThat(context(v).get("$undeclared")).isEqualTo(UNKNOWN);
+    assertNoneOf(v, "extra", "k@x.io", "ssn-123-45-6789", "secret@x.io", "deep", "secret-a", "secret-b");
+  }
+
+  @Test
+  void noUndeclaredEntryWhenAllKeysDeclared() {
+    Map<String, Object> ctx = sample();
+    ctx.remove("extra");
+    assertThat(context(render(ctx, false))).containsOnlyKeys("amount", "email", "items");
+  }
+
+  @Test
+  void undeclaredKeysInsideDeclaredRecordCollapse() {
+    Map<String, Object> item = new LinkedHashMap<>();
+    item.put("sku", "SKU-1");
+    item.put("leak-name-1", 1);
+    item.put("leak-name-2", Map.of("leak-name-3", 2));
+    Map<String, Object> ctx = sample();
+    ctx.put("items", List.of(item, Map.of("sku", "SKU-2", "leak-name-4", 4)));
+    InputViewRenderer.RenderedView v = render(ctx, false);
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> items = (List<Map<String, Object>>) context(v).get("items");
+    assertThat(items).hasSize(2);
+    assertThat(items.get(0)).containsOnlyKeys("sku", "$undeclared").containsEntry("$undeclared", UNKNOWN);
+    assertThat(items.get(1)).containsOnlyKeys("sku", "$undeclared");
+    assertNoneOf(v, "leak-name-1", "leak-name-2", "leak-name-3", "leak-name-4");
+  }
+
+  @Test
+  void undeclaredKeysInNestedObjectsCollapseAtEachLevel() {
+    InputClassification nested = new InputClassification(List.of("context.applicant.age", "context.applicant.home.zip"),
+        List.of());
+    Map<String, Object> home = new LinkedHashMap<>(Map.of("zip", "200000"));
+    home.put("home-secret-key", "x");
+    Map<String, Object> applicant = new LinkedHashMap<>();
+    applicant.put("age", 30);
+    applicant.put("home", home);
+    applicant.put("applicant-secret-key", "y");
+    Map<String, Object> ctx = new LinkedHashMap<>();
+    ctx.put("applicant", applicant);
+    ctx.put("top-secret-key", "z");
+    InputViewRenderer.RenderedView v = InputViewRenderer.render(DECISION, CTX_HASH, action(ctx), nested, "version",
+        "direct", sources(), false, REDACTOR);
+    Map<String, Object> expected = new LinkedHashMap<>();
+    expected.put("applicant", Map.of("age", 30, "home", Map.of("zip", "200000", "$undeclared", UNKNOWN),
+        "$undeclared", UNKNOWN));
+    expected.put("$undeclared", UNKNOWN);
+    assertThat(context(v)).isEqualTo(expected);
+    assertNoneOf(v, "home-secret-key", "applicant-secret-key", "top-secret-key");
+  }
+
+  @Test
+  void ambiguousKeyNamesAreTreatedAsUndeclared() {
+    Map<String, Object> ctx = new LinkedHashMap<>();
+    ctx.put("amount", 1);
+    ctx.put("items[]", "a");
+    ctx.put("a\u0001b", "b");
+    ctx.put("", "c");
+    InputViewRenderer.RenderedView v = render(ctx, false);
+    assertThat(context(v)).containsOnlyKeys("amount", "$undeclared");
+  }
+
+  @Test
+  void keyNamedLikeDeclaredPathCannotImpersonateIt() {
+    // 键 "items.sku" 拼出的路径是 context.items.sku，而不是 context.items[].sku
+    Map<String, Object> ctx = new LinkedHashMap<>();
+    ctx.put("items.sku", "impersonator-value");
+    InputViewRenderer.RenderedView v = render(ctx, false);
+    assertThat(context(v)).isEqualTo(Map.of("$undeclared", UNKNOWN));
+  }
+
+  /** 视图（含 piiMarks）里不得出现这些字符串。 */
+  private static void assertNoneOf(InputViewRenderer.RenderedView v, String... needles) {
+    String rendered = v.input().toString() + v.piiMarks();
+    for (String needle : needles) {
+      assertThat(rendered).as("view contains %s", needle).doesNotContain(needle);
+    }
+  }
+
+  @Test
+  void hashedFormDoesNotDependOnUndeclaredKeyNames() {
+    // 哈希载荷只含渲染后的视图：未声明键名不同、值不同，哈希必须相同，否则键名泄进了哈希体。
+    Map<String, Object> a = sample();
+    a.put("name-alpha", Map.of("n1", 1));
+    Map<String, Object> b = sample();
+    b.put("name-beta", "scalar");
+    b.put("name-gamma", List.of(1, 2));
+    assertThat(render(a, false).hash()).isEqualTo(render(b, false).hash());
+    assertThat(render(a, false).sizeBytes()).isEqualTo(render(b, false).sizeBytes());
+  }
+
+  @Test
+  void nonObjectContextIsUnknown() {
+    for (Object bad : new Object[] {"scalar-secret", List.of(Map.of("k-secret", 1))}) {
+      Map<String, Object> a = action(null);
+      a.put("context", bad);
+      InputViewRenderer.RenderedView v = InputViewRenderer.render(DECISION, CTX_HASH, a, CLS, "evaluation",
+          "evaluated", sources(), false, REDACTOR);
+      assertThat(v.input().get("context")).isEqualTo(UNKNOWN);
+      assertNoneOf(v, "scalar-secret", "k-secret");
+    }
+  }
+
+  @Test
+  void pinnedViewHashVector() {
+    // 钉死掩码视图的哈希（已用 Python 对排序紧凑 JSON 独立复算一致）：未声明键合并为 $undeclared 后的 v1 规则输出；规则再变须同步升 MASK_RULES 并更新此向量。
+    assertThat(render(sample(), false).hash()).isEqualTo("bece624c20aa4c6be370512262c0b34faef1ba3ab69a8c807e03f42f238b458e");
   }
 
   @Test
@@ -129,7 +240,7 @@ class InputViewRendererTest {
   void revealRestoresOnlyDeclaredPii() {
     InputViewRenderer.RenderedView v = render(sample(), true);
     assertThat(context(v)).containsEntry("email", "a@b.cc");
-    assertThat(context(v).get("extra")).isEqualTo(Map.of("$pii", Map.of("level", "unknown")));
+    assertThat(context(v)).doesNotContainKey("extra").containsEntry("$undeclared", UNKNOWN);
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> items = (List<Map<String, Object>>) context(v).get("items");
     assertThat(items.get(0)).containsEntry("note", "vip customer");
@@ -141,8 +252,8 @@ class InputViewRendererTest {
   void marksSourceNoneHidesAllContext() {
     InputViewRenderer.RenderedView v = InputViewRenderer.render(DECISION, CTX_HASH, action(sample()), CLS, "none",
         "unbound", sources(), true, REDACTOR);
-    assertThat(context(v)).containsOnlyKeys("amount", "email", "items", "extra");
-    assertThat(context(v).values()).allMatch(InputViewRenderer.unknown()::equals);
+    assertThat(context(v)).isEqualTo(Map.of("$undeclared", UNKNOWN));
+    assertNoneOf(v, "amount", "email", "items", "extra", "k@x.io");
     assertThat(v.piiMarks()).isEmpty();
     assertThat(v.revealedFields()).isZero();
   }
