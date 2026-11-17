@@ -59,10 +59,12 @@ jobs:
       docs-only: ${{ steps.docs.outputs.docs-only }}
     steps:
       - id: docs
-        uses: aster-cloud/aster-lang-platform/.github/actions/docs-only@main
+        uses: aster-cloud/aster-lang-platform/.github/actions/docs-only@ci/docs-only-skip
         with:
           extra-docs: |
             .claude/*
+          # 仅测试 PR：只比较最后一个提交，不合并
+          base: ${{ github.event.pull_request.head.sha }}~1
 
   # ── 1. 选 runner：本地优先，不可用则托管 ──────────────────────────────
   # ★GitHub 没有原生的"本地优先否则托管"：只写 runs-on: [self-hosted,…] 时，runner
