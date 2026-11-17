@@ -12,11 +12,18 @@
 #   DEPLOY_RESULT / PIN_RESULT 两个 job 的结论
 #   PINNED                     image-pin-pr 输出：开 PR 步骤成功为 true
 #   FINAL_STALE                image-pin-pr 输出：Final stale gate 判定过时为 true
+#   DOCS_ONLY                  changes 输出：本 commit 与已部署的基线只差仓库文档时为 true
 # 退出码：0 闭环成立或按设计不 pin；1 闭环断裂。
 set -euo pipefail
 
-echo "event=${EVENT} ref=${REF} trainId='${TRAIN_ID:-}' stale=${STALE:-}"
+echo "event=${EVENT} ref=${REF} trainId='${TRAIN_ID:-}' stale=${STALE:-} docsOnly=${DOCS_ONLY:-}"
 echo "deploy=${DEPLOY_RESULT} image-pin-pr=${PIN_RESULT} pinned=${PINNED:-} finalStale=${FINAL_STALE:-}"
+
+# docs-only：与已部署 commit 只差文档，按设计不构建、不部署、不 pin（deploy 必然 skipped）
+if [ "${DOCS_ONLY:-}" = "true" ] && [ "${DEPLOY_RESULT}" = "skipped" ]; then
+  echo "本次只动了仓库文档（相对已部署的基线），按设计不部署、不开 pin PR——集群不换版本属预期"
+  exit 0
+fi
 
 # deploy 自己没成功时不归本 job 管（它已经红了，别叠加噪音）
 if [ "${DEPLOY_RESULT}" != "success" ]; then

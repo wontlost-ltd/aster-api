@@ -55,6 +55,39 @@ env:
   DOCKER_BUILD_RECORD_UPLOAD: "false"
 
 jobs:
+  # ══ 只动仓库文档的 push：不构建、不部署、不开 pin PR ═══════════════════════════
+  # 判定规则见 aster-lang-platform/.github/actions/docs-only。仍然**不设 paths-ignore**（理由见上方 on.push），
+  # 每个 main commit 照常有自己的 run，只是本 job 判定「本 commit 与集群上已部署的 commit 只差文档」时，
+  # 下游全部跳过。
+  #
+  # ★比较基准不是 push 的 before，而是「最近一次真正开出 pin PR 的 deploy run」的 commit（基线）：
+  #   代码提交 A 的 deploy 被 concurrency 挤掉（pending 被取消）、或被 stale-guard 判过时，紧随其后的
+  #   docs 提交 B 若只和 A 比就不部署 → A 的代码永不上线（上面 on.push 记录的死角）。和基线比，
+  #   A 的代码在 diff 里 → B 完整构建并部署。基线判据：deploy 成功且 image-pin-pr 的开 PR 步骤成功
+  #   （stale 闸门跳过开 PR 时该步骤是 skipped，不算）。找不到基线 → 完整部署。
+  #   本 job 自身失败（如 action 取不到）→ 下游全部 skipped、run 为红：不部署但可见，不会静默。
+  #
+  # workflow_dispatch（列车 trainId / 手工补部署）一律完整运行，不受影响；列车 A1 跟随的是 pin
+  # merge commit 的 push deploy，pin commit 改的是构建文件，永远不是 docs-only。
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read      # 读本 workflow 历史 run 的 job / 步骤结论（基线）
+    outputs:
+      docs-only: ${{ steps.docs.outputs.docs-only }}
+    steps:
+      - id: docs
+        uses: aster-cloud/aster-lang-platform/.github/actions/docs-only@main
+        with:
+          extra-docs: |
+            .claude/*
+          baseline-workflow: deploy.yml
+          baseline-jobs: |
+            ^deploy$
+            ^image-pin-pr$ :: Open/update image-pin PR to k3s
+
   # ══ 复用探测（ADR 0053 §4/§5）══════════════════════════════════════════════
   # 不检出兄弟仓源码，几秒内算出构建复用键 key（aster-api commit + 7 个兄弟仓 tag commit + JDK），
   # 然后按优先级找可复用的产物：
@@ -65,6 +98,10 @@ jobs:
   #   3. 都没有 → 照旧完整 build&test（向后兼容的缺省路径）
   # 任何探测失败（API 错误、签名不符、tag 不存在）都落到 3：复用只是加速，绝不放宽门禁。
   reuse-probe:
+    needs: changes
+    # docs-only 时跳过（build-and-test / deploy / image-pin-pr / cleanup 随之 skipped，pin-closure-guard 判通过）。
+    # changes 失败时本 job 也被跳过（隐式 success()），run 为红——宁可不部署也不部署没构建过的东西。
+    if: needs.changes.outputs.docs-only != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -577,7 +614,7 @@ jobs:
   #
   # if: always() —— 必须，否则 image-pin-pr 被 skip 时本 job 也跟着 skip，白守。
   pin-closure-guard:
-    needs: [deploy, image-pin-pr]
+    needs: [changes, deploy, image-pin-pr]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -596,6 +633,7 @@ jobs:
           PIN_RESULT: ${{ needs.image-pin-pr.result }}
           PINNED: ${{ needs.image-pin-pr.outputs.pinned }}
           FINAL_STALE: ${{ needs.image-pin-pr.outputs.final_stale }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs-only }}
         run: bash scripts/ci/pin-closure-guard.sh
 
   # ══ 清理（ADR 0053 §9）══════════════════════════════════════════════════════

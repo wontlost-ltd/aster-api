@@ -45,12 +45,34 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  # ── 0. 只动仓库文档时跳过构建与测试 ────────────────────────────────────
+  # 判定规则见 aster-lang-platform/.github/actions/docs-only（docs/**、仓库级 *.md、LICENSE 等；
+  # src/** 下的任何文件、未知文件一律算代码 → 完整运行）。★不能用 workflow 级 paths-ignore：
+  # 整个 workflow 不跑时 ci-result / Guard bypass suite (#466) 两个必需检查永不报告，PR 卡 BLOCKED。
+  # 所以 workflow 照常触发，docs-only 时 pick-runner / build-* 跳过，两个必需检查由下面的汇总作业
+  # 判为 success。本 job 失败或判不出时输出为空 → 按代码处理（完整运行），绝不因探测故障跳过测试。
+  # push 未配基线 → 一律完整运行（docs-only 只作用于 PR；push 上既有的 paths-ignore 不变）。
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs-only: ${{ steps.docs.outputs.docs-only }}
+    steps:
+      - id: docs
+        uses: aster-cloud/aster-lang-platform/.github/actions/docs-only@main
+        with:
+          extra-docs: |
+            .claude/*
+
   # ── 1. 选 runner：本地优先，不可用则托管 ──────────────────────────────
   # ★GitHub 没有原生的"本地优先否则托管"：只写 runs-on: [self-hosted,…] 时，runner
   #   离线会让 job **无限排队**（默认 24h 超时）而不回落，不满足"不可用时启用 GitHub
   #   自带 runner"。故先用一个几秒的托管 probe 查 runner 实况。
   #   probe 自身按分钟取整算 1 min，相对它调度走的 ~12 分钟 build 完全值得。
   pick-runner:
+    needs: changes
+    # changes 失败时输出为空 → 仍然探测并构建（fail-safe）。
+    if: ${{ !cancelled() && needs.changes.outputs.docs-only != 'true' }}
     runs-on: ubuntu-latest
     outputs:
       target: ${{ steps.pick.outputs.target }}
@@ -82,9 +104,10 @@ jobs:
   #   (b) 本地 runner 在线但 job 真的失败/被取消（磁盘满、socket 挂等）。
   # ★用 always() + result 判断而非 failure()：skipped 不是 failure，只写
   #   failure() 会导致情况 (a) 两个 job 都不跑 = CI 静默不执行（假绿）。
+  #   docs-only 时两条路径都不跑（build-local 随 pick-runner 一起 skipped）。
   build-hosted:
-    needs: [pick-runner, build-local]
-    if: always() && needs.build-local.result != 'success'
+    needs: [changes, pick-runner, build-local]
+    if: always() && needs.changes.outputs.docs-only != 'true' && needs.build-local.result != 'success'
     uses: ./.github/workflows/ci-build.yml
     with:
       runs-on: '["ubuntu-latest"]'
@@ -93,9 +116,10 @@ jobs:
   # 作业名即分支保护登记的检查名，不得改动。只判定 ci-build.yml 中「Guard bypass suite (#466)」
   # 步骤的 outcome（只跑 aster-api JUnit guardBypassTest；cloud Playwright 与部署层探针不在其中）。
   # 套件通过而后续步骤失败时本检查为绿、ci-result 为红——两个检查各自说明各自的事实。
+  # docs-only 时两条路径都 skipped，判定脚本据 DOCS_ONLY 判为通过（套件与 PR 改动无关）。
   guard-bypass:
     name: Guard bypass suite (#466)
-    needs: [build-local, build-hosted]
+    needs: [changes, build-local, build-hosted]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -106,32 +130,27 @@ jobs:
         env:
           LOCAL: ${{ needs.build-local.outputs.guard-bypass }}
           HOSTED: ${{ needs.build-hosted.outputs.guard-bypass }}
-        run: bash scripts/ci/guard-bypass-verdict.sh "$LOCAL" "$HOSTED"
+          DOCS_ONLY: ${{ needs.changes.outputs.docs-only }}
+        run: bash scripts/ci/guard-bypass-verdict.sh "$LOCAL" "$HOSTED" "$DOCS_ONLY"
 
   # ── 5. 汇总门禁：给分支保护用的单一必需检查 ────────────────────────────
   # ★必需：build-local / build-hosted 互为条件分支，任一都可能 skipped，无法直接
   #   作为 required check（skipped 会被当成"未运行"而卡住合并）。故用本 job 收敛成
   #   一个确定结论：只要有任意一条路径成功就绿，两条都没成功就红（fail-closed）。
+  #   docs-only：两条路径都因 docs-only 而 skipped 时判为通过（scripts/ci/ci-result-verdict.sh）。
   ci-result:
-    needs: [build-local, build-hosted, guard-bypass]
+    needs: [changes, build-local, build-hosted, guard-bypass]
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
       - name: 判定 CI 结论
         env:
           LOCAL: ${{ needs.build-local.result }}
           HOSTED: ${{ needs.build-hosted.result }}
           GUARD_BYPASS: ${{ needs.guard-bypass.result }}
-        run: |
-          set -euo pipefail
-          echo "build-local=$LOCAL  build-hosted=$HOSTED  guard-bypass=$GUARD_BYPASS"
-          if [[ "$GUARD_BYPASS" != "success" ]]; then
-            echo "::error::CI 失败——Guard 绕过套件检查未通过（guard-bypass=$GUARD_BYPASS）"
-            exit 1
-          fi
-          if [[ "$LOCAL" == "success" || "$HOSTED" == "success" ]]; then
-            echo "✅ CI 通过（至少一条路径成功）"
-            exit 0
-          fi
-          echo "::error::CI 失败——本地与托管两条路径均未成功（local=$LOCAL hosted=$HOSTED）"
-          exit 1
+          DOCS_ONLY: ${{ needs.changes.outputs.docs-only }}
+        run: bash scripts/ci/ci-result-verdict.sh
