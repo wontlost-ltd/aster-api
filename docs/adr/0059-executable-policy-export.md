@@ -4,7 +4,7 @@
 - 提出：2026-11-16；来源 wontlost-ltd/aster-cloud#797（用户需求原文：「Add the function to export ready to execute policy (node and jre, orgininal policy with dedicated runtime or original policy, metadata and common compiler and run cli)」）
 - 相关：ADR 0047（Cedar 导出：只导出可执行版本、探针等价性、`POLICY_EXPORTED` 审计事件，本 ADR 沿用）、ADR 0055（Core IR v2 规范字节）、ADR 0056（双引擎推断统一，豁免表已清空）、ADR 0051 §7（5 段 source envelope）、ADR 0040 §11–§12（Ed25519 + `jcs-sha256/v1` 签名配方、JWKS）、ADR 0054（Guard 执行点）、ADR 0053 / A1（发布列车与 aster-api pin）、ADR 0031（错误码单一来源）
 - 范围：只定格式、命令、边界与分期，不含实现；实施计划另写
-- 修订：[修订 1 P0 实测结论](0059-amendment-1-p0-findings.md)（ACCEPTED，2026-11-16；A0 跨 CLI 比较口径、A1 值规范 JSON、A2 `coreIr.positionFreeSha256` 漂移判据、A3 体积上限 1 MiB / 18 MiB、A4 Worker 栈与资源、A5 导出检查 E737 / E738；改动 §0/§3/§4.1/§4.2/§4.3/§5.1/§5.3/§9/§13）；[修订 2 包格式 v1 裁决](0059-amendment-2-package-format-rulings.md)（ACCEPTED，2026-11-17；R1–R10，实现见 aster-cloud/aster-lang-test#216）
+- 修订：[修订 1 P0 实测结论](0059-amendment-1-p0-findings.md)（ACCEPTED，2026-11-16；A0 跨 CLI 比较口径、A1 值规范 JSON、A2 `coreIr.positionFreeSha256` 漂移判据、A3 体积上限 1 MiB / 18 MiB、A4 Worker 栈与资源、A5 导出检查 E737 / E738；改动 §0/§3/§4.1/§4.2/§4.3/§5.1/§5.3/§9/§13）；[修订 2 包格式 v1 裁决](0059-amendment-2-package-format-rulings.md)（ACCEPTED，2026-11-17；R1–R10，实现见 aster-cloud/aster-lang-test#216）；[修订 3 P2 实施裁决](0059-amendment-3-p2-rulings.md)（ACCEPTED，2026-11-17；P2-R1–P2-R17：#558 先修、导出密钥与锁文件、Core IR 类型 schema 生成器、E739、check / prepare / export 三分、单入口、P2 仅 HMAC 调用）
 
 ---
 
