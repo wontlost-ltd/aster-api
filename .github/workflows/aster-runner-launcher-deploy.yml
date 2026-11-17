@@ -13,7 +13,32 @@ on:
   #   非 main dispatch 会在 verify 阶段失败。launcher 镜像只随 main push。
 
 jobs:
+  # 只动仓库文档的 push：不构建、不签名、不开 pin PR。仍然每个 main commit 都触发（上面 on.push 的理由不变），
+  # 比较基准是「最近一次真正开出 pin PR 的本 workflow run」的 commit，而不是 push 的 before——
+  # 代码提交被 stale 闸门跳过 pin 后紧跟的 docs 提交，diff 里仍含那次代码 → 照常构建并 pin，不留死角。
+  # 判定规则见 aster-lang-platform/.github/actions/docs-only；找不到基线 → 完整运行；本 job 失败 → 下游 skipped、run 为红。
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read      # 读本 workflow 历史 run 的步骤结论（基线）
+    outputs:
+      docs-only: ${{ steps.docs.outputs.docs-only }}
+    steps:
+      - id: docs
+        uses: aster-cloud/aster-lang-platform/.github/actions/docs-only@main
+        with:
+          extra-docs: |
+            .claude/*
+          baseline-workflow: aster-runner-launcher-deploy.yml
+          baseline-jobs: |
+            ^image-pin-pr$ :: Open/update image-pin PR to k3s (launcher digest, LOCK_PATH → aster-runner)
+
   build:
+    needs: changes
+    # docs-only 时跳过（后续 job 经 needs 链随之 skipped）。
+    if: needs.changes.outputs.docs-only != 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write   # cosign keyless OIDC

@@ -78,6 +78,8 @@ jobs:
           bash scripts/ci/verify-artifact-run.test.sh
           # #466：必需检查 `Guard bypass suite (#466)` 的判定脚本（6 例，含「本地红、托管绿」告警）
           bash scripts/ci/guard-bypass-verdict.test.sh
+          # docs-only：必需检查 `ci-result` 的判定脚本（docs-only 时两条路径都 skipped 判通过，其余 fail-closed）
+          bash scripts/ci/ci-result-verdict.test.sh
 
       # workflow 静态检查（review L12）：钉死版本，自建 ARM64 runner 与托管 runner 均可（脚本按架构下载）。
       - name: actionlint

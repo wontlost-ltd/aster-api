@@ -13,7 +13,7 @@ case_() {
   set +e
   out="$(env -i PATH="$PATH" \
     EVENT=push REF=refs/heads/main TRAIN_ID= STALE=false CLIENT_ID=Iv23test \
-    DEPLOY_RESULT=success PIN_RESULT=success PINNED=true FINAL_STALE= \
+    DEPLOY_RESULT=success PIN_RESULT=success PINNED=true FINAL_STALE= DOCS_ONLY= \
     "$@" bash "$SCRIPT" 2>&1)"
   code=$?
   set -e
@@ -37,6 +37,9 @@ case_ "push：开 PR 前 main 前进 → 由新 commit 接手（警告，不失�
 case_ "★job success 但 pinned 为空（步骤被其它条件跳过）→ 断裂" 1 "部署闭环断裂" PINNED=
 case_ "image-pin-pr skipped → 断裂并提示 if 条件不一致" 1 "if: 条件与本脚本" PIN_RESULT=skipped PINNED=
 case_ "image-pin-pr failure → 断裂"                 1 "部署闭环断裂" PIN_RESULT=failure PINNED=
+case_ "docs-only push：deploy skipped → 按设计不 pin" 0 "只动了仓库文档" DOCS_ONLY=true DEPLOY_RESULT=skipped PIN_RESULT=skipped PINNED=
+case_ "★docs-only 却部署成功而没 pin → 仍判断裂（docs-only 不豁免已发生的部署）" \
+      1 "部署闭环断裂" DOCS_ONLY=true PIN_RESULT=skipped PINNED=
 case_ "★该 pin 但未配 CLIENT_ID → 断裂（不再只警告）" 1 "IMAGE_PIN_APP_CLIENT_ID" CLIENT_ID= PIN_RESULT=skipped PINNED=
 case_ "deploy job 过时（stale）→ 按设计不 pin"        0 "stale" STALE=true PIN_RESULT=skipped PINNED=
 case_ "deploy 未成功 → 不归本 job 管"               0 "闭环判定不适用" DEPLOY_RESULT=failure PIN_RESULT=skipped PINNED=

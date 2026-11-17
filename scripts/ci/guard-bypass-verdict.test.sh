@@ -7,11 +7,11 @@ FAILED=0
 PASSED=0
 TOTAL=0
 
-case_() {  # 名称 local hosted 期望退出码 [输出须含]
+case_() {  # 名称 local hosted 期望退出码 [输出须含] [docs-only]
   local out code
   TOTAL=$((TOTAL + 1))
   set +e
-  out=$(bash "$SCRIPT" "$2" "$3" 2>&1); code=$?
+  out=$(bash "$SCRIPT" "$2" "$3" "${6-}" 2>&1); code=$?
   set -e
   if [ "$code" != "$4" ]; then
     echo "  ✗ $1（期望 $4，实际 ${code}：${out}）"; FAILED=1; return
@@ -32,5 +32,10 @@ case_ "两路均失败"                 failure failure 1
 case_ "本地 skipped、托管未跑"     skipped ""      1
 case_ "两路均未跑（空串）"         ""      ""      1
 case_ "本地失败、托管通过：告警"   failure success 0 "::warning::"
+case_ "docs-only：两路均未跑"      ""      ""      0 "只动了仓库文档" true
+case_ "docs-only：两路均 skipped"  skipped skipped 0 "只动了仓库文档" true
+case_ "docs-only 但托管失败"       ""      failure 1 "" true
+case_ "docs-only 但本地取消"       cancelled ""    1 "" true
+case_ "docs-only 探测失败（空）且两路未跑" "" ""   1 "" ""
 echo "guard-bypass-verdict: ${PASSED}/${TOTAL} 通过"
 [ "$FAILED" = 0 ] || exit 1
