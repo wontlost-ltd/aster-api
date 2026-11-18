@@ -288,11 +288,27 @@ jobs:
           docker pull redis:7-alpine &
           wait
 
+      # ADR 0059 P2 T11：导出的策略包须通过 conformance package-v1 参照检查（PackageConformanceReferenceTest）。
+      # 兄弟检出钉在 src/test/resources/package-v1/SOURCE.md 记录的同一提交，夹具副本与参照实现同源。
+      - name: Checkout aster-lang-test (package-v1 reference check)
+        uses: actions/checkout@v7
+        with:
+          repository: aster-cloud/aster-lang-test
+          path: aster-lang-test
+          ref: c7219e201a20c2883885e02c709b751741f0d1b7
+
+      - name: Setup Node.js 24 (package-v1 reference check)
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
       - name: Unit Tests (fast feedback)
         working-directory: aster-api
         run: ./gradlew test --build-cache
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
+          # 参照检查在 CI 必须实际执行：兄弟检出或 node 缺失即失败，而不是静默跳过
+          ASTER_EXPORT_REFERENCE_REQUIRE: "1"
           # 指向上面的 postgres service，让连默认 localhost:5432 的 @QuarkusTest
           # DB 测试稳定可用。integrationTest 步骤不设这些（它走 Testcontainers）。
           DB_JDBC_URL: "jdbc:postgresql://localhost:5432/aster_policy"
