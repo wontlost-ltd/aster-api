@@ -159,11 +159,42 @@ runs:
         # 本 action 只需要一次性拉源码，不需要后续 git 操作 → 关掉持久化。
         persist-credentials: false
 
+    # ★不用 setup-java 的 `cache: gradle`（wontlost-ltd/aster-api#563）：它的键只含构建文件哈希，所有 job
+    #   共用一条，且「先写者胜、精确命中不再写」。main 上最先结束的是只解析一小部分依赖图的 job
+    #   （实测 2026-11-18：aster-replay-runner deploy 的 build job 只跑 :runner:installDist，run 44378257595
+    #   写下 177MB 的条目，PR 侧完整依赖约 330MB），
+    #   之后每个 PR 的 unit / integration / guard-bypass / verify 都精确命中这条残缺缓存，又各自去 Maven Central
+    #   解析缺的那一半，并行时触发 429。
+    #   改为按「workflow + job」分条缓存 Gradle User Home：每条只由解析同一依赖图的 job 写入，不会被别的 job 的
+    #   子集污染。pull_request 只读、其余事件（main 上的 push / schedule，以及 dispatch）写：PR 作用域的条目
+    #   别的 PR 读不到，写了只占 10GB 配额、挤掉 main 的条目；PR 从 main 作用域读同一 job 的条目。
+    #   构建文件变化时按前缀回落到同一 job 的上一条，只补下载差量。
     - uses: actions/setup-java@v5
       with:
         java-version: ${{ inputs.java-version }}
         distribution: ${{ inputs.java-distribution }}
-        cache: gradle
+
+    - name: Restore Gradle dependency cache (read-only)
+      if: ${{ github.event_name == 'pull_request' }}
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: gradle-${{ runner.os }}-${{ runner.arch }}-${{ github.workflow }}-${{ github.job }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/*.versions.toml', '**/versions.properties') }}
+        restore-keys: |
+          gradle-${{ runner.os }}-${{ runner.arch }}-${{ github.workflow }}-${{ github.job }}-
+
+    - name: Restore and save Gradle dependency cache
+      if: ${{ github.event_name != 'pull_request' }}
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: gradle-${{ runner.os }}-${{ runner.arch }}-${{ github.workflow }}-${{ github.job }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/*.versions.toml', '**/versions.properties') }}
+        restore-keys: |
+          gradle-${{ runner.os }}-${{ runner.arch }}-${{ github.workflow }}-${{ github.job }}-
 
     # 发布共享版本目录到 Maven Local（aster-api settings 依赖它）。
     - name: Publish version catalog to Maven Local
