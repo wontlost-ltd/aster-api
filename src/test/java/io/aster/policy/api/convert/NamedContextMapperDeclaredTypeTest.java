@@ -128,6 +128,11 @@ class NamedContextMapperDeclaredTypeTest {
     withNull.put("x", null);
     assertThat(NamedContextMapper.mapContextByDeclaredTypes(withNull, List.of(param("x", maybe(named("Decimal")))), module())
         .positionalArgs()[0]).isNull();
+    // 位置格式的数组实参与含 null 的 Maybe 元素（null 原样保留，不因不可变列表抛 NPE）
+    Object[] withNullElement = {"1.5", null};
+    assertThat(DeclaredTypeConverter.of(module()).convertArgs(new Object[] {withNullElement},
+        List.of(param("x", listOf(maybe(named("Decimal")))))))
+        .containsExactly(java.util.Arrays.asList(new BigDecimal("1.5"), null));
     List<?> claims = (List<?>) single(listOf(named("Claim")), List.of(Map.of("amount", "2.5")));
     assertThat(((Map<?, ?>) claims.get(0)).get("amount")).isEqualTo(new BigDecimal("2.5"));
   }

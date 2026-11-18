@@ -131,7 +131,7 @@ public final class DeclaredTypeConverter {
   }
 
   private Object convertList(Object value, CoreModel.Type element, String path, int depth) {
-    List<?> items = value instanceof List<?> l ? l : value instanceof Object[] arr ? List.of(arr) : null;
+    List<?> items = value instanceof List<?> l ? l : value instanceof Object[] arr ? java.util.Arrays.asList(arr) : null;
     if (items == null) {
       return value;
     }
