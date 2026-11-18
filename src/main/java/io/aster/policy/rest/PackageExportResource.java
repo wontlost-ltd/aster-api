@@ -83,6 +83,8 @@ public class PackageExportResource {
   @Inject AuditChainAppender appender;
   @Inject RequestIdentityResolver identityResolver;
 
+  /** 测试钩子：非 null 时覆盖开关配置（避免为「开关关」单独重启 Quarkus）。 */
+  static volatile Boolean enabledForTest;
   /** 测试钩子：取得许可后、进入 prepare 之前执行，用于构造确定的并发占用。 */
   static volatile Runnable afterPermit = () -> { };
   /** 测试钩子：进程环境是否设置了 {@code ASTER_TRUFFLE_FUNC}。 */
@@ -215,7 +217,7 @@ public class PackageExportResource {
   }
 
   private Response reject(PackageExportRequest request, ContainerRequestContext ctx) {
-    if (!enabled) {
+    if (!(enabledForTest != null ? enabledForTest : enabled)) {
       return error(404, "not_found", "package export is disabled");
     }
     if (!InternalCallerFilter.isHmacVerified(ctx)) {

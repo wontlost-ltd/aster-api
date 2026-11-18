@@ -4,20 +4,22 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.entity.AuditLog;
 import io.aster.security.apikey.InternalCallerSigning;
 import io.quarkus.narayana.jta.QuarkusTransaction;
-import io.quarkus.test.junit.QuarkusTestProfile;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static io.restassured.RestAssured.given;
 
-/** 策略包导出端点测试的共用 profile、请求构造与审计查询。 */
+/**
+ * 策略包导出端点测试的共用请求构造与审计查询。全部测试类沿用 {@link CedarExportResourceTest.AuthProfile}：
+ * 每多一个 profile 就多一次 Quarkus 重启，全量测试在同一 JVM 内累积内存；开关、签名结论与 Node 白名单改用测试钩子与 mock。
+ */
 final class PackageExportTestSupport {
-  static final String HMAC_KEY = "adr0059-package-export-test-key-32b!";
+  /** 复用 Cedar 导出测试的 profile（同一套 HMAC 密钥），不为包导出新增 Quarkus 重启。 */
+  static final String HMAC_KEY = CedarExportResourceTest.HMAC_KEY;
   static final String PATH = PackageExportResource.PATH;
   static final ObjectMapper JSON = new ObjectMapper();
   static final String SOURCE = String.join("\n",
@@ -36,82 +38,6 @@ final class PackageExportTestSupport {
       "");
 
   private PackageExportTestSupport() {
-  }
-
-  /** 基础：HMAC 内部调用可验签、API key 与 RBAC 照常开启；node 白名单指向测试副本，使 Node 导出路径可测。 */
-  public static class PkgProfile implements QuarkusTestProfile {
-    @Override
-    public Map<String, String> getConfigOverrides() {
-      return base();
-    }
-
-    static Map<String, String> base() {
-      Map<String, String> m = new HashMap<>();
-      m.put("aster.plan-gate.hmac-key", HMAC_KEY);
-      m.put("aster.plan-gate.enabled", "false");
-      m.put("aster.security.apikey.enabled", "true");
-      m.put("aster.security.rbac.enabled", "true");
-      m.put("aster.security.signature.enabled", "false");
-      m.put("aster.security.evaluate-source.public", "false");
-      m.put("aster.security.evaluate-source.trial.enabled", "false");
-      m.put("aster.export.package.enabled", "true");
-      m.put("aster.export.node-builtins-resource", "export/export-builtins-node.test.json");
-      return m;
-    }
-  }
-
-  /** 开关关闭。 */
-  public static class DisabledProfile implements QuarkusTestProfile {
-    @Override
-    public Map<String, String> getConfigOverrides() {
-      Map<String, String> m = PkgProfile.base();
-      m.put("aster.export.package.enabled", "false");
-      return m;
-    }
-  }
-
-  /** 并发许可为 1，验证 prepare 与导出共用同一个闸。 */
-  public static class BusyProfile implements QuarkusTestProfile {
-    @Override
-    public Map<String, String> getConfigOverrides() {
-      Map<String, String> m = PkgProfile.base();
-      m.put("aster.export.package.max-concurrent", "1");
-      return m;
-    }
-  }
-
-  /** 仓内真实锁文件（jre 1.0.49、trustAnchorKids []、node null）：首次上线的 fail-closed 形态。 */
-  public static class ShippedLockProfile implements QuarkusTestProfile {
-    @Override
-    public Map<String, String> getConfigOverrides() {
-      Map<String, String> m = PkgProfile.base();
-      m.put("aster.export.runtimes-lock", "export/export-runtimes.lock.json");
-      m.remove("aster.export.node-builtins-resource");
-      return m;
-    }
-  }
-
-  /** 未配置导出密钥。 */
-  public static class NoKeysProfile implements QuarkusTestProfile {
-    @Override
-    public Map<String, String> getConfigOverrides() {
-      Map<String, String> m = PkgProfile.base();
-      m.put("aster.export.signing-keys", "");
-      m.put("aster.export.active-kid", "");
-      return m;
-    }
-  }
-
-  /** on-prem：未配置密钥且显式 allow-unsigned。 */
-  public static class UnsignedProfile implements QuarkusTestProfile {
-    @Override
-    public Map<String, String> getConfigOverrides() {
-      Map<String, String> m = PkgProfile.base();
-      m.put("aster.export.signing-keys", "");
-      m.put("aster.export.active-kid", "");
-      m.put("aster.export.package.allow-unsigned", "true");
-      return m;
-    }
   }
 
   static Map<String, Object> request(String target, String source) {

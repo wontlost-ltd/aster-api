@@ -6,6 +6,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
+import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -26,9 +27,53 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** 策略包导出端点前置拒绝与 check / prepare（ADR 0059 P2 T12）。 */
 @QuarkusTest
-@TestProfile(PackageExportTestSupport.PkgProfile.class)
+@TestProfile(CedarExportResourceTest.AuthProfile.class)
 class PackageExportResourceTest {
   private static final String TENANT = "tenant-pkg-export";
+
+  @Inject PackageExportGate gate;
+
+  @Test
+  void disabledSwitchIs404BeforeAuthentication() {
+    PackageExportResource.enabledForTest = false;
+    try {
+      for (String sub : List.of("/check", "/prepare", "")) {
+        assertThat(hmacPost(PATH + sub, request("jre", SOURCE), TENANT).statusCode()).as(sub).isEqualTo(404);
+        Response anonymous = given().header("X-Tenant-Id", TENANT).contentType(ContentType.JSON).body("{}").post(PATH + sub);
+        assertThat(anonymous.statusCode()).as(sub + " 非 HMAC").isEqualTo(404);
+      }
+      assertThat(given().get(ExportKeysResource.PATH).statusCode()).as("JWKS 不受开关影响").isEqualTo(200);
+    } finally {
+      PackageExportResource.enabledForTest = null;
+    }
+  }
+
+  /** prepare 与导出共用同一个闸：许可占满时二者都 503 + Retry-After: 1，check 不受影响；释放后二者成功。 */
+  @Test
+  void prepareAndExportShareOneGate() {
+    int held = 0;
+    try {
+      while (gate.tryAcquire()) {
+        held++;
+      }
+      assertThat(held).isEqualTo(gate.limit());
+      for (String sub : List.of("/prepare", "")) {
+        Response busy = hmacPost(PATH + sub, request("jre", SOURCE), TENANT);
+        assertThat(busy.statusCode()).as(sub + " " + busy.asString()).isEqualTo(503);
+        assertThat(busy.jsonPath().getString("error")).isEqualTo("package_export_busy");
+        assertThat(busy.header("Retry-After")).isEqualTo("1");
+      }
+      assertThat(hmacPost(PATH + "/check", request("jre", SOURCE), TENANT).statusCode()).as("check 不占许可").isEqualTo(200);
+    } finally {
+      for (int i = 0; i < held; i++) {
+        gate.release();
+      }
+    }
+    assertThat(hmacPost(PATH + "/prepare", request("jre", SOURCE), TENANT).statusCode()).isEqualTo(200);
+    Response exported = hmacPost(PATH, request("jre", SOURCE), TENANT);
+    assertThat(exported.statusCode()).as(exported.asString()).isEqualTo(200);
+    assertThat(exported.contentType()).startsWith("application/zip");
+  }
 
   @Test
   void nonHmacCallerIsForbidden() throws Exception {
@@ -90,7 +135,9 @@ class PackageExportResourceTest {
     Response r = hmacPost(PATH + "/check", request("jre", SOURCE), TENANT);
     assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
     assertThat(r.jsonPath().getBoolean("targets.jre.exportable")).isTrue();
-    assertThat(r.jsonPath().getBoolean("targets.node.exportable")).isTrue();
+    // Node 白名单（T22）与锁文件 node 项就绪前，node 恒不可用
+    assertThat(r.jsonPath().getBoolean("targets.node.exportable")).isFalse();
+    assertThat(r.jsonPath().getString("targets.node.unavailable")).isEqualTo("export_runtime_unavailable");
     assertThat(r.jsonPath().getString("defaultEntry")).isEqualTo("decide");
     assertThat(r.jsonPath().getList("entryCandidates", String.class)).containsExactly("decide");
   }
