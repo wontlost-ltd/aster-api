@@ -11,7 +11,7 @@
 | --- | --- | --- |
 | `signing-keys` | Vault `apps/aster-api-export-signing` 属性 `signing-keys` → ExternalSecret `aster-api-export-signing-keys` → env `ASTER_EXPORT_SIGNING_KEYS` | JSON：`{"revision":N,"keys":[{"kid","privateKey","notAfter"?,"revoked"?}]}` |
 | `active-kid` | Vault 同路径属性 `active-kid` → env `ASTER_EXPORT_ACTIVE_KID` | 当前用于签名的 kid，必须在 `keys` 中 |
-| 锁文件 | 仓内 `src/main/resources/export/export-runtimes.lock.json` | 每个 target 的 CLI 版本与**内置信任锚 kid**（`trustAnchorKids`）；由列车 pin bump 更新 |
+| 锁文件 | 仓内 `src/main/resources/export/export-runtimes.lock.json` | 每个 target 的 CLI 版本与**内置信任锚 kid**（`trustAnchorKids`）；在列车发布之后由单独的 PR 更新（可以落后于生态 pin，不得领先） |
 | `allow-unsigned` | env `ASTER_EXPORT_PACKAGE_ALLOW_UNSIGNED`（缺省 `false`） | **只供 on-prem**：为 `true` 且未配置密钥时导出无签名包。只在 `aster.plan-gate.enabled=false`（无 cloud 计划门的 on-prem）时被接受；云上部署同时打开即启动失败 |
 
 - `privateKey`：32 字节 Ed25519 种子的 base64url（无填充，43 字符）。
@@ -82,8 +82,11 @@ unset SEED KEYS_FILE
 - 仓内锁文件首个内容为 `{"formatVersion":1,"jre":{"cliName":"cloud.aster-lang:aster-cli","cliVersion":"1.0.49","trustAnchorKids":[]},"node":null}`。
 - 已发布的 CLI（jre 1.0.49 / ts 3.2.0）内置锚里**没有** `export-2026-11a`，所以锁文件也不列它；此时就算生产已配置该密钥，
   jre 导出返回 503 `export_signing_kid_unanchored`，node 导出返回 503 `export_runtime_unavailable`。
-- 列车 eco-1.0.50（含 T25：两个 CLI 内置 `export-2026-11a` 的公钥）发布后，T15 把锁文件 bump 为
-  `"jre":{"cliVersion":"1.0.50","trustAnchorKids":["export-2026-11a"]}`（node 一项随 ts 3.3.x 补上），aster-api 部署后导出才可用。
+- 列车 eco-1.0.50（含 T25：两个 CLI 内置 `export-2026-11a` 的公钥）在 L4 自动合入的 aster-api pin PR **只改生态 pin**，不碰锁文件；
+  此时 aster-api 运行 1.0.50 引擎、锁文件仍为 1.0.49，属预期的「落后」：启动照常，只记一条 WARN「导出锁文件 jre.cliVersion=1.0.49 落后于引擎版本 1.0.50」，
+  导出仍 503 `export_signing_kid_unanchored`。
+- 列车之后，T15 以**单独的 PR** 把锁文件 bump 为 `"jre":{"cliVersion":"1.0.50","trustAnchorKids":["export-2026-11a"]}`（node 一项随 ts 3.3.x 补上），
+  aster-api 部署后导出才可用。锁文件的 `cliVersion` 只能等于或落后于生态 pin / 运行中的引擎，**领先即启动失败**（`ExportRuntimesTest.jreCliVersionNotNewerThanEcosystemPin` 在 PR CI 拦下）。
 
 按顺序执行，任一步未通过即停：
 
@@ -109,7 +112,7 @@ unset SEED KEYS_FILE
 
 1. **加入新 key**：Vault `keys` 追加新 kid，`revision` +1，`active-kid` 不变；重启后 `/exports/keys` 同时列出新旧两把。
 2. **锚进 CLI**：把新公钥加入两个 CLI 的内置锚（T25 同样的两份文件，逐字节相同），**随一次列车发布**。
-3. **锁文件**：列车 pin bump 时把新 kid 加入锁文件各 target 的 `trustAnchorKids`（与 `cliVersion` 一同更新），部署。
+3. **锁文件**：列车发布之后，以单独的 PR 把新 kid 加入锁文件各 target 的 `trustAnchorKids`（`cliVersion` 同时更新到已发布的、内置该锚的 CLI 版本），部署。
 4. **切换签名**：`active-kid` 改为新 kid，`revision` +1，重启。若跳过第 2–3 步直接切换，导出会 503 `export_signing_kid_unanchored`（这是保护，不是故障）。
 5. **退役旧 key**：从 `keys` 删除旧 kid，`revision` +1。旧 kid 应继续留在 CLI 内置锚中，否则已下发的旧包无法再验证。
 
@@ -132,4 +135,5 @@ unset SEED KEYS_FILE
 | Pod CrashLoopBackOff：必须同时配置或同时缺省 | Vault 只写了一个属性 | 两个属性一起写 |
 | Pod CrashLoopBackOff：kid 以 test- 开头 | 用了测试 kid | 换正式 kid，`revision` +1 |
 | Pod CrashLoopBackOff：导出签名密钥配置 revision 回退 | `revision` 没有递增或被回滚 | 改为大于 `export_signing_key_revisions` 最大值的整数 |
-| Pod CrashLoopBackOff：导出锁文件 jre.cliVersion 与实际加载的引擎版本不一致 | 列车 pin bump 只改了生态版本、漏改锁文件 | 同一 PR 内同步 bump 锁文件（`ExportRuntimesTest` 会在 PR CI 拦下） |
+| Pod CrashLoopBackOff：导出锁文件 jre.cliVersion 比实际加载的引擎版本新 | 锁文件先于引擎 bump（或回滚了引擎） | 锁文件只在引擎升级之后（或同时）bump；PR CI 的 `ExportRuntimesTest` 已拦截领先于生态 pin 的锁文件 |
+| 日志 WARN：导出锁文件 jre.cliVersion 落后于引擎版本 | 列车已升级引擎、锁文件 PR 尚未合入（预期状态） | 列车之后合入锁文件 PR（T15）；不影响启动 |

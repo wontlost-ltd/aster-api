@@ -24,13 +24,16 @@ class ExportRuntimesTest {
     assertThat(jre.trustAnchorKids()).isEmpty();
   }
 
-  /** 列车 L4 pin bump 只改 settings.gradle 而漏改锁文件时，生产启动会失败；在 PR CI 就拦下。 */
+  /**
+   * 锁文件 jre.cliVersion 不得比生态 pin 新（落后允许：列车 L4 自动开的 pin PR 只改生态 pin，锁文件与信任锚由列车后的
+   * 单独 PR 更新，本测试不得让该自动 PR 失败）。
+   */
   @Test
-  void jreCliVersionEqualsEcosystemPin() throws Exception {
+  void jreCliVersionNotNewerThanEcosystemPin() throws Exception {
     Matcher m = Pattern.compile("aster-lang-platform:([0-9][0-9.]*)'").matcher(Files.readString(Path.of("settings.gradle")));
     assertThat(m.find()).isTrue();
     ExportRuntimes.Lock lock = ExportRuntimes.parse(ExportRuntimes.readResource(ExportRuntimes.DEFAULT_RESOURCE));
-    assertThat(lock.targets().get("jre").cliVersion()).isEqualTo(m.group(1));
+    assertThat(ExportRuntimes.compareVersions(lock.targets().get("jre").cliVersion(), m.group(1))).isLessThanOrEqualTo(0);
   }
 
   @Test
@@ -53,11 +56,21 @@ class ExportRuntimesTest {
   }
 
   @Test
-  void engineVersionMustMatchUnlessDev() {
+  void lockMayLagTheEngineButNeverLeadIt() {
     ExportRuntimes.Lock lock = ExportRuntimes.parse(ExportRuntimes.readResource(ExportRuntimes.DEFAULT_RESOURCE));
-    ExportRuntimes.requireEngineMatches(lock, "dev");
-    ExportRuntimes.requireEngineMatches(lock, "1.0.49");
-    assertThatThrownBy(() -> ExportRuntimes.requireEngineMatches(lock, "1.0.50"))
-        .isInstanceOf(IllegalStateException.class).hasMessageContaining("1.0.50");
+    assertThat(ExportRuntimes.checkEngineVersion(lock, "dev")).isFalse();
+    assertThat(ExportRuntimes.checkEngineVersion(lock, "1.0.49")).isFalse();
+    assertThat(ExportRuntimes.checkEngineVersion(lock, "1.0.50")).as("列车后、锁文件 PR 前：落后，只告警").isTrue();
+    assertThat(ExportRuntimes.checkEngineVersion(lock, "1.1.0")).isTrue();
+    assertThatThrownBy(() -> ExportRuntimes.checkEngineVersion(lock, "1.0.48"))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("1.0.48");
+  }
+
+  @Test
+  void versionsCompareNumerically() {
+    assertThat(ExportRuntimes.compareVersions("1.0.49", "1.0.50")).isNegative();
+    assertThat(ExportRuntimes.compareVersions("1.0.100", "1.0.99")).isPositive();
+    assertThat(ExportRuntimes.compareVersions("1.0", "1.0.0")).isZero();
+    assertThat(ExportRuntimes.compareVersions("2.0.0", "1.9.9")).isPositive();
   }
 }

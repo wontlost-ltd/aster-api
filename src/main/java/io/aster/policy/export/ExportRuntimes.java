@@ -8,6 +8,7 @@ import io.aster.policy.parser.CompileIdentity;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -23,14 +24,15 @@ import java.util.Set;
  * 导出运行时锁文件（ADR 0059 修订 3 P2-R3）：{@code export/export-runtimes.lock.json} 为每个 target 记一项
  * {@code {cliName, cliVersion, trustAnchorKids}}，{@code node} 可为 {@code null}（该 target 不可导出）。
  * manifest {@code runtime.cli} 的唯一来源，也是「先发布锚，再签名」的机械检查：签名 kid 必须在该 target 的
- * {@code trustAnchorKids} 中。锁文件由列车 L4 pin bump 与生态版本一同更新。
+ * {@code trustAnchorKids} 中。锁文件在列车发布之后由单独的 PR 更新（可以落后于生态版本，不得领先）。
  *
- * <p>启动时严格读取（未知字段、缺字段、类型不符即启动失败）。{@code jre.cliVersion} 必须等于本进程实际加载的
- * 引擎版本（truffle jar 的 Implementation-Version，未 stamp 时退回 core jar 的版本——同一列车同一版本号）；
- * 两者都取不到（{@code dev}：本地 / CI 的 composite 构建）时跳过比较。
+ * <p>启动时严格读取（未知字段、缺字段、类型不符即启动失败）。{@code jre.cliVersion} 不得比本进程实际加载的
+ * 引擎版本（truffle jar 的 Implementation-Version，未 stamp 时退回 core jar 的版本——同一列车同一版本号）新；
+ * 落后允许（列车 L4 只 bump 生态 pin，锁文件随后单独更新），只记 WARN；取不到版本（{@code dev}）时跳过。
  */
 @ApplicationScoped
 public class ExportRuntimes {
+  private static final Logger LOG = Logger.getLogger(ExportRuntimes.class);
   public static final String DEFAULT_RESOURCE = "export/export-runtimes.lock.json";
   static final Set<String> TARGETS = Set.of("jre", "node");
 
@@ -61,7 +63,7 @@ public class ExportRuntimes {
   @PostConstruct
   void load() {
     lock = parse(readResource(resource));
-    requireEngineMatches(lock, engineVersion());
+    checkEngineVersion(lock, engineVersion());
   }
 
   /** 该 target 的锁文件项；锁文件中为 {@code null} 或未知 target 时为空。 */
@@ -80,13 +82,45 @@ public class ExportRuntimes {
     return truffle == null || truffle.isBlank() ? CompileIdentity.coreEngineVersion() : truffle;
   }
 
-  static void requireEngineMatches(Lock lock, String engineVersion) {
+  /**
+   * 锁文件的 {@code jre.cliVersion} 不得比实际加载的引擎<strong>新</strong>（锁文件宣称的 CLI 版本平台尚未运行，导出的包会在
+   * 用户本地重编译时漂移）→ 启动失败。落后是预期状态：列车 L4 只 bump 生态 pin，锁文件（含信任锚）由列车之后的单独 PR
+   * 更新，期间导出照常按锁文件版本写 manifest，只记一条 WARN。版本取不到（{@code dev}）时跳过。
+   *
+   * @return 锁文件落后于引擎时为 true（已记 WARN）
+   */
+  static boolean checkEngineVersion(Lock lock, String engineVersion) {
     Target jre = lock.targets().get("jre");
-    if (jre == null || "dev".equals(engineVersion) || jre.cliVersion().equals(engineVersion)) {
-      return;
+    if (jre == null || "dev".equals(engineVersion)) {
+      return false;
     }
-    throw new IllegalStateException("导出锁文件 jre.cliVersion=" + jre.cliVersion()
-        + " 与实际加载的引擎版本 " + engineVersion + " 不一致：列车 pin bump 时须同步更新 " + DEFAULT_RESOURCE);
+    int cmp = compareVersions(jre.cliVersion(), engineVersion);
+    if (cmp > 0) {
+      throw new IllegalStateException("导出锁文件 jre.cliVersion=" + jre.cliVersion()
+          + " 比实际加载的引擎版本 " + engineVersion + " 新：锁文件只能在引擎升级之后（或同时）bump");
+    }
+    if (cmp < 0) {
+      LOG.warnf("导出锁文件 jre.cliVersion=%s 落后于引擎版本 %s：导出包仍按锁文件版本声明 CLI，待列车后的锁文件 PR 更新",
+          jre.cliVersion(), engineVersion);
+      return true;
+    }
+    return false;
+  }
+
+  /** 按点分数字段比较版本（{@code 1.0.49 < 1.0.50 < 1.1.0}）；非数字段按字符串比较，缺的段视为 0。 */
+  static int compareVersions(String a, String b) {
+    String[] x = a.split("[.-]");
+    String[] y = b.split("[.-]");
+    for (int i = 0; i < Math.max(x.length, y.length); i++) {
+      String p = i < x.length ? x[i] : "0";
+      String q = i < y.length ? y[i] : "0";
+      int c = p.matches("\\d+") && q.matches("\\d+")
+          ? new java.math.BigInteger(p).compareTo(new java.math.BigInteger(q)) : p.compareTo(q);
+      if (c != 0) {
+        return c;
+      }
+    }
+    return 0;
   }
 
   static String readResource(String name) {
