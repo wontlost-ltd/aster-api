@@ -330,6 +330,15 @@ public class DynamicCnlExecutor {
      */
     public static ExecutionResult executeCoreIrJson(
             String coreIrJson, Object context, String functionName) {
+        return executeCoreIrJson(coreIrJson, context, functionName, ExecutionWatchdog.configuredTimeoutMs());
+    }
+
+    /**
+     * 同 {@link #executeCoreIrJson(String, Object, String)}，但以给定的墙钟上限执行（策略包探针按条 1 s，
+     * ADR 0059 修订 3 P2-R12）；其余语义完全相同。
+     */
+    public static ExecutionResult executeCoreIrJson(
+            String coreIrJson, Object context, String functionName, long timeoutMs) {
         long startTime = System.currentTimeMillis();
         try {
             // ADR 0055 §5：提交的 IR 只经 core CoreIrJson.read 严格读入（版本预检 → schema → 严格绑定 → 不变式）；
@@ -371,7 +380,8 @@ public class DynamicCnlExecutor {
             // 与 CNL 路径**字节同源**的 compact JSON，避免两条路径喂给 polyglot 的
             // 输入形态不同。
             String coreJson = MAPPER.writeValueAsString(coreModule);
-            Object result = executeMapped(coreModule, coreJson, targetFunction, functionParams, context, mappingResult);
+            Object result = executeMapped(coreModule, coreJson, targetFunction, functionParams, context, mappingResult,
+                timeoutMs);
 
             long executionTime = System.currentTimeMillis() - startTime;
             String moduleName = coreModule.name == null ? "" : coreModule.name;
@@ -546,8 +556,10 @@ public class DynamicCnlExecutor {
             // 6. 使用 GraalVM Polyglot 执行
             LOG.debugf("使用 GraalVM Polyglot 执行...");
             Object result = mapping == null
-                ? executeWithPolyglot(compiled.coreJson(), targetFunction, positionalContext)
-                : executeMapped(compiled.coreModule(), compiled.coreJson(), targetFunction, mappedParams, context, mapping);
+                ? executeWithPolyglot(compiled.coreJson(), targetFunction, positionalContext,
+                    ExecutionWatchdog.configuredTimeoutMs())
+                : executeMapped(compiled.coreModule(), compiled.coreJson(), targetFunction, mappedParams, context, mapping,
+                    ExecutionWatchdog.configuredTimeoutMs());
 
             long executionTime = System.currentTimeMillis() - startTime;
             LOG.infof("动态执行完成: %s.%s, 耗时 %dms", compiled.moduleName(), targetFunction, executionTime);
@@ -723,9 +735,9 @@ public class DynamicCnlExecutor {
      */
     private static Object executeMapped(CoreModel.Module module, String coreJson, String targetFunction,
                                         List<CoreModel.Param> params, Object context,
-                                        NamedContextMapper.MappingResult mapping) {
+                                        NamedContextMapper.MappingResult mapping, long timeoutMs) {
         try {
-            return executeWithPolyglot(coreJson, targetFunction, mapping.positionalArgs());
+            return executeWithPolyglot(coreJson, targetFunction, mapping.positionalArgs(), timeoutMs);
         } catch (DynamicExecutionException e) {
             boolean paramPrefixed = mapping.wasNamedFormat() || !(context instanceof Map);
             throw MissingInputFields.translate(e, module, params, mapping.positionalArgs(), paramPrefixed);
@@ -761,7 +773,8 @@ public class DynamicCnlExecutor {
      * - 有参函数：返回 LambdaValue（可执行），需要传参调用
      * - 无参函数：直接返回执行结果
      */
-    private static Object executeWithPolyglot(String coreJson, String functionName, Object[] context) {
+    private static Object executeWithPolyglot(String coreJson, String functionName, Object[] context,
+                                              long timeoutMs) {
         // Truffle 不接收入口函数名（固定按 main → 第一个函数选入口），而 context 是按 functionName
         // 的参数表映射的。必须先把目标函数排到 IR 最前，否则多 Rule 策略会静默执行错函数。
         String entryJson;
@@ -820,7 +833,7 @@ public class DynamicCnlExecutor {
                 .allowCreateThread(false)                   // 禁止创建线程
                 .allowNativeAccess(false)                   // 禁止本地代码访问
                 .build();
-            return invokeUnderWatchdog(polyglotContext, entryJson, context);
+            return invokeUnderWatchdog(polyglotContext, entryJson, context, timeoutMs);
         } catch (DynamicExecutionException e) {
             throw e;
         } catch (Exception e) {
@@ -855,8 +868,8 @@ public class DynamicCnlExecutor {
      * 其余失败按真实错误上报。期限边界上 guest 已正常完成的，照常返回结果（见 {@link ExecutionWatchdog.Guard}）。
      * Context 由调用方在 finally 中丢弃，从不复用，故这里无需处理「已关闭 Context 回池」的问题。
      */
-    private static Object invokeUnderWatchdog(Context polyglotContext, String entryJson, Object[] context) {
-        long timeoutMs = ExecutionWatchdog.configuredTimeoutMs();
+    private static Object invokeUnderWatchdog(Context polyglotContext, String entryJson, Object[] context,
+                                              long timeoutMs) {
         ExecutionWatchdog.Guard watchdog = ExecutionWatchdog.arm(polyglotContext, timeoutMs);
         try {
             return invokeEntry(polyglotContext, entryJson, context);
