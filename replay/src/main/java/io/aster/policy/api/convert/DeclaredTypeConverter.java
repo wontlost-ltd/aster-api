@@ -22,8 +22,9 @@ import java.util.regex.Pattern;
  *   <li><b>Decimal</b>：十进制字符串 {@code ^-?(0|[1-9][0-9]*)(\.[0-9]+)?}（与 conformance package-v1 README 相同，
  *       整体匹配，数字至多 80 位）或任意 JSON 数字 → {@link BigDecimal}；其它字符串 → 错误 {@code <路径>: expected Decimal}。
  *       带小数的 JSON 数字按 {@code Double.toString} 的最短十进制写法取值（JDK 19+ 为最短往返表示）。</li>
- *   <li><b>Long</b>：int / long 整数 → {@link Long}；字符串 {@code ^-?(0|[1-9][0-9]{0,18})} 且在 int64 内 → {@link Long}；
- *       其它字符串 → 错误 {@code <路径>: expected Long}。超出 int64 的整数与非整数数字保持原样（沿用既有口径）。</li>
+ *   <li><b>Long</b>：int / long 整数与无小数部分的安全范围浮点数（{@code 42.0}）→ {@link Long}；字符串
+ *       {@code ^-?(0|[1-9][0-9]{0,18})} 且在 int64 内 → {@link Long}；其它字符串 → 错误 {@code <路径>: expected Long}。
+ *       超出 int64 的整数与带小数的数字保持原样（沿用既有口径）。</li>
  * </ul>
  * 嵌套层数超过 {@link #MAX_DEPTH} 的部分原样保留，交给宿主 → guest 转换按 {@code input_too_deep} 拒绝。
  */
@@ -172,6 +173,8 @@ public final class DeclaredTypeConverter {
       case Integer i -> i.longValue();
       case Short s -> s.longValue();
       case Byte b -> b.longValue();
+      case Double d when isSafeIntegral(d) -> d.longValue();
+      case Float f when isSafeIntegral(f.doubleValue()) -> (long) f.floatValue();
       case String s when isLongText(s) -> Long.parseLong(s);
       case String s -> throw new ConversionException(path + ": expected Long");
       default -> value;
@@ -184,6 +187,11 @@ public final class DeclaredTypeConverter {
     }
     long digits = s.chars().filter(Character::isDigit).count();
     return digits <= MAX_DECIMAL_DIGITS;
+  }
+
+  /** 有限、无小数部分、在 ±(2⁵³−1) 内的浮点数（如 JSON 的 {@code 42.0}）可无损视为 Long。 */
+  static boolean isSafeIntegral(double d) {
+    return Double.isFinite(d) && d == Math.rint(d) && Math.abs(d) <= 9_007_199_254_740_991d;
   }
 
   static boolean isLongText(String s) {

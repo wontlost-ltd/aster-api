@@ -147,6 +147,9 @@ class NamedContextMapperDeclaredTypeTest {
     assertThat(error(named("Long"), "1.5")).isEqualTo("x: expected Long");
     // 平台口径（裁决）：Jackson 已精确读入的 int64 整数照常接受（包格式的 ±(2⁵³−1) 只约束 CLI 输入）
     assertThat(single(named("Long"), 9007199254740993L)).isEqualTo(9007199254740993L);
+    assertThat(single(named("Long"), 42.0)).isEqualTo(42L);
+    assertThat(single(named("Long"), 42.5)).as("带小数的数字保持原样").isEqualTo(42.5);
+    assertThat(single(named("Long"), 1e300)).as("超出安全范围保持原样").isEqualTo(1e300);
     Map<?, ?> claim = (Map<?, ?>) single(named("Claim"), Map.of("count", "9007199254740993"));
     assertThat(claim.get("count")).isEqualTo(9007199254740993L);
   }
