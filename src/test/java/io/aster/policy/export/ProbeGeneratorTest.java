@@ -55,4 +55,33 @@ class ProbeGeneratorTest {
     CoreModel.Module multi = EntrySchemaGeneratorTest.platformModule("a-multi-entry");
     assertThat(ProbeGenerator.inputs(multi, "answer", 256).stream().map(ValueJson::write)).containsExactly("{}");
   }
+
+  /** Long 字面量在 int64 边界时 ±1 饱和后截到 ±(2⁵³−1)，不回绕（CNL 写不出负的 int64 下界，按 IR 构造）。 */
+  @Test
+  void longLiteralsAtInt64BoundsSaturate() {
+    aster.core.ir.CoreModel.TypeName longT = new aster.core.ir.CoreModel.TypeName();
+    longT.name = "Long";
+    aster.core.ir.CoreModel.Param n = new aster.core.ir.CoreModel.Param();
+    n.name = "n";
+    n.type = longT;
+    aster.core.ir.CoreModel.LongE max = new aster.core.ir.CoreModel.LongE();
+    max.value = Long.MAX_VALUE;
+    aster.core.ir.CoreModel.ListE body = new aster.core.ir.CoreModel.ListE();
+    body.elements = List.of(max);
+    aster.core.ir.CoreModel.Return ret = new aster.core.ir.CoreModel.Return();
+    ret.expr = body;
+    aster.core.ir.CoreModel.Block block = new aster.core.ir.CoreModel.Block();
+    block.statements = List.of(ret);
+    aster.core.ir.CoreModel.Func f = new aster.core.ir.CoreModel.Func();
+    f.name = "f";
+    f.params = List.of(n);
+    f.ret = longT;
+    f.body = block;
+    aster.core.ir.CoreModel.Module m = new aster.core.ir.CoreModel.Module();
+    m.name = "t.long";
+    m.decls = List.of(f);
+    List<String> inputs = ProbeGenerator.inputs(m, "f", 256).stream().map(ValueJson::write).toList();
+    // 只有上界字面量：MAX + 1 若回绕会多出 −(2⁵³−1)
+    assertThat(inputs).containsExactly("{\"n\":0}", "{\"n\":9007199254740991}");
+  }
 }

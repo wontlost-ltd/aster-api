@@ -181,7 +181,8 @@ public final class ProbeGenerator {
       });
       case "Long" -> literals.getOrDefault("Long", List.of()).forEach(v -> {
         long n = v.longValue();
-        for (long x : new long[] {n, n - 1, n + 1}) {
+        // ±1 先饱和再截断：Long.MIN_VALUE / MAX_VALUE 字面量的 ±1 不得回绕到相反的边界
+        for (long x : new long[] {n, n == Long.MIN_VALUE ? n : n - 1, n == Long.MAX_VALUE ? n : n + 1}) {
           out.add(F.numberNode(Math.clamp(x, -SAFE, SAFE)));
         }
       });
