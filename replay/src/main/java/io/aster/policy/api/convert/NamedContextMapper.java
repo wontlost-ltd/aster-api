@@ -96,7 +96,44 @@ public class NamedContextMapper {
      * @return 映射结果
      */
     public static MappingResult mapContext(Object context, List<CoreModel.Param> params) {
-        return mapContext(context, params, null);
+        return mapContext(context, params, (Map<String, java.util.Set<String>>) null);
+    }
+
+    /**
+     * 以模块声明映射并<strong>按声明类型转换入参</strong>（aster-api#558）：先按 {@link #mapContext(Object, List, Map)}
+     * 做命名 / 位置映射与字段名校验，再由 {@link DeclaredTypeConverter} 把声明为 Decimal / Long 的位置（形参、
+     * Data 字段、List 元素、Map 值、Maybe 内层）转为 {@code BigDecimal} / {@code Long}。非法的 Decimal / Long 字符串
+     * 返回 {@code MappingResult.error("<路径>: expected Decimal")}。其余类型的行为与不带模块时相同。
+     */
+    public static MappingResult mapContext(Object context, List<CoreModel.Param> params, CoreModel.Module module) {
+        MappingResult mapped = mapContext(context, params, dataFieldNames(module));
+        if (!mapped.success() || params == null || params.isEmpty()) {
+            return mapped;
+        }
+        Object[] converted;
+        try {
+            converted = DeclaredTypeConverter.of(module).convertArgs(mapped.positionalArgs(), params);
+        } catch (DeclaredTypeConverter.ConversionException e) {
+            return MappingResult.error(e.getMessage());
+        }
+        return new MappingResult(converted, mapped.wasNamedFormat(), mapped.warnings(), mapped.error(),
+            mapped.missingParams(), mapped.firstParamKey(), mapped.paramKeys());
+    }
+
+    /** 模块内 Data 声明的字段名表（类型名 → 字段名集合），供单参数字段校验（issue #244）。 */
+    public static Map<String, java.util.Set<String>> dataFieldNames(CoreModel.Module module) {
+        Map<String, java.util.Set<String>> out = new java.util.HashMap<>();
+        if (module == null || module.decls == null) return out;
+        for (CoreModel.Decl d : module.decls) {
+            if (d instanceof CoreModel.Data data && data.name != null && data.fields != null) {
+                java.util.Set<String> fields = new java.util.LinkedHashSet<>();
+                for (CoreModel.Field f : data.fields) {
+                    if (f != null && f.name != null) fields.add(f.name);
+                }
+                out.put(data.name, fields);
+            }
+        }
+        return out;
     }
 
     /**
