@@ -2,6 +2,7 @@ package io.aster.guard.receipt;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.aster.common.signing.Ed25519KeyRing;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -42,7 +43,7 @@ public class SigningKeyRevisionStartup {
   @Inject Clock clock;
 
   void onStart(@Observes StartupEvent event) {
-    List<String> kids = keys.all().stream().map(ReceiptSigningKeys.SigningKey::kid).toList();
+    List<String> kids = keys.all().stream().map(Ed25519KeyRing.SigningKey::kid).toList();
     check(keys.revision(), kids);
     LOG.info(loadedMessage(keys.revision(), kids));
   }

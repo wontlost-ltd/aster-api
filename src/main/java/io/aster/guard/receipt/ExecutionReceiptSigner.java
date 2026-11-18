@@ -1,6 +1,7 @@
 package io.aster.guard.receipt;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.aster.common.signing.Ed25519KeyRing;
 import io.quarkus.runtime.Startup;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
@@ -72,7 +73,7 @@ public class ExecutionReceiptSigner {
    */
   public ExecutionReceipt sign(String decisionId, String tenantId, String actionHash, ReceiptPolicy policy,
                                Instant issuedAt) {
-    ReceiptSigningKeys.SigningKey key = requireUsableActive(issuedAt);
+    Ed25519KeyRing.SigningKey key = requireUsableActive(issuedAt);
     ExecutionReceipt.Payload payload = new ExecutionReceipt.Payload(actionHash, decisionId,
         issuedAt.plus(ttl).toString(), issuedAt.toString(), key.kid(), OUTCOME_ALLOW, policy.function(),
         policy.module(), policy.versionId(), tenantId, PAYLOAD_VERSION);
@@ -97,8 +98,8 @@ public class ExecutionReceiptSigner {
   }
 
   /** active key 在 {@code at} 时仍可签发则返回之；否则首次记 ERROR 并抛异常。 */
-  private ReceiptSigningKeys.SigningKey requireUsableActive(Instant at) {
-    ReceiptSigningKeys.SigningKey key = keys.active();
+  private Ed25519KeyRing.SigningKey requireUsableActive(Instant at) {
+    Ed25519KeyRing.SigningKey key = keys.active();
     if (key.expiredAt(at)) {
       if (expiryLogged.compareAndSet(false, true)) {
         LOG.errorf("执行收据 active key 已到 notAfter，拒绝签发（全部 ALLOW 将按 receipt_unavailable 处理），"
@@ -119,11 +120,11 @@ public class ExecutionReceiptSigner {
         || p.v() == null || p.v() != PAYLOAD_VERSION) {
       return false;
     }
-    Optional<ReceiptSigningKeys.SigningKey> key = keys.find(p.kid());
+    Optional<Ed25519KeyRing.SigningKey> key = keys.find(p.kid());
     return key.isPresent() && signatureValid(key.get(), p, receipt.signature()) && withinWindow(p);
   }
 
-  private static boolean signatureValid(ReceiptSigningKeys.SigningKey key, ExecutionReceipt.Payload p,
+  private static boolean signatureValid(Ed25519KeyRing.SigningKey key, ExecutionReceipt.Payload p,
                                         String signature) {
     try {
       byte[] sig = Base64.getUrlDecoder().decode(signature);

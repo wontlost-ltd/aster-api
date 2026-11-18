@@ -1,5 +1,6 @@
 package io.aster.guard.api;
 
+import io.aster.common.signing.Ed25519KeyRing;
 import io.aster.guard.receipt.ReceiptSigningKeys;
 import io.aster.policy.security.rbac.RequireRole;
 import io.aster.policy.security.rbac.Role;
@@ -58,7 +59,7 @@ public class GuardKeysResource {
     return body;
   }
 
-  private static Map<String, Object> jwk(ReceiptSigningKeys.SigningKey key) {
+  private static Map<String, Object> jwk(Ed25519KeyRing.SigningKey key) {
     Map<String, Object> jwk = new TreeMap<>();
     jwk.put("alg", "EdDSA");
     jwk.put("crv", "Ed25519");
