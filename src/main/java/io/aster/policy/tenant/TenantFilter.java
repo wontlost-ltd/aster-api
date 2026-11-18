@@ -120,6 +120,7 @@ public class TenantFilter implements ContainerRequestFilter {
         // 豁免路径：管理端点、schema 端点、AI 端点（浏览器直连，无 X-Tenant-Id）
         // /api/internal/* 跨服务接口：tenantId 在路径里或不需要，自带 HMAC 验签
         // /api/v1/lexicons* 语言包查询：登录前/匿名亦需获取可用语言列表
+        // /api/v1/exports/keys 导出验签公钥（ADR 0059 P2-R2）：CLI --jwks 匿名取用，精确路径
         // /api/v1/messages/{locale} 界面文案：与 lexicons 同源，前端匿名 fetch（无 X-Tenant-Id），
         // 单段 locale 精确匹配（见 MessagesPathMatcher，拒多段/路径穿越）
         // 用 slash-boundary 匹配防止误匹配兄弟路径（如 /api/v1/lexicons-admin）
@@ -136,6 +137,7 @@ public class TenantFilter implements ContainerRequestFilter {
                 || (isAiPath(path) && !signedAiCall)
                 || matchesLexiconPath(path)
                 || matchesMessagesPath(path)
+                || io.aster.policy.rest.ExportKeysResource.isPath(path)
                 || path.startsWith("/api/v1/admin/lexicons/") || path.startsWith("api/v1/admin/lexicons/")
                 || path.equals("/api/v1/admin/lexicons") || path.equals("api/v1/admin/lexicons")
                 || path.startsWith("/api/v1/admin/messages/") || path.startsWith("api/v1/admin/messages/")

@@ -42,6 +42,7 @@ public class RequestSignatureFilter {
                 || path.startsWith("/api/internal/") || path.startsWith("api/internal/")
                 || isLexiconReadPath(path)
                 || isMessagesReadPath(path)
+                || io.aster.policy.rest.ExportKeysResource.isPath(path)
                 || isLexiconAdminPath(path)
                 || isMessagesAdminPath(path)
                 || isByokAllowlistAdminPath(path)

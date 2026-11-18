@@ -135,6 +135,8 @@ dependencies {
     testImplementation 'io.quarkus:quarkus-jdbc-h2'
     testImplementation 'org.awaitility:awaitility:4.3.0'
     testImplementation 'com.tngtech.archunit:archunit-junit5:1.5.1'
+    // ADR 0059 P2：策略包 manifest / sig / 入口 schema 按 conformance 的 JSON Schema 2020-12 校验（仅测试；与 core 运行时依赖同一版本）
+    testImplementation 'com.networknt:json-schema-validator:2.0.1'
 
     // D-1 distribution parity：in-JVM 调 RunnerMain.run() 与生产权威路径 byte 比对。
     // 无环：runner→:replay，aster-api→:replay，aster-api-test→runner（runner 不依赖 aster-api）。
