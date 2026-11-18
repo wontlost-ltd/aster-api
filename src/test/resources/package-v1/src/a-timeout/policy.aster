@@ -1,0 +1,6 @@
+Module fixture.spin.
+
+Rule spin given n as Int, produce Int:
+  If n less than 2:
+    Return 1.
+  Return spin(n minus 1) plus spin(n minus 1).

@@ -1,0 +1,27 @@
+{
+  "description": "B 包，zh-CN + 冻结词汇，模块名与入口函数名为中文（块.遮蔽 / 分支遮蔽 / 嵌套遮蔽；评审 C1）。zip 形态按 java.util.zip.ZipOutputStream 的写法生成（全部条目 UTF-8 标志、DEFLATED 条目带数据描述符），根目录名为非 ASCII 的「块.遮蔽-v1-node-b」。源码与词汇取自 corpus/tier1-parity/vocab-zh/block-scope-shadowing.*。",
+  "mode": "b",
+  "target": "node",
+  "locale": "zh-CN",
+  "aliasSet": null,
+  "allowStructural": false,
+  "vocabulary": true,
+  "claimedRefVersion": 1,
+  "zip": true,
+  "zipStyle": "zipoutputstream",
+  "entries": [
+    { "function": "分支遮蔽", "default": true },
+    { "function": "嵌套遮蔽", "default": false }
+  ],
+  "probes": [{ "entry": "分支遮蔽", "input": { "n": 0 } }, { "entry": "嵌套遮蔽", "input": { "n": 0 } }],
+  "cases": [
+    { "name": "shadowing-n0", "command": "run", "input": { "n": 0 }, "expect": "platform" },
+    { "name": "writeback-n5", "command": "run", "input": { "n": 5 }, "expect": "platform" },
+    { "name": "nested-entry", "command": "run", "args": ["--entry", "嵌套遮蔽"], "input": { "n": 0 }, "expect": "platform" },
+    { "name": "zip-shadowing-n0", "command": "run", "package": "zip", "input": { "n": 0 }, "expect": "platform", "sameAs": "shadowing-n0" },
+    { "name": "zip-nested-entry", "command": "run", "package": "zip", "args": ["--entry", "嵌套遮蔽"], "input": { "n": 0 }, "expect": "platform", "sameAs": "nested-entry" },
+    { "name": "zip-verify-probes", "command": "verify", "package": "zip", "args": ["--recompile", "--probes"] },
+    { "name": "zip-inspect", "command": "inspect", "package": "zip" },
+    { "name": "inspect", "command": "inspect" }
+  ]
+}

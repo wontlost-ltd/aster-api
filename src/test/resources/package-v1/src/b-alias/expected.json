@@ -1,0 +1,18 @@
+{
+  "cases": {
+    "over-threshold": {
+      "source": "platform",
+      "value": "300"
+    },
+    "under-threshold": {
+      "source": "platform",
+      "value": "80"
+    }
+  },
+  "probes": [
+    {
+      "source": "platform",
+      "value": "300"
+    }
+  ]
+}

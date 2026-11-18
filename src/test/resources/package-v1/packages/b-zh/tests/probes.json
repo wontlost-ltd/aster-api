@@ -1,0 +1,1 @@
+{"probes":[{"entry":"分支遮蔽","expected":{"ok":true,"value":201},"input":{"n":0}},{"entry":"嵌套遮蔽","expected":{"ok":true,"value":10},"input":{"n":0}}]}

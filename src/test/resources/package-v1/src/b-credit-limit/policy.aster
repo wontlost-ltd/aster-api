@@ -1,0 +1,22 @@
+Module aster.pilot.credit.
+
+Define Applicant has
+  creditScore as Int,
+  monthlyIncome as Decimal,
+  monthlyDebt as Decimal,
+  requestedAmount as Decimal,
+  activeDefaults as Int.
+
+@id("CP-DECIDE")
+@control("EU_AI_ACT:ART14")
+@control("GDPR:ART22")
+Rule decide given applicant as Applicant, produce Verdict:
+  If applicant.activeDefaults at least 1:
+    Return Verdict.deny("active_default").
+  If applicant.monthlyDebt greater than applicant.monthlyIncome times 0.45m:
+    Return Verdict.deny("dti_exceeds_limit").
+  If applicant.requestedAmount at least 50000m:
+    Return Verdict.require_approval("Credit Officer", "large_exposure").
+  If applicant.creditScore at least 620 and applicant.creditScore at most 679:
+    Return Verdict.escalate("borderline_credit_score").
+  Return Verdict.allow().

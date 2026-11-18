@@ -1,0 +1,6 @@
+Modul versicherung.person.
+
+Definiere Person hat ageGroup als Ganzzahl, alter als Ganzzahl.
+
+Regel kennzahl gegeben p als Person, liefert Ganzzahl:
+  gib zurueck p.Alter mal 100 plus p.alter.

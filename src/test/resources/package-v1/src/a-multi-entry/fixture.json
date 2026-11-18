@@ -1,0 +1,579 @@
+{
+  "description": "A 包，四个入口（含 0 参入口 answer）（score 为 default），--entry 选择与缺省；模块内没有名为 main 的函数（P0 结果 §3 / 修订 A5 E737）。ratio(7) 产出 Double，ratio(0) 两侧都是求值错误。另含 USAGE 用例。 probes 含一条期望 EVAL_ERROR 的探针（ratio(0)）。命令行语法用例（README「命令行」）：重复选项、--opt=value、选项在位置参数之前、--timeout 语法、未知子命令、缺参数、--pubkey 与 --jwks 同时给出。",
+  "mode": "a",
+  "target": "jre",
+  "locale": "en-US",
+  "aliasSet": null,
+  "allowStructural": false,
+  "claimedRefVersion": 1,
+  "entries": [
+    {
+      "function": "score",
+      "default": true
+    },
+    {
+      "function": "label",
+      "default": false
+    },
+    {
+      "function": "ratio",
+      "default": false
+    },
+    {
+      "function": "answer",
+      "default": false
+    }
+  ],
+  "probes": [
+    {
+      "entry": "score",
+      "input": {
+        "x": 7
+      }
+    },
+    {
+      "entry": "label",
+      "input": {
+        "x": 7
+      }
+    },
+    {
+      "entry": "ratio",
+      "input": {
+        "x": 0
+      },
+      "expect": "EVAL_ERROR"
+    }
+  ],
+  "cases": [
+    {
+      "name": "default-entry",
+      "command": "run",
+      "input": {
+        "x": 7
+      },
+      "expect": "platform",
+      "platformEntry": "score"
+    },
+    {
+      "name": "entry-label",
+      "command": "run",
+      "args": [
+        "--entry",
+        "label"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": "platform"
+    },
+    {
+      "name": "entry-label-low",
+      "command": "run",
+      "args": [
+        "--entry",
+        "label"
+      ],
+      "input": {
+        "x": 2
+      },
+      "expect": "platform"
+    },
+    {
+      "name": "entry-double-result",
+      "command": "run",
+      "args": [
+        "--entry",
+        "ratio"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": "platform"
+    },
+    {
+      "name": "zero-param-entry",
+      "command": "run",
+      "args": [
+        "--entry",
+        "answer"
+      ],
+      "input": {},
+      "expect": "platform"
+    },
+    {
+      "name": "eval-error-division-by-zero",
+      "command": "run",
+      "args": [
+        "--entry",
+        "ratio"
+      ],
+      "input": {
+        "x": 0
+      },
+      "expect": {
+        "code": "EVAL_ERROR",
+        "platform": "error"
+      }
+    },
+    {
+      "name": "entry-not-in-manifest",
+      "command": "run",
+      "args": [
+        "--entry",
+        "nosuch"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "ENTRY_NOT_FOUND"
+      }
+    },
+    {
+      "name": "usage-timeout-over-limit",
+      "command": "run",
+      "args": [
+        "--timeout",
+        "301s"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-unknown-option",
+      "command": "run",
+      "args": [
+        "--no-such-option"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "verify-probes-with-expected-error",
+      "command": "verify",
+      "args": [
+        "--probes"
+      ]
+    },
+    {
+      "name": "option-equals-form",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "{pkg}",
+        "--entry=label",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": "platform",
+      "sameAs": "entry-label"
+    },
+    {
+      "name": "options-before-positional",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "--entry",
+        "label",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json",
+        "{pkg}"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": "platform",
+      "sameAs": "entry-label"
+    },
+    {
+      "name": "timeout-300000ms-is-the-limit",
+      "command": "run",
+      "args": [
+        "--timeout",
+        "300000ms"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": "platform",
+      "sameAs": "default-entry"
+    },
+    {
+      "name": "usage-repeated-option",
+      "command": "run",
+      "args": [
+        "--entry",
+        "label",
+        "--entry",
+        "score"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-timeout-300001ms",
+      "command": "run",
+      "args": [
+        "--timeout",
+        "300001ms"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-timeout-zero",
+      "command": "run",
+      "args": [
+        "--timeout",
+        "0s"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-timeout-fraction",
+      "command": "run",
+      "args": [
+        "--timeout",
+        "1.5s"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-timeout-leading-zero",
+      "command": "run",
+      "args": [
+        "--timeout",
+        "01s"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-timeout-no-unit",
+      "command": "run",
+      "args": [
+        "--timeout",
+        "5"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-unknown-subcommand",
+      "command": "frobnicate",
+      "rawArgs": [
+        "frobnicate",
+        "{pkg}"
+      ],
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-missing-input-option",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "{pkg}",
+        "--jwks",
+        "../keys/test-jwks.json"
+      ],
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-missing-package",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-extra-positional",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "{pkg}",
+        "{pkg}",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-pubkey-and-jwks",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "{pkg}",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json",
+        "--pubkey",
+        "../keys/test-ed25519.pub.b64u"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "stdin-with-surrounding-whitespace",
+      "command": "run",
+      "stdin": " {\"x\": 7}\n",
+      "expect": "platform",
+      "sameAs": "default-entry"
+    },
+    {
+      "name": "usage-timeout-trailing-newline",
+      "command": "run",
+      "args": [
+        "--timeout",
+        "1s\n"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-option-value-is-another-option",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "{pkg}",
+        "--entry",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-option-missing-value-at-end",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "{pkg}",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json",
+        "--entry"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-option-value-is-a-known-switch",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "{pkg}",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json",
+        "--entry",
+        "--allow-unsigned"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "double-dash-ends-options",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json",
+        "--entry",
+        "label",
+        "--",
+        "{pkg}"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": "platform",
+      "sameAs": "entry-label"
+    },
+    {
+      "name": "usage-option-after-double-dash",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json",
+        "--",
+        "{pkg}",
+        "--entry"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-empty-equals-value",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "{pkg}",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json",
+        "--entry="
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-switch-with-value",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "{pkg}",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json",
+        "--allow-unsigned=true"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-separate-empty-entry",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "{pkg}",
+        "--input",
+        "-",
+        "--jwks",
+        "../keys/test-jwks.json",
+        "--entry",
+        ""
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-separate-empty-input",
+      "command": "run",
+      "rawArgs": [
+        "run",
+        "{pkg}",
+        "--input",
+        "",
+        "--jwks",
+        "../keys/test-jwks.json"
+      ],
+      "input": {
+        "x": 7
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "cases": {
+    "shadowing-n0": {
+      "source": "platform",
+      "value": "201"
+    },
+    "writeback-n5": {
+      "source": "platform",
+      "value": "6"
+    },
+    "nested-entry": {
+      "source": "platform",
+      "value": "10"
+    }
+  },
+  "probes": [
+    {
+      "source": "platform",
+      "value": "201"
+    },
+    {
+      "source": "platform",
+      "value": "10"
+    }
+  ]
+}

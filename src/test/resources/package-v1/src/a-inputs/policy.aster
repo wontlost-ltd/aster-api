@@ -1,0 +1,31 @@
+Module fixture.inputs.
+
+Define Tier as one of Gold, Silver.
+
+Rule half given d as Double, produce Double:
+  Return d divided by 2.
+
+Rule bump given l as Long, produce Long:
+  Return l plus 1L.
+
+Rule count given xs as List of Int, produce Int:
+  Return List.length(xs).
+
+Rule lookup given m as Map Text to Int, produce Int?:
+  Return Map.get(m, "a").
+
+Rule orZero given t as Int?, produce Int:
+  Match t:
+    When Some(v), Return v.
+    When None, Return 0.
+
+Rule tierCode given tier as Tier, produce Text:
+  Match tier:
+    When Gold, Return "g".
+    When Silver, Return "s".
+
+Rule widen given x as Int, produce Long:
+  Return x times 1L.
+
+Rule echo given s as Text, produce Text:
+  Return s.

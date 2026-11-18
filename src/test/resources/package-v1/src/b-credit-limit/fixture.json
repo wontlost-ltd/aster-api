@@ -1,0 +1,810 @@
+{
+  "description": "B 包，en-US，单个 Data 入参（含 Decimal 字段），Verdict 输出；另有 zip 形态、--pubkey 与缺信任锚、inspect、verify --recompile 用例。源码取自 corpus/tier1-equivalence/policies/credit-pilot.aster。 信任锚用例（README「信任锚」）：原始 --pubkey 不看 kid；JWK 形态的 --pubkey 带 kid 时必须相符；非法锚文件一律 USAGE。zip 形态另有 verify / inspect。",
+  "mode": "b",
+  "target": "jre",
+  "locale": "en-US",
+  "aliasSet": null,
+  "allowStructural": false,
+  "claimedRefVersion": 3,
+  "zip": true,
+  "entries": [
+    {
+      "function": "decide",
+      "default": true
+    }
+  ],
+  "probes": [
+    {
+      "entry": "decide",
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      }
+    },
+    {
+      "entry": "decide",
+      "input": {
+        "applicant": {
+          "activeDefaults": 1,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "name": "allow",
+      "command": "run",
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform"
+    },
+    {
+      "name": "deny-active-default",
+      "command": "run",
+      "input": {
+        "applicant": {
+          "activeDefaults": 1,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform"
+    },
+    {
+      "name": "deny-dti",
+      "command": "run",
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "5000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform"
+    },
+    {
+      "name": "require-approval",
+      "command": "run",
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 700,
+          "monthlyDebt": "1000",
+          "monthlyIncome": "8000",
+          "requestedAmount": "60000"
+        }
+      },
+      "expect": "platform"
+    },
+    {
+      "name": "escalate",
+      "command": "run",
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 650,
+          "monthlyDebt": "1000",
+          "monthlyIncome": "8000",
+          "requestedAmount": "10000"
+        }
+      },
+      "expect": "platform"
+    },
+    {
+      "name": "explicit-entry",
+      "command": "run",
+      "args": [
+        "--entry",
+        "decide"
+      ],
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform",
+      "sameAs": "allow"
+    },
+    {
+      "name": "zip-allow",
+      "command": "run",
+      "package": "zip",
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform",
+      "sameAs": "allow"
+    },
+    {
+      "name": "pubkey-raw-anchor",
+      "command": "run",
+      "anchor": "pubkey",
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform",
+      "sameAs": "allow"
+    },
+    {
+      "name": "builtin-anchor-is-empty",
+      "command": "run",
+      "anchor": "none",
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "PKG_UNTRUSTED_KID"
+      }
+    },
+    {
+      "name": "inspect",
+      "command": "inspect"
+    },
+    {
+      "name": "verify",
+      "command": "verify"
+    },
+    {
+      "name": "verify-recompile",
+      "command": "verify",
+      "args": [
+        "--recompile"
+      ]
+    },
+    {
+      "name": "zip-verify",
+      "command": "verify",
+      "package": "zip",
+      "args": [
+        "--recompile",
+        "--probes"
+      ]
+    },
+    {
+      "name": "zip-inspect",
+      "command": "inspect",
+      "package": "zip"
+    },
+    {
+      "name": "raw-pubkey-ignores-kid",
+      "command": "run",
+      "target": "../tamper/signature-untrusted-kid",
+      "anchor": "pubkey",
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform",
+      "sameAs": "allow"
+    },
+    {
+      "name": "jwk-pubkey-matching-kid",
+      "command": "run",
+      "anchor": {
+        "pubkey": "../anchors/test-pub.jwk.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform",
+      "sameAs": "allow"
+    },
+    {
+      "name": "jwk-pubkey-kid-mismatch",
+      "command": "run",
+      "target": "../tamper/signature-untrusted-kid",
+      "anchor": {
+        "pubkey": "../anchors/test-pub.jwk.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "PKG_UNTRUSTED_KID"
+      }
+    },
+    {
+      "name": "jwk-pubkey-without-kid",
+      "command": "run",
+      "target": "../tamper/signature-untrusted-kid",
+      "anchor": {
+        "pubkey": "../anchors/test-pub-no-kid.jwk.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform",
+      "sameAs": "allow"
+    },
+    {
+      "name": "usage-jwks-duplicate-kid",
+      "command": "run",
+      "anchor": {
+        "jwks": "../anchors/jwks-duplicate-kid.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-wrong-curve",
+      "command": "run",
+      "anchor": {
+        "jwks": "../anchors/jwks-wrong-curve.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-short-x",
+      "command": "run",
+      "anchor": {
+        "jwks": "../anchors/jwks-short-x.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-wrong-alg",
+      "command": "run",
+      "anchor": {
+        "jwks": "../anchors/jwks-wrong-alg.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-not-json",
+      "command": "run",
+      "anchor": {
+        "jwks": "../anchors/jwks-not-json.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-missing-file",
+      "command": "run",
+      "anchor": {
+        "jwks": "../anchors/does-not-exist.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-pubkey-padded",
+      "command": "run",
+      "anchor": {
+        "pubkey": "../anchors/pub-padded.b64u"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-pubkey-crlf",
+      "command": "run",
+      "anchor": {
+        "pubkey": "../anchors/pub-crlf.b64u"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-pubkey-31-bytes",
+      "command": "run",
+      "anchor": {
+        "pubkey": "../anchors/pub-31-bytes.b64u"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "dir-named-like-zip",
+      "command": "run",
+      "target": "b-credit-limit-dir.zip",
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform",
+      "sameAs": "allow"
+    },
+    {
+      "name": "zip-without-extension",
+      "command": "run",
+      "target": "b-credit-limit-zip-no-extension",
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform",
+      "sameAs": "allow"
+    },
+    {
+      "name": "usage-jwks-http-url",
+      "command": "run",
+      "anchor": {
+        "jwks": "http://127.0.0.1:9/jwks.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-url-non-ascii",
+      "command": "run",
+      "anchor": {
+        "jwks": "https://127.0.0.1:9/jwks-é.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-url-space",
+      "command": "run",
+      "anchor": {
+        "jwks": "https://127.0.0.1:9/jwks .json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-url-bad-percent",
+      "command": "run",
+      "anchor": {
+        "jwks": "https://127.0.0.1:9/jwks%zz.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-url-backslash",
+      "command": "run",
+      "anchor": {
+        "jwks": "https://127.0.0.1:9\\jwks.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-url-colon-in-host",
+      "command": "run",
+      "anchor": {
+        "jwks": "https://a:b:443/jwks.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-url-double-colon-port",
+      "command": "run",
+      "anchor": {
+        "jwks": "https://h::443/jwks.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-url-userinfo",
+      "command": "run",
+      "anchor": {
+        "jwks": "https://u@127.0.0.1:9/jwks.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-url-empty-port",
+      "command": "run",
+      "anchor": {
+        "jwks": "https://127.0.0.1:/jwks.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-duplicate-json-key",
+      "command": "run",
+      "anchor": {
+        "jwks": "../anchors/jwks-duplicate-json-key.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-bom",
+      "command": "run",
+      "anchor": {
+        "jwks": "../anchors/jwks-bom.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwk-pubkey-trailing-garbage",
+      "command": "run",
+      "anchor": {
+        "pubkey": "../anchors/test-pub-trailing-garbage.jwk.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-uppercase-scheme",
+      "command": "run",
+      "anchor": {
+        "jwks": "HTTPS://127.0.0.1:9/jwks.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-jwks-ftp-url",
+      "command": "run",
+      "anchor": {
+        "jwks": "ftp://127.0.0.1/jwks.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "jwks-file-exactly-1MiB-ok",
+      "command": "run",
+      "anchor": {
+        "jwks": "../anchors/jwks-exactly-1MiB.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": "platform",
+      "sameAs": "allow"
+    },
+    {
+      "name": "usage-jwks-file-over-1MiB",
+      "command": "run",
+      "anchor": {
+        "jwks": "../anchors/jwks-over-1MiB.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    },
+    {
+      "name": "usage-pubkey-file-over-1MiB",
+      "command": "run",
+      "anchor": {
+        "pubkey": "../anchors/test-pub-over-1MiB.jwk.json"
+      },
+      "input": {
+        "applicant": {
+          "activeDefaults": 0,
+          "creditScore": 760,
+          "monthlyDebt": "2000",
+          "monthlyIncome": "9000",
+          "requestedAmount": "20000"
+        }
+      },
+      "expect": {
+        "code": "USAGE"
+      }
+    }
+  ]
+}

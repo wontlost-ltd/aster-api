@@ -1,0 +1,17 @@
+{
+  "id": "parity.vocab.zh-block-scope-shadowing",
+  "name": "中文块作用域遮蔽",
+  "locale": "zh-CN",
+  "version": "1.0.0",
+  "structs": [],
+  "fields": [],
+  "functions": [
+    {
+      "canonical": "double",
+      "localized": "加倍",
+      "kind": "function"
+    }
+  ],
+  "enumValues": [],
+  "literals": []
+}

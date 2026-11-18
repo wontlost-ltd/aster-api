@@ -1,0 +1,42 @@
+{
+  "cases": {
+    "default-entry": {
+      "source": "platform",
+      "value": "70"
+    },
+    "entry-label": {
+      "source": "platform",
+      "value": "\"high\""
+    },
+    "entry-label-low": {
+      "source": "platform",
+      "value": "\"low\""
+    },
+    "entry-double-result": {
+      "source": "platform",
+      "value": "14.285714285714286"
+    },
+    "zero-param-entry": {
+      "source": "platform",
+      "value": "42"
+    },
+    "eval-error-division-by-zero": {
+      "source": "platform",
+      "error": "evaluation_failed Policy evaluation failed"
+    }
+  },
+  "probes": [
+    {
+      "source": "platform",
+      "value": "70"
+    },
+    {
+      "source": "platform",
+      "value": "\"high\""
+    },
+    {
+      "source": "platform",
+      "error": "evaluation_failed Policy evaluation failed"
+    }
+  ]
+}

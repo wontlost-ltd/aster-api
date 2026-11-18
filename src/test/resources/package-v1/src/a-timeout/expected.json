@@ -1,0 +1,14 @@
+{
+  "cases": {
+    "small-input-completes": {
+      "source": "platform",
+      "value": "4"
+    }
+  },
+  "probes": [
+    {
+      "source": "platform",
+      "value": "4"
+    }
+  ]
+}

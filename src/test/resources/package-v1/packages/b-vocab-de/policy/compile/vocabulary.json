@@ -1,0 +1,1 @@
+{"enumValues":[],"fields":[{"canonical":"ageGroup","kind":"field","localized":"Alter","parent":"Person"},{"canonical":"age","kind":"field","localized":"alter","parent":"Person"}],"functions":[],"id":"parity.vocab.case-only-fields","literals":[],"locale":"de-DE","name":"同 struct 仅大小写不同的字段","structs":[{"canonical":"Person","kind":"struct","localized":"Person"}],"version":"1.0.0"}

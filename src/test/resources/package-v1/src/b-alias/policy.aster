@@ -1,0 +1,6 @@
+Module fixture.alias.
+
+Rule discount given amount as Int, produce Int:
+  in the case that amount greater than 100:
+    the answer is amount multiplied by 2.
+  the answer is amount.

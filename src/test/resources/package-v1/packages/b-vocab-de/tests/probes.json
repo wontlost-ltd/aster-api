@@ -1,0 +1,1 @@
+{"probes":[{"entry":"kennzahl","expected":{"ok":true,"value":342},"input":{"p":{"age":42,"ageGroup":3}}}]}

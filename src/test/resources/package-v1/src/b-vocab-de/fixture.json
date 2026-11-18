@@ -1,0 +1,16 @@
+{
+  "description": "B 包，de-DE + 冻结词汇（policy/compile/vocabulary.json）。源码与词汇取自 corpus/tier1-parity/vocab-de/case-only-fields.*：同一 struct 的两个词条 Alter / alter 只差大小写。",
+  "mode": "b",
+  "target": "node",
+  "locale": "de-DE",
+  "aliasSet": null,
+  "allowStructural": false,
+  "vocabulary": true,
+  "claimedRefVersion": 1,
+  "entries": [{ "function": "kennzahl", "default": true }],
+  "probes": [{ "entry": "kennzahl", "input": { "p": { "age": 42, "ageGroup": 3 } } }],
+  "cases": [
+    { "name": "case-only-fields", "command": "run", "input": { "p": { "age": 42, "ageGroup": 3 } }, "expect": "platform" },
+    { "name": "zero", "command": "run", "input": { "p": { "age": 0, "ageGroup": 0 } }, "expect": "platform" }
+  ]
+}

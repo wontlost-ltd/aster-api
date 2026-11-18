@@ -1,0 +1,18 @@
+{
+  "cases": {
+    "case-only-fields": {
+      "source": "platform",
+      "value": "342"
+    },
+    "zero": {
+      "source": "platform",
+      "value": "0"
+    }
+  },
+  "probes": [
+    {
+      "source": "platform",
+      "value": "342"
+    }
+  ]
+}
