@@ -759,6 +759,20 @@ class InternalCallerFilterTest {
             InternalCallerFilter.classify("/api/v1/policies/export/cedar/checkX", false, false, false, false, true));
     }
 
+    /** 策略包导出（ADR 0059 P2-R10）：带内部头必须验 HMAC；不带的放行到端点，由端点 403 export_requires_cloud。 */
+    @Test
+    void packageExportPathsRequireHmacOnlyWithInternalCallerHeaders() {
+        for (String p : new String[] {"/api/v1/policies/export/package", "/api/v1/policies/export/package/check",
+                "/api/v1/policies/export/package/prepare"}) {
+            assertEquals(InternalCallerFilter.Classification.REQUIRE_HMAC,
+                InternalCallerFilter.classify(p, false, false, false, false, true), p);
+            assertEquals(InternalCallerFilter.Classification.NOT_PROTECTED,
+                InternalCallerFilter.classify(p, false, false, false, false, false), p);
+        }
+        assertEquals(InternalCallerFilter.Classification.NOT_PROTECTED,
+            InternalCallerFilter.classify("/api/v1/policies/export/package/other", false, false, false, false, true));
+    }
+
     // aster-cloud#604：源码编译双通道，带内部调用头才要求 HMAC，否则保持匿名只读放行。
     @Test
     void compileRequiresHmacOnlyWithInternalCallerHeaders() {

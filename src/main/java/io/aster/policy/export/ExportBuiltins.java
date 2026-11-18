@@ -41,6 +41,15 @@ public final class ExportBuiltins {
     return CACHE.computeIfAbsent(target, t -> "jre".equals(t) ? Optional.of(load(JRE_RESOURCE)) : Optional.empty());
   }
 
+  /** 测试钩子：为某 target 设置白名单（T22 前用于覆盖 Node 导出路径），{@code null} 恢复缺省。 */
+  static void setForTest(String target, ExportBuiltins builtins) {
+    if (builtins == null) {
+      CACHE.remove(target);
+    } else {
+      CACHE.put(target, Optional.of(builtins));
+    }
+  }
+
   static ExportBuiltins load(String resource) {
     try (InputStream in = ExportBuiltins.class.getClassLoader().getResourceAsStream(resource)) {
       if (in == null) {
