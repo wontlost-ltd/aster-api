@@ -75,10 +75,10 @@ class NamedContextMapperDeclaredTypeTest {
   }
 
   private static String error(CoreModel.Type type, Object value) {
-    NamedContextMapper.MappingResult r = NamedContextMapper.mapContextByDeclaredTypes(Map.of("x", value),
-        List.of(param("x", type)), module());
-    assertThat(r.success()).isFalse();
-    return r.error();
+    Throwable t = org.assertj.core.api.Assertions.catchThrowable(() -> NamedContextMapper.mapContextByDeclaredTypes(
+        Map.of("x", value), List.of(param("x", type)), module()));
+    assertThat(t).isInstanceOf(DeclaredTypeConverter.ConversionException.class);
+    return t.getMessage();
   }
 
   @Test

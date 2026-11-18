@@ -103,8 +103,9 @@ public class NamedContextMapper {
      * 以模块声明映射并<strong>按声明类型转换入参</strong>（aster-api#558；另起方法名，使既有
      * {@code mapContext(context, params, null)} 调用不因重载产生歧义）：先按 {@link #mapContext(Object, List, Map)}
      * 做命名 / 位置映射与字段名校验，再由 {@link DeclaredTypeConverter} 把声明为 Decimal / Long 的位置（形参、
-     * Data 字段、List 元素、Map 值、Maybe 内层）转为 {@code BigDecimal} / {@code Long}。非法的 Decimal / Long 字符串
-     * 返回 {@code MappingResult.error("<路径>: expected Decimal")}。其余类型的行为与不带模块时相同。
+     * Data 字段、List 元素、Map 值、Maybe 内层）转为 {@code BigDecimal} / {@code Long}。其余类型的行为与不带模块时相同。
+     *
+     * @throws DeclaredTypeConverter.ConversionException 非法的 Decimal / Long 字符串（消息形如 {@code <路径>: expected Decimal}）
      */
     public static MappingResult mapContextByDeclaredTypes(Object context, List<CoreModel.Param> params,
                                                           CoreModel.Module module) {
@@ -112,12 +113,9 @@ public class NamedContextMapper {
         if (!mapped.success() || params == null || params.isEmpty()) {
             return mapped;
         }
-        Object[] converted;
-        try {
-            converted = DeclaredTypeConverter.of(module).convertArgs(mapped.positionalArgs(), params);
-        } catch (DeclaredTypeConverter.ConversionException e) {
-            return MappingResult.error(e.getMessage());
-        }
+        // 非法 Decimal / Long 字符串以 ConversionException 上抛（不折成 MappingResult.error）：调用方据此一律按
+        // 「入参不合法」归因（400），而不是混进各路径各自口径的映射失败。
+        Object[] converted = DeclaredTypeConverter.of(module).convertArgs(mapped.positionalArgs(), params);
         return new MappingResult(converted, mapped.wasNamedFormat(), mapped.warnings(), mapped.error(),
             mapped.missingParams(), mapped.firstParamKey(), mapped.paramKeys());
     }
