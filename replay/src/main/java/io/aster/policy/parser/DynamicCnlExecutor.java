@@ -362,7 +362,7 @@ public class DynamicCnlExecutor {
                     DynamicExecutionException.Kind.FUNCTION_NOT_FOUND);
             }
             NamedContextMapper.MappingResult mappingResult =
-                NamedContextMapper.mapContext(context, functionParams, dataDeclsOf(coreModule));
+                mapByDeclaredTypes(context, functionParams, coreModule);
             if (!mappingResult.success()) {
                 throw mappingFailure(mappingResult, DynamicExecutionException.Kind.INVALID_INPUT);
             }
@@ -524,8 +524,7 @@ public class DynamicCnlExecutor {
 
                 // 使用 NamedContextMapper 映射
                 NamedContextMapper.MappingResult mappingResult =
-                    NamedContextMapper.mapContext(context, functionParams,
-                        dataDeclsOf(compiled.coreModule()));
+                    mapByDeclaredTypes(context, functionParams, compiled.coreModule());
                 if (!mappingResult.success()) {
                     throw mappingFailure(mappingResult, DynamicExecutionException.Kind.EXECUTION);
                 }
@@ -730,6 +729,19 @@ public class DynamicCnlExecutor {
         } catch (DynamicExecutionException e) {
             boolean paramPrefixed = mapping.wasNamedFormat() || !(context instanceof Map);
             throw MissingInputFields.translate(e, module, params, mapping.positionalArgs(), paramPrefixed);
+        }
+    }
+
+    /**
+     * 按声明类型映射（#558）。非法的 Decimal / Long 字符串在全部执行路径上一律是入参不合法
+     * （{@link DynamicExecutionException.Kind#INVALID_INPUT}，REST 层回 400），与各路径其余映射失败的归因无关。
+     */
+    private static NamedContextMapper.MappingResult mapByDeclaredTypes(Object context, List<CoreModel.Param> params,
+                                                                      CoreModel.Module module) {
+        try {
+            return NamedContextMapper.mapContextByDeclaredTypes(context, params, module);
+        } catch (io.aster.policy.api.convert.DeclaredTypeConverter.ConversionException e) {
+            throw new DynamicExecutionException(e.getMessage(), DynamicExecutionException.Kind.INVALID_INPUT);
         }
     }
 
@@ -1093,23 +1105,4 @@ public class DynamicCnlExecutor {
         }
     }
 
-    /**
-     * 抽出模块内的 Data 声明（类型名 → 字段名集合），供单参数键名校验用（issue #244）。
-     */
-    private static java.util.Map<String, java.util.Set<String>> dataDeclsOf(
-            aster.core.ir.CoreModel.Module coreModule) {
-        java.util.Map<String, java.util.Set<String>> out = new java.util.HashMap<>();
-        if (coreModule == null || coreModule.decls == null) return out;
-        for (aster.core.ir.CoreModel.Decl d : coreModule.decls) {
-            if (d instanceof aster.core.ir.CoreModel.Data data
-                    && data.name != null && data.fields != null) {
-                java.util.Set<String> fields = new java.util.LinkedHashSet<>();
-                for (aster.core.ir.CoreModel.Field f : data.fields) {
-                    if (f != null && f.name != null) fields.add(f.name);
-                }
-                out.put(data.name, fields);
-            }
-        }
-        return out;
-    }
 }

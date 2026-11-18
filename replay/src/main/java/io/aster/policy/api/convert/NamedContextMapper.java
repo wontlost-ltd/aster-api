@@ -100,6 +100,43 @@ public class NamedContextMapper {
     }
 
     /**
+     * 以模块声明映射并<strong>按声明类型转换入参</strong>（aster-api#558；另起方法名，使既有
+     * {@code mapContext(context, params, null)} 调用不因重载产生歧义）：先按 {@link #mapContext(Object, List, Map)}
+     * 做命名 / 位置映射与字段名校验，再由 {@link DeclaredTypeConverter} 把声明为 Decimal / Long 的位置（形参、
+     * Data 字段、List 元素、Map 值、Maybe 内层）转为 {@code BigDecimal} / {@code Long}。其余类型的行为与不带模块时相同。
+     *
+     * @throws DeclaredTypeConverter.ConversionException 非法的 Decimal / Long 字符串（消息形如 {@code <路径>: expected Decimal}）
+     */
+    public static MappingResult mapContextByDeclaredTypes(Object context, List<CoreModel.Param> params,
+                                                          CoreModel.Module module) {
+        MappingResult mapped = mapContext(context, params, dataFieldNames(module));
+        if (!mapped.success() || params == null || params.isEmpty()) {
+            return mapped;
+        }
+        // 非法 Decimal / Long 字符串以 ConversionException 上抛（不折成 MappingResult.error）：调用方据此一律按
+        // 「入参不合法」归因（400），而不是混进各路径各自口径的映射失败。
+        Object[] converted = DeclaredTypeConverter.of(module).convertArgs(mapped.positionalArgs(), params);
+        return new MappingResult(converted, mapped.wasNamedFormat(), mapped.warnings(), mapped.error(),
+            mapped.missingParams(), mapped.firstParamKey(), mapped.paramKeys());
+    }
+
+    /** 模块内 Data 声明的字段名表（类型名 → 字段名集合），供单参数字段校验（issue #244）。 */
+    public static Map<String, java.util.Set<String>> dataFieldNames(CoreModel.Module module) {
+        Map<String, java.util.Set<String>> out = new java.util.HashMap<>();
+        if (module == null || module.decls == null) return out;
+        for (CoreModel.Decl d : module.decls) {
+            if (d instanceof CoreModel.Data data && data.name != null && data.fields != null) {
+                java.util.Set<String> fields = new java.util.LinkedHashSet<>();
+                for (CoreModel.Field f : data.fields) {
+                    if (f != null && f.name != null) fields.add(f.name);
+                }
+                out.put(data.name, fields);
+            }
+        }
+        return out;
+    }
+
+    /**
      * 带 Data 声明的重载：单参数规则可据此校验字段名（issue #244）。
      *
      * @param dataDecls 模块内的 Data 声明（类型名 → 字段名集合）；null 表示不做字段校验
