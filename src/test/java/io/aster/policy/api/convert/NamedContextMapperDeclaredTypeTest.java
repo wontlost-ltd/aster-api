@@ -11,7 +11,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * aster-api#558：{@code mapContext(context, params, module)} 按声明类型转换 Decimal 与 Long——形参、Data 字段、
+ * aster-api#558：{@code mapContextByDeclaredTypes(context, params, module)} 按声明类型转换 Decimal 与 Long——形参、Data 字段、
  * List 元素、Map 值、Maybe 内层；十进制字符串、带小数的数字、整数都得到 {@link BigDecimal}，非法字符串报带路径的错误。
  */
 class NamedContextMapperDeclaredTypeTest {
@@ -68,14 +68,14 @@ class NamedContextMapperDeclaredTypeTest {
   }
 
   private static Object single(CoreModel.Type type, Object value) {
-    NamedContextMapper.MappingResult r = NamedContextMapper.mapContext(Map.of("x", value),
+    NamedContextMapper.MappingResult r = NamedContextMapper.mapContextByDeclaredTypes(Map.of("x", value),
         List.of(param("x", type)), module());
     assertThat(r.success()).as(r.error()).isTrue();
     return r.positionalArgs()[0];
   }
 
   private static String error(CoreModel.Type type, Object value) {
-    NamedContextMapper.MappingResult r = NamedContextMapper.mapContext(Map.of("x", value),
+    NamedContextMapper.MappingResult r = NamedContextMapper.mapContextByDeclaredTypes(Map.of("x", value),
         List.of(param("x", type)), module());
     assertThat(r.success()).isFalse();
     return r.error();
@@ -126,7 +126,7 @@ class NamedContextMapperDeclaredTypeTest {
     assertThat(single(maybe(named("Decimal")), "9.99")).isEqualTo(new BigDecimal("9.99"));
     Map<String, Object> withNull = new LinkedHashMap<>();
     withNull.put("x", null);
-    assertThat(NamedContextMapper.mapContext(withNull, List.of(param("x", maybe(named("Decimal")))), module())
+    assertThat(NamedContextMapper.mapContextByDeclaredTypes(withNull, List.of(param("x", maybe(named("Decimal")))), module())
         .positionalArgs()[0]).isNull();
     List<?> claims = (List<?>) single(listOf(named("Claim")), List.of(Map.of("amount", "2.5")));
     assertThat(((Map<?, ?>) claims.get(0)).get("amount")).isEqualTo(new BigDecimal("2.5"));
@@ -140,6 +140,8 @@ class NamedContextMapperDeclaredTypeTest {
     assertThat(error(named("Long"), "9223372036854775808")).isEqualTo("x: expected Long");
     assertThat(error(named("Long"), "007")).isEqualTo("x: expected Long");
     assertThat(error(named("Long"), "1.5")).isEqualTo("x: expected Long");
+    // 平台口径（裁决）：Jackson 已精确读入的 int64 整数照常接受（包格式的 ±(2⁵³−1) 只约束 CLI 输入）
+    assertThat(single(named("Long"), 9007199254740993L)).isEqualTo(9007199254740993L);
     Map<?, ?> claim = (Map<?, ?>) single(named("Claim"), Map.of("count", "9007199254740993"));
     assertThat(claim.get("count")).isEqualTo(9007199254740993L);
   }
@@ -149,7 +151,7 @@ class NamedContextMapperDeclaredTypeTest {
     assertThat(single(named("Text"), "12.34")).isEqualTo("12.34");
     assertThat(single(named("Double"), 12.34)).isEqualTo(12.34);
     assertThat(single(named("Int"), 7)).isEqualTo(7);
-    NamedContextMapper.MappingResult positional = NamedContextMapper.mapContext(List.of("1.25", "t"),
+    NamedContextMapper.MappingResult positional = NamedContextMapper.mapContextByDeclaredTypes(List.of("1.25", "t"),
         List.of(param("a", named("Decimal")), param("b", named("Text"))), module());
     assertThat(positional.positionalArgs()).containsExactly(new BigDecimal("1.25"), "t");
     NamedContextMapper.MappingResult untyped = NamedContextMapper.mapContext(Map.of("x", "12.34"),

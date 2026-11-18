@@ -96,16 +96,18 @@ public class NamedContextMapper {
      * @return 映射结果
      */
     public static MappingResult mapContext(Object context, List<CoreModel.Param> params) {
-        return mapContext(context, params, (Map<String, java.util.Set<String>>) null);
+        return mapContext(context, params, null);
     }
 
     /**
-     * 以模块声明映射并<strong>按声明类型转换入参</strong>（aster-api#558）：先按 {@link #mapContext(Object, List, Map)}
+     * 以模块声明映射并<strong>按声明类型转换入参</strong>（aster-api#558；另起方法名，使既有
+     * {@code mapContext(context, params, null)} 调用不因重载产生歧义）：先按 {@link #mapContext(Object, List, Map)}
      * 做命名 / 位置映射与字段名校验，再由 {@link DeclaredTypeConverter} 把声明为 Decimal / Long 的位置（形参、
      * Data 字段、List 元素、Map 值、Maybe 内层）转为 {@code BigDecimal} / {@code Long}。非法的 Decimal / Long 字符串
      * 返回 {@code MappingResult.error("<路径>: expected Decimal")}。其余类型的行为与不带模块时相同。
      */
-    public static MappingResult mapContext(Object context, List<CoreModel.Param> params, CoreModel.Module module) {
+    public static MappingResult mapContextByDeclaredTypes(Object context, List<CoreModel.Param> params,
+                                                          CoreModel.Module module) {
         MappingResult mapped = mapContext(context, params, dataFieldNames(module));
         if (!mapped.success() || params == null || params.isEmpty()) {
             return mapped;

@@ -362,7 +362,7 @@ public class DynamicCnlExecutor {
                     DynamicExecutionException.Kind.FUNCTION_NOT_FOUND);
             }
             NamedContextMapper.MappingResult mappingResult =
-                NamedContextMapper.mapContext(context, functionParams, coreModule);
+                NamedContextMapper.mapContextByDeclaredTypes(context, functionParams, coreModule);
             if (!mappingResult.success()) {
                 throw mappingFailure(mappingResult, DynamicExecutionException.Kind.INVALID_INPUT);
             }
@@ -524,7 +524,7 @@ public class DynamicCnlExecutor {
 
                 // 使用 NamedContextMapper 映射
                 NamedContextMapper.MappingResult mappingResult =
-                    NamedContextMapper.mapContext(context, functionParams, compiled.coreModule());
+                    NamedContextMapper.mapContextByDeclaredTypes(context, functionParams, compiled.coreModule());
                 if (!mappingResult.success()) {
                     throw mappingFailure(mappingResult, DynamicExecutionException.Kind.EXECUTION);
                 }
