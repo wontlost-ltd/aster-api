@@ -1,5 +1,7 @@
 package io.aster.guard.receipt;
 
+import io.aster.common.signing.Ed25519KeyRing;
+
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -69,7 +71,7 @@ class ReceiptSigningKeysTest {
     for (String[] v : vectors) {
       String json = config(1, key("rfc", b64(HEX.parseHex(v[0])), ""));
       ReceiptSigningKeys keys = ReceiptSigningKeys.parse(json, "rfc", CLOCK);
-      ReceiptSigningKeys.SigningKey k = keys.active();
+      Ed25519KeyRing.SigningKey k = keys.active();
       assertThat(HEX.formatHex(k.rawPublicKey())).isEqualTo(v[1]);
 
       Signature signer = Signature.getInstance("Ed25519");
@@ -95,8 +97,8 @@ class ReceiptSigningKeysTest {
     assertThat(keys.revision()).isEqualTo(7L);
     assertThat(keys.active().kid()).isEqualTo("a");
     assertThat(keys.active().notAfter()).isEqualTo(Instant.parse("2027-01-01T00:00:00Z"));
-    assertThat(keys.all()).extracting(ReceiptSigningKeys.SigningKey::kid).containsExactly("a", "b");
-    assertThat(keys.find("b")).get().extracting(ReceiptSigningKeys.SigningKey::revoked).isEqualTo(true);
+    assertThat(keys.all()).extracting(Ed25519KeyRing.SigningKey::kid).containsExactly("a", "b");
+    assertThat(keys.find("b")).get().extracting(Ed25519KeyRing.SigningKey::revoked).isEqualTo(true);
     assertThat(keys.find("missing")).isEmpty();
     assertThat(keys.isRevoked("b")).isTrue();
     assertThat(keys.isRevoked("a")).isFalse();
@@ -237,7 +239,7 @@ class ReceiptSigningKeysTest {
   void startupSelfCheckSignsAndVerifies() {
     ReceiptSigningKeys keys = ReceiptSigningKeys.parse(
         config(1, key("a", SEED_A, ""), key("b", SEED_B, ",\"revoked\":true")), "a", CLOCK);
-    for (ReceiptSigningKeys.SigningKey k : keys.all()) {
+    for (Ed25519KeyRing.SigningKey k : keys.all()) {
       ReceiptSigningKeys.selfCheck(k.kid(), k.keyPair());
     }
 

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aster-lang.cloud/schema/policy-package/sig-1.0.json",
+  "title": "Aster policy package manifest.sig.json, formatVersion 1.0",
+  "description": "manifest.sig.json（ADR 0059 §6.2）：sig 为 manifest.json 文件字节的 64 字节 Ed25519 签名，base64url 无填充（恰 86 字符，且必须是规范编码：解码后重新编码与原文相同）。不符合本 schema 即 PKG_SIGNATURE。",
+  "type": "object",
+  "additionalProperties": false,
+  "propertyNames": {
+    "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+  },
+  "required": [
+    "alg",
+    "issuer",
+    "kid",
+    "sig"
+  ],
+  "properties": {
+    "alg": {
+      "const": "Ed25519"
+    },
+    "issuer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kid": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+(?![\\s\\S])"
+    },
+    "sig": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{86}(?![\\s\\S])"
+    }
+  }
+}
