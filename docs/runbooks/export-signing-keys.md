@@ -12,7 +12,7 @@
 | `signing-keys` | Vault `apps/aster-api-export-signing` 属性 `signing-keys` → ExternalSecret `aster-api-export-signing-keys` → env `ASTER_EXPORT_SIGNING_KEYS` | JSON：`{"revision":N,"keys":[{"kid","privateKey","notAfter"?,"revoked"?}]}` |
 | `active-kid` | Vault 同路径属性 `active-kid` → env `ASTER_EXPORT_ACTIVE_KID` | 当前用于签名的 kid，必须在 `keys` 中 |
 | 锁文件 | 仓内 `src/main/resources/export/export-runtimes.lock.json` | 每个 target 的 CLI 版本与**内置信任锚 kid**（`trustAnchorKids`）；由列车 pin bump 更新 |
-| `allow-unsigned` | env `ASTER_EXPORT_PACKAGE_ALLOW_UNSIGNED`（缺省 `false`） | **只供 on-prem**：为 `true` 且未配置密钥时导出无签名包。生产不得设置 |
+| `allow-unsigned` | env `ASTER_EXPORT_PACKAGE_ALLOW_UNSIGNED`（缺省 `false`） | **只供 on-prem**：为 `true` 且未配置密钥时导出无签名包。只在 `aster.plan-gate.enabled=false`（无 cloud 计划门的 on-prem）时被接受；云上部署同时打开即启动失败 |
 
 - `privateKey`：32 字节 Ed25519 种子的 base64url（无填充，43 字符）。
 - kid：不超过 64 字符，**不得以 `test-` 开头**（prod profile 下启动失败；conformance `keys/README.md` M4）。

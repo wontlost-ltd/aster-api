@@ -282,7 +282,7 @@ public final class Ed25519KeyRing {
     try {
       return Instant.parse(node.textValue());
     } catch (DateTimeParseException e) {
-      throw names.invalid(where + " 的 notAfter 必须是 ISO-8601 时间字符串: " + node.textValue());
+      throw names.invalid(where + " 的 notAfter 必须是 ISO-8601 时间字符串");
     }
   }
 

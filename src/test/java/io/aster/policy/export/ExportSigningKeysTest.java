@@ -54,4 +54,13 @@ class ExportSigningKeysTest {
     assertThat(ExportSigningKeys.load(Optional.of(config("export-2026-11a")), Optional.of("export-2026-11a"),
         CLOCK, PROD)).isPresent();
   }
+
+  @Test
+  void allowUnsignedOnlyOnPrem() {
+    ExportSigningKeys.requireAllowUnsignedOnPremOnly(false, true);
+    ExportSigningKeys.requireAllowUnsignedOnPremOnly(true, false);
+    ExportSigningKeys.requireAllowUnsignedOnPremOnly(false, false);
+    assertThatThrownBy(() -> ExportSigningKeys.requireAllowUnsignedOnPremOnly(true, true))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("on-prem");
+  }
 }

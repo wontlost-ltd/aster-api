@@ -101,6 +101,7 @@ class Ed25519KeyRingTest {
         config(1, key("a", SEED_B, ",\"revoked\":true")),
         config(1, key("a", SEED_B, ",\"notAfter\":\"" + NOW + "\"")),
         config(1, key("b", SEED_B, "")),
+        config(1, key("a", SEED_B, ",\"notAfter\":\"" + SEED_B + "\"")),
         "{\"revision\":1,\"keys\":[{\"kid\":\"a\",\"privateKey\":\"" + SEED_B + "\" oops}]}");
     for (String json : bad) {
       Throwable t = catchThrowable(() -> parse(json, "a"));
