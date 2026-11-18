@@ -1,0 +1,15 @@
+{
+  "description": "A 包，指数分支递归 spin(60)：--timeout 1s 下两侧都必须在约 1 s 内以 TIMEOUT / 5 退出（Node：Worker terminate；JVM：Context.close(true)）。",
+  "mode": "a",
+  "target": "node",
+  "locale": "en-US",
+  "aliasSet": null,
+  "allowStructural": false,
+  "claimedRefVersion": 1,
+  "entries": [{ "function": "spin", "default": true }],
+  "probes": [{ "entry": "spin", "input": { "n": 3 } }],
+  "cases": [
+    { "name": "timeout-1s", "command": "run", "args": ["--timeout", "1s"], "input": { "n": 60 }, "expect": { "code": "TIMEOUT" } },
+    { "name": "small-input-completes", "command": "run", "args": ["--timeout", "1s"], "input": { "n": 3 }, "expect": "platform" }
+  ]
+}

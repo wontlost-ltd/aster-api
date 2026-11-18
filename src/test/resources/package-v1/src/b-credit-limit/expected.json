@@ -1,0 +1,34 @@
+{
+  "cases": {
+    "allow": {
+      "source": "platform",
+      "value": "{\"__type\":\"Verdict\",\"outcome\":\"ALLOW\"}"
+    },
+    "deny-active-default": {
+      "source": "platform",
+      "value": "{\"__type\":\"Verdict\",\"outcome\":\"DENY\",\"reason\":\"active_default\"}"
+    },
+    "deny-dti": {
+      "source": "platform",
+      "value": "{\"__type\":\"Verdict\",\"outcome\":\"DENY\",\"reason\":\"dti_exceeds_limit\"}"
+    },
+    "require-approval": {
+      "source": "platform",
+      "value": "{\"__type\":\"Verdict\",\"outcome\":\"REQUIRE_APPROVAL\",\"reason\":\"large_exposure\",\"role\":\"Credit Officer\"}"
+    },
+    "escalate": {
+      "source": "platform",
+      "value": "{\"__type\":\"Verdict\",\"outcome\":\"ESCALATE\",\"reason\":\"borderline_credit_score\"}"
+    }
+  },
+  "probes": [
+    {
+      "source": "platform",
+      "value": "{\"__type\":\"Verdict\",\"outcome\":\"ALLOW\"}"
+    },
+    {
+      "source": "platform",
+      "value": "{\"__type\":\"Verdict\",\"outcome\":\"DENY\",\"reason\":\"active_default\"}"
+    }
+  ]
+}

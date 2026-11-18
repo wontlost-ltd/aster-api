@@ -1,0 +1,15 @@
+Module fixture.multi.
+
+Rule score given x as Int, produce Int:
+  Return x times 10.
+
+Rule label given x as Int, produce Text:
+  If x greater than 5:
+    Return "high".
+  Return "low".
+
+Rule ratio given x as Int, produce Double:
+  Return 100 divided by x.
+
+Rule answer produce Int:
+  Return 42.

@@ -1,0 +1,1 @@
+{"probes":[{"entry":"score","expected":{"ok":true,"value":70},"input":{"x":7}},{"entry":"label","expected":{"ok":true,"value":"high"},"input":{"x":7}},{"entry":"ratio","expected":{"code":"EVAL_ERROR","ok":false},"input":{"x":0}}]}

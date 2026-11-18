@@ -1,0 +1,16 @@
+{
+  "description": "B 包，非空 aliasSet（多词、规范形，过 UserAliasValidator；IF / RETURN 为结构性别名，allowStructural=true）。修订 A2 之下两侧都期望成功：ts 与 Java 的 IR 只差 origin 列（向量 position-free-hash.json 收录这一对）。",
+  "mode": "b",
+  "target": "node",
+  "locale": "en-US",
+  "aliasSet": { "IF": ["in the case that"], "RETURN": ["the answer is"], "TIMES": ["multiplied by"] },
+  "allowStructural": true,
+  "claimedRefVersion": 2,
+  "entries": [{ "function": "discount", "default": true }],
+  "probes": [{ "entry": "discount", "input": { "amount": 150 } }],
+  "cases": [
+    { "name": "over-threshold", "command": "run", "input": { "amount": 150 }, "expect": "platform" },
+    { "name": "under-threshold", "command": "run", "input": { "amount": 80 }, "expect": "platform" },
+    { "name": "verify-recompile", "command": "verify", "args": ["--recompile"] }
+  ]
+}

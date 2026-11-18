@@ -1,0 +1,1 @@
+{"probes":[{"entry":"discount","expected":{"ok":true,"value":300},"input":{"amount":150}}]}

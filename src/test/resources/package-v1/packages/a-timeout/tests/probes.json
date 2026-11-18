@@ -1,0 +1,1 @@
+{"probes":[{"entry":"spin","expected":{"ok":true,"value":4},"input":{"n":3}}]}

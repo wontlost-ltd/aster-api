@@ -1,0 +1,1 @@
+{"$defs":{"entry.decide":{"additionalProperties":false,"properties":{"__type":{"const":"Verdict"},"outcome":{"enum":["ALLOW","DENY","REQUIRE_APPROVAL","ESCALATE"]},"reason":{"type":"string"},"role":{"type":"string"}},"required":["__type","outcome"],"type":"object"}},"$schema":"https://json-schema.org/draft/2020-12/schema","title":"aster.pilot.credit entry outputs"}

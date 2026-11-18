@@ -1,0 +1,42 @@
+{
+  "description": "A 包，覆盖各类入参的输入形态（评审 I4）：Double（整数 token 与小数 token）、Long（安全整数 token 与 int64 十进制字符串，结果超出 2⁵³ 用于无损比较）、List、Map（Text 键）、Maybe（null 为 None）、无载荷 Enum（变体名字符串）、Int 的 int32 边界。字符串形态 Long 的期望值取自 ts（平台 /evaluate-json 把 JSON 字符串当 Text）。",
+  "mode": "a",
+  "target": "jre",
+  "locale": "en-US",
+  "aliasSet": null,
+  "allowStructural": false,
+  "claimedRefVersion": 1,
+  "entries": [
+    { "function": "half", "default": true },
+    { "function": "bump", "default": false },
+    { "function": "count", "default": false },
+    { "function": "lookup", "default": false },
+    { "function": "orZero", "default": false },
+    { "function": "tierCode", "default": false },
+    { "function": "widen", "default": false },
+    { "function": "echo", "default": false }
+  ],
+  "probes": [
+    { "entry": "bump", "input": { "l": "9007199254740993" }, "source": "ts" },
+    { "entry": "half", "input": { "d": 3 } },
+    { "entry": "orZero", "input": { "t": null } }
+  ],
+  "cases": [
+    { "name": "double-integer-token", "command": "run", "input": { "d": 3 }, "expect": "platform" },
+    { "name": "double-fraction-token", "command": "run", "input": { "d": 3.5 }, "expect": "platform" },
+    { "name": "long-integer-token", "command": "run", "args": ["--entry", "bump"], "input": { "l": 5 }, "expect": "platform" },
+    { "name": "long-decimal-string-beyond-2^53", "command": "run", "args": ["--entry", "bump"], "input": { "l": "9007199254740993" }, "expect": "ts" },
+    { "name": "long-decimal-string-min", "command": "run", "args": ["--entry", "bump"], "input": { "l": "-9223372036854775808" }, "expect": "ts" },
+    { "name": "list", "command": "run", "args": ["--entry", "count"], "input": { "xs": [1, 2, 3] }, "expect": "platform" },
+    { "name": "list-empty", "command": "run", "args": ["--entry", "count"], "input": { "xs": [] }, "expect": "platform" },
+    { "name": "map-some", "command": "run", "args": ["--entry", "lookup"], "input": { "m": { "a": 7, "b": 8 } }, "expect": "platform" },
+    { "name": "map-none", "command": "run", "args": ["--entry", "lookup"], "input": { "m": {} }, "expect": "platform" },
+    { "name": "maybe-some", "command": "run", "args": ["--entry", "orZero"], "input": { "t": 5 }, "expect": "platform" },
+    { "name": "maybe-none-is-null", "command": "run", "args": ["--entry", "orZero"], "input": { "t": null }, "expect": "platform" },
+    { "name": "enum-variant-name", "command": "run", "args": ["--entry", "tierCode"], "input": { "tier": "Silver" }, "expect": "platform" },
+    { "name": "int32-max", "command": "run", "args": ["--entry", "widen"], "input": { "x": 2147483647 }, "expect": "platform" },
+    { "name": "int32-min", "command": "run", "args": ["--entry", "widen"], "input": { "x": -2147483648 }, "expect": "platform" },
+    { "name": "text-non-ascii", "command": "run", "args": ["--entry", "echo"], "input": { "s": "Grüße, 世界 \ud83d\ude00" }, "expect": "platform" },
+    { "name": "verify-probes-lossless", "command": "verify", "args": ["--probes"] }
+  ]
+}

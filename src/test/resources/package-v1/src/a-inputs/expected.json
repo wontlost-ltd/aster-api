@@ -1,0 +1,78 @@
+{
+  "cases": {
+    "double-integer-token": {
+      "source": "platform",
+      "value": "1.5"
+    },
+    "double-fraction-token": {
+      "source": "platform",
+      "value": "1.75"
+    },
+    "long-integer-token": {
+      "source": "platform",
+      "value": "6"
+    },
+    "long-decimal-string-beyond-2^53": {
+      "source": "ts",
+      "value": "9007199254740994"
+    },
+    "long-decimal-string-min": {
+      "source": "ts",
+      "value": "-9223372036854775807"
+    },
+    "list": {
+      "source": "platform",
+      "value": "3"
+    },
+    "list-empty": {
+      "source": "platform",
+      "value": "0"
+    },
+    "map-some": {
+      "source": "platform",
+      "value": "{\"__type\":\"Some\",\"value\":7}"
+    },
+    "map-none": {
+      "source": "platform",
+      "value": "{\"__type\":\"None\"}"
+    },
+    "maybe-some": {
+      "source": "platform",
+      "value": "5"
+    },
+    "maybe-none-is-null": {
+      "source": "platform",
+      "value": "0"
+    },
+    "enum-variant-name": {
+      "source": "platform",
+      "value": "\"s\""
+    },
+    "int32-max": {
+      "source": "platform",
+      "value": "2147483647"
+    },
+    "int32-min": {
+      "source": "platform",
+      "value": "-2147483648"
+    },
+    "text-non-ascii": {
+      "source": "platform",
+      "value": "\"Grüße, 世界 😀\""
+    }
+  },
+  "probes": [
+    {
+      "source": "ts",
+      "value": "9007199254740994"
+    },
+    {
+      "source": "platform",
+      "value": "1.5"
+    },
+    {
+      "source": "platform",
+      "value": "0"
+    }
+  ]
+}

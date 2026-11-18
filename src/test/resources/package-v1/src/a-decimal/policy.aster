@@ -1,0 +1,4 @@
+Module fixture.decimal.
+
+Rule withTax given amount as Decimal, produce Decimal:
+  Return Decimal.round(amount times 1.0825m, 2, "HALF_EVEN").

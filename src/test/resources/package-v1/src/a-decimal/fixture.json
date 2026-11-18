@@ -1,0 +1,87 @@
+{
+  "description": "A 包（compiled/core.json 为平台 IR；runtime/ 留空——P1 只测 compiled 路径），Decimal 入参（只接受字符串）与 HALF_EVEN 舍入；tests/probes.json 3 条，verify --probes 通过。小数入参 \"12.34\" 的期望值取自 ts（平台 /evaluate-json 无法传入非整数 Decimal，见 README「期望值来源」）。",
+  "mode": "a",
+  "target": "node",
+  "locale": "en-US",
+  "aliasSet": null,
+  "allowStructural": false,
+  "claimedRefVersion": 4,
+  "entries": [
+    {
+      "function": "withTax",
+      "default": true
+    }
+  ],
+  "probes": [
+    {
+      "entry": "withTax",
+      "input": {
+        "amount": "10"
+      }
+    },
+    {
+      "entry": "withTax",
+      "input": {
+        "amount": "30"
+      }
+    },
+    {
+      "entry": "withTax",
+      "input": {
+        "amount": "50"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "name": "half-even-down",
+      "command": "run",
+      "input": {
+        "amount": "10"
+      },
+      "expect": "platform"
+    },
+    {
+      "name": "half-even-up",
+      "command": "run",
+      "input": {
+        "amount": "30"
+      },
+      "expect": "platform"
+    },
+    {
+      "name": "fractional-input",
+      "command": "run",
+      "input": {
+        "amount": "12.34"
+      },
+      "expect": "ts"
+    },
+    {
+      "name": "verify",
+      "command": "verify"
+    },
+    {
+      "name": "verify-probes",
+      "command": "verify",
+      "args": [
+        "--probes"
+      ]
+    },
+    {
+      "name": "verify-recompile",
+      "command": "verify",
+      "args": [
+        "--recompile"
+      ]
+    },
+    {
+      "name": "verify-recompile-and-probes",
+      "command": "verify",
+      "args": [
+        "--recompile",
+        "--probes"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "cases": {
+    "half-even-down": {
+      "source": "platform",
+      "value": "\"10.82\""
+    },
+    "half-even-up": {
+      "source": "platform",
+      "value": "\"32.48\""
+    },
+    "fractional-input": {
+      "source": "ts",
+      "value": "\"13.36\""
+    }
+  },
+  "probes": [
+    {
+      "source": "platform",
+      "value": "\"10.82\""
+    },
+    {
+      "source": "platform",
+      "value": "\"32.48\""
+    },
+    {
+      "source": "platform",
+      "value": "\"54.12\""
+    }
+  ]
+}

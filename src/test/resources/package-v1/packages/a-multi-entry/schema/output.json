@@ -1,0 +1,1 @@
+{"$defs":{"entry.answer":{"type":"integer"},"entry.label":{"type":"string"},"entry.ratio":{"type":"number"},"entry.score":{"type":"integer"}},"$schema":"https://json-schema.org/draft/2020-12/schema","title":"fixture.multi entry outputs"}
