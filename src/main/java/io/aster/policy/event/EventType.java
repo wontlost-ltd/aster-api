@@ -30,8 +30,8 @@ public enum EventType {
     GUARD_RECONCILIATION,       // 某租户一次对账有新孤儿或有解除（ADR 0054 §10.3；无变化不入链）
     GUARD_ORPHAN_ACKNOWLEDGED,  // 管理员确认一条孤儿动作（ADR 0054 §10.2）
 
-    // Cedar 导出（ADR 0047 §6）：成功导出同步入链后才返回
-    POLICY_EXPORTED,            // 策略导出为 Cedar（源码、策略文本与 schema 各自哈希）
+    // Cedar 导出（ADR 0047 §6）与策略包导出（ADR 0059 P2）：成功导出同步入链后才返回
+    POLICY_EXPORTED,            // 策略导出为 Cedar（源码、策略文本与 schema 各自哈希）或策略包（metadata.target = package:jre-b / package:node-b）
     POLICY_REVALIDATION,        // 重验生命周期，具体动作记录在 metadata.action
 
     // cloud 策略部署（ADR 0054 §11 D1）：部署 / 撤回与版本激活同一事务入链

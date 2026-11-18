@@ -37,6 +37,17 @@ trace 响应包含: `{"decisionTrace":{"moduleName":"...","functionName":"...","
 
 **GET /{policyId}/versions** -- 获取策略版本历史列表。
 
+**POST /export/package/check**、**POST /export/package/prepare**、**POST /export/package** -- B 形态策略包导出（ADR 0059 P2，修订 3 P2-R8）。
+只接受 aster-cloud 的 HMAC 内部调用（其它调用方 `403 export_requires_cloud`）；开关 `ASTER_EXPORT_PACKAGE_ENABLED`（缺省 `false`）关闭时三者均 `404`。
+请求体相同：`{"source","locale","aliasSet","allowStructural","vocabulary","entry","target":"jre|node","mode":"b","uiLocale":"en|zh|de|hi","claimedRef":{"policyId","version","status","approvedAt"},"nodeProbes":{…}}`。
+入参错误 `400`（`source_required`、`source_too_large`、`target_invalid`、`mode_unsupported`、`ui_locale_invalid`、`claimed_ref_invalid`、`alias_set_too_large`、词汇表超限）；进程设置了 `ASTER_TRUFFLE_FUNC` 时 `503 export_runtime_misconfigured`。
+- `check`：编译 + 闭世界检查，返回 `{"targets":{"jre":{exportable,diagnostics,unavailable},"node":{…}},"defaultEntry","entryCandidates"}`；不占并发许可、不写审计。
+- `prepare`：另跑探针（≤ 256 条），返回 `{exportable,diagnostics,entry,coreIr,coreIrSha256,positionFreeSha256,probes,probesSha256,probeCount,runtime:{cliName,cliVersion,ecosystem}}`；入口确定不了 `400 entry_required`（带 `entryCandidates`）；target 不可用 `503 export_runtime_unavailable`。
+- `export/package`：成功 `200 application/zip`，头 `Content-Disposition`、`X-Aster-Package-Sha256`、`X-Aster-Package-Signed`、`Cache-Control: private, no-store`，并同步入链 `POLICY_EXPORTED`（target `package:jre-b` / `package:node-b`）；不可导出（含 E734 超过 1 MiB）`200 {"exportable":false,"diagnostics":[…]}`；签名不可用 `503 export_signing_unavailable` / kid 未进 CLI 锚 `503 export_signing_kid_unanchored`（均在组装前、不写审计）；`target=node` 须带 cloud 核对过的 `nodeProbes {probesSha256,count,agreed,tsVersion}`，与平台重算不符分别 `400 node_probes_mismatch` / `node_check_incomplete` / `node_ts_version_mismatch`，`target=jre` 带它为 `400 node_probes_unexpected`；入链失败 `500 audit_unavailable`。
+`prepare` 与 `export/package` 共用并发许可 `ASTER_EXPORT_PACKAGE_MAX_CONCURRENT`（缺省 2），占满 `503 package_export_busy` + `Retry-After: 1`。
+
+**GET /api/v1/exports/keys** -- 策略包导出验签公钥（JWKS，匿名可读，`Cache-Control: max-age=300`），形状同 `/api/v1/guard/keys`：`{"keys":[{alg,crv,kid,kty,use,x[,exp]}],"revision"}`；未配置导出密钥时 `{"keys":[],"revision":0}`。供 CLI `aster verify --jwks <url>` 使用。
+
 ## 2 审计日志 `/api/v1/audit`（ADMIN）
 
 **GET /** -- 查询当前租户全部审计日志。

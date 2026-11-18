@@ -23,6 +23,7 @@ import java.util.Set;
  */
 public final class ExportBuiltins {
   static final String JRE_RESOURCE = "export/export-builtins-jre.json";
+  static final String NODE_RESOURCE_PROPERTY = "aster.export.node-builtins-resource";
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final Map<String, Optional<ExportBuiltins>> CACHE = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -38,7 +39,25 @@ public final class ExportBuiltins {
 
   /** 该 target 的白名单；node 在 ts 文件就绪前为空。 */
   public static Optional<ExportBuiltins> forTarget(String target) {
-    return CACHE.computeIfAbsent(target, t -> "jre".equals(t) ? Optional.of(load(JRE_RESOURCE)) : Optional.empty());
+    return CACHE.computeIfAbsent(target, t -> switch (t) {
+      case "jre" -> Optional.of(load(JRE_RESOURCE));
+      case "node" -> nodeResource().map(ExportBuiltins::load);
+      default -> Optional.empty();
+    });
+  }
+
+  /**
+   * node 白名单的类路径资源：配置 {@value #NODE_RESOURCE_PROPERTY}（缺省不配）。T22 把 ts 的生成文件复制进仓后改为固定资源；
+   * 在那之前只有测试 profile 指向测试副本，用以覆盖 Node 导出路径。
+   */
+  static Optional<String> nodeResource() {
+    return org.eclipse.microprofile.config.ConfigProvider.getConfig()
+        .getOptionalValue(NODE_RESOURCE_PROPERTY, String.class).filter(s -> !s.isBlank());
+  }
+
+  /** 测试钩子：清空缓存，使配置变更（不同测试 profile）生效。 */
+  static void resetCache() {
+    CACHE.clear();
   }
 
   static ExportBuiltins load(String resource) {

@@ -25,6 +25,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Internal caller filter for cloud-BFF-only endpoints.
@@ -190,6 +191,9 @@ public class InternalCallerFilter {
         // 源码编译（aster-cloud#604）：cloud 保存门禁走 HMAC（只有验签通过才可能信任结构词别名），
         // 匿名 IDE/浏览器调用不带内部头，仍按匿名只读端点放行，同收据先例的双通道。
         boolean isCompile = normalizedPath.equals(COMPILE_PATH);
+        // 策略包导出（ADR 0059 修订 3 P2-R10）：只对 cloud 开放。带内部头即验 HMAC；不带的请求放行到端点，
+        // 由端点按「开关关 404 → 非 HMAC 403 export_requires_cloud」的顺序拒绝，API key 不是有效通道。
+        boolean isPackageExport = PACKAGE_EXPORT_PATHS.contains(normalizedPath);
         // 从证据开决策（ADR 0042 §3.1）：只对 cloud 开放，无 Bearer 通道，恒要求 HMAC。
         if (normalizedPath.equals(GUARD_FROM_EVIDENCE_PATH)) return Classification.REQUIRE_HMAC;
         // 签名事实签发方管理（ADR 0040 §11 D3）：同 from-evidence，只对 cloud 开放，恒要求 HMAC。
@@ -197,7 +201,7 @@ public class InternalCallerFilter {
         // cloud 策略部署（ADR 0054 §11 D1）：同签发方管理，只对 cloud 开放，恒要求 HMAC。
         if (isGuardPolicyDeployments(normalizedPath)) return Classification.REQUIRE_HMAC;
         // guard 审批、决策回读与执行收据（ADR 0042 §4.2、ADR 0040 §12 D5）：cloud 走 HMAC，SDK 走 Bearer，同收据先例。
-        if (isAuditReceipts || isReplayItems || isCedarExport || isCompile
+        if (isAuditReceipts || isReplayItems || isCedarExport || isCompile || isPackageExport
             || isGuardDualChannel(normalizedPath)) {
             return hasInternalCaller ? Classification.REQUIRE_HMAC : Classification.NOT_PROTECTED;
         }
@@ -227,6 +231,9 @@ public class InternalCallerFilter {
     static final String CEDAR_EXPORT_PATH = "/api/v1/policies/export/cedar";
     static final String CEDAR_EXPORT_CHECK_PATH = CEDAR_EXPORT_PATH + "/check";
     static final String COMPILE_PATH = "/api/v1/policies/compile";
+    static final String PACKAGE_EXPORT_PATH = "/api/v1/policies/export/package";
+    static final Set<String> PACKAGE_EXPORT_PATHS = Set.of(
+        PACKAGE_EXPORT_PATH, PACKAGE_EXPORT_PATH + "/check", PACKAGE_EXPORT_PATH + "/prepare");
 
     static final String GUARD_POLICY_DEPLOYMENTS_PATH = "/api/v1/guard/policy-deployments";
 
