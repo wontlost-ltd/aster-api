@@ -44,7 +44,8 @@ class ExportRuntimesTest {
         "{\"formatVersion\":1,\"jre\":{\"cliName\":\"c\",\"cliVersion\":\"1\",\"trustAnchorKids\":[],\"sha256\":\"x\"},\"node\":null}",
         "{\"formatVersion\":1,\"jre\":{\"cliName\":\"c\",\"cliVersion\":\"1\",\"trustAnchorKids\":\"k\"},\"node\":null}",
         "{\"formatVersion\":1,\"jre\":{\"cliName\":\"\",\"cliVersion\":\"1\",\"trustAnchorKids\":[]},\"node\":null}",
-        "{\"formatVersion\":1,\"formatVersion\":1,\"jre\":" + jre + ",\"node\":null}");
+        "{\"formatVersion\":1,\"formatVersion\":1,\"jre\":" + jre + ",\"node\":null}",
+        "{\"formatVersion\":1,\"jre\":null,\"node\":null}");
     for (String json : bad) {
       assertThatThrownBy(() -> ExportRuntimes.parse(json)).as(json).isInstanceOf(IllegalStateException.class)
           .hasMessageContaining("export-runtimes.lock.json");

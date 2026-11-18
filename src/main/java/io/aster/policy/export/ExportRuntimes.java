@@ -123,6 +123,9 @@ public class ExportRuntimes {
     Map<String, Target> targets = new java.util.TreeMap<>();
     for (String name : List.of("jre", "node")) {
       JsonNode node = root.get(name);
+      if (node.isNull() && "jre".equals(name)) {
+        throw invalid("jre 不得为 null（只有 node 可在 ts 版本进锁文件前为 null）");
+      }
       if (!node.isNull()) {
         targets.put(name, readTarget(node, name));
       }
