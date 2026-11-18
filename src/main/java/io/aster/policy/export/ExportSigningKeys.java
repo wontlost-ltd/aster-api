@@ -6,6 +6,7 @@ import io.quarkus.runtime.configuration.ConfigUtils;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 import java.time.Clock;
 import java.util.List;
@@ -30,6 +31,8 @@ public class ExportSigningKeys {
   static final String ACTIVE_KID_PROPERTY = "aster.export.active-kid";
   static final String TEST_KID_PREFIX = "test-";
 
+  private static final Logger LOG = Logger.getLogger(ExportSigningKeys.class);
+
   private final Optional<Ed25519KeyRing> ring;
 
   static final String ALLOW_UNSIGNED_PROPERTY = "aster.export.package.allow-unsigned";
@@ -43,6 +46,10 @@ public class ExportSigningKeys {
                     Clock clock) {
     requireAllowUnsignedOnPremOnly(allowUnsigned, planGateEnabled);
     this.ring = load(json, activeKid, clock, ConfigUtils.getProfiles());
+    if (allowUnsigned && ring.isEmpty()) {
+      LOG.warn("策略包导出未配置签名密钥且 " + ALLOW_UNSIGNED_PROPERTY + "=true（on-prem）：导出的包无 manifest.sig.json，"
+          + "离线验证需 aster verify --allow-unsigned");
+    }
   }
 
   /**
@@ -52,6 +59,8 @@ public class ExportSigningKeys {
    * @throws IllegalStateException 云上部署打开了 allow-unsigned
    */
   static void requireAllowUnsignedOnPremOnly(boolean allowUnsigned, boolean planGateEnabled) {
+    // 云上部署的判定：k3s 生产恒设 ASTER_PLAN_GATE_ENABLED=true（关掉它即关掉全部配额门，本身就是事故）；
+    // on-prem 没有 aster-cloud BFF，计划门必然关闭。这是本仓唯一可靠的部署形态标记。
     if (allowUnsigned && planGateEnabled) {
       throw new IllegalStateException(ALLOW_UNSIGNED_PROPERTY + "=true 只供 on-prem（" + PLAN_GATE_PROPERTY
           + "=false）；云上部署缺导出密钥时必须 503 export_signing_unavailable");
