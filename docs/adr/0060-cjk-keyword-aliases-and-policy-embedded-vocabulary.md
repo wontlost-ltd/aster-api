@@ -181,7 +181,7 @@ isHanSingleToken(norm, loc)  = loc 的主语言子标签为 "zh"
 在既有的「不遮蔽规范拼写 / 官方别名、跨 kind 不重复、不撞词汇写法」之外，新增两条：
 
 1. **别名（折叠键）不得等于有效词汇中任何字面量触发词或其别名**。
-2. **IR 名字守卫**（只在 aliasSet 含汉字单词别名时启用）：令 K = 每个带汉字单词别名的 kind 在 en-US lexicon 中的全部拼写（规范拼写 + 官方别名，折叠后）。解析后，若任一名字——模块名各段、声明名（规则、Data、枚举、类型别名、导入别名）、参数、局部绑定、字段、成员访问、构造字段、调用目标、枚举成员——折叠后属于 K，编译失败，报新诊断 `alias_identifier_collision`（按 ADR 0031 在 ts `shared/error_codes.json` 登记下一个空号，core / locales 同步，消息「别名 'X'（KIND）在源码中被当作名字使用」）。守卫放在 core `InProcessCnlParser.parseWithUserAliases` 与 ts `compileSource` 的解析之后、降级之前，因此保存门禁、每次执行的复验、包导出的 Node 重编译都会经过它。多词别名不需要它（含空格，不可能是名字）。代价：作者在带汉字单词别名的策略里不能把名字写成 `return`、`module` 等英文拼写，报错时说明原因。
+2. **IR 名字守卫**（只在 aliasSet 含汉字单词别名时启用）：令 K = 每个带汉字单词别名的 kind 在 en-US lexicon 中的全部拼写（规范拼写 + 官方别名）加上这些汉字别名本身，均取折叠键。包含别名本身是因为两引擎在名字位置的处理不必相同：core 在文本层把别名译成英文关键词再按软关键字当名字，ts 的上下文关键词模型可能保留原写法；两种结果都要命中。解析后，若任一名字——模块名各段、声明名（规则、Data、枚举、类型别名、导入别名）、参数、局部绑定、字段、成员访问、构造字段、调用目标、枚举成员——折叠后属于 K，编译失败，报新诊断 `alias_identifier_collision`（按 ADR 0031 在 ts `shared/error_codes.json` 登记下一个空号，core / locales 同步，消息「别名 'X'（KIND）在源码中被当作名字使用」）。守卫放在 core `InProcessCnlParser.parseWithUserAliases` 与 ts `compileSource` 的解析之后、降级之前，因此保存门禁、每次执行的复验、包导出的 Node 重编译都会经过它。多词别名不需要它（含空格，不可能是名字）。代价：作者在带汉字单词别名的策略里不能把名字写成 `return`、`module` 等英文拼写，报错时说明原因。
 
 第 1 条的落点：core 的 `vocabularyHasWritten`（`UserAliasValidator.java:235-243`）加入 `scopes.literals()`；ts `alias-validate.ts` 同；cloud 的 `ReservedSets.vocabularyTermsLower` 改由**本次保存的有效词汇**生成，含字面量触发词（今天由 `buildAliasReservedForUser` 读作者全部个人词条，不含团队词条、不按作用域，`src/lib/structural-alias-grants.ts:22-55`，与编译所用词汇不一致）。
 
