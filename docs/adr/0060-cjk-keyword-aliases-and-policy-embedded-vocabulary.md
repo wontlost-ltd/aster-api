@@ -191,7 +191,7 @@ isHanSingleToken(norm, loc)  = loc 的主语言子标签为 "zh"
 
 - core `UserAliasValidator.VERSION`、ts `USER_ALIAS_VALIDATOR_VERSION`、cloud `USER_ALIAS_VALIDATOR_VERSION` 同时改为 `"2"`。
 - toolchainId 含 `validator=`（`CompileIdentity.java:37`、cloud `policy-alias.ts:55-61`），新版本的 envelope 带 `validator=2`；已存版本各有 `sourceToolchainId`，重算不受影响。
-- 新增跨引擎共享夹具 `alias-cases-v2.json`（core 与 ts 逐字节相同的副本，同 parse-diagnostics parity 夹具的做法）：每条 `{aliasSet, locale, allowStructural, vocabulary?, expectValid, expectCodes}`，覆盖 §5.1–5.3 每条规则的正反例；另含 `guardCases`（源码 + aliasSet + 期望 `ok` / `alias_identifier_collision`），对每个可别名结构词与一个运算符 kind、每类名字位置各至少一例，跑完整编译；cloud `policy-alias-shared` 的测试读同一夹具。
+- 新增跨引擎共享夹具 `alias_validation_v2_parity.json`（core `src/test/resources/diagnostics/`、ts `shared/`、cloud `src/lib/__fixtures__/` 三份逐字节相同的副本，同 parse-diagnostics parity 夹具的做法）：每条 `{aliasSet, locale, allowStructural, vocabulary?, expectValid, expectCodes}`，覆盖 §5.1–5.3 每条规则的正反例；另含 `guardCases`（源码 + aliasSet + 期望 `ok` / `alias_identifier_collision`），对每个可别名结构词与一个运算符 kind、每类名字位置各至少一例，跑完整编译；cloud `policy-alias-shared` 的测试读同一夹具。
 
 ### 5.5 发布顺序（列车门）
 
@@ -404,7 +404,7 @@ aster-api 只看到合并后的 `DomainVocabulary`：编译、`evaluate-source`�
 | aster-api 回退到旧引擎 | §5.5 第 5 条：pin 下限 CI 检查 + runbook；镜像级回滚是剩余风险，后果 fail-closed |
 | 汉字单词别名把同形名字静默改名（软关键字） | §5.3 第 2 条 IR 名字守卫，双引擎按位置矩阵测试 |
 | 内嵌词条与下层词条冲突，作者没注意到自己的个人词条在这条策略里失效 | `vocabularyShadowed` 响应 + 编辑器标记 |
-| 三处校验器漂移 | 共享夹具 `alias-cases-v2.json` 三处同跑 |
+| 三处校验器漂移 | 共享夹具 `alias_validation_v2_parity.json` 三处同跑 |
 | 字面量宏误导审批者 | 版本详情的内嵌词汇映射表与字面量标记；LayoutMap 不能把触发词藏进结构 span |
 | ts 与 core 对「触发词 = 关键词」的处理顺序不同 | 校验器与内嵌词汇校验在入口拦截；引擎顺序统一另开 issue |
 
