@@ -191,7 +191,7 @@ isHanSingleToken(norm, loc)  = loc 的主语言子标签为 "zh"
 
 - core `UserAliasValidator.VERSION`、ts `USER_ALIAS_VALIDATOR_VERSION`、cloud `USER_ALIAS_VALIDATOR_VERSION` 同时改为 `"2"`。
 - toolchainId 含 `validator=`（`CompileIdentity.java:37`、cloud `policy-alias.ts:55-61`），新版本的 envelope 带 `validator=2`；已存版本各有 `sourceToolchainId`，重算不受影响。
-- 新增跨引擎共享夹具 `alias-cases-v2.json`（core 与 ts 逐字节相同的副本，同 parse-diagnostics parity 夹具的做法）：每条 `{aliasSet, locale, allowStructural, vocabulary?, expectValid, expectCodes}`，覆盖 §5.1–5.3 每条规则的正反例；cloud `policy-alias-shared` 的测试读同一夹具。
+- 新增跨引擎共享夹具 `alias-cases-v2.json`（core 与 ts 逐字节相同的副本，同 parse-diagnostics parity 夹具的做法）：每条 `{aliasSet, locale, allowStructural, vocabulary?, expectValid, expectCodes}`，覆盖 §5.1–5.3 每条规则的正反例；另含 `guardCases`（源码 + aliasSet + 期望 `ok` / `alias_identifier_collision`），对每个可别名结构词与一个运算符 kind、每类名字位置各至少一例，跑完整编译；cloud `policy-alias-shared` 的测试读同一夹具。
 
 ### 5.5 发布顺序（列车门）
 
