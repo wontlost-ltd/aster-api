@@ -169,6 +169,8 @@ runs:
     #   子集污染。pull_request 只读、其余事件（main 上的 push / schedule，以及 dispatch）写：PR 作用域的条目
     #   别的 PR 读不到，写了只占 10GB 配额、挤掉 main 的条目；PR 从 main 作用域读同一 job 的条目。
     #   构建文件变化时按前缀回落到同一 job 的上一条，只补下载差量。
+    #   Gradle 发行版（~/.gradle/wrapper，约 280MB，各 job 相同、由 gradle-wrapper.properties 唯一决定）单独存一条、
+    #   全部 job 共用，不在每条 job 缓存里重复一份。
     - uses: actions/setup-java@v5
       with:
         java-version: ${{ inputs.java-version }}
@@ -178,9 +180,7 @@ runs:
       if: ${{ github.event_name == 'pull_request' }}
       uses: actions/cache/restore@v6
       with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
+        path: ~/.gradle/caches
         key: gradle-${{ runner.os }}-${{ runner.arch }}-${{ github.workflow }}-${{ github.job }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/*.versions.toml', '**/versions.properties') }}
         restore-keys: |
           gradle-${{ runner.os }}-${{ runner.arch }}-${{ github.workflow }}-${{ github.job }}-
@@ -189,12 +189,16 @@ runs:
       if: ${{ github.event_name != 'pull_request' }}
       uses: actions/cache@v6
       with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
+        path: ~/.gradle/caches
         key: gradle-${{ runner.os }}-${{ runner.arch }}-${{ github.workflow }}-${{ github.job }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'gradle/*.versions.toml', '**/versions.properties') }}
         restore-keys: |
           gradle-${{ runner.os }}-${{ runner.arch }}-${{ github.workflow }}-${{ github.job }}-
+
+    - name: Restore and save Gradle wrapper distributions
+      uses: actions/cache@v6
+      with:
+        path: ~/.gradle/wrapper
+        key: gradle-wrapper-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/gradle-wrapper.properties') }}
 
     # 发布共享版本目录到 Maven Local（aster-api settings 依赖它）。
     - name: Publish version catalog to Maven Local
