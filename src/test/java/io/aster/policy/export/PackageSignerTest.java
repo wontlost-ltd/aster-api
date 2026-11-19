@@ -72,19 +72,22 @@ class PackageSignerTest {
   }
 
   /**
-   * 首次上线的真实形态：生产密钥 kid {@code export-2026-11a} 已配置，但仓内锁文件 {@code jre.trustAnchorKids=[]}
-   * （已发布的 1.0.49 CLI 不含该锚）→ 必须 fail-closed 为 kid_unanchored，直到列车 eco-1.0.50 后 T15 bump 锁文件。
+   * 上线形态（A6 锁文件 bump 之后）：仓内锁文件两个 target 的 {@code trustAnchorKids} 都是生产 kid {@code export-2026-11a}
+   * （已发布的 aster-cli 1.0.50 与 ts 3.3.0 内置该锚），生产密钥据此签名；不在锚内的 kid 仍 fail-closed。
    */
   @Test
-  void productionKidAgainstShippedLockIsUnanchored() {
+  void productionKidIsAnchoredByShippedLock() {
     Ed25519KeyRing ring = ring("export-2026-11a", SEED, "");
     ExportRuntimes.Lock shipped = ExportRuntimes.parse(ExportRuntimes.readResource(ExportRuntimes.DEFAULT_RESOURCE));
-    for (boolean allowUnsigned : new boolean[] {false, true}) {
-      assertThat(PackageSigner.decide(MANIFEST, Optional.of(ring), Optional.ofNullable(shipped.targets().get("jre")),
-          allowUnsigned, CLOCK)).isEqualTo(new PackageSigner.Refused("export_signing_kid_unanchored"));
+    for (String target : new String[] {"jre", "node"}) {
+      PackageSigner.SignOutcome outcome = PackageSigner.decide(MANIFEST, Optional.of(ring),
+          Optional.ofNullable(shipped.targets().get(target)), false, CLOCK);
+      assertThat(outcome).as(target).isInstanceOf(PackageSigner.Signed.class);
+      assertThat(((PackageSigner.Signed) outcome).kid()).isEqualTo("export-2026-11a");
     }
-    assertThat(PackageSigner.decide(MANIFEST, Optional.of(ring), Optional.ofNullable(shipped.targets().get("node")),
-        false, CLOCK)).isEqualTo(new PackageSigner.Refused("export_runtime_unavailable"));
+    Ed25519KeyRing other = ring("export-2026-12a", SEED, "");
+    assertThat(PackageSigner.decide(MANIFEST, Optional.of(other), Optional.ofNullable(shipped.targets().get("jre")),
+        true, CLOCK)).isEqualTo(new PackageSigner.Refused("export_signing_kid_unanchored"));
   }
 
   @Test

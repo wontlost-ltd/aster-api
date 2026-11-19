@@ -2,6 +2,8 @@ package io.aster.policy.parser;
 
 import aster.core.ast.Module;
 import aster.core.canonicalizer.Canonicalizer;
+import aster.core.embed.AliasOverlayLexicon;
+import aster.core.embed.UserAliasValidator;
 import aster.core.identifier.VocabularyScopes;
 import aster.core.ir.CoreModel;
 import aster.core.lexicon.Lexicon;
@@ -32,6 +34,13 @@ import java.util.Map;
  *
  * <p>ADR 0051：解析之后紧接名称解析（R1 → lower → R2），产出只含规范名的 Core。R2 依赖 lower 在
  * 同一进程内登记的解析标记，因此调用方必须使用 {@link ParseResult#core()}，不得自行重新 lower AST。
+ *
+ * <p>ADR 0059 P2 T14 已改用 core {@code aster.core.embed} 的 {@code UserAliasValidator} / {@code AliasOverlayLexicon}。
+ * 本类与它包内依赖的 {@code ParseBudget}、{@code BudgetedParserATNSimulator}、{@code CnlErrorListener}、
+ * {@code KeywordLocalizer}、{@code SyntaxMessages}、{@code LegacySyntaxCodes} 暂留：core 1.0.50 的
+ * {@code aster.core.embed.InProcessCnlParser} 仍用 {@link String#isBlank()} 判空源码，缺本类的 {@link #isBlankSource}
+ * （aster-lang-ts#348，#577），换过去会让只含 U+3000 等 Unicode 空白的源码丢掉 core 词法给的 E050；
+ * 那几个依赖类在 core 是包内可见，无法单独复用。core 补上后整组删除。
  */
 public class InProcessCnlParser {
 

@@ -1,1 +1,1 @@
-{"formatVersion":1,"jre":{"cliName":"cloud.aster-lang:aster-cli","cliVersion":"1.0.49","trustAnchorKids":[]},"node":null}
+{"formatVersion":1,"jre":{"cliName":"cloud.aster-lang:aster-cli","cliVersion":"1.0.50","trustAnchorKids":["export-2026-11a"]},"node":{"cliName":"@aster-cloud/aster-lang-ts","cliVersion":"3.3.0","trustAnchorKids":["export-2026-11a"]}}

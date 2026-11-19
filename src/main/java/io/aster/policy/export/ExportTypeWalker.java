@@ -1,6 +1,7 @@
 package io.aster.policy.export;
 
 import aster.core.ir.CoreModel;
+import aster.core.typecheck.ErrorCode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -217,18 +218,18 @@ final class ExportTypeWalker {
   }
 
   private ObjectNode noForm(String entry, String path, String type) {
-    report(ExportDiagnosticCode.E733, entry, path, type,
+    report(ErrorCode.EXPORT_ENTRY_TYPE_UNSUPPORTED, entry, path, type,
         Map.of("entry", entry, "position", "at " + path, "type", type));
     return F.objectNode();
   }
 
   private void undefinedForm(String entry, String path, String type) {
-    report(ExportDiagnosticCode.E738, entry, path, type, Map.of("entry", entry, "type", type, "path", path));
+    report(ErrorCode.EXPORT_ENTRY_VALUE_FORM_UNDEFINED, entry, path, type, Map.of("entry", entry, "type", type, "path", path));
   }
 
-  private void report(ExportDiagnosticCode code, String entry, String path, String type, Map<String, String> params) {
+  private void report(ErrorCode code, String entry, String path, String type, Map<String, String> params) {
     if (reported.add(code + "|" + entry + "|" + path)) {
-      diagnostics.add(code.at(null, null, params));
+      diagnostics.add(ExportDiagnostic.of(code, null, null, params));
     }
   }
 

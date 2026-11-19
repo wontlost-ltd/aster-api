@@ -2,6 +2,7 @@ package io.aster.policy.export;
 
 import aster.core.ir.CoreModel;
 
+import aster.core.typecheck.ErrorCode;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -70,7 +71,7 @@ public final class ExportChecker {
     }
     for (CoreModel.Decl d : module.decls) {
       if (d instanceof CoreModel.Func f && "main".equals(f.name)) {
-        return List.of(ExportDiagnosticCode.E737.at(line(f.origin), column(f.origin), Map.of("entry", entry)));
+        return List.of(ExportDiagnostic.of(ErrorCode.EXPORT_ENTRY_SHADOWED_BY_MAIN, line(f.origin), column(f.origin), Map.of("entry", entry)));
       }
     }
     return List.of();
@@ -78,12 +79,12 @@ public final class ExportChecker {
 
   private void checkFunc(CoreModel.Func f) {
     if (f.effects != null && f.effects.contains("io")) {
-      out.add(ExportDiagnosticCode.E730.at(line(f.origin), column(f.origin),
+      out.add(ExportDiagnostic.of(ErrorCode.EXPORT_IO_CAPABILITY, line(f.origin), column(f.origin),
           Map.of("function", f.name, "capability", "io")));
     }
     if (f.effectCapsExplicit && f.effectCaps != null) {
       f.effectCaps.stream().filter(IO_CAPABILITIES::contains).distinct().forEach(cap ->
-          out.add(ExportDiagnosticCode.E730.at(line(f.origin), column(f.origin),
+          out.add(ExportDiagnostic.of(ErrorCode.EXPORT_IO_CAPABILITY, line(f.origin), column(f.origin),
               Map.of("function", f.name, "capability", cap))));
     }
     Deque<Set<String>> scopes = new ArrayDeque<>();
@@ -169,13 +170,13 @@ public final class ExportChecker {
         || constructors.contains(name)
         || builtins.contains(name);
     if (!resolved) {
-      out.add(ExportDiagnosticCode.E732.at(line(n.origin), column(n.origin),
+      out.add(ExportDiagnostic.of(ErrorCode.EXPORT_UNRESOLVED_NAME, line(n.origin), column(n.origin),
           Map.of("name", name, "function", fn, "target", target)));
     }
   }
 
   private void asyncUse(String fn, String construct, CoreModel.Origin origin) {
-    out.add(ExportDiagnosticCode.E731.at(line(origin), column(origin), Map.of("function", fn, "construct", construct)));
+    out.add(ExportDiagnostic.of(ErrorCode.EXPORT_ASYNC_CONSTRUCT, line(origin), column(origin), Map.of("function", fn, "construct", construct)));
   }
 
   private static void bind(CoreModel.Pattern p, Set<String> bound) {

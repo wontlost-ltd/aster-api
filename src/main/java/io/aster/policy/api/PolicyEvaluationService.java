@@ -211,7 +211,7 @@ public class PolicyEvaluationService {
             compiled = compileOnce(cacheKey).await().atMost(RULE_METADATA_TIMEOUT);
         }
         if (compiled.getEntryFailure() != null) {
-            throw io.aster.policy.parser.EntryFunctionException.cached(compiled.getEntryFailure());
+            throw aster.truffle.embed.EntryFunctionException.cached(compiled.getEntryFailure());
         }
         return ruleMetadataOf(compiled, policyFunction);
     }
@@ -233,7 +233,7 @@ public class PolicyEvaluationService {
             compiled = compileOnce(cacheKey).await().atMost(RULE_METADATA_TIMEOUT);
         }
         if (compiled.getEntryFailure() != null) {
-            throw io.aster.policy.parser.EntryFunctionException.cached(compiled.getEntryFailure());
+            throw aster.truffle.embed.EntryFunctionException.cached(compiled.getEntryFailure());
         }
         io.aster.policy.cache.CompiledPolicy artifact = compiled;
         return artifact.guardClassification(policyFunction, fn -> io.aster.policy.governance.InputClassifier
@@ -318,13 +318,13 @@ public class PolicyEvaluationService {
             .chain(hit -> hit != null ? Uni.createFrom().item(hit) : compileOnce(cacheKey))
             .map(compiled -> {
                 if (compiled.getEntryFailure() != null) {
-                    throw io.aster.policy.parser.EntryFunctionException.cached(compiled.getEntryFailure());
+                    throw aster.truffle.embed.EntryFunctionException.cached(compiled.getEntryFailure());
                 }
                 return executeCompiled(cacheKey, compiled, System.nanoTime(), resolveDeterminismContext() != null);
             })
             // EntryFunctionException 的消息只含函数名、且是调用方唯一能自行修正的原因：
             // 不包装，让 /evaluate 与 /evaluate/batch 把它原样回给调用方。
-            .onFailure(e -> !(e instanceof io.aster.policy.parser.EntryFunctionException))
+            .onFailure(e -> !(e instanceof aster.truffle.embed.EntryFunctionException))
             .transform(e -> new RuntimeException("Policy evaluation failed", e));
     }
 
@@ -598,12 +598,12 @@ public class PolicyEvaluationService {
             PolicyVersion version, CompilationResult compilationResult) {
         String versionId = String.valueOf(version.id);
         try {
-            String entryCoreJson = io.aster.policy.parser.CoreIrEntrySelector.withEntry(
+            String entryCoreJson = aster.truffle.embed.CoreIrEntrySelector.withEntry(
                 compilationResult.getCoreJson(), cacheKey.getPolicyFunction());
             // 内容哈希与信封哈希随产物进证据事件（aster-api#459）
             return new io.aster.policy.cache.CompiledPolicy(
                 versionId, version.sourceHash, version.sourceEnvelopeSha256, entryCoreJson, compilationResult.getMetadata());
-        } catch (io.aster.policy.parser.EntryFunctionException e) {
+        } catch (aster.truffle.embed.EntryFunctionException e) {
             return io.aster.policy.cache.CompiledPolicy.entryFailure(versionId, version.sourceHash, e.getMessage());
         }
     }

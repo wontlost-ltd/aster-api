@@ -1,9 +1,9 @@
 package io.aster.policy.api;
 
 import io.aster.policy.parser.DynamicCnlExecutor;
-import io.aster.policy.parser.EntryFunctionException;
+import aster.truffle.embed.EntryFunctionException;
 import io.aster.policy.runtime.MissingInputFieldException;
-import io.aster.policy.runtime.ValueShapeException;
+import aster.truffle.embed.ValueShapeException;
 
 /**
  * 评估失败到 HTTP 状态与机器可读错误码的映射（/evaluate、/evaluate-json、/evaluate/batch 共用）。

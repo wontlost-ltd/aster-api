@@ -119,13 +119,25 @@ class PackageExportServiceTest {
   }
 
   @Test
-  void nodeTargetUnavailableUntilBuiltinsShip() throws Exception {
+  void nodeTargetUsesTheTsWhitelist() throws Exception {
     PackageExportCheck check = service.check(spec("b-credit-limit"));
     assertThat(check.targets().get("jre").exportable()).isTrue();
-    assertThat(check.targets().get("node").unavailable()).isEqualTo("export_runtime_unavailable");
-    PackageExportService.ExportSpec node = new PackageExportService.ExportSpec(spec("b-credit-limit").source(), "en-US",
-        null, false, null, null, "node", "en", new PackageAssembler.ClaimedRef("p", 1, "APPROVED", null), "t");
-    assertThatThrownBy(() -> service.prepare(node)).isInstanceOf(PackageExportUnavailableException.class)
-        .hasMessage("export_runtime_unavailable");
+    assertThat(check.targets().get("node").exportable()).isTrue();
+  }
+
+  @Test
+  void nodeTargetUnavailableWithoutWhitelist() throws Exception {
+    ExportBuiltinsTestAccess.disableNode();
+    try {
+      PackageExportCheck check = service.check(spec("b-credit-limit"));
+      assertThat(check.targets().get("jre").exportable()).isTrue();
+      assertThat(check.targets().get("node").unavailable()).isEqualTo("export_runtime_unavailable");
+      PackageExportService.ExportSpec node = new PackageExportService.ExportSpec(spec("b-credit-limit").source(),
+          "en-US", null, false, null, null, "node", "en", new PackageAssembler.ClaimedRef("p", 1, "APPROVED", null), "t");
+      assertThatThrownBy(() -> service.prepare(node)).isInstanceOf(PackageExportUnavailableException.class)
+          .hasMessage("export_runtime_unavailable");
+    } finally {
+      ExportBuiltinsTestAccess.reset();
+    }
   }
 }

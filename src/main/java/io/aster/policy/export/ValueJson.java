@@ -16,8 +16,9 @@ import java.util.List;
  * {@code -0} 输出 {@code 0}；顶层值为第 0 层，任何值位于第 65 层或更深、孤立代理项、NaN / ±Infinity 一律抛
  * {@link IllegalArgumentException}（探针据此记为求值失败）。
  *
- * <p>Double 的写法与 aster-lang-truffle CLI {@code aster.cli.ValueJson#number} 逐行相同（两侧跑同一组向量）；
- * 列车 eco-1.0.50 后（计划 T14）改为直接调用 truffle 的实现并删除本类。
+ * <p>Double 的写法与 aster-lang-truffle CLI {@code aster.cli.ValueJson#number} 逐行相同（两侧跑同一组向量）。truffle 的实现在
+ * {@code cli} 子项目（不随引擎 jar 发布，aster-api 无从依赖），故本类保留；两侧字节一致由 jre CLI 黄金门
+ * {@code JreCliGoldenGateTest} 逐条探针比对守住。
  */
 public final class ValueJson {
   /** 值的最大嵌套层级（与 ts {@code SERIALIZE_MAX_DEPTH} 相同）。 */

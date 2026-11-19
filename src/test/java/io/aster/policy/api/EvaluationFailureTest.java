@@ -1,7 +1,7 @@
 package io.aster.policy.api;
 
 import io.aster.policy.parser.DynamicCnlExecutor.DynamicExecutionException;
-import io.aster.policy.parser.EntryFunctionException;
+import aster.truffle.embed.EntryFunctionException;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletionException;
@@ -104,10 +104,10 @@ class EvaluationFailureTest {
     }
 
     /** 经真实转换触发一次形态违例，取出其异常（构造器不对外开放）。 */
-    private static io.aster.policy.runtime.ValueShapeException shapeFailure(Runnable conversion) {
+    private static aster.truffle.embed.ValueShapeException shapeFailure(Runnable conversion) {
         try {
             conversion.run();
-        } catch (io.aster.policy.runtime.ValueShapeException e) {
+        } catch (aster.truffle.embed.ValueShapeException e) {
             return e;
         }
         throw new AssertionError("预期抛出 ValueShapeException");
@@ -117,7 +117,7 @@ class EvaluationFailureTest {
     void 值边界形态违例_入参400_出参422_细分code_被包装也能识别() {
         java.util.Map<String, Object> cyclic = new java.util.HashMap<>();
         cyclic.put("self", cyclic);
-        var input = shapeFailure(() -> io.aster.policy.runtime.PolyglotValues.toGuest(cyclic));
+        var input = shapeFailure(() -> aster.truffle.embed.PolyglotValues.toGuest(cyclic));
         EvaluationFailure in = EvaluationFailure.classify(new CompletionException(new RuntimeException(input)));
         assertThat(in.status()).isEqualTo(400);
         assertThat(in.code()).isEqualTo("input_cyclic");
@@ -126,7 +126,7 @@ class EvaluationFailureTest {
                 .allowHostAccess(org.graalvm.polyglot.HostAccess.newBuilder(
                     org.graalvm.polyglot.HostAccess.EXPLICIT).allowMapAccess(true).build())
                 .build()) {
-            var output = shapeFailure(() -> io.aster.policy.runtime.PolyglotValues.toHost(ctx.asValue(cyclic)));
+            var output = shapeFailure(() -> aster.truffle.embed.PolyglotValues.toHost(ctx.asValue(cyclic)));
             EvaluationFailure out = EvaluationFailure.classify(output);
             assertThat(out.status()).isEqualTo(422);
             assertThat(out.code()).isEqualTo("output_cyclic");

@@ -105,7 +105,7 @@ public class PolicyVersionService {
     /**
      * 创建版本并冻结用户自定义别名集（ADR 0022 方案 D）——**结构化入口（推荐）**。
      *
-     * <p>aliasSet 经 {@link io.aster.policy.parser.UserAliasValidator#validate} 强制校验
+     * <p>aliasSet 经 {@link aster.core.embed.UserAliasValidator#validate} 强制校验
      * （白名单/多词/不遮蔽/不撞领域词汇），再用 {@code canonicalJson} 确定性序列化后冻结。
      * 这保证同一别名集总产出同一 source envelope（可复现/跨租户一致）。
      *
@@ -118,12 +118,12 @@ public class PolicyVersionService {
                                        String sourceKind, String authorRole,
                                        java.util.Map<aster.core.lexicon.SemanticTokenKind, java.util.List<String>> aliasSet,
                                        aster.core.identifier.VocabularyScopes scopes) {
-        io.aster.policy.parser.UserAliasValidator.Result vr =
-            io.aster.policy.parser.UserAliasValidator.validate(aliasSet, locale, scopes);
+        aster.core.embed.UserAliasValidator.Result vr =
+            aster.core.embed.UserAliasValidator.validate(aliasSet, locale, scopes);
         if (!vr.valid()) {
             throw new IllegalArgumentException("用户自定义别名校验失败: " + String.join("; ", vr.errors()));
         }
-        String canonical = io.aster.policy.parser.UserAliasValidator.canonicalJson(aliasSet);
+        String canonical = aster.core.embed.UserAliasValidator.canonicalJson(aliasSet);
         return createVersion(catalogId, sourceCnl, locale, sourceKind, authorRole, canonical);
     }
 
@@ -250,12 +250,12 @@ public class PolicyVersionService {
         // 语义校验（Codex 三轮复核：String 入口也必须校验，不能只验 canonical 形）。
         // 白名单/多词/不遮蔽——撞领域词汇的碰撞校验需词汇作用域，请用结构化入口
         // createVersion(...Map, VocabularyScopes)；此处至少挡敏感 kind/单词/遮蔽。
-        io.aster.policy.parser.UserAliasValidator.Result vr =
-            io.aster.policy.parser.UserAliasValidator.validate(parsed, locale, null);
+        aster.core.embed.UserAliasValidator.Result vr =
+            aster.core.embed.UserAliasValidator.validate(parsed, locale, null);
         if (!vr.valid()) {
             throw new IllegalArgumentException("用户自定义别名校验失败: " + String.join("; ", vr.errors()));
         }
-        String canonical = io.aster.policy.parser.UserAliasValidator.canonicalJson(parsed);
+        String canonical = aster.core.embed.UserAliasValidator.canonicalJson(parsed);
         if (!aliasSetJson.equals(canonical)) {
             throw new IllegalArgumentException(
                 "aliasSet JSON 非规范形，请用 UserAliasValidator.canonicalJson 序列化后提交");

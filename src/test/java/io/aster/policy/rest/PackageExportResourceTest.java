@@ -135,9 +135,8 @@ class PackageExportResourceTest {
     Response r = hmacPost(PATH + "/check", request("jre", SOURCE), TENANT);
     assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
     assertThat(r.jsonPath().getBoolean("targets.jre.exportable")).isTrue();
-    // Node 白名单（T22）与锁文件 node 项就绪前，node 恒不可用
-    assertThat(r.jsonPath().getBoolean("targets.node.exportable")).isFalse();
-    assertThat(r.jsonPath().getString("targets.node.unavailable")).isEqualTo("export_runtime_unavailable");
+    // node 用 ts 白名单（export-builtins-node.json）与锁文件 node 项
+    assertThat(r.jsonPath().getBoolean("targets.node.exportable")).isTrue();
     assertThat(r.jsonPath().getString("defaultEntry")).isEqualTo("decide");
     assertThat(r.jsonPath().getList("entryCandidates", String.class)).containsExactly("decide");
   }
@@ -173,6 +172,6 @@ class PackageExportResourceTest {
         MessageDigest.getInstance("SHA-256").digest(body.get("coreIr").asText().getBytes(StandardCharsets.UTF_8))));
     assertThat(body.get("positionFreeSha256").asText()).hasSize(64);
     assertThat(body.at("/runtime/cliName").asText()).isEqualTo("cloud.aster-lang:aster-cli");
-    assertThat(body.at("/runtime/cliVersion").asText()).isEqualTo("1.0.49");
+    assertThat(body.at("/runtime/cliVersion").asText()).isEqualTo("1.0.50");
   }
 }

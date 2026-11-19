@@ -8,7 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.compiler.CompilationResult;
 import io.aster.policy.compiler.PolicyCompiler;
 import io.aster.policy.entity.PolicyVersion;
-import io.aster.policy.parser.AliasOverlayLexicon;
+import aster.core.embed.AliasOverlayLexicon;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
