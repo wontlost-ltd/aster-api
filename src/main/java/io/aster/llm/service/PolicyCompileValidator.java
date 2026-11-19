@@ -32,7 +32,7 @@ public class PolicyCompileValidator {
      * @return 校验结果
      */
     public ValidationResult validate(String policySource, String locale) {
-        if (policySource == null || policySource.isBlank()) {
+        if (InProcessCnlParser.isBlankSource(policySource)) {
             return ValidationResult.failure("策略代码为空");
         }
 

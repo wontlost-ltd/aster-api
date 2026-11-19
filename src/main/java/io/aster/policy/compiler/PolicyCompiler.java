@@ -122,8 +122,9 @@ public class PolicyCompiler {
         // 类型检查对所有编译路径一视同仁（编辑器/保存门、运行时求值、Cedar 导出、审批视图）：
         // 上线前清库重建，没有需要宽容的历史版本；aster.compile.typecheck=warn 只是紧急降级口。
         boolean warnOnly = "warn".equalsIgnoreCase(typecheckMode);
-        if (sourceCnl == null || sourceCnl.isBlank()) {
-            return CompilationResult.failure("CNL 源代码不能为空");
+        // 空源码判定与解析器同一口径（只认 ASCII 词法空白）：只含 U+3000 等 Unicode 空白的源码交给解析器，按 core 报 E050
+        if (InProcessCnlParser.isBlankSource(sourceCnl)) {
+            return CompilationResult.failure(InProcessCnlParser.EMPTY_SOURCE_MESSAGE);
         }
 
         try {
@@ -338,7 +339,7 @@ public class PolicyCompiler {
             LOG.debugf("从 PolicyVersion.coreJson 读取: versionId=%d", policyVersionId);
             return CompilationResult.success(version.coreJson, CompilationMetadata.empty());
         }
-        if (version.content == null || version.content.isBlank()) {
+        if (InProcessCnlParser.isBlankSource(version.content)) {
             return CompilationResult.failure(String.format("策略版本 %d 没有可用的 CNL 源代码", policyVersionId));
         }
         LOG.infof("动态编译 CNL 源代码: versionId=%d, locale=%s, hasAliases=%b",
