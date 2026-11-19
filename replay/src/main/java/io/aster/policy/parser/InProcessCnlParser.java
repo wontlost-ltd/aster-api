@@ -44,6 +44,22 @@ public class InProcessCnlParser {
      */
     static final int NESTING_DEPTH_LIMIT = aster.core.parser.AsterCustomLexer.MAX_NESTING_DEPTH;
 
+    /** 空源码（只含词法空白，见 {@link #isBlankSource}）的拒绝消息。 */
+    public static final String EMPTY_SOURCE_MESSAGE = "CNL 源代码不能为空";
+
+    /**
+     * 源码是否没有任何词法 token：为 null，或只含 core 词法器跳过的 ASCII 空格、tab、CR、LF。
+     *
+     * <p>编译前的「空源码」判定一律用它，不用 {@link String#isBlank()}：后者按 {@link Character#isWhitespace}
+     * 把 U+3000、U+2003、U+2028 等 Unicode 空白也算空白，而 core 词法只认 ASCII 空格与 tab（aster-lang-ts#348），
+     * 这些字符在 core 报 E050。提前当空源码拒掉，aster-api 就丢了 core 给的带码诊断。
+     * zh 的 U+3000 是空白，但那是 core 规范化把它转成半角空格的结果，所以解析入口在规范化之后再判一次。
+     */
+    public static boolean isBlankSource(String source) {
+        return source == null
+            || source.chars().allMatch(c -> c == ' ' || c == '\t' || c == '\r' || c == '\n');
+    }
+
     /**
      * CNL 解析结果
      *
@@ -177,8 +193,8 @@ public class InProcessCnlParser {
                                               Map<SemanticTokenKind, List<String>> aliasSet,
                                               NameResolver resolver, ParseBudget budget,
                                               PredictionMode predictionMode) {
-        if (source == null || source.isBlank()) {
-            throw new CnlParseException("CNL 源代码不能为空");
+        if (isBlankSource(source)) {
+            throw new CnlParseException(EMPTY_SOURCE_MESSAGE);
         }
 
         try {
@@ -190,6 +206,11 @@ public class InProcessCnlParser {
             // 词汇在此只提供字面量宏；标识符按位置解析见下方第 6 步（ADR 0051）。
             Canonicalizer canonicalizer = new Canonicalizer(lexicon, scopes);
             String canonicalizedSource = canonicalizer.canonicalize(source);
+            // 规范化之后再判一次：zh 的 U+3000 由 core 转成半角空格，只含它的源码此时才是词法上的空源码；
+            // en 等 locale 不转，U+3000 留给词法器报 E050（aster-lang-ts#348）
+            if (isBlankSource(canonicalizedSource)) {
+                throw new CnlParseException(EMPTY_SOURCE_MESSAGE);
+            }
             LOG.debugf("CNL 规范化完成: locale=%s, 原始长度=%d, 规范化后长度=%d",
                 locale, source.length(), canonicalizedSource.length());
             // Debug: 输出完整规范化结果
