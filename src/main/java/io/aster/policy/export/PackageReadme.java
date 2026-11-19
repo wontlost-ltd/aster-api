@@ -27,6 +27,8 @@ public final class PackageReadme {
   private PackageReadme() {
   }
 
+  private static final String TS_RELEASES = "https://github.com/aster-cloud/aster-lang-ts/releases/";
+
   public static byte[] render(String uiLocale, Data d) {
     String locale = LOCALES.contains(uiLocale) ? uiLocale : "en";
     Map<String, String> values = new LinkedHashMap<>();
@@ -37,7 +39,8 @@ public final class PackageReadme {
     values.put("cliName", d.cliName());
     values.put("cliVersion", d.cliVersion());
     values.put("jreVersion", d.jreCliVersion());
-    values.put("tsVersion", d.tsCliVersion() == null ? "latest" : d.tsCliVersion());
+    // Node 用 ts GitHub Release 的单文件运行器 aster.mjs（npm 包的 aster bin 依赖可选 peer，npx 也推不出可执行名）
+    values.put("tsReleaseUrl", d.tsCliVersion() == null ? TS_RELEASES + "latest" : TS_RELEASES + "tag/v" + d.tsCliVersion());
     values.put("factSourcesNote", d.factSources().isEmpty() ? ""
         : FACT_SOURCES_NOTE.get(locale) + String.join(", ", d.factSources()) + ("zh".equals(locale) ? "。" : "."));
     String text = template(locale);

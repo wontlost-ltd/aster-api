@@ -1,5 +1,6 @@
 package io.aster.replay.core;
 
+import aster.truffle.embed.ValueShapeException;
 import io.aster.policy.parser.DynamicCnlExecutor;
 import io.aster.policy.parser.InProcessCnlParser;
 
@@ -68,7 +69,7 @@ public final class ErrorClassification {
             return new ErrorClassification(
                 Kind.MODULE, moduleError.code() + ": " + moduleError.getMessage());
         }
-        if (e instanceof DynamicCnlExecutor.DynamicExecutionException) {
+        if (e instanceof DynamicCnlExecutor.DynamicExecutionException || e instanceof ValueShapeException) {
             return new ErrorClassification(Kind.EXECUTION, String.valueOf(e.getMessage()));
         }
         if (e instanceof InProcessCnlParser.CnlParseException) {

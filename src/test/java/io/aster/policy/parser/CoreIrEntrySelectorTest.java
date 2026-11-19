@@ -1,5 +1,7 @@
 package io.aster.policy.parser;
 
+import aster.truffle.embed.CoreIrEntrySelector;
+import aster.truffle.embed.EntryFunctionException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;

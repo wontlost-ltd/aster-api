@@ -828,16 +828,18 @@ public class PolicyEvaluationResource {
                         .build()
                 );
 
-            } catch (DynamicCnlExecutor.DynamicExecutionException e) {
+            } catch (DynamicCnlExecutor.DynamicExecutionException | aster.truffle.embed.ValueShapeException e) {
                 // ★模拟执行的耗时不进业务指标（第十轮）：否则「simulate 不污染指标」不成立
                 if (!effectiveSimulate) {
                     businessMetrics.endPolicyEvaluation(sample);
                 }
                 // 看门狗超时与用户源码编译错误是预期内的请求问题：WARN 一行、不打堆栈；其余执行失败保留完整堆栈
                 boolean sourceError = e.getCause() instanceof InProcessCnlParser.CnlParseException;
-                boolean timedOut = e.kind() == DynamicCnlExecutor.DynamicExecutionException.Kind.TIMEOUT;
-                // 值边界形态违例（入参过深 / 成环 / 非字符串键等）同属预期内的请求问题，同样不打堆栈
-                boolean shapeViolation = e instanceof io.aster.policy.runtime.ValueShapeException;
+                boolean timedOut = e instanceof DynamicCnlExecutor.DynamicExecutionException de
+                    && de.kind() == DynamicCnlExecutor.DynamicExecutionException.Kind.TIMEOUT;
+                // 值边界形态违例（入参过深 / 成环 / 非字符串键等，truffle 引擎的异常，不在执行器异常层级内）
+                // 同属预期内的请求问题，同样不打堆栈
+                boolean shapeViolation = e instanceof aster.truffle.embed.ValueShapeException;
                 // 输入缺少规则读取的字段：调用方补字段即可，同属预期内的请求问题
                 boolean missingField = e instanceof io.aster.policy.runtime.MissingInputFieldException;
                 if (timedOut || shapeViolation || missingField || sourceError) {

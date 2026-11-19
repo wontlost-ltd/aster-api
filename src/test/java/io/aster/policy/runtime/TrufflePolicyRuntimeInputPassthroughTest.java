@@ -2,8 +2,9 @@ package io.aster.policy.runtime;
 
 import aster.core.ir.CoreModel;
 import aster.core.lowering.CoreLowering;
+import aster.truffle.embed.PolyglotValues;
 import io.aster.policy.compiler.CompilationMetadata;
-import io.aster.policy.parser.CoreIrEntrySelector;
+import aster.truffle.embed.CoreIrEntrySelector;
 import io.aster.policy.parser.InProcessCnlParser;
 import io.aster.replay.core.parser.ReplayMappers;
 import org.junit.jupiter.api.AfterEach;

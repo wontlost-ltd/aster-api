@@ -1,5 +1,6 @@
 package io.aster.policy.rest;
 
+import aster.core.typecheck.ErrorCode;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.aster.audit.chain.AuditChainAppender;
 import io.aster.common.JacksonMappers;
@@ -7,7 +8,6 @@ import io.aster.policy.event.AuditEvent;
 import io.aster.policy.event.EventType;
 import io.aster.policy.export.EntryRequiredException;
 import io.aster.policy.export.ExportDiagnostic;
-import io.aster.policy.export.ExportDiagnosticCode;
 import io.aster.policy.export.ExportRejectedException;
 import io.aster.policy.export.PackageAssembler;
 import io.aster.policy.export.PackageExportCheck;
@@ -188,7 +188,7 @@ public class PackageExportResource {
     } catch (PackageExportUnavailableException e) {
       return error(503, e.code(), "package signing is not available");
     } catch (PackageTooLargeException e) {
-      return notExportable(List.of(ExportDiagnosticCode.E734.at(null, null,
+      return notExportable(List.of(ExportDiagnostic.of(ErrorCode.EXPORT_SIZE_EXCEEDED, null, null,
           Map.of("size", Long.toString(e.size()), "limit", Long.toString(e.limit())))));
     } catch (ExportRejectedException e) {
       return notExportable(e.diagnostics());

@@ -11,9 +11,6 @@ import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.quarkus.test.junit.mockito.InjectSpy;
 import io.restassured.response.Response;
-import io.aster.policy.export.ExportBuiltinsTestAccess;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -43,16 +40,6 @@ import static org.mockito.Mockito.doThrow;
 @TestProfile(CedarExportResourceTest.AuthProfile.class)
 class PackageExportDownloadTest {
   @InjectSpy AuditChainAppender appender;
-
-  @BeforeEach
-  void enableNode() {
-    ExportBuiltinsTestAccess.enableNodeTestCopy();
-  }
-
-  @AfterEach
-  void resetNode() {
-    ExportBuiltinsTestAccess.reset();
-  }
 
   static Map<String, byte[]> unzip(byte[] zip) throws Exception {
     Map<String, byte[]> out = new LinkedHashMap<>();

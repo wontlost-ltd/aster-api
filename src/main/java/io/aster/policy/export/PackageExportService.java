@@ -1,6 +1,7 @@
 package io.aster.policy.export;
 
 import aster.core.canonical.CanonicalJson;
+import aster.core.embed.PolicySourceCompiler;
 import aster.core.identifier.VocabularyScopes;
 import aster.core.ir.CoreIrFormatException;
 import aster.core.ir.CoreIrJson;
@@ -97,7 +98,7 @@ public class PackageExportService {
     ProbeRunner.ProbesFile probes = ProbeRunner.run(c.coreJson(), c.entry(), inputs);
     ExportRuntimes.Target lock = runtimes.target(spec.target()).orElseThrow();
     return new PackagePrepared(true, List.of(), c.entry(), c.coreJson(),
-        PackageAssembler.sha256(c.coreJson().getBytes(StandardCharsets.UTF_8)), PositionFreeHash.sha256(c.coreJson()),
+        PackageAssembler.sha256(c.coreJson().getBytes(StandardCharsets.UTF_8)), positionFreeSha256(c.coreJson()),
         probes, new PackagePrepared.Runtime(lock.cliName(), lock.cliVersion(), runtimes.ecosystem()));
   }
 
@@ -232,6 +233,15 @@ public class PackageExportService {
       return CoreIrJson.read(coreJson);
     } catch (CoreIrFormatException e) {
       throw new IllegalStateException("编译产物不是合法的 v2 Core IR", e);
+    }
+  }
+
+  /** {@code coreIr.positionFreeSha256}（修订 1 A2）：core 的唯一实现；平台编译产出的 IR 读不进来只可能是内部错误。 */
+  private static String positionFreeSha256(String coreJson) {
+    try {
+      return PolicySourceCompiler.positionFreeSha256(coreJson);
+    } catch (CoreIrFormatException e) {
+      throw new IllegalStateException("平台编译产出的 Core IR 无法严格读入: " + e.getMessage(), e);
     }
   }
 }

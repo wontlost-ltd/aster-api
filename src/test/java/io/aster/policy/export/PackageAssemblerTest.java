@@ -156,8 +156,17 @@ class PackageAssemblerTest {
         List.of("bureau"));
     String hi = new String(PackageReadme.render("hi", d), StandardCharsets.UTF_8);
     assertThat(hi).isEqualTo(new String(PackageReadme.render("en", d), StandardCharsets.UTF_8))
-        .contains("aster-cli-1.0.49.jar", "@aster-cloud/aster-lang-ts@latest", "bureau", "not** a Guard execution point")
+        .contains("aster-cli-1.0.49.jar", "https://github.com/aster-cloud/aster-lang-ts/releases/latest", "node aster.mjs",
+            "bureau", "not** a Guard execution point")
+        .doesNotContain("npx", "npm i -g")
         .doesNotContain("{{");
     assertThat(new String(PackageReadme.render("zh", d), StandardCharsets.UTF_8)).contains("事实来源：bureau。");
+    PackageReadme.Data pinned = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.3.0", "1.0.50",
+        "3.3.0", List.of());
+    for (String locale : List.of("en", "zh", "de")) {
+      assertThat(new String(PackageReadme.render(locale, pinned), StandardCharsets.UTF_8)).as(locale)
+          .contains("https://github.com/aster-cloud/aster-lang-ts/releases/tag/v3.3.0", "aster.mjs.sha256", "node aster.mjs")
+          .doesNotContain("npx", "npm i -g", "{{");
+    }
   }
 }

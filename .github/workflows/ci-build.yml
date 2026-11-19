@@ -308,13 +308,26 @@ jobs:
         with:
           node-version: 24
 
+      # ADR 0059 P2 T15：aster-api ≡ jre CLI 黄金门（JreCliGoldenGateTest）用兄弟 truffle（sibling-ref）构建的 aster-cli
+      # fat jar。经本仓 composite 构建（兄弟仓只 includeBuild、不发布到 Maven Local，单独 -p 构建 truffle 解析不到同版 core）。
+      - name: Build jre CLI fat jar (golden gate)
+        id: cli-jar
+        working-directory: aster-api
+        run: |
+          ./gradlew :aster-lang-truffle:cli:shadowJar --build-cache
+          jar=$(ls "$GITHUB_WORKSPACE"/aster-lang-truffle/cli/build/libs/aster-cli-*.jar)
+          test "$(echo "$jar" | wc -l)" -eq 1
+          echo "jar=$jar" >> "$GITHUB_OUTPUT"
+
       - name: Unit Tests (fast feedback)
         working-directory: aster-api
-        run: ./gradlew test --build-cache
+        run: ./gradlew test --build-cache "-Daster.cli.jar=${{ steps.cli-jar.outputs.jar }}"
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
           # 参照检查在 CI 必须实际执行：兄弟检出或 node 缺失即失败，而不是静默跳过
           ASTER_EXPORT_REFERENCE_REQUIRE: "1"
+          # jre CLI 黄金门同理：未给出 CLI jar 即失败
+          ASTER_EXPORT_GOLDEN_REQUIRE_JAR: "1"
           # 指向上面的 postgres service，让连默认 localhost:5432 的 @QuarkusTest
           # DB 测试稳定可用。integrationTest 步骤不设这些（它走 Testcontainers）。
           DB_JDBC_URL: "jdbc:postgresql://localhost:5432/aster_policy"

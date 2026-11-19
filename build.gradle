@@ -208,8 +208,9 @@ tasks.withType(Test) {
 
     // P0-A S2-1a-2 Task 0：把命令行 -Dparity.* 系统属性透传给 fork 的测试 JVM
     // （Gradle 默认不透传 -D 到 test fork）。GenExpectedCorpusTest 据此定位 corpus 目录
-    // （parity.corpus.dir）与开写盘门控（parity.gen.expected）。仅 parity 前缀，零副作用。
-    ['parity.corpus.dir', 'parity.gen.expected'].each { key ->
+    // （parity.corpus.dir）与开写盘门控（parity.gen.expected）。aster.cli.jar：ADR 0059 P2 T15 的 jre CLI
+    // 黄金门（JreCliGoldenGateTest）据此定位 aster-cli fat jar。
+    ['parity.corpus.dir', 'parity.gen.expected', 'aster.cli.jar'].each { key ->
         if (System.getProperty(key) != null) {
             systemProperty key, System.getProperty(key)
         }

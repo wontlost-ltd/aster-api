@@ -1,6 +1,7 @@
 package io.aster.policy.parser;
 
 import aster.core.ast.Module;
+import aster.core.embed.AliasOverlayLexicon;
 import aster.core.ir.CoreModel;
 import aster.core.lexicon.SemanticTokenKind;
 import aster.core.lowering.CoreLowering;

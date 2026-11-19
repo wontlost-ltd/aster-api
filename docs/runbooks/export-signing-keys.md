@@ -87,6 +87,10 @@ unset SEED KEYS_FILE
   导出仍 503 `export_signing_kid_unanchored`。
 - 列车之后，T15 以**单独的 PR** 把锁文件 bump 为 `"jre":{"cliVersion":"1.0.50","trustAnchorKids":["export-2026-11a"]}`（node 一项随 ts 3.3.x 补上），
   aster-api 部署后导出才可用。锁文件的 `cliVersion` 只能等于或落后于生态 pin / 运行中的引擎，**领先即启动失败**（`ExportRuntimesTest.jreCliVersionNotNewerThanEcosystemPin` 在 PR CI 拦下）。
+- A6 的锁文件：`jre` 为 `1.0.50`、`node` 为 `@aster-cloud/aster-lang-ts` `3.3.0`，两项的 `trustAnchorKids` 都是 `["export-2026-11a"]`
+  （已核：Release 资产 `aster-cli-1.0.50.jar` 与 npm 3.3.0 的 `dist/runner/aster.mjs` 的 `version` 都列出该 kid，公钥与 `/api/v1/exports/keys` 一致）。
+  node 的 ts 版本 aster-api 不运行，无 pin 可比；与 cloud 依赖的 ts 版本不一致时由 cloud 返回 503 `export_runtime_skew`（修订 3 P2-R13）。
+  node 白名单 `export/export-builtins-node.json` 是该 ts tag 的 `src/policy-package/export-builtins.json` 逐字节副本，随 `node.cliVersion` 一起更新。
 
 按顺序执行，任一步未通过即停：
 

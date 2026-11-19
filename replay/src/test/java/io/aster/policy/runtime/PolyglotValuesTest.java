@@ -1,5 +1,7 @@
 package io.aster.policy.runtime;
 
+import aster.truffle.embed.PolyglotValues;
+import aster.truffle.embed.ValueShapeException;
 import aster.truffle.runtime.interop.AsterDecimalValue;
 import aster.truffle.runtime.interop.AsterListValue;
 import aster.truffle.runtime.interop.AsterMapValue;

@@ -1,5 +1,7 @@
 package io.aster.policy.runtime;
 
+import aster.truffle.embed.PolyglotValues;
+import aster.truffle.embed.ValueShapeException;
 import io.aster.policy.compiler.CompilationMetadata;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;

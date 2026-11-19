@@ -1,5 +1,6 @@
 package io.aster.policy.export;
 
+import aster.truffle.embed.ValueShapeException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.parser.DynamicCnlExecutor;
@@ -39,7 +40,7 @@ public final class ProbeRunner {
       }
     }
     byte[] bytes = ("{\"probes\":[" + String.join(",", probes) + "]}").getBytes(StandardCharsets.UTF_8);
-    return new ProbesFile(bytes, probes.size(), PositionFreeHash.sha256Hex(new String(bytes, StandardCharsets.UTF_8)));
+    return new ProbesFile(bytes, probes.size(), PackageAssembler.sha256(bytes));
   }
 
   /** 一条探针的期望；返回 null 表示丢弃。 */
@@ -54,6 +55,9 @@ public final class ProbeRunner {
         return null;
       }
       return EVAL_ERROR;
+    } catch (ValueShapeException e) {
+      // 入参形态违例与 INVALID_INPUT 同样丢弃；结果形态违例是确定的求值失败
+      return e.inputError() ? null : EVAL_ERROR;
     } catch (StackOverflowError | OutOfMemoryError e) {
       return null;
     }

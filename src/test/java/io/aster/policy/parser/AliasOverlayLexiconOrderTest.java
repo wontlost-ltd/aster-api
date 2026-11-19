@@ -1,6 +1,8 @@
 package io.aster.policy.parser;
 
 import aster.core.canonicalizer.Canonicalizer;
+import aster.core.embed.AliasOverlayLexicon;
+import aster.core.embed.UserAliasValidator;
 import aster.core.lexicon.Lexicon;
 import aster.core.lexicon.LexiconRegistry;
 import aster.core.lexicon.SemanticTokenKind;

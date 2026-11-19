@@ -18,7 +18,7 @@ import io.aster.policy.compiler.PolicyCompiler;
 import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.event.EventType;
-import io.aster.policy.parser.UserAliasValidator;
+import aster.core.embed.UserAliasValidator;
 import io.aster.policy.rest.model.VocabularyBounds;
 import io.aster.policy.service.PolicyVersionService;
 import io.quarkus.narayana.jta.QuarkusTransaction;

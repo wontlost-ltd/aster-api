@@ -4,7 +4,7 @@ Dieses Paket enthält **Quelltext und Metadaten** der Version {{version}} der Ri
 
 ## CLI installieren
 
-- Node: `npm i -g @aster-cloud/aster-lang-ts@{{tsVersion}}`, danach `aster` (oder `npx @aster-cloud/aster-lang-ts@{{tsVersion}} …`).
+- Node (ab 24): den Einzeldatei-Runner `aster.mjs` und `aster.mjs.sha256` von {{tsReleaseUrl}} herunterladen, mit `sha256sum -c aster.mjs.sha256` prüfen und mit `node aster.mjs …` starten (kein `npm install` nötig).
 - JRE (Java 25): `aster-cli-{{jreVersion}}.jar` und `aster-cli-{{jreVersion}}.jar.sha256` von https://github.com/aster-cloud/aster-lang-truffle/releases/tag/v{{jreVersion}} herunterladen, mit `sha256sum -c aster-cli-{{jreVersion}}.jar.sha256` prüfen und mit `java --sun-misc-unsafe-memory-access=allow -jar aster-cli-{{jreVersion}}.jar …` starten (der Schalter unterdrückt nur eine JDK-25-Warnung von GraalVM Truffle).
 
 Das Paket wurde für `{{cliName}}` {{cliVersion}} erstellt. Meldet `verify` `PKG_IR_DRIFT`, installieren Sie genau diese Version.
@@ -15,6 +15,8 @@ Das Paket wurde für `{{cliName}}` {{cliVersion}} erstellt. Meldet `verify` `PKG
 aster verify <package.zip> --probes
 aster run <package.zip> --input input.json
 ```
+
+`aster` steht dabei für `node aster.mjs` (Node) bzw. `java --sun-misc-unsafe-memory-access=allow -jar aster-cli-{{jreVersion}}.jar` (JRE).
 
 Der Einstiegspunkt ist `{{entry}}`; die Eingabeform steht in `schema/input.json` (`#/$defs/entry.{{entry}}`). Decimal-Werte sind Dezimalzeichenketten; Long-Werte über 2^53 sind Dezimalzeichenketten oder exakte Ganzzahlen.
 

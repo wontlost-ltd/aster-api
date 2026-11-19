@@ -10,6 +10,7 @@ import aster.core.ir.CoreIrJson;
 import aster.core.ir.CoreModel;
 import aster.core.typecheck.ErrorCode;
 import aster.core.typecheck.model.Diagnostic;
+import aster.truffle.embed.ValueShapeException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import io.aster.common.JacksonMappers;
 import io.aster.policy.compiler.CompilationResult;
@@ -234,7 +235,7 @@ public class CedarExportService {
             return VerdictView.from(result.result())
                 .map(v -> new AsterSide(v.outcome(), v.reason(), v.role(), null))
                 .orElseGet(() -> new AsterSide("NOT_VERDICT", null, null, null));
-        } catch (DynamicExecutionException e) {
+        } catch (DynamicExecutionException | ValueShapeException e) {
             return new AsterSide(null, null, null, truncate(String.valueOf(e.getMessage())));
         }
     }

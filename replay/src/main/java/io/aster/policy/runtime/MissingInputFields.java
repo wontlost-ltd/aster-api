@@ -1,6 +1,7 @@
 package io.aster.policy.runtime;
 
 import aster.core.ir.CoreModel;
+import aster.truffle.embed.PolyglotValues;
 import io.aster.policy.parser.DynamicCnlExecutor.DynamicExecutionException;
 import org.jboss.logging.Logger;
 

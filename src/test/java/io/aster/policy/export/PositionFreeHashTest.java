@@ -1,5 +1,7 @@
 package io.aster.policy.export;
 
+import aster.core.embed.PolicySourceCompiler;
+import aster.core.ir.CoreIrFormatException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -12,7 +14,10 @@ import java.util.HexFormat;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** 去列投影哈希：跑 conformance {@code vectors/position-free-hash.json}（含只差 col 的平台 / ts IR 对）。 */
+/**
+ * 去列投影哈希（导出用 core {@code PolicySourceCompiler.positionFreeSha256}）：跑 conformance
+ * {@code vectors/position-free-hash.json}（含只差 col 的平台 / ts IR 对）。
+ */
 class PositionFreeHashTest {
 
   @Test
@@ -24,7 +29,7 @@ class PositionFreeHashTest {
       String name = v.get("name").asText();
       assertThat(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(core.getBytes(StandardCharsets.UTF_8))))
           .as(name).isEqualTo(v.get("sha256").asText());
-      assertThat(PositionFreeHash.sha256(core)).as(name).isEqualTo(v.get("positionFreeSha256").asText());
+      assertThat(PolicySourceCompiler.positionFreeSha256(core)).as(name).isEqualTo(v.get("positionFreeSha256").asText());
       checked++;
     }
     assertThat(checked).isEqualTo(doc.get("vectors").size()).isGreaterThanOrEqualTo(4);
@@ -32,6 +37,6 @@ class PositionFreeHashTest {
 
   @Test
   void rejectsNonIr() {
-    assertThatThrownBy(() -> PositionFreeHash.sha256("{}")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> PolicySourceCompiler.positionFreeSha256("{}")).isInstanceOf(CoreIrFormatException.class);
   }
 }

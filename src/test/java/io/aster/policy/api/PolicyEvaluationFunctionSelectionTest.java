@@ -8,7 +8,7 @@ import io.aster.policy.entity.PolicyArtifact;
 import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.entity.VersionStatus;
-import io.aster.policy.parser.EntryFunctionException;
+import aster.truffle.embed.EntryFunctionException;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.mockito.InjectSpy;

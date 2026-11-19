@@ -10,7 +10,7 @@ import io.aster.policy.entity.PolicyCatalog;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.entity.VersionStatus;
 import io.aster.policy.parser.InProcessCnlParser;
-import io.aster.policy.runtime.PolyglotValues;
+import aster.truffle.embed.PolyglotValues;
 import io.aster.security.apikey.InternalCallerSigning;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;

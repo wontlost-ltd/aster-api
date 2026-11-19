@@ -2,11 +2,14 @@ package io.aster.policy.parser;
 
 import aster.core.ast.Module;
 import aster.core.ast.Decl;
+import aster.core.embed.UserAliasValidator;
 import aster.core.ir.CoreIrFormatException;
 import aster.core.ir.CoreIrJson;
 import aster.core.ir.CoreModel;
 import aster.core.module.LinkException;
 import aster.core.module.ModuleGraphLinker;
+import aster.truffle.embed.CoreIrEntrySelector;
+import aster.truffle.embed.ValueShapeException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.api.convert.NamedContextMapper;
 import io.aster.policy.governance.InputClassification;
@@ -16,7 +19,7 @@ import io.aster.policy.module.ModuleResolutionException;
 import io.aster.policy.runtime.ExecutionWatchdog;
 import io.aster.policy.runtime.MissingInputFieldException;
 import io.aster.policy.runtime.MissingInputFields;
-import io.aster.policy.runtime.PolyglotValues;
+import aster.truffle.embed.PolyglotValues;
 import io.aster.replay.core.module.ModuleGraphResolver;
 import io.aster.replay.core.parser.ReplayMappers;
 import org.graalvm.polyglot.Context;
@@ -389,7 +392,7 @@ public class DynamicCnlExecutor {
             // 提交的 IR 不可信：RuleMetadata 按规则体重算 inputRefs，不读 IR 自带值（ADR 0046 §11.6 第 19 条）
             RuleMetadata meta = RuleMetadata.of(coreModule, targetFunction);
             return ExecutionResult.of(result, moduleName, targetFunction, executionTime, meta, mappingResult, coreModule);
-        } catch (DynamicExecutionException e) {
+        } catch (DynamicExecutionException | ValueShapeException e) {
             throw e;
         } catch (Exception e) {
             LOG.errorf(e, "Core IR 直接执行失败: %s", e.getMessage());
@@ -583,7 +586,7 @@ public class DynamicCnlExecutor {
                 List.of(),
                 e
             ));
-        } catch (DynamicExecutionException e) {
+        } catch (DynamicExecutionException | ValueShapeException e) {
             throw e;
         } catch (Exception e) {
             LOG.errorf(e, "动态执行失败: %s", e.getMessage());
@@ -834,7 +837,7 @@ public class DynamicCnlExecutor {
                 .allowNativeAccess(false)                   // 禁止本地代码访问
                 .build();
             return invokeUnderWatchdog(polyglotContext, entryJson, context, timeoutMs);
-        } catch (DynamicExecutionException e) {
+        } catch (DynamicExecutionException | ValueShapeException e) {
             throw e;
         } catch (Exception e) {
             throw new DynamicExecutionException("Polyglot 执行失败: " + e.getMessage(), e);
@@ -943,7 +946,7 @@ public class DynamicCnlExecutor {
                     // apply 不可执行，尝试通过 as(Class) 获取 LambdaValue
                     result = invokeLambdaViaReflection(evalResult, guestArgs);
                 }
-            } catch (DynamicExecutionException e) {
+            } catch (DynamicExecutionException | ValueShapeException e) {
                 // 结果形态违例（ValueShapeException 等）是确定的失败，不能被反射兜底吞掉
                 throw e;
             } catch (Exception e) {
