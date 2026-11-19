@@ -3,6 +3,8 @@ package io.aster.policy.replay.batch;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -11,6 +13,7 @@ import jakarta.inject.Inject;
 
 import io.aster.billing.PlanGateConfig;
 import io.quarkus.logging.Log;
+import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 
 /**
@@ -57,13 +60,25 @@ public class PolicyVersionSourceClient {
      * 一个策略版本的源码。
      *
      * @param vocabulary 版本冻结的领域词汇（DomainVocabulary JSON，ADR 0051）；cloud 未下发时为 null
+     * @param aliasSet   版本冻结的关键词别名（kind 名 → 别名数组，ADR 0022）；cloud 未下发时为空 Map，
+     *                   从不为 null。重放目标版本必须带上它，否则靠别名解析的源码编译不过（ADR 0060 §7.4）
      */
     public record VersionSource(String versionId, String policyId, int version, String content,
-                                Map<String, Object> vocabulary) {
+                                Map<String, Object> vocabulary, Map<String, List<String>> aliasSet) {
 
-        /** 不带词汇的版本。 */
+        public VersionSource {
+            aliasSet = aliasSet == null ? Map.of() : Map.copyOf(aliasSet);
+        }
+
+        /** 不带词汇、不带别名的版本。 */
         public VersionSource(String versionId, String policyId, int version, String content) {
-            this(versionId, policyId, version, content, null);
+            this(versionId, policyId, version, content, null, Map.of());
+        }
+
+        /** 带词汇、不带别名的版本。 */
+        public VersionSource(String versionId, String policyId, int version, String content,
+                             Map<String, Object> vocabulary) {
+            this(versionId, policyId, version, content, vocabulary, Map.of());
         }
     }
 
@@ -121,7 +136,10 @@ public class PolicyVersionSourceClient {
         return Optional.of(fromJson(resp.bodyAsJsonObject()));
     }
 
-    /** cloud 响应体 → 版本源码；{@code vocabulary} 缺省或非对象时视为无词汇。 */
+    /**
+     * cloud 响应体 → 版本源码。{@code vocabulary} 缺省或非对象时视为无词汇；
+     * {@code aliasSet} 缺省或非对象时视为无别名。
+     */
     static VersionSource fromJson(JsonObject o) {
         Object vocabulary = o.getValue("vocabulary");
         return new VersionSource(
@@ -129,7 +147,34 @@ public class PolicyVersionSourceClient {
             o.getString("policyId"),
             o.getInteger("version", 0),
             o.getString("content"),
-            vocabulary instanceof JsonObject v ? v.getMap() : null);
+            vocabulary instanceof JsonObject v ? v.getMap() : null,
+            aliasSetOf(o.getValue("aliasSet")));
+    }
+
+    /**
+     * cloud 下发的 {@code aliasSet}（{@code {"PLUS":["接 着"]}}）→ kind 名 → 别名列表。
+     *
+     * <p>只做形状转换，kind 名合法性由重放执行层（{@code ReplayExecutionCore.buildAliasSet}）判定。
+     * 值不是数组、数组元素不是字符串的条目丢弃：这是 cloud 已校验过的冻结快照，坏数据不应以
+     * {@code ClassCastException} 打断整段重放；丢掉的别名若是承重的，目标版本会如实归为编译错误。
+     */
+    private static Map<String, List<String>> aliasSetOf(Object raw) {
+        if (!(raw instanceof JsonObject obj)) {
+            return Map.of();
+        }
+        Map<String, List<String>> out = new LinkedHashMap<>();
+        for (String kind : obj.fieldNames()) {
+            if (obj.getValue(kind) instanceof JsonArray arr) {
+                List<String> aliases = arr.stream()
+                    .filter(String.class::isInstance)
+                    .map(String.class::cast)
+                    .toList();
+                if (!aliases.isEmpty()) {
+                    out.put(kind, aliases);
+                }
+            }
+        }
+        return out;
     }
 
     private static String enc(String s) {

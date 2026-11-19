@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class PolicyVersionEnvelopeTest {
 
-    private static final String VECTORS_SHA256 = "cc743299e6f0bde27b650337f0ebb70652b9b8c80ed6278d764b8c1416b8c563";
+    private static final String VECTORS_SHA256 = "3973ef0fc52ce9466db92e31e7955ea68205b8932825f8fd37794931ac713184";
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private static byte[] vectorsBytes() throws Exception {

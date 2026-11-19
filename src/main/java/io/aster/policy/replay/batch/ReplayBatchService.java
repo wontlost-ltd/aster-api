@@ -616,6 +616,10 @@ public class ReplayBatchService {
         }
         aster.core.identifier.VocabularyScopes targetScopes = vocabularyError != null ? null
             : io.aster.replay.core.ReplayExecutionCore.buildVocabularyScopes(target.vocabulary());
+        // 目标版本冻结的别名同样按段转换一次（ADR 0060 §7.4）：此前固定传空别名，
+        // 任何靠别名才能解析的版本在批量 What-If 下都归为 TARGET_COMPILE_ERROR
+        Map<aster.core.lexicon.SemanticTokenKind, List<String>> targetAliases =
+            io.aster.replay.core.ReplayExecutionCore.buildAliasSet(target.aliasSet());
 
         // ★只拉**本段**，不再每段拉全量窗口（ADR 0034 §12.4）。
         //   上一版是 O(N²)：500 段 × 10000 条 = 5,000,000 个对象、约 5000 次 HTTP。
@@ -648,7 +652,7 @@ public class ReplayBatchService {
             ReplayBatchRunner.ItemResult r = vocabularyError != null
                 ? ReplayBatchRunner.ItemResult.failed(e.executionId(), frozenBase(item).outcome(),
                     frozenBase(item).legacy(), ReplayFailureKind.VOCABULARY_UNAVAILABLE)
-                : replayOne(e, frozenBase(item), target, targetScopes, snap.tenantId());
+                : replayOne(e, frozenBase(item), target, targetScopes, targetAliases, snap.tenantId());
             item.success = r.failureKind() == null;
             item.failureKind = r.failureKind() == null ? null : r.failureKind().name();
             item.targetApproved = r.failureKind() == null ? r.targetApproved() : null;
@@ -885,6 +889,7 @@ public class ReplayBatchService {
         ReplayOutcome.Base base,
         PolicyVersionSourceClient.VersionSource target,
         aster.core.identifier.VocabularyScopes targetScopes,
+        Map<aster.core.lexicon.SemanticTokenKind, List<String>> targetAliases,
         String tenantId) {
 
         try {
@@ -898,7 +903,8 @@ public class ReplayBatchService {
                     e.functionName(), e.locale(),
                     targetScopes,
                     /* legacyEvaluateSentinel */ false,
-                    /* aliasSet */ java.util.Map.of(),
+                    targetAliases,
+                    // 回源走 HMAC 签名的内部接口，aliasSet 是 cloud 版本行上已校验的冻结快照
                     /* aliasesTrusted */ true)));
 
             var targetVerdict = DecisionInterpreter.interpret(execResult.result());
