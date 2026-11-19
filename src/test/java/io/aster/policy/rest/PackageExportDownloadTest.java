@@ -110,10 +110,10 @@ class PackageExportDownloadTest {
     assertThat(manifest.at("/target").asText()).isEqualTo("node");
     assertThat(manifest.at("/tests/nodeCheck/agreed").asInt()).isEqualTo(prepared.get("probeCount").asInt());
     assertThat(manifest.at("/tests/nodeCheck/checkedBy").asText()).isEqualTo("aster-cloud");
-    assertThat(manifest.at("/tests/nodeCheck/tsVersion").asText()).isEqualTo("3.4.0");
+    assertThat(manifest.at("/tests/nodeCheck/tsVersion").asText()).isEqualTo("3.5.0");
     assertThat(manifest.at("/runtime/cli/name").asText()).isEqualTo("@aster-cloud/aster-lang-ts");
     assertThat(JSON.readTree((String) JSON.readValue(exportEvent(tenant).metadata, Map.class).get("nodeCheck"))
-        .get("tsVersion").asText()).isEqualTo("3.4.0");
+        .get("tsVersion").asText()).isEqualTo("3.5.0");
   }
 
   @Test
