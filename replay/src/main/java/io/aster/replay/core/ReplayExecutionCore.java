@@ -164,8 +164,10 @@ public final class ReplayExecutionCore {
      *
      * <p>ADR 0022。无法识别的 kind 名跳过（不阻断执行；下游 UserAliasValidator 会对无效 kind 拒，
      * 但冻结版本本就已校验过，这里只做类型转换）。null/空 → null（无用户别名，退化为无别名解析）。
+     *
+     * <p>公开为静态方法，供批量 What-If 重放目标版本时复用同一转换口径（ADR 0060 §7.4）。
      */
-    private Map<SemanticTokenKind, List<String>> buildAliasSet(Map<String, List<String>> aliasSet) {
+    public static Map<SemanticTokenKind, List<String>> buildAliasSet(Map<String, List<String>> aliasSet) {
         if (aliasSet == null || aliasSet.isEmpty()) {
             return null;
         }

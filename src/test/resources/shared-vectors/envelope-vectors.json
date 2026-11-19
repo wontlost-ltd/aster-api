@@ -107,5 +107,36 @@
     },
     "scopesJson": "{\"enumMembers\":{\"Level\":{\"hoch\":[{\"canonical\":\"High\",\"kind\":\"enum_value\",\"parent\":\"Level\",\"source\":\"term\",\"written\":\"Hoch\"}],\"niedrig\":[{\"canonical\":\"Low\",\"kind\":\"enum_value\",\"parent\":\"Level\",\"source\":\"term\",\"written\":\"Niedrig\"}]}},\"fields\":{\"Cafe\":{\"kosten\":[{\"canonical\":\"price\",\"kind\":\"field\",\"parent\":\"Cafe\",\"source\":\"synonym\",\"written\":\"kosten\"}],\"preis\":[{\"canonical\":\"price\",\"kind\":\"field\",\"parent\":\"Cafe\",\"source\":\"term\",\"written\":\"preis\"}],\"stufe\":[{\"canonical\":\"level\",\"kind\":\"field\",\"parent\":\"Cafe\",\"source\":\"term\",\"written\":\"stufe\"}]}},\"functions\":{\"gesamt\":[{\"canonical\":\"total\",\"kind\":\"function\",\"source\":\"term\",\"written\":\"gesamt\"}],\"summe\":[{\"canonical\":\"total\",\"kind\":\"function\",\"source\":\"synonym\",\"written\":\"summe\"}]},\"literals\":{},\"schemaVersion\":1,\"types\":{\"bistró\":[{\"canonical\":\"Cafe\",\"kind\":\"struct\",\"source\":\"synonym\",\"written\":\"Bistró\"}],\"café\":[{\"canonical\":\"Cafe\",\"kind\":\"struct\",\"source\":\"term\",\"written\":\"Café\"}],\"kaffeehaus\":[{\"canonical\":\"Cafe\",\"kind\":\"struct\",\"source\":\"synonym\",\"written\":\"Kaffeehaus\"}],\"niveau\":[{\"canonical\":\"Level\",\"kind\":\"struct\",\"source\":\"synonym\",\"written\":\"Niveau\"}],\"stufe\":[{\"canonical\":\"Level\",\"kind\":\"struct\",\"source\":\"term\",\"written\":\"Stufe\"}]}}",
     "expectedSha256": "c663f4803b2409f1a43e847ad2499a47bd16bddaeb8fdd1fd29607e0d54082e7"
+  },
+  {
+    "content": "床前 明月光。\n疑是 地上霜，举头 望明月：\n  低头 思故乡。",
+    "aliasSetJson": "{\"FUNC_PRODUCE\":[\"举头\"],\"FUNC_TO\":[\"疑是\"],\"MODULE_DECL\":[\"床前\"],\"RETURN\":[\"低头\"]}",
+    "locale": "zh-CN",
+    "toolchainId": "abi=1.1;core=ts;validator=1;resolver=1;casefold=15.1;build=vectors",
+    "vocabulary": {
+      "id": "envelope.literal-macro",
+      "name": "字面量宏 + 单 struct（静夜思）",
+      "locale": "zh-CN",
+      "version": "1.0.0",
+      "structs": [
+        {
+          "canonical": "Text",
+          "localized": "望明月",
+          "kind": "struct"
+        }
+      ],
+      "fields": [],
+      "functions": [],
+      "enumValues": [],
+      "literals": [
+        {
+          "canonical": "静夜思",
+          "localized": "思故乡",
+          "kind": "literal"
+        }
+      ]
+    },
+    "scopesJson": "{\"enumMembers\":{},\"fields\":{},\"functions\":{},\"literals\":{\"思故乡\":\"静夜思\"},\"schemaVersion\":1,\"types\":{\"望明月\":[{\"canonical\":\"Text\",\"kind\":\"struct\",\"source\":\"term\",\"written\":\"望明月\"}]}}",
+    "expectedSha256": "a58ac3976653e247674b99393127f3fd1e9277d66ad3387e26b8c233941714f3"
   }
 ]
