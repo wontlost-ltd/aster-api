@@ -28,6 +28,13 @@ inputs:
       交叉审 Medium）。CI（PR/公开场景）可留 "false" 用 fallback。
     required: false
     default: "false"
+  gradle-cache-group:
+    description: >-
+      Gradle 依赖缓存的分组名（#563）。解析**同一依赖配置**的 job 填同一个组名，共用一条缓存；
+      留空则按 workflow + job 单独一条。不同配置的 job 不得同组：先写入的 job 若只解析了子集，
+      同组其他 job 会精确命中这条残缺缓存、每次再去 Maven Central 补下载。
+    required: false
+    default: ""
   java-version:
     description: JDK 主版本
     required: false
@@ -159,11 +166,73 @@ runs:
         # 本 action 只需要一次性拉源码，不需要后续 git 操作 → 关掉持久化。
         persist-credentials: false
 
+    # ★不用 setup-java 的 `cache: gradle`（wontlost-ltd/aster-api#563）：它的键只含构建文件哈希，所有 job
+    #   共用一条，且「先写者胜、精确命中不再写」。main 上最先结束的是只解析一小部分依赖图的 job
+    #   （实测 2026-11-18：aster-replay-runner deploy 的 build job 只跑 :runner:installDist，run 44378257595
+    #   写下 177MB 的条目，PR 侧完整依赖约 330MB），之后每个 PR 的 unit / integration / guard-bypass / verify
+    #   都精确命中这条残缺缓存，又各自去 Maven Central 解析缺的那一半，并行时触发 429。
+    #
+    #   改为按「解析同一依赖配置的一组 job」分条缓存 ~/.gradle/caches：
+    #   - 调用方用 gradle-cache-group 声明分组；不声明时每个 workflow+job 单独一条。只有解析同一配置的 job
+    #     才能同组（否则又回到「子集先写」的问题）。
+    #   - pull_request 只读；其余事件（main 上的 push / schedule，以及 dispatch）读写。PR 作用域的条目别的 PR
+    #     读不到，写了只占配额、挤掉 main 的条目；PR 从 main 作用域读同组的条目。
+    #   - 构建输入（所有兄弟仓的 *.gradle* / gradle.properties / 版本目录 / wrapper 属性 / buildSrc）变化时换新键，
+    #     按前缀回落到同组的最新一条，只补下载差量。
+    #   - Gradle 发行版（~/.gradle/wrapper，实测 277MB，各 job 相同、由 gradle-wrapper.properties 唯一决定）
+    #     单独存一条、全部 job 共用。
+    #
+    #   容量估算（GitHub 每仓 10GB，超出时按最近访问时间 LRU 淘汰，7 天未访问的条目自动删除）：
+    #   - 调用方共 10 个 workflow×job，分成 5 条依赖缓存：
+    #       group test（Test 任务都用 sourceSets.test.runtimeClasspath）：CI guard-bypass / unit / integration、
+    #         Nightly fresh-it / chaos、aster-replay-runner parity-arm64（gen-expected 跑 :test）——实测 311–321MB；
+    #       单独：CI verify 实测 292MB；Deploy build-and-test、perf k6 估 ≤330MB（完整依赖图上限）；
+    #         aster-replay-runner build 实测 177MB。
+    #     每个构建输入哈希约 1.45GB，加共用 wrapper 0.28GB，约 1.7GB（不分组时 10 条约 3.3GB）。
+    #     只在托管 runner 上跑（public 仓 pick-runner 一律走托管），故只有 Linux-X64 一套。
+    #   - main 上构建输入变更约每天一次（过去 14 天 14 次，多为生态 pin bump）。每次产生一套新条目，旧哈希的条目
+    #     此后不再命中（精确键命中新哈希；前缀回落只取最新一条），只会闲置：7 天后自动删除，或在超过 10GB 时作为
+    #     最久未访问者先被 LRU 淘汰。当前哈希的条目每次运行都被访问，不会被挤掉。
+    #     最坏情况 7 天内 7 次变更：7×1.45GB + 0.28GB ≈ 10.4GB，刚过上限，由 LRU 先淘汰最旧的闲置套；
+    #     常态（每周 3–5 次）约 4.6–7.5GB。
     - uses: actions/setup-java@v5
       with:
         java-version: ${{ inputs.java-version }}
         distribution: ${{ inputs.java-distribution }}
-        cache: gradle
+
+    - name: Compute Gradle cache key
+      id: gradle-cache-key
+      shell: bash
+      env:
+        GROUP: ${{ inputs.gradle-cache-group != '' && format('group-{0}', inputs.gradle-cache-group) || format('job-{0}-{1}', github.workflow, github.job) }}
+        BUILD_INPUTS_HASH: ${{ hashFiles('**/*.gradle*', '**/gradle.properties', '**/gradle/*.versions.toml', '**/gradle-wrapper.properties', '**/versions.properties', '**/buildSrc/**') }}
+      run: |
+        prefix="gradle-${RUNNER_OS}-${RUNNER_ARCH}-${GROUP}-"
+        echo "prefix=${prefix}" >> "$GITHUB_OUTPUT"
+        echo "key=${prefix}${BUILD_INPUTS_HASH}" >> "$GITHUB_OUTPUT"
+        echo "Gradle dependency cache key: ${prefix}${BUILD_INPUTS_HASH}"
+
+    - name: Restore Gradle dependency cache (read-only)
+      if: ${{ github.event_name == 'pull_request' }}
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.gradle/caches
+        key: ${{ steps.gradle-cache-key.outputs.key }}
+        restore-keys: ${{ steps.gradle-cache-key.outputs.prefix }}
+
+    - name: Restore and save Gradle dependency cache
+      if: ${{ github.event_name != 'pull_request' }}
+      uses: actions/cache@v6
+      with:
+        path: ~/.gradle/caches
+        key: ${{ steps.gradle-cache-key.outputs.key }}
+        restore-keys: ${{ steps.gradle-cache-key.outputs.prefix }}
+
+    - name: Restore and save Gradle wrapper distributions
+      uses: actions/cache@v6
+      with:
+        path: ~/.gradle/wrapper
+        key: gradle-wrapper-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/gradle-wrapper.properties') }}
 
     # 发布共享版本目录到 Maven Local（aster-api settings 依赖它）。
     - name: Publish version catalog to Maven Local

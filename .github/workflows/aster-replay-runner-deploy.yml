@@ -212,6 +212,8 @@ jobs:
       - name: Setup Aster build (siblings + JDK + version catalog)
         uses: ./aster-api/.github/actions/setup-aster-build
         with:
+          # 与其他跑 Test 任务（sourceSets.test.runtimeClasspath）的 job 共用依赖缓存（#563）
+          gradle-cache-group: test
           cross-repo-token: ${{ secrets.CROSS_REPO_TOKEN }}
           require-cross-repo-token: "true"
 
