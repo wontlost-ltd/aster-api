@@ -19,19 +19,29 @@
 #
 # drift gate 查不到这里：它只认 settings 的 pin，不知道本仓 CI 还有第二个版本源。
 #
+# ══ 引擎下限（ADR 0060 §5.5 第 5 条）══════════════════════════════
+#
+# cloud 放宽别名规则 v2（汉字单词结构词别名）之后，已存的这类版本只有 1.0.52 起的
+# 引擎能复验通过；aster-api 回退到更低的 pin，这些版本执行时一律 fail-closed。
+# 因此两处一致之外，pin 还不得低于 MIN_ENGINE_VERSION。下限写成常量而不是环境
+# 变量：门禁不给调用方留关掉它的开关。集群层面的镜像回滚不经过 CI，只能靠 runbook。
+#
 # ── 用法 ──
 #   scripts/ci/verify-sibling-ref-pin.sh              # 检查
 #   scripts/ci/verify-sibling-ref-pin.sh --self-test  # 反向自检：门禁必须能变红
 set -euo pipefail
+
+# 引擎 pin 下限：低于它的 pin 一律拒绝（见文件头「引擎下限」）
+MIN_ENGINE_VERSION="1.0.52"
 
 SETTINGS="${SETTINGS:-settings.gradle}"
 ACTION="${ACTION:-.github/actions/setup-aster-build/action.yml}"
 
 scan() {
   local settings="$1" action="$2"
-  python3 - "$settings" "$action" <<'PY'
+  python3 - "$settings" "$action" "$MIN_ENGINE_VERSION" <<'PY'
 import re, sys
-settings_path, action_path = sys.argv[1], sys.argv[2]
+settings_path, action_path, min_ver = sys.argv[1], sys.argv[2], sys.argv[3]
 
 s = open(settings_path, encoding='utf-8').read()
 m = re.search(r"aster-lang-platform:(\d+\.\d+\.\d+)", s)
@@ -62,6 +72,16 @@ if settings_ver != action_ver:
           f"两处必须同时 bump。", file=sys.stderr)
     sys.exit(1)
 print("✓ 两处 platform 版本一致")
+
+def as_tuple(v):
+    return tuple(int(x) for x in v.split("."))
+
+if as_tuple(settings_ver) < as_tuple(min_ver):
+    print(f"::error::引擎 pin {settings_ver} 低于下限 {min_ver}（ADR 0060 §5.5 第 5 条）："
+          f"汉字单词别名版本只能由 {min_ver} 起的引擎复验，回退会让这些版本执行失败。"
+          f"pin 不得降到下限以下。", file=sys.stderr)
+    sys.exit(1)
+print(f"✓ 引擎 pin 不低于下限 {min_ver}")
 PY
 }
 
@@ -70,10 +90,10 @@ if [[ "${1:-}" == "--self-test" ]]; then
   #   这里注入一处不一致，要求门禁确实 exit 1。
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
-  echo "── 自检 1/2：当前仓库状态必须通过 ──"
+  echo "── 自检 1/3：当前仓库状态必须通过 ──"
   scan "$SETTINGS" "$ACTION"
 
-  echo "── 自检 2/2：注入版本不一致必须被抓到 ──"
+  echo "── 自检 2/3：注入版本不一致必须被抓到 ──"
   cp "$ACTION" "$tmp/action.yml"
   python3 - "$tmp/action.yml" <<'PY'
 import re, sys
@@ -97,7 +117,34 @@ PY
   fi
   echo "$out" | sed -E 's/^[[:space:]]*::error::/[注入用例，预期报错] /; s/^/    /'
   echo "✓ caught：注入的版本不一致被门禁抓到（exit=${rc}，注解已抑制）"
-  echo "✓ 自检通过：门禁在不一致时确实变红"
+
+  echo "── 自检 3/3：两处一致但低于引擎下限必须被抓到 ──"
+  # 两处同时改成「下限的 patch 位 -1」：一致性检查通过，只剩下限能拦住
+  below=$(python3 -c 'import sys; a,b,c=sys.argv[1].split("."); print(f"{a}.{b}.{int(c)-1}")' "$MIN_ENGINE_VERSION")
+  python3 - "$SETTINGS" "$ACTION" "$tmp/settings.below" "$tmp/action.below" "$below" <<'PY'
+import re, sys
+src_s, src_a, dst_s, dst_a, below = sys.argv[1:6]
+s = open(src_s, encoding='utf-8').read()
+s, n = re.subn(r"(aster-lang-platform:)\d+\.\d+\.\d+", lambda m: m.group(1) + below, s, count=1)
+assert n == 1, '!! 自检锚点未命中（settings），变异未落地'
+open(dst_s, 'w', encoding='utf-8').write(s)
+a = open(src_a, encoding='utf-8').read()
+a, n = re.subn(r'(^  sibling-ref:\s*$.*?default:\s*")v\d+\.\d+\.\d+(")',
+               lambda m: m.group(1) + 'v' + below + m.group(2), a, count=1, flags=re.S | re.M)
+assert n == 1, '!! 自检锚点未命中（action），变异未落地'
+open(dst_a, 'w', encoding='utf-8').write(a)
+PY
+  rc=0
+  out=$(scan "$tmp/settings.below" "$tmp/action.below" 2>&1) || rc=$?
+  # 必须是「低于下限」被拒（exit 1 且带下限注解）；不一致或解析失败都不算抓到
+  if [[ $rc -ne 1 || "$out" != *"::error::引擎 pin ${below} 低于下限 ${MIN_ENGINE_VERSION}"* ]]; then
+    echo "✗ 自检失败：注入了低于下限的 pin ${below}，门禁未按预期拒绝（exit=${rc}），下限形同虚设" >&2
+    echo "$out" | sed -E 's/^[[:space:]]*::/[::]/; s/^/    /' >&2
+    exit 1
+  fi
+  echo "$out" | sed -E 's/^[[:space:]]*::error::/[注入用例，预期报错] /; s/^/    /'
+  echo "✓ caught：低于下限的 pin ${below} 被门禁抓到（exit=${rc}，注解已抑制）"
+  echo "✓ 自检通过：门禁在不一致与低于下限时都确实变红"
   exit 0
 fi
 
