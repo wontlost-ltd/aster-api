@@ -55,7 +55,7 @@ ADR §1 已列出全部出处；下表只补任务定位需要的路径。
 1. **只改源码、省略 `embeddedVocabulary` 的 PUT**（无能力的队友编辑团队策略）：必须沿用活跃版本的内嵌词条，新版本仍能编译执行（T9 `carries embedded vocabulary forward when the field is omitted`）。
 2. **作者事后新增与内嵌词条同形的个人词条**：这条策略的草稿含义不变（内嵌优先），保存响应列出被遮蔽的个人词条；审批后执行用冻结快照，结果仍是 `静夜思`（T8 `embedded term shadows a later author term`、T10 `approved version executes with embedded vocabulary after the author adds a colliding term`）。
 3. **库里直接改了 `embeddedVocabulary` 列**：审批与执行 APPROVED 版本时复算的 `scopesJson` 与封印不等，fail-closed（T10 `rejects execution when the embedded column no longer matches the seal`）。
-4. **别名与源码里的标识符同形**（如把 `明月光` 设为 `MODULE_DECL` 别名）：保存门禁编译报错，绝不静默改义；ts 与 core 都报错（T3、T4 的 `alias equal to an identifier in the source fails to compile`）。
+4. **别名与源码里的名字同形**（如参数、字段叫 `低头`，又把 `低头` 设为 `RETURN` 别名）：结构词在标识符位置是软关键字，若无守卫会被一致改名为 `return` 照常编译；必须报 `alias_identifier_collision`，ts 与 core 一致（T3、T4 的位置矩阵）。
 5. **cloud 先放宽、aster-api 仍是 1.0.51**：保存被 aster-api 编译门禁拒绝（4xx），不落库（T12 的部署前核对步骤与 `rejected by an upstream v1 validator is surfaced as a compile error` 测试）。
 
 ---
@@ -127,14 +127,15 @@ PR 7 先于 PR 8：读路径先能处理非空列，写入方后上；反过来�
 - Modify: `src/test/java/aster/core/embed/UserAliasValidatorTest.java`、`src/test/resources/shared-vectors/envelope-vectors.json`（T2 副本）
 
 **Interfaces:**
-- Produces: `VERSION = "2"`；`STRUCTURAL_KINDS` 含 `FUNC_PRODUCE`；`static boolean isHanSingleToken(String norm, String locale)`（包内可见，供测试）；`vocabularyHasWritten` 含 `scopes.literals()`
+- Produces: `VERSION = "2"`；`STRUCTURAL_KINDS` 含 `FUNC_PRODUCE`；`static boolean isHanSingleToken(String norm, String locale)`（包内可见，供测试）；`vocabularyHasWritten` 含 `scopes.literals()`；IR 名字守卫 `AliasIdentifierGuard.check(Module ast, Map<SemanticTokenKind,List<String>> aliasSet, String locale)`（新文件 `src/main/java/aster/core/embed/AliasIdentifierGuard.java`，在 `InProcessCnlParser.parseWithUserAliases` 解析后、降级前调用，命中抛 `CnlParseException`，诊断码 `alias_identifier_collision`）；该码按 ADR 0031 登记（core `ErrorCode` + locales 副本与 zh / de / hi 译文；号码与 T4 在 ts `shared/error_codes.json` 登记的同号）
 - 夹具形状（T4、T12 同用）：`{ "version": 2, "cases": [ { "id": string, "locale": string, "allowStructural": boolean, "aliasSet": {kind: [alias]}, "vocabulary": DomainVocabulary | null, "valid": boolean, "codes": string[] } ] }`，`codes` 取 cloud `AliasIssueCode` 名（`singleWord`、`structuralNotGranted`、`kindNotAllowed`、`collidesVocabulary`、`shadowsKeyword`…）；core 按错误消息前缀映射到码
 
 - [ ] **Step 1: 写夹具**，至少这些用例（`id`：期望）：
   `zh-han-2`（zh-CN，`RETURN:["低头"]`，授权）valid；`zh-han-1`（`"头"`）`singleWord`；`zh-han-9`（9 个汉字）`singleWord`；`zh-ext-b`（含 U+20000）`singleWord`；`zh-kana`（`"かな"`）`singleWord`；`en-han`（en-US + `"低头"`）`singleWord`；`zh-latin-single`（zh-CN + `"answer"`）`singleWord`；`zh-mixed`（`"低头x"`）`singleWord`；`func-produce-granted` valid；`func-produce-ungranted` `structuralNotGranted`；`poem`（ADR §8 aliasSet，授权，词汇为 §8 两条）valid；`alias-eq-literal`（`RETURN:["思故乡"]` + 字面量 `思故乡`）`collidesVocabulary`；`alias-eq-struct`（`RETURN:["望明月"]` + struct `望明月`）`collidesVocabulary`；`latin-multi` 不变 valid；`latin-single`（`TIMES:["scaled"]`）`singleWord`；`logic-kind`（`AND:["并且 也"]`，授权）`kindNotAllowed`。
 - [ ] **Step 2: 写 `AliasValidationV2ParityTest`**：逐条用 `UserAliasValidator.validate(aliasSet, locale, scopesOf(vocabulary), allowStructural)` 断言 `valid` 与码集合；并断言 `VERSION.equals("2")`。另在 `UserAliasValidatorTest` 加 `hanSingleTokenCountsCodePointsNotChars`（`"𠀀𠀁"` 两个码点但为扩展 B → 拒）。
+- [ ] **Step 2b: 写 IR 名字守卫的位置矩阵测试** `AliasIdentifierGuardTest`（共享源码放进同一夹具的 `guardCases` 数组，T4 复用）：zh-CN，aliasSet `RETURN:["低头"]`（授权），分别把 `低头` 写在参数名、`令 … 为` 局部绑定、`定义 … 包含` 字段名、成员访问 `x.低头`、构造字段、规则名、模块名段、类型别名名、导入别名、调用目标、枚举成员——每例都断言编译失败且码为 `alias_identifier_collision`；对照例：同一源码去掉 aliasSet 编译成功；诗本身通过；多词别名（`RETURN:["answer it"]`）不触发守卫；源码里出现英文名字 `return` 且 aliasSet 有汉字 `RETURN` 别名 → 拒绝（已知代价，ADR §5.3）。
 - [ ] **Step 3: 运行确认失败**：`./gradlew test --tests 'aster.core.embed.*'` → FAIL。
-- [ ] **Step 4: 实现** ADR §5.1–5.3；单词判定改为 `!(norm.indexOf(' ') >= 0 || isHanSingleToken(norm, locale))`；locale 判定 `locale != null && locale.toLowerCase(Locale.ROOT).replace('_','-').matches("zh(-.*)?")`；码点遍历用 `norm.codePoints()`。更新 `VERSION` 的注释与类注释里的「铁律 2」描述（引用 ADR 0060 §5.2）。
+- [ ] **Step 4: 实现** ADR §5.1–5.3（含 IR 名字守卫：遍历 AST 收集名字，折叠后与 K 求交；K 取 en-US lexicon 中该 kind 的规范拼写与官方别名）；单词判定改为 `!(norm.indexOf(' ') >= 0 || isHanSingleToken(norm, locale))`；locale 判定 `locale != null && locale.toLowerCase(Locale.ROOT).replace('_','-').matches("zh(-.*)?")`；码点遍历用 `norm.codePoints()`。更新 `VERSION` 的注释与类注释里的「铁律 2」描述（引用 ADR 0060 §5.2）。
 - [ ] **Step 5: 同步 T2 的 envelope 向量副本**并更新 core 内读取它的测试（若有哈希钉一并更新）。
 - [ ] **Step 6: 运行** `./gradlew test` 全绿（记执行的测试数）。
 - [ ] **Step 7: 提交并开 PR**；另开 issue「ts 与 core 对字面量触发词 / 关键词的处理顺序不一致」（引用 ADR §4.2 T3、`Canonicalizer.java:732-741`、ts `canonicalizer.ts:601-604`），PR 正文引用它。
@@ -147,14 +148,14 @@ PR 7 先于 PR 8：读路径先能处理非空列，写入方后上；反过来�
 
 **Interfaces:**
 - Consumes: T3 夹具
-- Produces: `USER_ALIAS_VALIDATOR_VERSION = '2'`；`isHanSingleToken(norm: string, locale: string): boolean`（导出）；常量 `JINGYESI_POSITION_FREE_SHA256`（写在测试里，T7 复用其值）
+- Produces: `USER_ALIAS_VALIDATOR_VERSION = '2'`；`isHanSingleToken(norm: string, locale: string): boolean`（导出）；`checkAliasIdentifiers(ast: Module, aliasSet: AliasSet | null, locale: string): string[]`（新文件 `src/policy-package/alias-identifier-guard.ts`，`compileSource` 在解析后调用，非空即 `CompileFailure`）；`shared/error_codes.json` 新登记 `alias_identifier_collision`；常量 `JINGYESI_POSITION_FREE_SHA256`（写在测试里，T7 复用其值）
 
 - [ ] **Step 1: 写 parity 测试**：读 `shared/alias_validation_v2_parity.json`，逐条 `validateAliasSet(aliasSet, { base: lexiconForLocale(locale), allowStructural, vocabulary: vocabulary && buildVocabularyScopes(vocabulary) })`，断言 `errors.length === 0` 与 `valid` 一致、每个期望码对应的消息前缀出现；另测试断言夹具文件与 core 副本的 sha256（写死在测试里，T3 合入后的值）相同。
 - [ ] **Step 2: 写诗测试** `jingyesi-policy.test.ts`：
   - `compiles with zh-CN, the v2 aliasSet and the embedded vocabulary`：`compileSource(SOURCE, { locale: 'zh-CN', aliasSet: ALIASES, allowStructural: true, vocabulary: VOCAB })` 不抛；
   - `evaluates 地上霜 to 静夜思`；
   - `is rejected without the structural grant`（`allowStructural: false` → `CompileFailure`，消息含 `FUNC_PRODUCE`）；
-  - `alias equal to an identifier in the source fails to compile`（`MODULE_DECL: ['明月光']` → `CompileFailure`）；
+  - `alias equal to a name in the source fails with alias_identifier_collision`：跑 T3 夹具 `guardCases` 全部用例，结果与 core 一致；
   - `positionFreeSha256 is stable`：断言等于 `JINGYESI_POSITION_FREE_SHA256`（首次运行取值写入）。
   - `SOURCE`、`ALIASES`、`VOCAB` 取 ADR §8 的值，`VOCAB` 为 `DomainVocabulary` 形状（`id: 'policy.embedded'`、`locale: 'zh-CN'`）。
 - [ ] **Step 3: 运行确认失败**：`pnpm run test:unit` → FAIL。
@@ -192,6 +193,7 @@ PR 7 先于 PR 8：读路径先能处理非空列，写入方后上；反过来�
 
 **Files:**
 - Test: `src/test/java/io/aster/policy/rest/JingyesiPolicyCompileTest.java`
+- Modify: `scripts/ci/verify-sibling-ref-pin.sh`（引擎下限 `MIN_ENGINE_VERSION=1.0.52`，pin 低于它即失败，ADR §5.5 第 5 条）
 
 **Interfaces:**
 - Consumes: T4 的 `JINGYESI_POSITION_FREE_SHA256` 值；ADR §8 的源码、aliasSet、词汇
@@ -202,7 +204,8 @@ PR 7 先于 PR 8：读路径先能处理非空列，写入方后上；反过来�
   - `unsignedCallerCannotUseTheStructuralAliases`：不带 HMAC → 编译失败，消息含 `FUNC_PRODUCE` 或结构词授权文案；
   - `coreIrMatchesTs`：取编译得到的 Core IR 算 position-free sha256，等于 T4 的值。
 - [ ] **Step 2: 运行** `./gradlew --offline :test --tests '*JingyesiPolicyCompileTest*'`（列车后的 pin）→ PASS；在 1.0.51 上应 FAIL（PR 正文记录）。
-- [ ] **Step 3: 提交并开 PR**。
+- [ ] **Step 3: 下限检查**：把 `settings.gradle` 的 pin 临时改为 1.0.51 运行 `scripts/ci/verify-sibling-ref-pin.sh` → 非零退出、消息含 `1.0.52`；改回后 → 0。
+- [ ] **Step 4: 提交并开 PR**。
 
 ### Task 8: cloud 内嵌词汇库（PR 7）
 
@@ -360,7 +363,11 @@ PR 7 先于 PR 8：读路径先能处理非空列，写入方后上；反过来�
   - `applying the template writes no user or team vocabulary`（桩 db，断言对 `UserDomainTerm` / `DomainTerm` 零写入）。
 - [ ] **Step 2: 运行确认失败** → FAIL。
 - [ ] **Step 3: 实现**；文件头注释改写：说明原诗即源码、别名为结构词需授权、内嵌词汇两条、layout 为何仍需要（ADR §8）；删掉「不含领域词汇」那段。
-- [ ] **Step 4: e2e**（本地栈：cloud + aster-api 1.0.52 镜像）：有两项能力的用户应用模板 → 保存 → 审批 → 执行 → 输出 `静夜思`；版本详情显示四条别名映射与两条内嵌词条；无结构词授权的用户看到模板锁定。
+- [ ] **Step 4: e2e**（本地栈：cloud + aster-api 1.0.52 镜像，不桩 aster-api）：
+  - `template saves, approves and executes to 静夜思`：有两项能力的用户应用模板 → 保存 → 审批（另一用户）→ 审批后作者新增个人词条 `望明月 → Moon` → 经 `POST /api/policies/[id]/execute`（真实转发到 aster-api `evaluate-source`）执行 → 输出 `静夜思`；
+  - `batch What-If on the approved version returns 静夜思`：以该版本为目标发起批量 What-If，aster-api 回源拿到 aliasSet（T5）与合并词汇（T10），结果为 `静夜思`；
+  - `review shows aliases and embedded terms`：版本详情显示四条别名映射与两条内嵌词条（字面量行有标记）；
+  - `locked without the structural alias grant`：无结构词授权的用户看到模板锁定。
 - [ ] **Step 5: 运行** `pnpm exec tsc --noEmit`、`pnpm test:run` 全绿；e2e 通过。
 - [ ] **Step 6: 提交并开 PR**（关闭 cloud#830）。
 

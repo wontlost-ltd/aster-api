@@ -17,7 +17,7 @@
 | 为什么是新 ADR | 改的是 ADR 0022 的安全规则与引擎校验器，并新增一类编译输入；ADR 0058 讲能力授权与显示排版，二者都不改。放进 0058 的修订会把引擎规则藏在一份 cloud UI 的 ADR 里 |
 | 汉字单词别名 | 不含空格的别名，当且仅当 locale 为 `zh-*`、**每个字符都是汉字**（U+4E00–9FFF 或 U+3400–4DBF）、长 2–8 个字时允许；拉丁、天城文等单词别名仍拒绝 |
 | `FUNC_PRODUCE` | 加入**结构词**白名单，需结构词别名授权（与 `FUNC_TO` 同类：函数签名关键词） |
-| 新增碰撞规则 | 别名不得等于任何字面量宏触发词（今天 ts 与 core 在这种情况下结果不同，§4.3 T3） |
+| 新增碰撞规则 | 别名不得等于任何字面量宏触发词（今天 ts 与 core 在这种情况下结果不同，§4.2 T3）；带汉字单词别名时，解析后任何名字不得折叠成被别名化 kind 的英文拼写（IR 名字守卫，防软关键字把同形名字静默改名，§5.3） |
 | 校验器版本 | core / ts / cloud 的 `USER_ALIAS_VALIDATOR_VERSION` 一起从 `"1"` 升到 `"2"`；新版本的 toolchainId 随之变化，旧版本的 envelope 不受影响（各自存了 `sourceToolchainId`） |
 | 列车门 | core 与 ts 的校验器改动必须随列车发布（eco-1.0.52）并由列车 bump aster-api pin；cloud 放宽在 aster-api 1.0.52 上线后才合 |
 | 内嵌词汇存储 | cloud `PolicyVersion` 新列 `embeddedVocabulary text NULL`，存确定性序列化的 JSON；与 `aliasSet` 同生命周期：建版本时写入，之后不改 |
@@ -120,7 +120,7 @@
 | A2 用户空间 | 不用别名时合法的标识符，加了别名后仍按原意解析，或者至少编译失败，**绝不静默改义** |
 | A3 隔离 | 一个策略的别名 / 词汇不影响别的策略、别的用户、别的租户 |
 | A4 引擎一致 | 同一编译输入在 ts 与 core 得到同一 Core IR（ADR 0022 §6 parity、ADR 0059 E739） |
-| A5 编译身份 | envelope 覆盖完整编译输入，任何一项被替换都能发现 |
+| A5 编译身份 | envelope 覆盖完整编译输入；在数据库可信的前提下，任一编译输入列与封印不一致都能被发现（不抵御同时改写多列的库写权限者，见下表） |
 
 | 参与者 | 能力 |
 |---|---|
@@ -137,7 +137,7 @@
 | # | 威胁 | 今天的控制 | 放宽后的控制 |
 |---|---|---|---|
 | T1 | **审批欺骗（H3）**：用像「批准」「拒绝」的词作结构词别名，让审批者误读结构 | kind 白名单（逻辑、效果、导入、布尔永不可别名）；结构词需管理员授权；版本详情显示别名→规范映射并标出结构词；审计 | **不变**。单字别名不比多词别名更危险：`approve it` → `RETURN` 今天就合法。`FUNC_PRODUCE` 只引出返回类型，类型名本身仍在内容中可见，它改不了控制流，归入结构词档（需授权） |
-| T2 | **标识符命名空间被占**（「仅多词」的理由） | 只收多词 | 拉丁等有空格的文字**维持只收多词**（ADR 0022 §10 的 15/15 实证仍成立）。汉字单词放开，理由与约束：①两引擎都按整词匹配（§1.3），`低头` 不会吃掉 `低头思故乡`；②别名只属于一个版本（`aliasSet` 版本局部，没有团队 / 租户层），被占的命名空间只在作者自己这条策略里；③撞上源码里的标识符时，该处变成关键词，保存门禁的编译直接报错（双引擎都是），不会静默改义——由 §8 的回归用例钉住；④仍禁撞规范拼写、官方别名、词汇写法（含内嵌词汇与字面量触发词）；⑤长度 2–8 个汉字，排除单字（单字最容易撞日常标识符，且诗与政策写作都不需要） |
+| T2 | **标识符命名空间被占 / 同形名字被静默改名**（「仅多词」的理由） | 只收多词 | 拉丁等有空格的文字**维持只收多词**（ADR 0022 §10 的 15/15 实证仍成立）。汉字单词放开，理由与约束：①两引擎都按整词匹配（§1.3），`低头` 不会吃掉 `低头思故乡`；②别名只属于一个版本（`aliasSet` 版本局部，没有团队 / 租户层），被占的命名空间只在作者自己这条策略里；③撞上源码里的标识符时**不能**指望编译失败：结构词在所有标识符位置都是软关键字（core `AsterParser.g4:466-500` 的 `structKeywordName`，用于名字声明、变量引用、成员、构造字段、类型别名名、导入别名；ts `parser/expr-stmt-parser.ts:1313-1332` 对齐），把参数 `低头` 别名为 `RETURN` 会让它被一致地改名为 `return` 而照常编译——字段名变了，输出记录的键也随之改变，这正是 A2 要防的静默改义。因此新增引擎侧的 **IR 名字守卫**（§5.3 第 2 条）：解析后任何名字折叠后等于「被汉字单词别名化的 kind」的规范拼写即拒绝；双引擎实现，按位置矩阵测试；④仍禁撞规范拼写、官方别名、词汇写法（含内嵌词汇与字面量触发词）；⑤长度 2–8 个汉字，排除单字（单字最容易撞日常标识符，且诗与政策写作都不需要） |
 | T3 | **引擎分歧**：字面量触发词与别名同形时，core 先译关键词（`Canonicalizer.java:732-741`），ts 先展开字面量（`canonicalizer.ts:601-604`），结果不同 | 无（`UserAliasValidator.java:234` 明确不查字面量） | 新规则：别名不得等于任何字面量触发词（三处校验器都加）；内嵌词汇另禁触发词等于该 locale 的规范拼写、官方别名与本版本别名（§6.4）。引擎执行顺序的统一另开 issue，不在本 ADR |
 | T4 | **边界分歧**：假名、谚文、扩展 B 在两引擎的 token 边界不同 | — | 汉字单词别名只允许 U+4E00–9FFF 与 U+3400–4DBF，且只在 `zh-*` locale |
 | T5 | **直连绕过授权** | 不可信调用 `allowStructural=false` | 不变；`FUNC_PRODUCE` 是结构词，直连调用同样被拒 |
@@ -178,9 +178,14 @@ isHanSingleToken(norm, loc)  = loc 的主语言子标签为 "zh"
 
 ### 5.3 碰撞规则
 
-在既有的「不遮蔽规范拼写 / 官方别名、跨 kind 不重复、不撞词汇写法」之外，新增：**别名（折叠键）不得等于有效词汇中任何字面量触发词或其别名**。core 的 `vocabularyHasWritten`（`UserAliasValidator.java:235-243`）加入 `scopes.literals()`；ts `alias-validate.ts` 同；cloud 的 `ReservedSets.vocabularyTermsLower` 改由**本次保存的有效词汇**生成，含字面量触发词（今天由 `buildAliasReservedForUser` 读作者全部个人词条，不含团队词条、不按作用域，`src/lib/structural-alias-grants.ts:22-55`，与编译所用词汇不一致）。
+在既有的「不遮蔽规范拼写 / 官方别名、跨 kind 不重复、不撞词汇写法」之外，新增两条：
 
-这是本 ADR 唯一的**收紧**：执行时会复验冻结 aliasSet（§1.1），因此列车前须用 gate scan 确认生产没有「别名 = 字面量触发词」的版本（cloud 用户词汇不存字面量，风险只在 Guard 部署带来的 `vocabulary_json`）。
+1. **别名（折叠键）不得等于有效词汇中任何字面量触发词或其别名**。
+2. **IR 名字守卫**（只在 aliasSet 含汉字单词别名时启用）：令 K = 每个带汉字单词别名的 kind 在 en-US lexicon 中的全部拼写（规范拼写 + 官方别名，折叠后）。解析后，若任一名字——模块名各段、声明名（规则、Data、枚举、类型别名、导入别名）、参数、局部绑定、字段、成员访问、构造字段、调用目标、枚举成员——折叠后属于 K，编译失败，报新诊断 `alias_identifier_collision`（按 ADR 0031 在 ts `shared/error_codes.json` 登记下一个空号，core / locales 同步，消息「别名 'X'（KIND）在源码中被当作名字使用」）。守卫放在 core `InProcessCnlParser.parseWithUserAliases` 与 ts `compileSource` 的解析之后、降级之前，因此保存门禁、每次执行的复验、包导出的 Node 重编译都会经过它。多词别名不需要它（含空格，不可能是名字）。代价：作者在带汉字单词别名的策略里不能把名字写成 `return`、`module` 等英文拼写，报错时说明原因。
+
+第 1 条的落点：core 的 `vocabularyHasWritten`（`UserAliasValidator.java:235-243`）加入 `scopes.literals()`；ts `alias-validate.ts` 同；cloud 的 `ReservedSets.vocabularyTermsLower` 改由**本次保存的有效词汇**生成，含字面量触发词（今天由 `buildAliasReservedForUser` 读作者全部个人词条，不含团队词条、不按作用域，`src/lib/structural-alias-grants.ts:22-55`，与编译所用词汇不一致）。
+
+第 1 条是本 ADR 对既有输入的唯一**收紧**（第 2 条只作用于汉字单词别名，存量版本不可能有）：执行时会复验冻结 aliasSet（§1.1），因此列车前须用 gate scan 确认生产没有「别名 = 字面量触发词」的版本（cloud 用户词汇不存字面量，风险只在 Guard 部署带来的 `vocabulary_json`）。
 
 ### 5.4 版本与 parity
 
@@ -194,7 +199,7 @@ isHanSingleToken(norm, loc)  = loc 的主语言子标签为 "zh"
 2. 列车 eco-1.0.52 发布 core / ts，并按 ADR 0053 修订 1 由列车 bump aster-api pin；列车前跑 gate scan（§5.3）。
 3. aster-api 1.0.52 上线后，cloud 才合「放宽」PR（升级 ts 依赖、`policy-alias-shared` v2）。
 4. 在此之前，即使 cloud 前端放宽了，aster-api 的编译门禁仍按 v1 拒绝，保存失败而不是落库——顺序错了只会 fail-closed。
-5. **回退约束**：cloud 放宽之后，aster-api 不得回退到 1.0.51 以下的引擎，否则已存的汉字单词别名版本在执行时复验失败。回退 cloud 无此问题。
+5. **回退约束**：cloud 放宽之后，aster-api 不得回退到 1.0.52 以下的引擎，否则已存的汉字单词别名版本在执行时复验失败。后果是执行报错（fail-closed），不会算出错误结果。机械防线：aster-api 的 `scripts/ci/verify-sibling-ref-pin.sh` 增加引擎下限 1.0.52，低于下限的 pin PR CI 失败；**剩余风险**：集群层面的镜像回滚（`kubectl rollout undo`）不经过 CI，只能靠 runbook。回退 cloud 无此问题。
 
 ---
 
@@ -321,7 +326,7 @@ aster-api 只看到合并后的 `DomainVocabulary`：编译、`evaluate-source`�
 | 批量 What-If 带上目标版本的 `aliasSet`（`VersionSource` 加字段，`ReplayBatchService` 传入，`aliasesTrusted=true` 不变）。这是既有缺陷（§1.5），不修则诗在批量 What-If 下编译失败 | 否 |
 | envelope 共享向量更新 | 否（仅测试资源） |
 | 列车 bump 引擎 pin 到 1.0.52 | 由列车完成 |
-| 列车后：诗的端到端测试（HMAC 签名的 `/compile` 与 `/evaluate-source`，zh-CN + aliasSet + 合并词汇 → `静夜思`） | 依赖列车 |
+| 列车后：诗的端到端测试（HMAC 签名的 `/compile` 与 `/evaluate-source`，zh-CN + aliasSet + 合并词汇 → `静夜思`）；`verify-sibling-ref-pin.sh` 引擎下限 1.0.52（§5.5 第 5 条） | 依赖列车 |
 
 ### 7.5 编辑器与评审
 
@@ -352,7 +357,7 @@ aster-api 只看到合并后的 `DomainVocabulary`：编译、`evaluate-source`�
 1. ts：`compileSource(source, { locale: 'zh-CN', aliasSet, allowStructural: true, vocabulary })` 零诊断，求值 `地上霜` 得 `静夜思`。
 2. Java core 经 aster-api：本地栈中带 HMAC 的 `POST /api/v1/policies/compile` 零 error 诊断；`POST /api/v1/policies/evaluate-source` 得 `静夜思`。
 3. 两侧 Core IR 的 `positionFreeSha256` 相同（ADR 0059 P2-R5 的同一判据，否则 Node 导出会报 E739）。
-4. cloud：模板应用 → 保存 → 审批 → 执行，输出 `静夜思`；版本详情显示别名映射与内嵌词汇映射。
+4. cloud + aster-api 1.0.52 本地栈：模板应用 → 保存 → 审批 → 经真实 `evaluate-source` 执行，输出 `静夜思`（执行使用冻结的下层词汇 + 内嵌词汇）；批量 What-If 以该版本为目标同样输出 `静夜思`；版本详情显示别名映射与内嵌词汇映射。
 
 ---
 
@@ -379,12 +384,14 @@ aster-api 只看到合并后的 `DomainVocabulary`：编译、`evaluate-source`�
 
 ## 10. 待产品负责人确认的问题（附推荐）
 
-1. **免费套餐能否使用内嵌词汇？** 推荐：能（32 条上限）。若要求 Pro，需决定降级后已有内嵌词汇的策略如何保存（只能拒绝）。
-2. **用户 / 团队词汇是否也加 literal 种类？** 推荐：本 ADR 不做，另开 issue。
-3. **冲突时内嵌词条优先（推荐）还是拒绝保存？**
-4. **Guard 部署仍不支持结构词别名**（`allowStructural=false`），因此诗不能部署到 Guard。接受吗？推荐：接受，另议。
-5. **没有结构词别名授权的用户看到的诗模板是锁定的**（现有 `requires.structuralAliases` 机制），不提供例外。是否可以接受「大多数用户看不到可用的诗模板」？推荐：接受；它是结构化编写的展示，本来就面向有授权的人。
-6. **汉字单词别名的长度上限 8 字**是否合适？
+§3 的 P1 / P2 已由产品负责人确认；下列问题是本 ADR 作者的提议，**都不阻塞实施**：计划按推荐值执行，若被推翻，只改括号中的任务。
+
+1. **免费套餐能否使用内嵌词汇？**（T9）推荐：能（32 条上限）。若要求 Pro，需决定降级后已有内嵌词汇的策略如何保存（只能拒绝）。
+2. **用户 / 团队词汇是否也加 literal 种类？**（无）推荐：本 ADR 不做，另开 issue。
+3. **冲突时内嵌词条优先（推荐）还是拒绝保存？**（T8）
+4. **Guard 部署仍不支持结构词别名**（无）（`allowStructural=false`），因此诗不能部署到 Guard。接受吗？推荐：接受，另议。
+5. **没有结构词别名授权的用户看到的诗模板是锁定的**（T13）（现有 `requires.structuralAliases` 机制），不提供例外。是否可以接受「大多数用户看不到可用的诗模板」？推荐：接受；它是结构化编写的展示，本来就面向有授权的人。
+6. **汉字单词别名的长度上限 8 字**是否合适？（T3、T4、T12）
 
 ---
 
@@ -394,7 +401,8 @@ aster-api 只看到合并后的 `DomainVocabulary`：编译、`evaluate-source`�
 |---|---|
 | 字面量碰撞规则是收紧，执行时复验可能让存量版本失败 | 列车前 gate scan（§5.3）；cloud 用户词汇没有字面量 |
 | cloud 先于 aster-api 放宽 | aster-api 编译门禁 fail-closed（§5.5 第 4 条）；计划把放宽 PR 排在列车之后 |
-| aster-api 回退到旧引擎 | §5.5 第 5 条写入列车 runbook |
+| aster-api 回退到旧引擎 | §5.5 第 5 条：pin 下限 CI 检查 + runbook；镜像级回滚是剩余风险，后果 fail-closed |
+| 汉字单词别名把同形名字静默改名（软关键字） | §5.3 第 2 条 IR 名字守卫，双引擎按位置矩阵测试 |
 | 内嵌词条与下层词条冲突，作者没注意到自己的个人词条在这条策略里失效 | `vocabularyShadowed` 响应 + 编辑器标记 |
 | 三处校验器漂移 | 共享夹具 `alias-cases-v2.json` 三处同跑 |
 | 字面量宏误导审批者 | 版本详情的内嵌词汇映射表与字面量标记；LayoutMap 不能把触发词藏进结构 span |
@@ -418,3 +426,5 @@ aster-api 只看到合并后的 `DomainVocabulary`：编译、`evaluate-source`�
 | R10 | 保存不设门，编辑入口随 `structured_authoring`（§6.7） |
 | R11 | 批量 What-If 补 aliasSet，作为本 ADR 的前置修复（§7.4） |
 | R12 | 模板只写内嵌词汇与别名，永不写用户词汇；#829 模板整体替换（§8） |
+| R13 | 汉字单词别名必须配 IR 名字守卫 `alias_identifier_collision`，双引擎实现，属列车门（§5.3 第 2 条） |
+| R14 | aster-api 引擎 pin 下限 1.0.52 进 CI 检查（§5.5 第 5 条） |
