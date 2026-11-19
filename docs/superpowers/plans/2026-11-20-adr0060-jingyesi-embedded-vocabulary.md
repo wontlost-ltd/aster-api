@@ -8,7 +8,7 @@
 
 **Tech Stack:** aster-lang-core（Java 21、Gradle、JUnit 5）；aster-lang-ts（TypeScript、`node --test`）；aster-lang-test（Node 脚本）；aster-api（Quarkus、Gradle）；aster-cloud（Next.js on Workers、Drizzle + Postgres、vitest、Playwright、next-intl）。依赖：cloud 当前 `@aster-cloud/aster-lang-ts` 3.4.0（`package.json:67`），列车后升到列车发布的 ts 版本（下称 **ts-next**）。
 
-**Spec:** `docs/adr/0060-cjk-keyword-aliases-and-policy-embedded-vocabulary.md`（PROPOSED 2026-11-20）。对应 wontlost-ltd/aster-cloud#830。
+**Spec:** `docs/adr/0060-cjk-keyword-aliases-and-policy-embedded-vocabulary.md`（ACCEPTED 2026-11-20）。对应 wontlost-ltd/aster-cloud#830。
 
 ## 现状（2026-11-20 核对：aster-api `ae8e4bc8`、aster-cloud `f3877466`、aster-lang-core `d9b7254`、aster-lang-ts `9f2268f`、aster-lang-test `dd87f30`）
 
@@ -61,6 +61,8 @@ ADR §1 已列出全部出处；下表只补任务定位需要的路径。
 ---
 
 ## 裁决（ADR 未定之处；用户可推翻）
+
+**产品负责人已决（2026-11-20，ADR §10 / R15）**：免费套餐可用内嵌词汇（32 条上限，T9 不设套餐门）；用户 / 团队词汇不加 literal；冲突时内嵌优先、不拒绝保存（T8）；Guard 部署维持 `allowStructural=false`；无结构词授权则模板锁定（T13）；汉字别名 2–8 个码点（T3、T4、T12）；规范源码在别名后带空格、由 LayoutMap 隐去（T13）。下表是实施层面的补充裁决。
 
 | # | 问题 | 裁决 | 理由 |
 |---|---|---|---|
@@ -372,6 +374,14 @@ PR 7 先于 PR 8：读路径先能处理非空列，写入方后上；反过来�
 - [ ] **Step 6: 提交并开 PR**（关闭 cloud#830）。
 
 ---
+
+## 后续（不在本计划内）
+
+| # | 事项 | 何时开 | 依据 |
+|---|---|---|---|
+| F1 | **统一 ts 与 core 的字面量展开 / 关键词翻译顺序**：core 先译关键词再展开字面量（`aster.core.canonicalizer.Canonicalizer.java:732-741`），ts 先展开字面量再词法 / 译关键词（`src/frontend/canonicalizer.ts:601-604`）；触发词与关键词或别名同形时两侧结果不同。本计划只在校验入口拦截（T3 / T4 / T9）；F1 让两引擎按同一顺序处理，并加 parity 夹具。属引擎改动，需随列车 | T3 Step 7 开 issue（aster-lang-ts 与 aster-lang-core 各一，互相引用） | ADR §4.2 T3、R16 |
+| F2 | 用户 / 团队词汇的 literal 种类 | 有需求时 | ADR §10 第 2 条 |
+| F3 | Guard 部署支持结构词别名 | 有需求时 | ADR §10 第 4 条 |
 
 ## 本地验证命令汇总
 
