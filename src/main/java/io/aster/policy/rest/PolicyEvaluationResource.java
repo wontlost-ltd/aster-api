@@ -155,6 +155,9 @@ public class PolicyEvaluationResource {
     // 验证后再加。见 issue #98。
     // 语法分析阶段另有协作式时间预算（aster.parse.time-budget，aster-cloud/aster-lang-core#254）：超时在解析线程内
     // 中止并返回带码 E054，线程随之释放——Uni 层的墙钟超时做不到这一点（只断开响应，计算仍占着线程）。
+    // 匿名（未验签）的 /compile、/schema 另按 aster.parse.anonymous-time-budget（默认 500ms）限额（aster-api#489）：
+    // 最坏情况下匿名请求每轮占满全部许可的 CPU 时间降到原来的四分之一；许可数不变，免得验签的 cloud BFF
+    // （编辑器 compile-on-type、保存门）与匿名请求共用的池子更容易 503。
 
     @Inject
     PolicyEvaluationService evaluationService;
@@ -200,6 +203,13 @@ public class PolicyEvaluationResource {
 
     @Inject
     io.aster.policy.stability.ToolchainIdentityProvider toolchainIdentityProvider;
+
+    /**
+     * 匿名（未经 HMAC 验签）编译 / 取 schema 请求的解析额度（aster-api#489）：比进程级 {@code aster.parse.time-budget}
+     * 更紧，匿名调用方能占用的 CPU 时间随之下降；验签的内部调用方（cloud BFF）仍按进程级预算。0 表示不另加限制。
+     */
+    @ConfigProperty(name = "aster.parse.anonymous-time-budget", defaultValue = "500ms")
+    java.time.Duration anonymousParseBudget;
 
     @ConfigProperty(name = "aster.entry.legacy-evaluate-sentinel", defaultValue = "true")
     boolean legacyEvaluateSentinel;
@@ -913,6 +923,8 @@ public class PolicyEvaluationResource {
     public Uni<SchemaResponse> getSchema(@Valid SchemaRequest request) {
         LOG.infof("Extracting schema from CNL source (locale=%s, function=%s)",
             request.getLocaleOrDefault(), request.getFunctionNameOrDefault());
+        // 在切 worker 线程前读取验签状态（请求上下文属性）
+        final java.time.Duration parseAllowance = requestParseAllowance();
 
         return Uni.createFrom().item(() -> {
             // 并发闸：解析是 CPU 密集且对长输入超线性，匿名端点必须限并发，
@@ -928,11 +940,11 @@ public class PolicyEvaluationResource {
                         .build());
             }
             try {
-                ParameterSchemaExtractor.SchemaResult result = ParameterSchemaExtractor.extractSchema(
-                    request.source(),
-                    request.getFunctionNameOrDefault(),
-                    request.getLocaleOrDefault()
-                );
+                ParameterSchemaExtractor.SchemaResult result = io.aster.policy.parser.ParseBudget.withinRequestAllowance(
+                    parseAllowance, () -> ParameterSchemaExtractor.extractSchema(
+                        request.source(),
+                        request.getFunctionNameOrDefault(),
+                        request.getLocaleOrDefault()));
 
                 if (result.success()) {
                     LOG.infof("Schema extracted successfully: %s.%s with %d parameters",
@@ -982,6 +994,7 @@ public class PolicyEvaluationResource {
             && io.aster.security.apikey.InternalCallerFilter.isHmacVerified(jaxrsCtx);
         // 词汇表超限在抢匿名解析许可前就拒绝（400），与 evaluate-source 共用同一校验器。
         requireVocabularyWithinBounds(request.vocabulary());
+        final java.time.Duration parseAllowance = requestParseAllowance();
 
         return Uni.createFrom().item(() -> {
             if (!tryAcquireAnonParse()) {
@@ -1020,8 +1033,9 @@ public class PolicyEvaluationResource {
                 // 领域词汇作用域与执行端（ReplayExecutionCore）同一构建口径（ADR 0051）。
                 aster.core.identifier.VocabularyScopes scopes =
                     io.aster.replay.core.ReplayExecutionCore.buildVocabularyScopes(request.vocabulary());
-                CompilationResult result = policyCompiler.compile(
-                    request.source(), request.getLocaleOrDefault(), aliasSetJson, scopes, allowStructural);
+                CompilationResult result = io.aster.policy.parser.ParseBudget.withinRequestAllowance(
+                    parseAllowance, () -> policyCompiler.compile(
+                        request.source(), request.getLocaleOrDefault(), aliasSetJson, scopes, allowStructural));
                 return toCompileResponse(result);
             } catch (jakarta.ws.rs.BadRequestException bre) {
                 throw bre; // 400 直接上抛，不吞成编译失败
@@ -1198,6 +1212,14 @@ public class PolicyEvaluationResource {
         } catch (Exception e) {
             throw new IllegalStateException("aliasSet 序列化失败: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 本请求的解析额度：HMAC 验签的内部调用方不另加限制（按进程级预算），其余（匿名）调用方取
+     * {@code aster.parse.anonymous-time-budget}。必须在请求线程上调用（读取请求上下文属性）。
+     */
+    private java.time.Duration requestParseAllowance() {
+        return io.aster.security.apikey.InternalCallerFilter.isHmacVerified(jaxrsCtx) ? null : anonymousParseBudget;
     }
 
     /**

@@ -22,7 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@code aster.parse.time-budget} 确实接到了解析器（aster-cloud/aster-lang-core#254）：用非默认值启动，
- * 端点返回的 E054 带该预算（budgetMs=750，而不是默认的 2000），且不早于该预算中止。
+ * 编译返回的 E054 带该预算（budgetMs=750，而不是默认的 2000），且不早于该预算中止。
+ * {@code aster.parse.anonymous-time-budget} 同样接到了匿名编译端点（aster-api#489）：budgetMs=650，而不是默认的 500。
  */
 @QuarkusTest
 @RedisEnabledTest
@@ -32,9 +33,12 @@ public class PolicyCompileParseBudgetConfigTest {
     public static class ShortBudgetProfile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
-            return Map.of("aster.parse.time-budget", "750ms");
+            return Map.of("aster.parse.time-budget", "750ms", "aster.parse.anonymous-time-budget", "650ms");
         }
     }
+
+    @jakarta.inject.Inject
+    io.aster.policy.compiler.PolicyCompiler policyCompiler;
 
     @AfterEach
     void restoreSlowChecks() {
@@ -42,7 +46,7 @@ public class PolicyCompileParseBudgetConfigTest {
     }
 
     @Test
-    void configuredBudgetIsAppliedToCompileEndpoint() throws Exception {
+    void configuredAnonymousBudgetIsAppliedToCompileEndpoint() throws Exception {
         assertEquals(Duration.ofMillis(750), ParseBudget.configured(), "启动时按配置值设定进程级预算");
         String source = PolicyCompileParseBudgetTest.slowSource();
         ParseBudgetTestHooks.slowChecks(PolicyCompileParseBudgetTest.SLOW_STEP);
@@ -61,8 +65,20 @@ public class PolicyCompileParseBudgetConfigTest {
             .statusCode(200)
             .body("success", is(false))
             .body("diagnostics.findAll { it.code == 'E054' && it.params.reason == 'time-budget' }", hasSize(1))
-            .body("diagnostics.find { it.code == 'E054' }.params.budgetMs", is("750"));
+            .body("diagnostics.find { it.code == 'E054' }.params.budgetMs", is("650"));
         long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+        assertTrue(elapsed >= 650, "匿名额度到点之前不应中止，实际 " + elapsed + "ms");
+    }
+
+    @Test
+    void configuredProcessBudgetIsAppliedOutsideAnonymousEndpoints() {
+        String source = PolicyCompileParseBudgetTest.slowSource();
+        ParseBudgetTestHooks.slowChecks(PolicyCompileParseBudgetTest.SLOW_STEP);
+        long t0 = System.nanoTime();
+        io.aster.policy.compiler.CompilationResult result = policyCompiler.compile(source, "en-US", null);
+        long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+        assertEquals("750", result.getDiagnostics().stream()
+            .filter(d -> "E054".equals(d.code())).findFirst().orElseThrow().params().get("budgetMs"));
         assertTrue(elapsed >= 750, "预算到点之前不应中止，实际 " + elapsed + "ms");
     }
 }

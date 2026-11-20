@@ -162,7 +162,7 @@
       "sameAs": "allow"
     },
     {
-      "name": "builtin-anchor-is-empty",
+      "name": "builtin-anchor-rejects-test-kid",
       "command": "run",
       "anchor": "none",
       "input": {
