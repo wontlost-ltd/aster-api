@@ -60,6 +60,11 @@ dependencies {
     // 不依赖 quarkus-cache 的传递（避免未来 quarkus 更换 cache provider 时崩）
     implementation 'com.github.ben-manes.caffeine:caffeine:3.3.1'
 
+    // 显式声明 icu4j —— MessagesValidator 直接使用 com.ibm.icu.text.MessageFormat。
+    // 此前只靠 aster-lang-core 误把 ANTLR 工具链（antlr4 → icu4j）带到运行时 classpath（core#279）；
+    // core 收回工具链后不声明就会编译失败。版本与此前传递解析到的 72.1 一致，避免顺带改变 ICU 语义。
+    implementation 'com.ibm.icu:icu4j:72.1'
+
     // WebSocket support for Live Preview
     implementation 'io.quarkus:quarkus-websockets'
 
