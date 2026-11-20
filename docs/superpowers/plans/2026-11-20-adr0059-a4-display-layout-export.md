@@ -8,7 +8,7 @@
 
 **Tech Stack:** aster-lang-test（Node ≥ 24 脚本，无 npm 依赖）；aster-lang-core（Java 25、Gradle、JUnit 5）；aster-lang-ts（TypeScript、`pnpm test`）；aster-lang-truffle `cli/`（picocli、Gradle）；aster-api（Quarkus、Gradle）；aster-cloud（Next.js on Workers、vitest、next-intl）。
 
-**Spec:** `docs/adr/0059-amendment-4-display-layout-in-packages.md`（PROPOSED，2026-11-20；下称「修订」，条目 D1–D16、规则 L1–L9）。实施须等产品负责人确认修订；修订 §11 的 Q1–Q5 若被推翻，按推翻后的结论改对应任务。
+**Spec:** `docs/adr/0059-amendment-4-display-layout-in-packages.md`（**ACCEPTED** 2026-11-20；下称「修订」，条目 D1–D16、规则 L1–L9）。产品负责人 2026-11-20 采纳修订 §11 Q1–Q5 的全部推荐答案（见下「裁决」）。
 
 ## 现状（2026-11-20 核对：aster-api `2b63f1bc`、aster-cloud `1db16067`、aster-lang-ts `e4728cb`（3.5.0）、aster-lang-truffle `248d100`（1.0.52）、aster-lang-test `99ef78e`）
 
@@ -51,7 +51,9 @@
 4. **导出者没有 `structured_authoring`**：排版照样随包导出（T7 `includes the layout regardless of the exporter's capability`）。
 5. **无签名包上 `show`**：照常打印并在 stderr 提示未核验；签名包上被改坏的 `display.aster` 必须 `PKG_DISPLAY_INVALID`（T1 篡改夹具 `display-text-tampered-resigned`）。
 
-## 裁决（修订未定之处；用户可推翻）
+## 裁决
+
+**产品负责人已决（2026-11-20，修订 §11）**：Q1 排版过不了校验时省略排版、照常导出 1.0，原因进响应头与界面说明（T6、T7）；Q2 不提供「不含排版」选项（T7 面板不加开关）；Q3 `run --display` 随 eco-1.0.53 交付（T1、T3、T4、T8）；Q4 无排版的包上 `show` 打印规范源码并在 stderr 注明（T1、T3、T4）；Q5 保留文件名 `display.aster`（T1、T6）。下表是实施层面的补充裁决（用户可推翻）。
 
 | # | 问题 | 裁决 | 理由 |
 |---|---|---|---|
@@ -102,7 +104,7 @@
   - **复杂度**：`D_k` 的出现位置用 KMP 一次求出；「全部 e > p」的累加用前缀和，再对至多一个原样终点做减法把它从「改过」类里剔除。每个内容 span O(|E|)，总计 O(span 数 × |E|) ≤ 400 × 24 577。唯一解时沿前驱回溯出各 `t_k` 得 `L'`。
   运行 → PASS。
 - [ ] **Step 4: 写 schema 1.1、README 三节、exit-codes、envelope schema**；README 的检查顺序表：manifest ⑤ 改「主版本 = 1 且次版本 ≤ 1」，按次版本选 schema；integrity 之后新增 display 阶段（`PKG_DISPLAY_INVALID`）；`run --display` 的阶段序：…→ display → reconstruct（`DISPLAY_UNMAPPABLE` / `DISPLAY_AMBIGUOUS`）→ derived（L2/L5/L6/L7，`DISPLAY_REJECTED`）→ compile（`COMPILE_ERROR`）→ L8/L9（`DISPLAY_REJECTED`）→ entry → input → eval；`meta` 取值表补 `display`。
-- [ ] **Step 5: 生成黄金包与用例**：`b-jingyesi.cases.json` 至少：`verify`（含 `display`）、`verify --recompile`（含 `display-ir`）、`inspect`（含 `display` 成员）、`show`（stdout = 原诗 + `\n`）、`show --canonical`、`show --from-display displays/last-line-literal.txt`（stdout = 派生源码 + `\n`）、`run` → `静夜思`、`run --display displays/unchanged.txt` → `静夜思` 且 `matchesPackage:true`、`run --display displays/last-line-literal.txt` → `月光` 且 `matchesPackage:false`、`displays/trailing-newline.txt` → `静夜思`、`displays/both-sides.txt` → `DISPLAY_UNMAPPABLE`、`displays/repeat-prefix.txt` → `DISPLAY_AMBIGUOUS`、`show --canonical --from-display x` → `USAGE`；`display-entry-renamed`（把 `地上霜` 改成 `天上霜`）→ `ENTRY_NOT_FOUND`。`b-display-swallow`：`verify` 通过（`·` 显示的空格合规）；`run --display`（显示改成 `Return "x·y"`，还原出 `Return "x y"`，字符串吞进结构 span）→ `DISPLAY_REJECTED`（L9）。另一个带参数的 en-US 黄金包 `b-display-params`：`display-param-retyped`（改形参类型后按旧形态输入）→ `INPUT_INVALID`。篡改夹具（重新签名）：`display-text-tampered-resigned`、`display-layout-not-canonical-resigned`、`display-roundtrip-mismatch-resigned`、`display-missing-file`（manifest 有 `display` 缺文件 → `PKG_INVALID_MANIFEST`）、`display-in-1-0-manifest`（1.0 带 `display` → `PKG_INVALID_MANIFEST`）、`display-unsigned`（`show --allow-unsigned` 成功）。
+- [ ] **Step 5: 生成黄金包与用例**：`b-jingyesi.cases.json` 至少：`verify`（含 `display`）、`verify --recompile`（含 `display-ir`）、`inspect`（含 `display` 成员）、`show`（stdout = 原诗 + `\n`）、`show --canonical`、`show --from-display displays/last-line-literal.txt`（stdout = 派生源码 + `\n`）、`run` → `静夜思`、`run --display displays/unchanged.txt` → `静夜思` 且 `matchesPackage:true`、`run --display displays/last-line-literal.txt` → `月光` 且 `matchesPackage:false`、`displays/trailing-newline.txt` → `静夜思`、`displays/both-sides.txt` → `DISPLAY_UNMAPPABLE`、`displays/repeat-prefix.txt` → `DISPLAY_AMBIGUOUS`、`show --canonical --from-display x` → `USAGE`；`display-entry-renamed`（把 `地上霜` 改成 `天上霜`）→ `ENTRY_NOT_FOUND`。无排版的 1.0 黄金包 `b-credit-limit` 加 `show` 用例（Q4）：stdout = `policy/policy.aster` 字节 + `\n`、退出码 0，stderr 含「无显示排版」说明；`show --from-display x` → `PKG_DISPLAY_INVALID`（包无排版可还原）。`b-display-swallow`：`verify` 通过（`·` 显示的空格合规）；`run --display`（显示改成 `Return "x·y"`，还原出 `Return "x y"`，字符串吞进结构 span）→ `DISPLAY_REJECTED`（L9）。另一个带参数的 en-US 黄金包 `b-display-params`：`display-param-retyped`（改形参类型后按旧形态输入）→ `INPUT_INVALID`。篡改夹具（重新签名）：`display-text-tampered-resigned`、`display-layout-not-canonical-resigned`、`display-roundtrip-mismatch-resigned`、`display-missing-file`（manifest 有 `display` 缺文件 → `PKG_INVALID_MANIFEST`）、`display-in-1-0-manifest`（1.0 带 `display` → `PKG_INVALID_MANIFEST`）、`display-unsigned`（`show --allow-unsigned` 成功）。
 - [ ] **Step 5a: 能力门控**：`package-conformance.mjs` 读每条用例的 `requiresFormat`，两侧 `version` 的 `formatVersions` 都含该值才运行，否则 skipped（报告列出）；单测覆盖「一侧支持一侧不支持 → skipped」「都支持 → 运行」。
 - [ ] **Step 5b: 写 `pendingTsRelease`**（`src/` 下的清单，列出 Step 5 新增的全部用例 id；`--verify-engines` 在固定 ts 版本 < ts-next 时跳过它们，≥ ts-next 时清单非空即失败）。
 - [ ] **Step 6: 旧 CLI 兼容脚本** `scripts/test-old-cli-rejects-1-1.mjs`：从 GitHub Release 下载 ts `v3.5.0` 的 `aster.mjs` 与 truffle `v1.0.52` 的 `aster-cli-1.0.52.jar`，核对各自 `.sha256`，对 `b-jingyesi` 跑 `verify` / `run` / `inspect`，断言两侧退出码 4、错误码 `PKG_UNSUPPORTED_FORMAT`；加入 CI（缓存下载）。

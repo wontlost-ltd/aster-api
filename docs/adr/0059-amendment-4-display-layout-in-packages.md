@@ -1,6 +1,6 @@
 # ADR 0059 修订 4：策略包携带显示排版，本地查看并运行改过的显示源码
 
-- 状态：**PROPOSED**（2026-11-20，待产品负责人确认）
+- 状态：**ACCEPTED**（2026-11-20，产品负责人采纳 §11 Q1–Q5 的全部推荐答案）
 - 日期：2026-11-20
 - 修订对象：[ADR 0059](0059-executable-policy-export.md) §2、§3、§4.1、§6.1、§7、§8，[修订 2](0059-amendment-2-package-format-rulings.md) R3（格式版本检查）；同时修订 [ADR 0058](0058-structured-authoring-capability-and-policy-layout.md) §7.2 读取契约（导出成为 `loadVersionLayout` 的调用方）、§7.4（本地 CLI 的反向映射）、§7.10（出现 Java 版本）
 - 实施计划：`docs/superpowers/plans/2026-11-20-adr0059-a4-display-layout-export.md`
@@ -113,7 +113,7 @@ A 包（P3 尚未实施）带自己的 CLI；P3 实施时其 CLI 来自锁文件
 - `aster show <pkg> [--canonical | --from-display <file>] [--jwks|--pubkey|--allow-unsigned]`（新子命令，两个 CLI 同名同义）：
   - 阶段 usage → read → manifest → signature → integrity →（有 `display` 时）display（L1–L7）。
   - stdout：有排版时为 `display.aster` 的字节加一个 `\n`；无排版或给了 `--canonical` 时为 `policy/policy.aster` 的字节加一个 `\n`（与 `compile` 的「字节 + `\n`」同一约定）。不是 JSON。
-  - `--from-display <file>`：按 D7 的还原、L1–L9 全部检查（含编译），stdout 为还原出的规范源码加 `\n`，不求值——`run --display` 的演练。
+  - `--from-display <file>`：按 D7 的还原、L1–L9 全部检查（含编译），stdout 为还原出的规范源码加 `\n`，不求值——`run --display` 的演练。包没有排版时，`show --from-display` 与 `run --display` 都是 `PKG_DISPLAY_INVALID`（没有可对照的排版）。
   - 失败时 stdout 为与 `run` 相同的错误信封（与 `compile` 一致）。
   - stderr：有排版时先打印**结构映射**——每个 `display ≠ canonical` 的结构 span 一行 `display ⇐ canonical`（JSON 字符串形式，去重保序），这是纯文本里对 ADR 0058 §7.7 第 3 条「结构文字可辨认、悬停显示 canonical」的替代；词汇含字面量宏时列出「触发词 → 展开值」（ADR 0058 §7.7 第 7 条：显示的是 `思故乡`，编译的是 `"静夜思"`）；包无签名（`--allow-unsigned`）时提示「显示排版未经签名核验」。
 - 选 `show` 而不是 `inspect --display`：`inspect` 的 stdout 是一行 JSON 信封，显示文本是给人读的多行原文；把它塞进 JSON 字符串既不好读也改变 `inspect` 的形状。
@@ -269,17 +269,17 @@ A 包（P3 尚未实施）带自己的 CLI；P3 实施时其 CLI 来自锁文件
 
 ---
 
-## 11. 待产品负责人确认
+## 11. 产品负责人裁决（2026-11-20，全部采纳推荐答案）
 
-| # | 问题 | 推荐 |
+| # | 问题 | 裁决 |
 |---|---|---|
-| Q1 | 排版过不了校验时：省略排版照常导出，还是整次拒绝 | **省略**并提示原因（D11）。排版不改执行内容，拒绝会让一条已批准、可执行的策略因显示层问题导不出 |
-| Q2 | 导出面板是否提供「不含排版」选项（给仍用旧 CLI 的人得到 1.0 包） | **不提供**。旧 CLI 已明确失败并提示升级；多一个选项多一个可复现维度。真有需要再加 |
-| Q3 | `run --display` 是否随 eco-1.0.53 一起交付 | **是**。它是本需求「改了布局的源码本地运行」的直接答案，也是最终验收的一部分；L9 与反向映射已有实测与明确规则 |
-| Q4 | `show` 在无排版的包上打印什么 | **规范源码**，stderr 注明无排版（与 ADR 0058 修订 1「有排版先显示排版」同向） |
-| Q5 | 文件名 `display.aster` | **保留**负责人的命名。代价：有人对它跑 `aster compile display.aster` 会得到编译错误；README 与 `show` 的 stderr 说明它不是编译输入 |
+| Q1 | 排版过不了校验时：省略排版照常导出，还是整次拒绝 | **已裁决：省略**，照常导出 1.0 包，原因写入响应头 `X-Aster-Package-Layout-Reason` 并在界面显示一行说明（D11）。排版不改执行内容，拒绝会让一条已批准、可执行的策略因显示层问题导不出 |
+| Q2 | 导出面板是否提供「不含排版」选项（给仍用旧 CLI 的人得到 1.0 包） | **已裁决：不提供**。旧 CLI 已明确失败并提示升级；多一个选项多一个可复现维度。真有需要再加 |
+| Q3 | `run --display` 是否随 eco-1.0.53 一起交付 | **已裁决：是**，随 eco-1.0.53 交付。它是本需求「改了布局的源码本地运行」的直接答案，也是最终验收的一部分；L9 与反向映射已有实测与明确规则 |
+| Q4 | `show` 在无排版的包上打印什么 | **已裁决：规范源码**，stderr 注明无排版（与 ADR 0058 修订 1「有排版先显示排版」同向） |
+| Q5 | 文件名 `display.aster` | **已裁决：保留** `display.aster`。代价：有人对它跑 `aster compile display.aster` 会得到编译错误；README 与 `show` 的 stderr 说明它不是编译输入 |
 
-## 12. 裁决（PROPOSED）
+## 12. 裁决（ACCEPTED，2026-11-20）
 
 | # | 裁决 |
 |---|---|
