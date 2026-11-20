@@ -52,7 +52,7 @@
 
 1. **旧 aster-api 忽略 `severity`**：cloud 先于 A1 部署时，选「critical」不得出现 info 行——BFF 二次过滤并续取（T3 `filters by severity even when upstream ignores it`、`stops after 5 upstream pages`）。
 2. **会话中被降级的管理员**：页面仍显示「确认」按钮，点下去 BFF 现查角色 → 403，且不调用 aster-api；UI 提示并刷新权限（T3 `ack re-reads the role per request`，T7 `ack 403 hides the button`）。
-3. **`side_effect_without_decision` 带他租户的真实 decisionId**：决策上下文只以当前租户签名查询，得到 404 → `decision: null`，无其他租户请求（T4 `never queries another tenant`）。
+3. **`side_effect_without_decision` 带他租户的真实 decisionId**：决策上下文只以当前租户签名查询，得到 404 → `decision.state === 'not_found'`，措辞为「上报方声称的决策 id 在本工作区不存在」，无其他租户请求（T4 `never queries another tenant`）。
 4. **确认与自动解除竞态**：对账把行改成 `RESOLVED` 后管理员再确认 → 409 `not_open`，UI 用响应里的 `status` 更新该行并提示，不报通用错误（T3、T7）。
 5. **上报方注入的文本**（`<img onerror>`、`javascript:` 资源 id、10 KB 的 `actionName`）：原样作文本显示、折叠，DOM 中无对应元素或链接（T6 `renders reporter text inertly`）。
 
@@ -337,3 +337,4 @@ cloud      PR-C1 (T2–T4, BFF)  ── 任何时候可合 ──┴──▶ PR
 - 不在本计划：批量确认、撤销确认、通知、cloud 作为上报方、viewer 可见（ADR 0061 §2）。
 - 类型一致性：`GuardOrphan*`、`GuardReconciliationSummary`（T2）用于 T3–T7；`ReconciliationAccess` / `ReconciliationApi` / `createReconciliationClient`（T2）用于 T3、T4、T6；`ReconciliationTenantSummary`（T3）用于 T5；`DecisionContext` / `Part`（T4）用于 T6；`parseOrphanQuery` / `orphanQueryToSearch` / `DEFAULT_ORPHAN_QUERY`（T2）用于 T3、T6。
 - 车次门：无引擎改动；A1 随常规 aster-api 发布（发布动作先问用户）。
+- Codex 评审记录：第 1 轮 76 分（退回）——H1 角色「每次现查」没有落到接口（客户端可被缓存）、H2 带 admin 签名的客户端暴露完整 `PolicyApiClient`（aster-api 另有 ADMIN 端点）、H3 决策 404 与「无证据」混为一谈（`orphan_receipt` 有链事件）、M1 旧 api 下二次过滤后的分页游标会漏行、M2 收据失败用例不足、M3 非法 id 的语义、L2 命令工作目录；已逐条修订（每请求新建 + 降级用例、`ReconciliationApi` 窄接口 + 源码扫描测试、按 kind 的 404 措辞、`fillFilteredPage` 续取至多 5 页且凑满时以最后返回项为游标、补三条降级用例、400 `invalid_decision_id`、命令表标明仓库）。第 2 轮 91 分（通过），一条 Low（Review Focus 第 3 条的旧响应形状）已改。
