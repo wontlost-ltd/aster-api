@@ -205,7 +205,18 @@ public class InProcessCnlParser {
         if (isBlankSource(source)) {
             throw new CnlParseException(EMPTY_SOURCE_MESSAGE);
         }
+        try {
+            return parseBudgeted(source, locale, scopes, aliasSet, resolver, budget, predictionMode);
+        } finally {
+            // 本次解析耗时计入请求级额度（aster-api#489），成功与失败一样计
+            budget.finish();
+        }
+    }
 
+    private static ParseResult parseBudgeted(String source, String locale, VocabularyScopes scopes,
+                                             Map<SemanticTokenKind, List<String>> aliasSet,
+                                             NameResolver resolver, ParseBudget budget,
+                                             PredictionMode predictionMode) {
         try {
             // 1. 根据 locale 获取对应的 Lexicon，并叠加用户自定义别名（方案 D）后规范化源代码
             Lexicon lexicon = AliasOverlayLexicon.wrap(getLexiconForLocale(locale), aliasSet);
