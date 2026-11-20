@@ -3,7 +3,7 @@
 - 状态：**ACCEPTED**（2026-11-20，产品负责人决定）
 - 日期：2026-11-20
 - 修订对象：[ADR 0058](0058-structured-authoring-capability-and-policy-layout.md) §7.7 第 1 条在阅读视图上的适用范围；阶段 2 实施计划（`docs/superpowers/plans/2026-11-19-adr0058-phase2.md`）裁决 R16，并补充 R11 的并排视图默认状态
-- 实现：wontlost-ltd/aster-cloud `feat/layout-display-first`（依据 cloud `20d23c94`，含 C9 #825、C10 #827、#829、#837）
+- 实现：wontlost-ltd/aster-cloud#839（依据 cloud `20d23c94`，含 C9 #825、C10 #827、#829、#837）
 - 来源：产品负责人 2026-11-20 的两句话——「如果有显示排版，优先显示」「编辑时，默认打开并排视图」；并明确**审批与评审视图不变**
 
 本修订只改两处默认值，其余不变。
