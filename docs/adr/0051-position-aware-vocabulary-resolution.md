@@ -422,6 +422,8 @@ Candidate { written(NFC), canonical, kind, parent?, source: 'term' | 'synonym' }
 
 ### 16.3 R58：alias 右侧解析与导入签名 / 字段类型的接口契约（延后实现）
 
+> 第 1 条（alias RHS → E800）已由[修订 1](0051-amendment-1-type-alias-rhs-e800.md) 裁决启用（2026-11-20），实现排在 1.0.54 或之后，以门禁扫描为前提。
+
 **现状。** core `ImportedDeclarations` 只携带导入模块的函数名、类型名、字段名，不含签名与类型；ts `declareTopLevel` 只登记类型别名的名字，RHS 不解析，core `DeclarationResolver` 原样透传。生产路径为单模块编译（aster-api 与 cloud 都不做跨模块解析，ts browser checker 由调用方注入 `importedEffects`），**这两项在当前生产路径上不可达**。
 
 **契约（定稿后实现须遵守）。**
