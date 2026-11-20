@@ -97,6 +97,10 @@ unset SEED KEYS_FILE
 - 列车 eco-1.0.52 之后的锁文件：`jre` 为 `1.0.52`、`node` 为 `3.5.0`，`trustAnchorKids` 不变（已核：Release 资产 `aster-cli-1.0.52.jar`（`.sha256` 校验通过）内 `aster/cli/export-jwks.json`、
   ts v3.5.0 Release 的 `aster.mjs`（与 npm `dist/runner/aster.mjs` 逐字节相同、`.sha256` 校验通过）的 `version` 都列出 `export-2026-11a`，公钥 x 与 `/api/v1/exports/keys` 一致）；
   白名单与 v3.5.0 逐字节相同，未变。须先于 cloud 的 ts 3.5.0 PR（ADR 0060 T12）部署，两次部署之间 Node 导出 503 `export_runtime_skew`，JRE 导出不受影响。
+- 列车 eco-1.0.53 之后的锁文件：`jre` 为 `1.0.53`、`node` 为 `3.6.0`，`trustAnchorKids` 不变
+  （已核：Release 资产 `aster-cli-1.0.53.jar`（sha256 `d113126f…f32cab8`，`.sha256` 校验通过）内 `aster/cli/export-jwks.json`、ts v3.6.0 Release 的 `aster.mjs`
+  （sha256 `5fda34f2…45b135`，与 npm `dist/runner/aster.mjs` 逐字节相同、`.sha256` 校验通过）的 `version` 都列出 `export-2026-11a`，公钥 x 与 `/api/v1/exports/keys` 一致）；
+  白名单与 v3.6.0 逐字节相同，未变。须先于 cloud 的 ts 3.6.0 PR（wontlost-ltd/aster-cloud#847）部署，两次部署之间 Node 导出 503 `export_runtime_skew`，JRE 导出不受影响。
 
 按顺序执行，任一步未通过即停：
 
