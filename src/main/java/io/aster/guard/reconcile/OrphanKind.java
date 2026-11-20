@@ -2,6 +2,7 @@ package io.aster.guard.reconcile;
 
 import java.util.Arrays;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 孤儿动作类别（ADR 0054 §10.3）。{@link #wire()} 是 DB CHECK、指标标签 {@code kind}、REST 字段与告警正则共用的字面量，
@@ -27,6 +28,9 @@ public enum OrphanKind {
    * 单列为 info 使其不混入 critical 类别；与 {@link #ALLOW_UNCONSUMED} 同法按 aged_out 解除。
    */
   ORPHAN_RECEIPT("orphan_receipt", "info", true);
+
+  /** {@link #severity()} 的全部取值；列表端点 {@code severity} 过滤只接受这三个字面量（ADR 0061 §3.4）。 */
+  public static final Set<String> SEVERITIES = Set.of("critical", "warning", "info");
 
   private final String wire;
   private final String severity;

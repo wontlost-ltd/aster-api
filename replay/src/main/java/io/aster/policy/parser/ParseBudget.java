@@ -14,8 +14,13 @@ import java.util.concurrent.locks.LockSupport;
  * 递归里协作式检查，超时抛 {@link Exceeded}，由 {@link InProcessCnlParser} 归为带码 E054。
  *
  * <p>进程级默认值由宿主在启动时经 {@link #configure(Duration)} 设定（aster-api 读
- * {@code aster.parse.time-budget}）；未配置时为 {@link #DEFAULT_BUDGET}。预算 ≤ 0 表示不限时。
- * 每个实例只属于一次解析调用（单线程使用），不跨线程共享。
+ * {@code aster.parse.time-budget}）；未配置时为 {@link #DEFAULT_BUDGET}。预算 ≤ 0 表示不限时（总开关：
+ * 此时请求级额度也不生效）。每个实例只属于一次解析调用（单线程使用），不跨线程共享。
+ *
+ * <p><b>请求级额度</b>（wontlost-ltd/aster-api#489）：一次请求可能解析多次（跨模块 import 每个模块各解析一次），
+ * 只按单次计时则总耗时可达 N × 预算。{@link #withinRequestAllowance} 在当前线程上开一个额度，额度内每次解析的
+ * 预算取「进程级预算」与「额度剩余」中较小者，解析结束（成功或失败）后扣掉本次耗时。只计解析本身的耗时，
+ * 不计两次解析之间的 DB 查询等等待，所以慢 DB 不会让正常源码被误判超时。额度可嵌套，内层同时受外层约束。
  */
 public final class ParseBudget {
 
@@ -41,12 +46,80 @@ public final class ParseBudget {
     /** 进程启动以来因超出预算而中止的解析次数（宿主据此注册指标）。 */
     private static final AtomicLong EXCEEDED = new AtomicLong();
 
+    /** 当前线程上的请求级额度（栈顶），没有时为 null。 */
+    private static final ThreadLocal<Allowance> REQUEST_ALLOWANCE = new ThreadLocal<>();
+
     private final long budgetNanos;
     private final long startNanos;
+    /** 诊断里报告的预算：额度是更紧的约束时报额度总量（用户看到的是「这次请求的解析预算」），否则同 budgetNanos。 */
+    private final long reportedNanos;
+    /** 本次解析计入的请求级额度；null 表示不在额度内。 */
+    private final Allowance allowance;
+    private boolean finished;
 
     private ParseBudget(long budgetNanos) {
+        this(budgetNanos, budgetNanos, null);
+    }
+
+    private ParseBudget(long budgetNanos, long reportedNanos, Allowance allowance) {
         this.budgetNanos = budgetNanos;
+        this.reportedNanos = reportedNanos;
+        this.allowance = allowance;
         this.startNanos = System.nanoTime();
+    }
+
+    /** 请求级额度内要执行的工作。 */
+    @FunctionalInterface
+    public interface Work<T, E extends Exception> {
+        T run() throws E;
+    }
+
+    /**
+     * 在当前线程上开一个请求级解析额度并执行 {@code work}：其间每次解析的预算不超过额度剩余，解析耗时从额度里扣除
+     * （嵌套时同时从外层扣）。{@code total} 为 null 或 ≤ 0 表示不加额度（照常执行，外层额度仍然生效）。
+     * 额度只在调用线程上生效；{@code work} 若把解析交给其他线程，那些解析不受此额度约束。
+     */
+    public static <T, E extends Exception> T withinRequestAllowance(Duration total, Work<T, E> work) throws E {
+        if (total == null || total.isZero() || total.isNegative()) {
+            return work.run();
+        }
+        Allowance outer = REQUEST_ALLOWANCE.get();
+        REQUEST_ALLOWANCE.set(new Allowance(total.toNanos(), outer));
+        try {
+            return work.run();
+        } finally {
+            if (outer == null) {
+                REQUEST_ALLOWANCE.remove();
+            } else {
+                REQUEST_ALLOWANCE.set(outer);
+            }
+        }
+    }
+
+    /** 请求级解析额度：剩余量随每次解析递减，可为负（已用尽）。只在所属线程上读写。 */
+    private static final class Allowance {
+        private final long totalNanos;
+        private final Allowance parent;
+        private long remainingNanos;
+
+        Allowance(long totalNanos, Allowance parent) {
+            this.totalNanos = totalNanos;
+            this.parent = parent;
+            this.remainingNanos = totalNanos;
+        }
+
+        /** 剩余最少（最紧）的那一层。 */
+        Allowance tightest() {
+            Allowance up = parent == null ? this : parent.tightest();
+            return up.remainingNanos < remainingNanos ? up : this;
+        }
+
+        void consume(long nanos) {
+            remainingNanos -= nanos;
+            if (parent != null) {
+                parent.consume(nanos);
+            }
+        }
     }
 
     /** 设定进程级默认预算；null 恢复默认值，≤ 0 表示不限时。 */
@@ -78,9 +151,32 @@ public final class ParseBudget {
         return EXCEEDED.get();
     }
 
-    /** 按进程级默认预算从此刻开始计时。 */
+    /**
+     * 按进程级默认预算从此刻开始计时；在请求级额度内时预算取二者较小者（额度已用尽时取 1ns：语法分析第一次进入
+     * 预测即中止——这次请求的解析时间已经花完）。进程级预算 ≤ 0（不限时总开关）时额度不生效。
+     */
     static ParseBudget startDefault() {
-        return start(Duration.ofNanos(configuredNanos));
+        long configured = configuredNanos;
+        Allowance current = REQUEST_ALLOWANCE.get();
+        if (configured <= 0 || current == null) {
+            return new ParseBudget(configured);
+        }
+        Allowance tightest = current.tightest();
+        if (tightest.remainingNanos >= configured) {
+            return new ParseBudget(configured, configured, current);
+        }
+        return new ParseBudget(Math.max(tightest.remainingNanos, 1L), tightest.totalNanos, current);
+    }
+
+    /** 解析结束（成功或失败）：把本次耗时计入请求级额度。幂等；不在额度内时什么也不做。 */
+    void finish() {
+        if (finished) {
+            return;
+        }
+        finished = true;
+        if (allowance != null) {
+            allowance.consume(System.nanoTime() - startNanos);
+        }
     }
 
     /** 按指定预算从此刻开始计时（测试与需要单独限时的调用方使用）；≤ 0 表示不限时。 */
@@ -88,9 +184,9 @@ public final class ParseBudget {
         return new ParseBudget(budget.toNanos());
     }
 
-    /** 预算毫秒数（诊断参数用）；不限时为 0。 */
+    /** 诊断参数里报告的预算毫秒数（额度更紧时为额度总量）；不限时为 0。 */
     long budgetMillis() {
-        return budgetNanos > 0 ? Duration.ofNanos(budgetNanos).toMillis() : 0;
+        return budgetNanos > 0 ? Duration.ofNanos(reportedNanos).toMillis() : 0;
     }
 
     /** 已超时则抛 {@link Exceeded}。调用方负责控制调用频率（nanoTime 本身约数十纳秒）。 */

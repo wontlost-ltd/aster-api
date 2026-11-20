@@ -266,6 +266,7 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 - `GET /api/v1/guard/reconciliation` → `{ "lastRun": { "runId", "finishedAt", "windowStart", "windowEnd", "newOrphans", "resolvedOrphans", "openOrphans" } | null, "open": { "<kind>": n }, "openTotal": n, "resultGrace": "PT15M", "lookback": "P7D" }`（`open` 只列非零）。
 - `GET /api/v1/guard/reconciliation/orphans?status=OPEN|RESOLVED|ACKNOWLEDGED&kind=<kind>&limit=1..200&before=<id>` → `{ "items": [ { "id", "kind", "severity", "status", "decisionId"?, "sideEffectId"?, "executor", "executorId"?, "detectedAt", "resolvedAt"?, "resolution"?, "acknowledgedBy"?, "detail" } ], "next"?: <id> }`；`id` 降序，`status` 缺省 `OPEN`，`limit` 缺省 50；非法参数 → 400 `invalid_query`。
 - `POST /api/v1/guard/reconciliation/orphans/{id}/ack`，体 `{ "comment": "<1–1000 字符>" }` → 200 同列表项；非 `OPEN` → 409 `{ "error": "not_open", "status": "<当前>" }`；`comment` 不合法 → 400 `invalid_ack`。确认写链事件 `GUARD_ORPHAN_ACKNOWLEDGED`。
+- 查询扩展（向后兼容的新增）：列表加 `severity` 过滤（`critical | warning | info`，逗号多选，与 `kind` 取交集），列表项与确认响应加可选 `ackComment`——见 ADR 0061 §3.4。
 
 ### 10.3 孤儿类别
 

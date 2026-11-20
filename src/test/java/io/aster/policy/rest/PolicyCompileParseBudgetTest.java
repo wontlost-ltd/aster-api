@@ -37,6 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>慢输入为 {@link #slowSource()} 加 {@link ParseBudgetTestHooks#slowChecks} 的周期检查停顿（新旧引擎都成立）。
  * 端点必须在预算附近返回 200 + 带码 E054（{@code reason=time-budget}），不占住工作线程；
  * 几个慢请求并发时正常请求不受阻（在匿名解析许可池容量之内）；按版本编译的超时结果不进编译缓存。
+ * 匿名（未验签）的 /compile、/schema 按 {@code aster.parse.anonymous-time-budget}（默认 500ms）限额（aster-api#489），
+ * 不经端点的编译仍按进程级预算（默认 2s）；验签调用方见 {@link PolicyCompileParseBudgetHmacTest}。
  */
 @QuarkusTest
 @RedisEnabledTest
@@ -122,7 +124,7 @@ public class PolicyCompileParseBudgetTest {
     }
 
     @Test
-    void slowSourceReturnsCodedE054WithinDefaultBudget() {
+    void anonymousSlowSourceReturnsCodedE054WithinAnonymousBudget() {
         assertEquals(ParseBudget.DEFAULT_BUDGET, ParseBudget.configured(), "启动时按 aster.parse.time-budget=2s 配置");
         String source = slowSource();
         ParseBudgetTestHooks.slowChecks(SLOW_STEP);
@@ -134,14 +136,46 @@ public class PolicyCompileParseBudgetTest {
             .body("diagnostics.findAll { it.code == '" + io.aster.policy.rest.model.CompileDiagnostic.INTERNAL_FAILURE_CODE
                 + "' }", hasSize(0))
             .body("diagnostics.findAll { it.code == 'E054' && it.params.reason == 'time-budget' }", hasSize(1))
-            .body("diagnostics.find { it.code == 'E054' }.params.budgetMs", is("2000"))
+            .body("diagnostics.find { it.code == 'E054' }.params.budgetMs", is("500"))
             .body("diagnostics.find { it.code == 'E054' }.message",
-                is("Parsing took too long (budget 2000 ms); simplify the policy"))
+                is("Parsing took too long (budget 500 ms); simplify the policy"))
             .body("diagnostics.find { it.code == 'E054' }.blocking", is(true));
         long elapsed = millisSince(t0);
 
-        assertTrue(elapsed < 2000 + MARGIN_MS, "应在 2s 预算附近返回，实际 " + elapsed + "ms");
+        assertTrue(elapsed >= 500, "匿名额度到点之前不应中止，实际 " + elapsed + "ms");
+        assertTrue(elapsed < 500 + MARGIN_MS, "应在匿名 500ms 额度附近返回（而非进程级 2s），实际 " + elapsed + "ms");
         assertEquals(metricBefore + 1, exceededMetric(), "aster.parse.budget.exceeded 指标加一");
+    }
+
+    @Test
+    void anonymousSchemaUsesAnonymousBudget() {
+        String source = slowSource();
+        ParseBudgetTestHooks.slowChecks(SLOW_STEP);
+        long t0 = System.nanoTime();
+        given()
+            .contentType(ContentType.JSON)
+            .header("X-Tenant-Id", "default")
+            .body(java.util.Map.of("source", source, "locale", "en-US"))
+        .when()
+            .post("/api/v1/policies/schema")
+        .then()
+            .log().ifValidationFails()
+            .statusCode(200)
+            .body("success", is(false))
+            .body("error", org.hamcrest.Matchers.containsString("Parsing took too long (budget 500 ms)"));
+        long elapsed = millisSince(t0);
+        assertTrue(elapsed < 500 + MARGIN_MS, "/schema 同样按匿名额度中止，实际 " + elapsed + "ms");
+    }
+
+    /** 不经匿名端点的编译（按版本编译、内部调用）仍按进程级预算。 */
+    @Test
+    void compileOutsideAnonymousEndpointsKeepsProcessBudget() {
+        String source = slowSource();
+        ParseBudgetTestHooks.slowChecks(SLOW_STEP);
+        CompilationResult result = policyCompiler.compile(source, "en-US", null);
+        assertFalse(result.isSuccess());
+        assertEquals("2000", result.getDiagnostics().stream()
+            .filter(d -> "E054".equals(d.code())).findFirst().orElseThrow().params().get("budgetMs"));
     }
 
     @Test
@@ -161,7 +195,8 @@ public class PolicyCompileParseBudgetTest {
     @Test
     void concurrentSlowRequestsDoNotBlockANormalOne() throws Exception {
         // 慢请求数取 3：低于匿名解析许可池的下限（max(2, 2×核数) ≥ 4，单核 CI 也满足），
-        // 正常请求不会因许可耗尽被 503，验证的是「慢请求不占住线程 / 不拖慢别人」
+        // 正常请求不会因许可耗尽被 503，验证的是「慢请求不占住线程 / 不拖慢别人」。
+        // 匿名请求实际按 min(进程级 1000ms, 匿名 500ms) 中止，下面的上限按 1000ms 写，两者都满足。
         ParseBudget.configure(Duration.ofMillis(1000));
         String source = slowSource();
         ParseBudgetTestHooks.slowChecks(SLOW_STEP);
