@@ -502,9 +502,11 @@ public class DynamicCnlExecutor {
                 if (cacheKey != null) {
                     coreIrCacheMisses.incrementAndGet();
                 }
-                compiled = compileCoreIr(
+                // 入口源码与它 import 的全部模块共用一份解析额度（= 进程级预算，aster-api#489）：
+                // 否则 N 个模块各有一份预算，一次请求的总解析时间可达 N × 预算。
+                compiled = ParseBudget.withinRequestAllowance(ParseBudget.configured(), () -> compileCoreIr(
                     source, locale, vocabulary, aliasSet, aliasesTrusted,
-                    functionName, legacyEvaluateSentinel, tenantId, moduleResolver, modulesEnabled);
+                    functionName, legacyEvaluateSentinel, tenantId, moduleResolver, modulesEnabled));
                 if (cacheKey != null && compiled.cacheable()) {
                     if (coreIrCache.size() >= CACHE_MAX) {
                         coreIrCache.clear();

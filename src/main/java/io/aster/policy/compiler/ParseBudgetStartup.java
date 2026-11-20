@@ -30,15 +30,21 @@ public class ParseBudgetStartup {
     @ConfigProperty(name = "aster.parse.time-budget", defaultValue = "2s")
     Duration budget;
 
+    /** 匿名 /compile、/schema 的解析额度（由 PolicyEvaluationResource 使用），这里只做启动期校验。 */
+    @ConfigProperty(name = "aster.parse.anonymous-time-budget", defaultValue = "500ms")
+    Duration anonymousBudget;
+
     /** 预算上限：超过它等于没有兜底（一个请求可占线程数十秒），配置错误应在启动时暴露。 */
     static final Duration MAX_BUDGET = Duration.ofSeconds(30);
 
     void onStart(@Observes StartupEvent ev) {
         ParseBudget.configure(validate(budget));
+        validate(anonymousBudget, "aster.parse.anonymous-time-budget");
         FunctionCounter.builder("aster.parse.budget.exceeded", ParseBudget.class, c -> ParseBudget.exceededCount())
             .description("Parses aborted because they exceeded aster.parse.time-budget")
             .register(registry);
-        LOG.infof("CNL 解析时间预算: %s", budget.isZero() ? "不限时" : budget);
+        LOG.infof("CNL 解析时间预算: %s（匿名编译 / schema 额度 %s）", budget.isZero() ? "不限时" : budget,
+            anonymousBudget.isZero() ? "不另限" : anonymousBudget);
     }
 
     /**
@@ -46,8 +52,12 @@ public class ParseBudgetStartup {
      * 须带单位书写（{@code 2s}、{@code 500ms}）；不带单位的纯数字按 Quarkus 约定解释为秒。
      */
     static Duration validate(Duration budget) {
+        return validate(budget, "aster.parse.time-budget");
+    }
+
+    static Duration validate(Duration budget, String property) {
         if (budget == null || budget.isNegative() || budget.compareTo(MAX_BUDGET) > 0) {
-            throw new IllegalStateException("aster.parse.time-budget 必须在 0（不限时）到 " + MAX_BUDGET.toSeconds()
+            throw new IllegalStateException(property + " 必须在 0（不限时）到 " + MAX_BUDGET.toSeconds()
                 + "s 之间，带单位书写（如 2s、500ms），实际: " + budget);
         }
         return budget;
