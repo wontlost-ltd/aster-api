@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -30,8 +31,15 @@ public class GuardOrphanAdminService {
   static final String OPEN_BY_KIND = "SELECT kind, count(*) FROM guard_orphan_actions WHERE tenant_id = :t "
       + "AND status = 'OPEN' GROUP BY kind";
 
-  /** 列表过滤条件；{@code before} 为 null 表示从最新开始。 */
-  public record ListQuery(String status, OrphanKind kind, int limit, Long before) {}
+  /**
+   * 列表过滤条件；{@code severities} 为空集表示不按 severity 过滤（与 {@code kind} 同时给时取交集，ADR 0061 §3.4）；
+   * {@code before} 为 null 表示从最新开始。
+   */
+  public record ListQuery(String status, OrphanKind kind, Set<String> severities, int limit, Long before) {
+    public ListQuery {
+      severities = Set.copyOf(severities);
+    }
+  }
 
   /** 一页孤儿与下一页游标（无更多时为 null）。 */
   public record Page(List<GuardOrphanActionEntity> items, Long next) {}
@@ -75,6 +83,10 @@ public class GuardOrphanAdminService {
         where.append(" and kind = :kind");
         params.put("kind", q.kind().wire());
       }
+      if (!q.severities().isEmpty()) {
+        where.append(" and severity in :sev");
+        params.put("sev", q.severities());
+      }
       if (q.before() != null) {
         where.append(" and id < :before");
         params.put("before", q.before());
@@ -111,7 +123,7 @@ public class GuardOrphanAdminService {
     });
   }
 
-  /** 列表项形状（ADR 0054 §10.2）：null 字段不写，{@code detail} 以 JSON 对象原样给出。 */
+  /** 列表项形状（ADR 0054 §10.2，{@code ackComment} 见 ADR 0061 §3.4）：null 字段不写，{@code detail} 以 JSON 对象原样给出。 */
   public Map<String, Object> view(GuardOrphanActionEntity o) {
     Map<String, Object> m = new LinkedHashMap<>();
     m.put("id", o.id);
@@ -126,6 +138,7 @@ public class GuardOrphanAdminService {
     putIfNotNull(m, "resolvedAt", iso(o.resolvedAt));
     putIfNotNull(m, "resolution", o.resolution);
     putIfNotNull(m, "acknowledgedBy", o.acknowledgedBy);
+    putIfNotNull(m, "ackComment", o.ackComment);
     m.put("detail", tree(o.detail));
     return m;
   }
