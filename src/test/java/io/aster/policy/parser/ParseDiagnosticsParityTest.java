@@ -13,7 +13,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -28,29 +27,28 @@ import static org.assertj.core.api.Assertions.assertThat;
  * （{@link InProcessCnlParser} + {@link CnlErrorListener}）对共享夹具逐例产出与夹具同码同行的诊断，
  * 语法诊断的命名参数与 core {@link ParseDiagnostics} 等价。
  *
- * <p>夹具 {@code diagnostics/parse_diagnostics_parity.json} 的权威副本在 aster-lang-core
- * {@code src/test/resources/diagnostics/}（与 aster-lang-ts {@code shared/} 同名文件 byte-identical；core 测试资源
- * 不随 jar 发布）。CI 与本地 composite 都把 core 检出在兄弟目录，且检出的就是 classpath 上那个 core 版本
- * （setup-aster-build 的 sibling-ref = settings.gradle 的 pin），所以优先读兄弟仓的副本：夹具与引擎同版本，
- * pin bump 不需要同步复制夹具——列车在 L4 开的 pin PR 只改两处版本号（ADR 0053 修订 A1）。没有兄弟仓
- * （纯 Maven 构建）时退回本仓的副本，它只保证与写入时的 core 版本一致。
+ * <p>夹具 {@code diagnostics/parse_diagnostics_parity.json} 只读 aster-lang-core 的权威副本
+ * {@code ../aster-lang-core/src/test/resources/diagnostics/}（与 aster-lang-ts {@code shared/} 同名文件 byte-identical；core 测试资源
+ * 不随 jar 发布）。CI、列车的 api-parity 预检与本地 composite 都把 core 检出在兄弟目录，且检出的就是 classpath 上那个 core
+ * 版本（CI：setup-aster-build 的 sibling-ref = settings.gradle 的 pin；列车预检：候选 core main），所以夹具与引擎永远同版本，
+ * pin bump 不需要同步复制夹具——列车在 L4 开的 pin PR 只改两处版本号（ADR 0053 修订 A1）。
+ * 本仓不再保留副本（wontlost-ltd/aster-api#578）：它只在没有兄弟仓时被读，而那时与 classpath 上的 core 是否同版本无从保证，
+ * 历次 pin bump 也没人同步，早已过期。没有兄弟仓即失败，不静默改测一份旧夹具。
  * 判定规则与 core 一致：有解析错误时取第一条非 E063 的诊断（全是 E063 时取第一条）；
  * 无解析错误时取名称解析的全部 error。{@code only=ts} 的用例跳过。
  */
 class ParseDiagnosticsParityTest {
 
-    private static final String FIXTURE = "diagnostics/parse_diagnostics_parity.json";
-
     /** 兄弟仓 aster-lang-core 的权威副本（Gradle 以项目目录为测试工作目录）。 */
-    private static final Path SIBLING_FIXTURE = Path.of("..", "aster-lang-core", "src", "test", "resources", FIXTURE);
+    private static final Path SIBLING_FIXTURE =
+        Path.of("..", "aster-lang-core", "src", "test", "resources", "diagnostics", "parse_diagnostics_parity.json");
 
     private static JsonNode fixture() throws Exception {
-        if (Files.isRegularFile(SIBLING_FIXTURE)) {
-            return new ObjectMapper().readTree(Files.readAllBytes(SIBLING_FIXTURE));
-        }
-        try (InputStream in = ParseDiagnosticsParityTest.class.getClassLoader().getResourceAsStream(FIXTURE)) {
-            return new ObjectMapper().readTree(in);
-        }
+        assertThat(SIBLING_FIXTURE)
+            .as("缺少兄弟仓 aster-lang-core 的 parse diagnostics parity 夹具 %s：把 core 检出到 ../aster-lang-core"
+                + "（版本与 settings.gradle 的 platform pin 一致，CI 由 setup-aster-build 完成）", SIBLING_FIXTURE.toAbsolutePath())
+            .isRegularFile();
+        return new ObjectMapper().readTree(Files.readAllBytes(SIBLING_FIXTURE));
     }
 
     /** 与 core 夹具测试同样的词汇构造：structs 为 [[规范名, 本地名]]。 */
