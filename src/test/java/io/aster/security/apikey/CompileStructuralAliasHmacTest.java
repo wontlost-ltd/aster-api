@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @QuarkusTest
 @QuarkusTestResource(PostgresTestResource.class)
 @TestProfile(CompileStructuralAliasHmacTest.HmacProfile.class)
-class CompileStructuralAliasHmacTest {
+public class CompileStructuralAliasHmacTest {
 
     /** 打开 HMAC 密钥，关闭全局签名与 evaluate-source 旁路，贴近生产。 */
     public static class HmacProfile implements QuarkusTestProfile {
@@ -38,7 +38,7 @@ class CompileStructuralAliasHmacTest {
         }
     }
 
-    static final String HMAC_KEY = "compile-structural-604-key-32bytes!";
+    public static final String HMAC_KEY = "compile-structural-604-key-32bytes!";
     static final String PATH = "/api/v1/policies/compile";
     static final String TENANT = "tenant-compile-604";
 

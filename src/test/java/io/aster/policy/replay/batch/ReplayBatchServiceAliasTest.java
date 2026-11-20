@@ -1,5 +1,6 @@
 package io.aster.policy.replay.batch;
 
+import io.aster.test.JingyesiPolicy;
 import io.aster.test.PostgresTestResource;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.InjectMock;
@@ -108,6 +109,38 @@ class ReplayBatchServiceAliasTest {
 
         assertThat(itemColumn(batchId, "success")).isEqualTo("false");
         assertThat(itemColumn(batchId, "failure_kind")).isEqualTo("TARGET_COMPILE_ERROR");
+    }
+
+    /**
+     * 《静夜思》原诗即策略（ADR 0060 §8）作为批量 What-If 的目标版本：四个汉字单词结构词别名 + cloud 合并后的
+     * 内嵌词汇（struct 望明月→Text、literal 思故乡→"静夜思"），输入见 {@link JingyesiPolicy}。
+     * 回源是冻结快照、按已授权应用结构词别名，必须成功重跑（规则输出文本 → INDETERMINATE，不是编译错误）。
+     */
+    @Test
+    void batchReplayRunsTheJingyesiPolicyWithItsStructuralAliasesAndEmbeddedVocabulary() {
+        List<ExecutionWindowClient.WindowedExecution> rows = List.of(new ExecutionWindowClient.WindowedExecution(
+            "a1", Map.of(), "approved", true, JingyesiPolicy.ENTRY, JingyesiPolicy.LOCALE, new JsonObject(), "pv-poem", "ALLOW"));
+        Mockito.when(windowClient.fetchWindow(
+                Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(Instant.class), Mockito.any(Instant.class)))
+            .thenReturn(rows);
+        Mockito.when(windowClient.fetchSegment(
+                Mockito.anyString(), Mockito.anyString(),
+                Mockito.any(Instant.class), Mockito.any(Instant.class),
+                Mockito.any(), Mockito.anyInt()))
+            .thenReturn(rows);
+        stubTarget(new PolicyVersionSourceClient.VersionSource("pv-poem", "p-alias", 3,
+            JingyesiPolicy.SOURCE,
+            JingyesiPolicy.vocabulary(),
+            JingyesiPolicy.ALIAS_SET));
+
+        UUID batchId = runBatch();
+
+        assertThat(itemColumn(batchId, "failure_kind"))
+            .as("诗的目标版本必须带别名与词汇编译重跑，而不是归为目标编译错误")
+            .isEqualTo("null");
+        assertThat(itemColumn(batchId, "success")).isEqualTo("true");
+        assertThat(itemColumn(batchId, "target_outcome")).isEqualTo("INDETERMINATE");
     }
 
     private void stubTarget(PolicyVersionSourceClient.VersionSource source) {
