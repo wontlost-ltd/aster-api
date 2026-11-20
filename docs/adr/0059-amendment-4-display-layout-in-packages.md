@@ -168,7 +168,7 @@ A 包（P3 尚未实施）带自己的 CLI；P3 实施时其 CLI 来自锁文件
 | L4 | `display.aster` 字节 = `toDisplay(layout)` 的 UTF-8 | 否 |
 | L5 | `verifyContentParity`：至少一个内容 span 在去掉 ECMAScript `String.prototype.trim` 所认的空白后非空；结构 `canonical` 不含 `"“”「」『』` | 否 |
 | L6 | 每个结构 span 的 `canonical`：(a) 不含 `\p{Nd}`；(b) 不整词出现词汇任一条目的 `localized`（全部 kind，含字面量触发词）；(c) 不整词出现包 locale 与 en-US 词法表的 TRUE / FALSE / NULL / NONE 拼写 | 否 |
-| L7 | **运算符不得被藏或改写**：设 O = ASCII 运算符字符 `+ - * / % < > = ! & \| ^ ~` ∪ 包 locale 与 en-US 词法表中 11 个运算符 kind（core `UserAliasValidator` 的运算符档，ADR 0060 §1.1）的全部拼写 ∪ aliasSet 中这些 kind 的别名。对每个结构 span，`canonical` 中每处 O 的出现（字符按出现、拼写按整词出现）都必须在该 span 的 `display` 中以同一折叠形态出现，且出现次数不少于 canonical 中的次数 | 否 |
+| L7 | **运算符不得被藏或改写**：设 O = ASCII 运算符字符 `+ - * / % < > = ! & \| ^ ~` ∪ 包 locale 与 en-US 词法表中 11 个运算符 kind（core `UserAliasValidator` 的运算符档，ADR 0060 §1.1）的全部拼写 ∪ aliasSet 中这些 kind 的别名（拼写均经 `foldKey`）。对一段文本取其**运算符序列**：在经 `foldKey` 的文本上从左到右扫描，每个位置按「码点数降序、同长按码点序」尝试 O 的成员，含标识符字符的拼写须整词出现，命中即记下该成员并跳过它（不重叠），否则前进一个码点。每个结构 span 的 `canonical` 与 `display` 的运算符序列必须**完全相同**（同样的成员、同样的个数、同样的顺序）：运算符既不能被藏，也不能被改写或多出 | 否 |
 | L8 | 编译 `C`（或 `C'`）得到 IR；IR 中键名为 `name` 或 `written` 的全部字符串值不得整词出现在任一结构 span 的 `canonical` 中 | 是 |
 | L9 | **补空格不变性**：设 B = 全部结构 span 的起点与终点偏移构成的集合（相邻 span 的公共边界只算一次）。对 B 中每个偏移 p，满足下列全部条件时在 p 处插入一个 U+0020：0 < p < \|C\|；`C[p-1]` 不是换行符；`C[0..p)` 中最后一个换行符（或文首）到 p 之间不全是空格与制表符（即 p 不在行首缩进内）。按 p 从大到小插入得到 `P`；`P` 必须编译成功且 `positionFreeSha256(P) = positionFreeSha256(C)` | 是 |
 
