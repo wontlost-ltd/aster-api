@@ -8,10 +8,16 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.Test;
 
+import io.quarkus.narayana.jta.QuarkusTransaction;
+
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static io.aster.guard.reconcile.ReconcileFixture.chainEvents;
 import static io.aster.guard.reconcile.ReconcileFixture.effect;
@@ -48,6 +54,137 @@ class GuardReconciliationResourceTest {
     }
     report(tenant, effects);
     service.reconcileTenant(tenant, Instant.now().plus(grace).plusSeconds(60));
+  }
+
+  /** 直接落一行 OPEN 孤儿（severity 取自 kind），用于造齐 8 个 kind；返回行 id。 */
+  private static long seed(String tenant, OrphanKind kind, String subject) {
+    return QuarkusTransaction.requiringNew().call(() -> {
+      GuardOrphanActionEntity o = new GuardOrphanActionEntity();
+      o.tenantId = tenant;
+      o.kind = kind.wire();
+      o.severity = kind.severity();
+      o.subjectKey = subject;
+      o.executorLabel = "other";
+      o.detail = "{\"reason\":\"seeded\"}";
+      o.firstRunId = 1;
+      o.detectedAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
+      o.persist();
+      return o.id;
+    });
+  }
+
+  /** 每个 kind 各一行。 */
+  private static void seedEveryKind(String tenant) {
+    for (OrphanKind k : OrphanKind.values()) {
+      seed(tenant, k, "seed:" + k.wire());
+    }
+  }
+
+  private static Set<String> kindsOf(Response r) {
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    return Set.copyOf(r.jsonPath().getList("items.kind", String.class));
+  }
+
+  private static Set<String> wiresWithSeverity(String... severities) {
+    Set<String> want = Set.of(severities);
+    return java.util.Arrays.stream(OrphanKind.values()).filter(k -> want.contains(k.severity()))
+        .map(OrphanKind::wire).collect(Collectors.toSet());
+  }
+
+  @Test
+  void severityFilterSingle() {
+    String t = ReconcileFixture.tenant("res-sev-one");
+    seedEveryKind(t);
+
+    Set<String> kinds = kindsOf(get(t, "/orphans?severity=critical"));
+
+    assertThat(kinds).isEqualTo(Set.of("side_effect_without_decision", "side_effect_unconsumed",
+        "side_effect_mismatch", "consume_on_non_allow", "result_without_consume"));
+    assertThat(kinds).isEqualTo(wiresWithSeverity("critical"));
+    assertThat(kindsOf(get(t, "/orphans?severity=info"))).isEqualTo(Set.of("allow_unconsumed", "orphan_receipt"));
+    assertThat(kindsOf(get(t, "/orphans"))).hasSize(OrphanKind.values().length);
+  }
+
+  @Test
+  void severityFilterMulti() {
+    String t = ReconcileFixture.tenant("res-sev-multi");
+    seedEveryKind(t);
+
+    Response r = get(t, "/orphans?severity=critical,warning");
+
+    assertThat(kindsOf(r)).isEqualTo(wiresWithSeverity("critical", "warning")).contains("consumed_without_result")
+        .doesNotContain("allow_unconsumed", "orphan_receipt");
+    assertThat(r.jsonPath().getList("items.severity", String.class)).doesNotContain("info");
+    assertThat(kindsOf(get(t, "/orphans?severity=info,warning,critical"))).hasSize(OrphanKind.values().length);
+  }
+
+  @Test
+  void severityAndKindIntersect() {
+    String t = ReconcileFixture.tenant("res-sev-kind");
+    seedEveryKind(t);
+
+    Response empty = get(t, "/orphans?severity=info&kind=side_effect_mismatch");
+    assertThat(empty.statusCode()).isEqualTo(200);
+    assertThat(empty.asString()).isEqualTo("{\"items\":[]}");
+    assertThat(kindsOf(get(t, "/orphans?severity=critical&kind=side_effect_mismatch")))
+        .isEqualTo(Set.of("side_effect_mismatch"));
+  }
+
+  @Test
+  void severityInvalid() {
+    String t = ReconcileFixture.tenant("res-sev-bad");
+    for (String bad : List.of("high", "", ",", "critical,", ",critical", "critical,,warning", "critical,critical",
+        "CRITICAL", " critical", "critical, warning")) {
+      Response r = get(t, "/orphans?severity=" + bad);
+      assertThat(r.statusCode()).as("[" + bad + "]").isEqualTo(400);
+      assertThat(r.asString()).as("[" + bad + "]").isEqualTo("{\"error\":\"invalid_query\"}");
+    }
+    Response repeated = get(t, "/orphans?severity=critical&severity=info");
+    assertThat(repeated.statusCode()).isEqualTo(400);
+    assertThat(repeated.asString()).isEqualTo("{\"error\":\"invalid_query\"}");
+  }
+
+  @Test
+  void severityPagesWithCursor() {
+    String t = ReconcileFixture.tenant("res-sev-page");
+    List<Long> critical = new ArrayList<>();
+    critical.add(seed(t, OrphanKind.SIDE_EFFECT_MISMATCH, "c1"));
+    seed(t, OrphanKind.ALLOW_UNCONSUMED, "i1");
+    critical.add(seed(t, OrphanKind.CONSUME_ON_NON_ALLOW, "c2"));
+    seed(t, OrphanKind.ORPHAN_RECEIPT, "i2");
+    critical.add(seed(t, OrphanKind.RESULT_WITHOUT_CONSUME, "c3"));
+    seed(t, OrphanKind.ALLOW_UNCONSUMED, "i3");
+
+    Response first = get(t, "/orphans?severity=critical&limit=2");
+    assertThat(first.statusCode()).as(first.asString()).isEqualTo(200);
+    assertThat(first.jsonPath().getList("items.id", Long.class)).containsExactly(critical.get(2), critical.get(1));
+    long next = first.jsonPath().getLong("next");
+    assertThat(next).isEqualTo(critical.get(1));
+
+    Response second = get(t, "/orphans?severity=critical&limit=2&before=" + next);
+    assertThat(second.jsonPath().getList("items.id", Long.class)).containsExactly(critical.get(0));
+    assertThat(second.asString()).doesNotContain("\"next\"");
+    assertThat(first.jsonPath().getList("items.severity", String.class)).containsOnly("critical");
+    assertThat(second.jsonPath().getList("items.severity", String.class)).containsOnly("critical");
+  }
+
+  @Test
+  void ackCommentReturned() {
+    String t = ReconcileFixture.tenant("res-ack-comment");
+    long acked = seed(t, OrphanKind.SIDE_EFFECT_MISMATCH, "acked");
+    long open = seed(t, OrphanKind.SIDE_EFFECT_MISMATCH, "still-open");
+
+    Response r = ack(t, acked, Map.of("comment", "已核实：误报"));
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    assertThat(r.jsonPath().getString("ackComment")).isEqualTo("已核实：误报");
+
+    Response listed = get(t, "/orphans?status=ACKNOWLEDGED");
+    assertThat(listed.jsonPath().getList("items.id", Long.class)).containsExactly(acked);
+    assertThat(listed.jsonPath().getString("items[0].ackComment")).isEqualTo("已核实：误报");
+
+    Response openList = get(t, "/orphans");
+    assertThat(openList.jsonPath().getList("items.id", Long.class)).containsExactly(open);
+    assertThat(openList.jsonPath().getMap("items[0]")).doesNotContainKey("ackComment");
   }
 
   @Test

@@ -22,13 +22,17 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.UriInfo;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -48,6 +52,8 @@ public class GuardReconciliationResource {
   static final int DEFAULT_LIMIT = 50;
   static final int MAX_LIMIT = 200;
   static final int MAX_COMMENT = 1000;
+  /** 重复的 {@code severity} 参数的哨兵值：不是任何合法字面量，parse 必判非法。 */
+  private static final String REPEATED = "\u0000repeated";
   private static final Set<String> STATUSES = Set.of(GuardOrphanActionEntity.OPEN, GuardOrphanActionEntity.RESOLVED,
       GuardOrphanActionEntity.ACKNOWLEDGED);
 
@@ -77,8 +83,9 @@ public class GuardReconciliationResource {
   @GET
   @Path("/orphans")
   public Response list(@QueryParam("status") String status, @QueryParam("kind") String kind,
-                       @QueryParam("limit") String limit, @QueryParam("before") String before) {
-    Optional<ListQuery> q = parse(status, kind, limit, before);
+                       @QueryParam("limit") String limit, @QueryParam("before") String before,
+                       @Context UriInfo uri) {
+    Optional<ListQuery> q = parse(status, kind, severityParam(uri), limit, before);
     if (q.isEmpty()) {
       return error(Response.Status.BAD_REQUEST, INVALID_QUERY, Map.of());
     }
@@ -118,8 +125,26 @@ public class GuardReconciliationResource {
     };
   }
 
-  /** status 缺省 OPEN；kind 为 8 个字面量之一；limit 1..200（缺省 50）；before 为正整数。任一不合法 → empty。 */
-  static Optional<ListQuery> parse(String status, String kind, String limit, String before) {
+  /**
+   * {@code severity} 原值：未给 → null；给了一次 → 原文（{@code ?severity=} 为空串，JAX-RS 的 {@code @QueryParam} 会把它读成
+   * null，故从 {@link UriInfo} 取）；重复给多次 → {@link #REPEATED}（按非法处理，避免静默丢掉后几个）。
+   */
+  private static String severityParam(UriInfo uri) {
+    List<String> values = uri.getQueryParameters().get("severity");
+    if (values == null || values.isEmpty()) {
+      return null;
+    }
+    if (values.size() > 1) {
+      return REPEATED;
+    }
+    return values.get(0) == null ? "" : values.get(0);
+  }
+
+  /**
+   * status 缺省 OPEN；kind 为 8 个字面量之一；severity 为逗号分隔的 {@code critical | warning | info}（不得为空项、
+   * 不得重复，缺省不过滤，ADR 0061 §3.4）；limit 1..200（缺省 50）；before 为正整数。任一不合法 → empty。
+   */
+  static Optional<ListQuery> parse(String status, String kind, String severity, String limit, String before) {
     String s = status == null ? GuardOrphanActionEntity.OPEN : status;
     if (!STATUSES.contains(s)) {
       return Optional.empty();
@@ -131,6 +156,10 @@ public class GuardReconciliationResource {
         return Optional.empty();
       }
       k = parsed.get();
+    }
+    Optional<Set<String>> severities = severities(severity);
+    if (severities.isEmpty()) {
+      return Optional.empty();
     }
     int n = DEFAULT_LIMIT;
     if (limit != null) {
@@ -148,7 +177,21 @@ public class GuardReconciliationResource {
       }
       b = parsed.get();
     }
-    return Optional.of(new ListQuery(s, k, n, b));
+    return Optional.of(new ListQuery(s, k, severities.get(), n, b));
+  }
+
+  /** null → 空集（不过滤）；否则逐项校验，空项、重复项或未知字面量（含大小写不符）→ empty。 */
+  private static Optional<Set<String>> severities(String raw) {
+    if (raw == null) {
+      return Optional.of(Set.of());
+    }
+    Set<String> out = new LinkedHashSet<>();
+    for (String v : raw.split(",", -1)) {
+      if (!OrphanKind.SEVERITIES.contains(v) || !out.add(v)) {
+        return Optional.empty();
+      }
+    }
+    return Optional.of(out);
   }
 
   private static Optional<Long> positiveLong(String v) {
