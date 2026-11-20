@@ -15,16 +15,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ExportRuntimesTest {
 
   @Test
-  void lockFileNamesTheEco1051CliAndTs340WithTheExportAnchor() {
+  void lockFileNamesTheEco1052CliAndTs350WithTheExportAnchor() {
     ExportRuntimes.Lock lock = ExportRuntimes.parse(ExportRuntimes.readResource(ExportRuntimes.DEFAULT_RESOURCE));
     assertThat(lock.targets()).containsOnlyKeys("jre", "node");
     ExportRuntimes.Target jre = lock.targets().get("jre");
     assertThat(jre.cliName()).isEqualTo("cloud.aster-lang:aster-cli");
-    assertThat(jre.cliVersion()).isEqualTo("1.0.51");
+    assertThat(jre.cliVersion()).isEqualTo("1.0.52");
     assertThat(jre.trustAnchorKids()).containsExactly("export-2026-11a");
     ExportRuntimes.Target node = lock.targets().get("node");
     assertThat(node.cliName()).isEqualTo("@aster-cloud/aster-lang-ts");
-    assertThat(node.cliVersion()).isEqualTo("3.4.0");
+    assertThat(node.cliVersion()).isEqualTo("3.5.0");
     assertThat(node.trustAnchorKids()).containsExactly("export-2026-11a");
     // conformance keys/README.md M4：生产锁文件不得含测试 kid
     assertThat(lock.targets().values()).flatExtracting(ExportRuntimes.Target::trustAnchorKids)
@@ -66,11 +66,11 @@ class ExportRuntimesTest {
   void lockMayLagTheEngineButNeverLeadIt() {
     ExportRuntimes.Lock lock = ExportRuntimes.parse(ExportRuntimes.readResource(ExportRuntimes.DEFAULT_RESOURCE));
     assertThat(ExportRuntimes.checkEngineVersion(lock, "dev")).isFalse();
-    assertThat(ExportRuntimes.checkEngineVersion(lock, "1.0.51")).isFalse();
-    assertThat(ExportRuntimes.checkEngineVersion(lock, "1.0.52")).as("下一列车后、锁文件 PR 前：落后，只告警").isTrue();
+    assertThat(ExportRuntimes.checkEngineVersion(lock, "1.0.52")).isFalse();
+    assertThat(ExportRuntimes.checkEngineVersion(lock, "1.0.53")).as("下一列车后、锁文件 PR 前：落后，只告警").isTrue();
     assertThat(ExportRuntimes.checkEngineVersion(lock, "1.1.0")).isTrue();
-    assertThatThrownBy(() -> ExportRuntimes.checkEngineVersion(lock, "1.0.50"))
-        .isInstanceOf(IllegalStateException.class).hasMessageContaining("1.0.50");
+    assertThatThrownBy(() -> ExportRuntimes.checkEngineVersion(lock, "1.0.51"))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("1.0.51");
   }
 
   @Test

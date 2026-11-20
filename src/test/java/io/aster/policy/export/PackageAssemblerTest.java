@@ -116,7 +116,7 @@ class PackageAssemblerTest {
     List<UnaryOperator<PackageAssembler.PackageInputs>> changes = List.of(
         in -> withFields(in, fields(4, "tc", null, "1.0.49")),
         in -> withFields(in, fields(3, "tc2", null, "1.0.49")),
-        in -> withFields(in, fields(3, "tc", new PackageAssembler.NodeCheck("3.4.0", 2), "1.0.49")),
+        in -> withFields(in, fields(3, "tc", new PackageAssembler.NodeCheck("3.5.0", 2), "1.0.49")),
         in -> withFields(in, fields(3, "tc", null, "1.0.50")),
         in -> new PackageAssembler.PackageInputs(in.moduleName(), "node", in.uiLocale(), in.source(), in.aliasSetCanonicalJson(),
             in.vocabularyCanonicalJson(), in.schemas(), in.probes(), in.fields(), in.jreCliVersion(), in.tsCliVersion()),
@@ -161,11 +161,11 @@ class PackageAssemblerTest {
         .doesNotContain("npx", "npm i -g")
         .doesNotContain("{{");
     assertThat(new String(PackageReadme.render("zh", d), StandardCharsets.UTF_8)).contains("事实来源：bureau。");
-    PackageReadme.Data pinned = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.4.0", "1.0.51",
-        "3.4.0", List.of());
+    PackageReadme.Data pinned = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.5.0", "1.0.52",
+        "3.5.0", List.of());
     for (String locale : List.of("en", "zh", "de")) {
       assertThat(new String(PackageReadme.render(locale, pinned), StandardCharsets.UTF_8)).as(locale)
-          .contains("https://github.com/aster-cloud/aster-lang-ts/releases/tag/v3.4.0", "aster.mjs.sha256", "node aster.mjs")
+          .contains("https://github.com/aster-cloud/aster-lang-ts/releases/tag/v3.5.0", "aster.mjs.sha256", "node aster.mjs")
           .doesNotContain("npx", "npm i -g", "{{");
     }
   }
