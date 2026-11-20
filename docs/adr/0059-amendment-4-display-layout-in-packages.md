@@ -19,12 +19,12 @@
 | 格式版本 | 带排版的包 `formatVersion` 为 **`1.1`**，manifest 新增可选成员 `display:{"layoutVersion":1}`；不带排版的包仍是 `1.0`，逐字节不变 |
 | 旧 CLI | 对 `1.1` 包按既有规则**明确失败**：`PKG_UNSUPPORTED_FORMAT`、退出码 4（§1.1 实测两侧皆然）；不会静默忽略排版 |
 | 新文件 | `policy/display/layout.json`（ADR 0058 §7.3 的确定性序列化）与 `policy/display/display.aster`（`toDisplay` 的 UTF-8 字节）；都是普通载荷，经 `files[]` 进入签名、进入 `SHA256SUMS`；不进 `envelopeSha256`、不参与编译 |
-| CLI 的排版校验 | 一套**不依赖词法器**的规则 L1–L8（§4），两侧 CLI 与 aster-api 用同一份规范、同一组向量实现；值是否被藏进结构 span 的判定用**补空格不变性**（编译器本身作判官，两引擎 IR 已逐字节对齐） |
-| Java 版本 | 在 aster-lang-core 新增纯 Java 的 `aster.core.layout`（格式、上限、L1–L8 的字符串部分、反向映射、补空格），按 ADR 0045「副本 + 共享向量」；**不**移植 ts 的 587 行词法启发式 `value-tokens.ts` |
+| CLI 的排版校验 | 一套**不依赖词法器**的规则 L1–L9（§4），两侧 CLI 与 aster-api 用同一份规范、同一组向量实现；值是否被切进结构 span 用**补空格不变性**判定（编译器本身作判官，两引擎 IR 已逐字节对齐）；纯文本没有界面上的结构样式，所以另加 L7：运算符不得被藏或改写 |
+| Java 版本 | 在 aster-lang-core 新增纯 Java 的 `aster.core.layout`（格式、上限、L1–L9 的字符串部分、反向映射、补空格），按 ADR 0045「副本 + 共享向量」；**不**移植 ts 的 587 行词法启发式 `value-tokens.ts` |
 | 新命令 | `aster show <pkg> [--canonical \| --from-display <file>]`；`run --display <file>`；`verify` 增加 `display`（及 `--recompile` 下的 `display-ir`）检查项；`inspect` 原样带出 manifest 的 `display` |
-| `run --display` 的反向映射 | 结构 span 固定不动，只有内容 span 可改；隐藏（display 为空）的结构 span 两侧至少一个内容 span 原样不变才可定位；解恰好一个才运行，零个 `DISPLAY_UNMAPPABLE`、多个 `DISPLAY_AMBIGUOUS`——**从不替用户猜** |
+| `run --display` 的反向映射 | 结构 span（标点、空白、结构关键词）固定不动，只有内容 span 可改——改标点、改别名不支持；隐藏（display 为空）的结构 span 两侧至少一个内容 span 原样不变才可定位；解恰好一个才运行，零个 `DISPLAY_UNMAPPABLE`、多个 `DISPLAY_AMBIGUOUS`——**从不替用户猜** |
 | 运行改过的源码 | 不在签名覆盖内：`meta.display` 标明、`coreIrSha256 = null`、还原出的规范源码先写到 stderr；沙箱不变 |
-| 导出 | cloud 读 `loadVersionLayout` 并跑完整的 ts `validatePolicyLayout`，通过才随请求发送；aster-api 在签名前用 Java 再跑 L1–L8；任何一步不过就**省略排版**照常导出 `1.0` 包，并在响应头与界面说明原因 |
+| 导出 | cloud 读 `loadVersionLayout` 并跑完整的 ts `validatePolicyLayout`，通过才随请求发送；aster-api 在签名前用 Java 再跑 L1–L9；任何一步不过就**省略排版**照常导出 `1.0` 包，并在响应头与界面说明原因 |
 | 门控 | 沿用：只导出 APPROVED、计划门 `policyExport`、两个包导出开关；新增锁文件 `packageFormats` 机械门（列车把 CLI 升到支持 1.1 之前 aster-api 不会产出 1.1）与 cloud 开关 `policy_export.package.layout.enabled` |
 
 ---
@@ -74,6 +74,7 @@ policy/display/display.aster   # toDisplay(layout) 的 UTF-8 字节，不加任�
 
 - manifest schema `manifest-1.1.schema.json` = 1.0 + 可选顶层成员 `display`，形状恰为 `{"layoutVersion":1}`（`additionalProperties:false`；`layoutVersion` 为整数常量 1，对应 ADR 0058 §7.3 的 `v`）。路径固定为 D1 两个，不在 manifest 里另写。
 - 语义规则（schema 之后，`PKG_INVALID_MANIFEST`）：`display` 存在 ⇔ `files[]` 同时含 D1 两个路径。`display` 不存在时，`policy/display/*` 若出现在 `files[]` 中只是普通载荷，CLI 不解释（避免给 1.0 包追加含义）。
+- **两个版本号的分工**：`formatVersion` 管包级字段与 CLI 行为；`display.layoutVersion` 只是 layout 载荷语法（ADR 0058 §7.3 的 `v`）的副本，L1 要求二者相等。1.1 的 schema 把它定为常量 1；将来 layout 语法若出 v2，随包格式次版本（1.2）一起引入，所以支持某个包格式次版本的 CLI 永远认得该次版本允许的全部 `layoutVersion`，不存在「格式支持、排版版本不支持」的组合，也就不需要单独的错误码。
 - 导出：版本带一致且通过校验的排版 → `1.1` + `display`；否则 `1.0`，与今天**逐字节相同**（§6.1 可复现性不受影响）。
 - CLI 支持的格式版本变为 `["1.0","1.1"]`（`version` 子命令输出）；按修订 2 R3 的顺序，`formatVersion` 先于 schema 判定，主版本 1、次版本 ≤ 1，再按**该次版本自己的** schema 严格校验（1.0 包用 1.0 schema：1.0 包里出现 `display` 仍是 `PKG_INVALID_MANIFEST`）。
 - conformance 中断言「1.1 不受支持」的夹具（`format-version-1.1`、`format-version-1.1-with-new-field`）改为 1.2，继续守住「更高次版本按不受支持拒绝」。
@@ -103,34 +104,36 @@ A 包（P3 尚未实施）带自己的 CLI；P3 实施时其 CLI 来自锁文件
 
 检查项顺序：`schema`、`signature`、`integrity`、`ir`（A 包）、**`display`**（仅 1.1 且有 `display`）、`recompile`、**`display-ir`**（仅 `--recompile` 且有 `display`）、`probes`。第一项失败即停（修订 2 R4 不变）。
 
-- `display`：L1–L6（§4），不编译，失败码 `PKG_DISPLAY_INVALID`（新，退出码 4）。
-- `display-ir`：L7–L8，需要编译（与 `recompile` 同一组编译输入），失败码同上。普通 `verify` 不编译 B 包的原则（修订 2 补记 R4）保持不变。
+- `display`：L1–L7（§4），不编译，失败码 `PKG_DISPLAY_INVALID`（新，退出码 4）。
+- `display-ir`：L8–L9，需要编译（与 `recompile` 同一组编译输入），失败码同上。普通 `verify` 不编译 B 包的原则（修订 2 补记 R4）保持不变。
 
 ### D6 `inspect` 与 `show`
 
 - `inspect`：manifest 有 `display` 时，`inspect` 对象多一个成员 `display`，原样取自 manifest（与另外五个成员同一规则）；不做排版检查。1.0 包的输出不变。
 - `aster show <pkg> [--canonical | --from-display <file>] [--jwks|--pubkey|--allow-unsigned]`（新子命令，两个 CLI 同名同义）：
-  - 阶段 usage → read → manifest → signature → integrity →（有 `display` 时）display（L1–L6）。
+  - 阶段 usage → read → manifest → signature → integrity →（有 `display` 时）display（L1–L7）。
   - stdout：有排版时为 `display.aster` 的字节加一个 `\n`；无排版或给了 `--canonical` 时为 `policy/policy.aster` 的字节加一个 `\n`（与 `compile` 的「字节 + `\n`」同一约定）。不是 JSON。
-  - `--from-display <file>`：按 D7 的还原、L1–L8 全部检查（含编译），stdout 为还原出的规范源码加 `\n`，不求值——`run --display` 的演练。
+  - `--from-display <file>`：按 D7 的还原、L1–L9 全部检查（含编译），stdout 为还原出的规范源码加 `\n`，不求值——`run --display` 的演练。
   - 失败时 stdout 为与 `run` 相同的错误信封（与 `compile` 一致）。
-  - stderr：词汇含字面量宏时列出「触发词 → 展开值」（ADR 0058 §7.7 第 7 条：显示的是 `思故乡`，编译的是 `"静夜思"`）；包无签名（`--allow-unsigned`）时提示「显示排版未经签名核验」。
+  - stderr：有排版时先打印**结构映射**——每个 `display ≠ canonical` 的结构 span 一行 `display ⇐ canonical`（JSON 字符串形式，去重保序），这是纯文本里对 ADR 0058 §7.7 第 3 条「结构文字可辨认、悬停显示 canonical」的替代；词汇含字面量宏时列出「触发词 → 展开值」（ADR 0058 §7.7 第 7 条：显示的是 `思故乡`，编译的是 `"静夜思"`）；包无签名（`--allow-unsigned`）时提示「显示排版未经签名核验」。
 - 选 `show` 而不是 `inspect --display`：`inspect` 的 stdout 是一行 JSON 信封，显示文本是给人读的多行原文；把它塞进 JSON 字符串既不好读也改变 `inspect` 的形状。
 
 ### D7 `run --display <file>`：从改过的显示文本还原规范源码
 
-输入：显示文本文件 `E`（严格 UTF-8，去掉至多一个开头 BOM；不存在、不可读、非法 UTF-8 为 `USAGE`；UTF-8 长度 > `LAYOUT_LIMITS.displayBytes`（24 576）为 `DISPLAY_UNMAPPABLE`）。**编辑器补的文末换行**：若 `toDisplay(L)` 不以 `\n` 结尾而 `E` 以 `\n` 结尾，去掉 `E` 末尾的一个 `\n`（及其前紧邻的一个 `\r`）——几乎所有编辑器保存时都会补它，《静夜思》的显示以 `。` 结尾。除此之外不做换行归一：`\r\n` 换行的文件对不上以 `\n` 为界的结构 span，结果为 `DISPLAY_UNMAPPABLE`，stderr 提示「文件使用 CRLF 换行」。包的排版 `L`（合并形态，内容 span 之间必隔着结构 span）先通过 L1–L6。
+输入：显示文本文件 `E`（严格 UTF-8，去掉至多一个开头 BOM；不存在、不可读、非法 UTF-8 为 `USAGE`；UTF-8 长度 > `LAYOUT_LIMITS.displayBytes`（24 576）为 `DISPLAY_UNMAPPABLE`）。**编辑器补的文末换行**：若 `toDisplay(L)` 不以 `\n` 结尾而 `E` 以 `\n` 结尾，去掉 `E` 末尾的一个 `\n`（及其前紧邻的一个 `\r`）——几乎所有编辑器保存时都会补它，《静夜思》的显示以 `。` 结尾。除此之外不做换行归一：`\r\n` 换行的文件对不上以 `\n` 为界的结构 span，结果为 `DISPLAY_UNMAPPABLE`，stderr 提示「文件使用 CRLF 换行」。包的排版 `L`（合并形态，内容 span 之间必隔着结构 span）先通过 L1–L7。
 
 **一个解** = 给每个内容 span `j` 一个**非空**新文本 `t_j`，使得按 span 顺序拼接（内容 span 取 `t_j`，结构 span 取原 `display`）恰为 `E`，并满足**锚定条件**：每一段「隐藏串」——连续的、`display` 全为空串的结构 span——若两侧都是内容 span，则这两个内容 span 至少有一个 `t_j` 与原文逐字节相同。隐藏串位于文首、文末或与非空 display 的结构 span 相邻时不加条件（它的位置已由文本边界或可见锚点确定）。
 
-**判定**：解的个数为 1 → 得到派生排版 `L'`（结构 span 原样，内容换成 `t_j`）与派生规范源码 `C' = toCanonical(L')`；个数为 0 → `DISPLAY_UNMAPPABLE`；≥ 2 → `DISPLAY_AMBIGUOUS`（两者退出码 2，固定文案见 D10；stderr 给出第一个无法定位的位置或前两个解的分歧点）。实现以 (span 下标, 文本位置, 前一内容 span 是否原样) 为状态计数，计到 2 即停；参照实现与向量在 aster-lang-test。
+解集合由上面的定义唯一确定，与实现算法无关；三处实现只需给出同一个「0 / 1 / ≥ 2」结论与唯一解时的 `L'`。用于诊断的偏移只写 stderr，不进信封、不做跨 CLI 比较。
+
+**判定**：解的个数为 1 → 得到派生排版 `L'`（结构 span 原样，内容换成 `t_j`）与派生规范源码 `C' = toCanonical(L')`；个数为 0 → `DISPLAY_UNMAPPABLE`；≥ 2 → `DISPLAY_AMBIGUOUS`（两者退出码 2，固定文案见 D10；stderr 给出第一个无法定位的位置或前两个解的分歧点）。实现以 (span 下标, 文本位置, 前一内容 span 是否原样) 为状态计数，计到 2 即停；状态数不超过 span 数 × (|E|+1) × 2，即 ≤ 400 × 24 577 × 2。参照实现与向量（连续隐藏串、同一可见锚点在文本中重复出现、相邻多个可见锚点、文首文末隐藏串、内容删空）在 aster-lang-test。
 
 这条规则的含义：结构 span（标点、空白、关键词别名）**不能改**，改了就对不上；隐藏的空格靠「旁边那句没动」定位。以《静夜思》为例：
 
 | 改后的显示 | 结果 |
 |---|---|
 | 原诗不改 | 1 个解，`C' = C` |
-| 末句 `低头思故乡。` → `低头「月光」。` | `低头` 原样 → 1 个解，`C'` 末行 `␠␠低头 「月光」。`，求值 `月光`（两引擎均已实测可编译、补空格不变，§4 L8） |
+| 末句 `低头思故乡。` → `低头「月光」。` | `低头` 原样 → 1 个解，`C'` 末行 `␠␠低头 「月光」。`，求值 `月光`（两引擎均已实测可编译、补空格不变，§4 L9） |
 | 首句 `床前明月光，` → `床前明月照，` | `床前` 原样 → 1 个解 |
 | `床后明月照，` | 隐藏空格两侧都改了 → 0 个解，`DISPLAY_UNMAPPABLE` |
 | `床前床前明月光，` | 「`床前` 原样」与「`明月光` 原样」各给一个解 → `DISPLAY_AMBIGUOUS` |
@@ -138,7 +141,7 @@ A 包（P3 尚未实施）带自己的 CLI；P3 实施时其 CLI 来自锁文件
 
 **与 ADR 0058 §7.4 的关系**：§7.4 拒绝「编辑 display、由系统反推 span」，理由是对齐有歧义、由算法替作者选一处。本条不选：有歧义就拒绝，且结构 span 不随编辑移动或增删。§7.4 仍约束平台上**保存**排版的方式；本条只用于本地一次性运行，结果不回写、不签名。
 
-`show --from-display` 与 `run --display` 在还原之前同样先过包排版的 L1–L6（失败 `PKG_DISPLAY_INVALID`）。还原之后依次：派生排版 `L'` 过 L2、L5、L6（上限、内容 span 规则、字符串层面的值检查）→ 用 manifest 的编译输入（locale、aliasSet、allowStructural、词汇）编译 `C'`（失败 `COMPILE_ERROR`）→ L7–L8（失败 `DISPLAY_REJECTED`）→ entry（`--entry` 或 manifest 缺省入口，须存在于**派生模块**，否则 `ENTRY_NOT_FOUND`）→ input（按派生 IR 的形参类型校验，CLI 的输入校验本来就基于 IR 类型，`input.ts:141-168`）→ 沙箱求值，超时与资源规则不变。
+`show --from-display` 与 `run --display` 在还原之前同样先过包排版的 L1–L7（失败 `PKG_DISPLAY_INVALID`）。还原之后依次：派生排版 `L'` 过 L2、L5、L6、L7（上限、内容 span 规则、字符串层面的值检查）→ 用 manifest 的编译输入（locale、aliasSet、allowStructural、词汇）编译 `C'`（失败 `COMPILE_ERROR`）→ L8–L9（失败 `DISPLAY_REJECTED`）→ entry（`--entry` 或 manifest 缺省入口，须存在于**派生模块**，否则 `ENTRY_NOT_FOUND`）→ input（按派生 IR 的形参类型校验，CLI 的输入校验本来就基于 IR 类型，`input.ts:141-168`）→ 沙箱求值，超时与资源规则不变。
 
 ### D8 `run --display` 的输出
 
@@ -149,38 +152,43 @@ A 包（P3 尚未实施）带自己的 CLI；P3 实施时其 CLI 来自锁文件
 
 ---
 
-## 4. 排版校验规则 L1–L8（CLI 与 aster-api 共用）
+## 4. 排版校验规则 L1–L9（CLI 与 aster-api 共用）
 
 两个 CLI 必须给出同一结论，所以规则只用两侧都已有、且已被 parity 门对齐的能力：字符串运算、`foldKey`（两侧同一 casefold 15.1，见两侧 `toolchainId` 的 `casefold=15.1`）、标识符字符类 `[\p{L}\p{M}\p{Nd}_]`（manifest 规则已在用，修订 2 R6）、编译器与 `positionFreeSha256`（修订 1 A2，ADR 0060 已证《静夜思》两侧同值）。
 
+**规则要守的性质**与 ADR 0058 §7.5 相同：会影响判定结果的**值与名字**只能出现在内容 span 里。ADR 0058 允许关键词、标点与空白作结构 span（guyong 演示的 `是 → ，是那盏`、`记着 → 空`），并以界面上的独立样式与悬停显示 canonical 作补偿（§7.7 第 3 条）。纯文本的 `display.aster` 没有样式，所以本修订在包里**另加一条更严的规则 L7**（运算符不得被藏或改写）并要求 `show` 在 stderr 给出结构映射（D6），用来代替 §7.7 第 3 条。
+
+**共同约定**（三处实现与向量一律按此）：文本是严格 UTF-8 解码后的字符串，偏移单位为 UTF-16 code unit（ADR 0058 §7.8 同一单位）；换行符指 `\n` 与 `\r`，不归一；`foldKey` 先 NFC 再 casefold 15.1（两侧现有实现）；「整词出现」= 在经 `foldKey` 的被查文本中出现，且该出现的前一字符与后一字符（若有）都不属标识符字符类，字符类按各运行时的 Unicode 属性（JDK 25 / Node 24 均为 Unicode 16），向量覆盖组合附加符、代理对、全角与大小写折叠。
+
 | # | 规则 | 需编译 |
 |---|---|---|
-| L1 | `layout.json` 严格 JSON（包格式的严格 JSON 规则）；结构同 ts `readLayout`（恰为 `{v:1,spans}`、span 恰为两种形态、`text` 与结构 `canonical` 非空、任一视图不拆代理对）；文件字节 = `serializeLayout` 的 UTF-8（规范形态：相邻内容 span 已合并、键序固定、字符串按 ECMAScript `JSON.stringify` 转义） | 否 |
+| L1 | `layout.json` 严格 JSON（包格式的严格 JSON 规则）；结构同 ts `readLayout`（恰为 `{v:1,spans}`、span 恰为两种形态、`text` 与结构 `canonical` 非空、任一视图不拆代理对）；`v` 等于 manifest `display.layoutVersion`；文件字节 = `serializeLayout` 的 UTF-8（规范形态：相邻内容 span 已合并、键序固定、字符串按 ECMAScript `JSON.stringify` 转义） | 否 |
 | L2 | `LAYOUT_LIMITS` 六项（源码 12 288 字节 / 200 行 / 400 span / 序列化 49 152 字节 / display 24 576 字节 / 单个结构 display 256 码点），口径同 ts `assertWithinLimits` | 否 |
 | L3 | `toCanonical(layout)` = `policy/policy.aster` 的严格 UTF-8 解码（不去 BOM，逐字符相等） | 否 |
 | L4 | `display.aster` 字节 = `toDisplay(layout)` 的 UTF-8 | 否 |
-| L5 | `verifyContentParity`：至少一个非空白内容 span；结构 `canonical` 不含 `"“”「」『』` | 否 |
-| L6 | 每个结构 span 的 `canonical`（经 `foldKey`）：(a) 不含 `\p{Nd}`；(b) 不以整词出现词汇任一条目的 `localized`（全部 kind，含字面量触发词，经 `foldKey`）；(c) 不以整词出现包 locale 与 en-US 的 TRUE / FALSE / NULL / NONE 关键词拼写。「整词」= 前后相邻字符（若有）不属标识符字符类 | 否 |
-| L7 | 编译 `C`（或 `C'`）得到 IR；IR 中名为 `name` 或 `written` 的全部字符串（经 `foldKey`）不得以整词出现在任一结构 span 的 `canonical` 中 | 是 |
-| L8 | **补空格不变性**：在每个结构 span 的起点与终点各插入一个 U+0020，跳过①文首文末②位于行首缩进内（从行首到该位置只有空格与制表符）的位置③紧挨换行符之后的位置，得到 `P`；`P` 必须编译成功且 `positionFreeSha256(P) = positionFreeSha256(C)` | 是 |
+| L5 | `verifyContentParity`：至少一个内容 span 在去掉 ECMAScript `String.prototype.trim` 所认的空白后非空；结构 `canonical` 不含 `"“”「」『』` | 否 |
+| L6 | 每个结构 span 的 `canonical`：(a) 不含 `\p{Nd}`；(b) 不整词出现词汇任一条目的 `localized`（全部 kind，含字面量触发词）；(c) 不整词出现包 locale 与 en-US 词法表的 TRUE / FALSE / NULL / NONE 拼写 | 否 |
+| L7 | **运算符不得被藏或改写**：设 O = ASCII 运算符字符 `+ - * / % < > = ! & \| ^ ~` ∪ 包 locale 与 en-US 词法表中 11 个运算符 kind（core `UserAliasValidator` 的运算符档，ADR 0060 §1.1）的全部拼写 ∪ aliasSet 中这些 kind 的别名。对每个结构 span，`canonical` 中每处 O 的出现（字符按出现、拼写按整词出现）都必须在该 span 的 `display` 中以同一折叠形态出现，且出现次数不少于 canonical 中的次数 | 否 |
+| L8 | 编译 `C`（或 `C'`）得到 IR；IR 中键名为 `name` 或 `written` 的全部字符串值不得整词出现在任一结构 span 的 `canonical` 中 | 是 |
+| L9 | **补空格不变性**：设 B = 全部结构 span 的起点与终点偏移构成的集合（相邻 span 的公共边界只算一次）。对 B 中每个偏移 p，满足下列全部条件时在 p 处插入一个 U+0020：0 < p < \|C\|；`C[p-1]` 不是换行符；`C[0..p)` 中最后一个换行符（或文首）到 p 之间不全是空格与制表符（即 p 不在行首缩进内）。按 p 从大到小插入得到 `P`；`P` 必须编译成功且 `positionFreeSha256(P) = positionFreeSha256(C)` | 是 |
 
-**为什么 L8 能代替词法启发式的主体**：`layout_structural_hides_value` 要防的是「值的 token 与结构 span 重叠」。重叠只有两种形态：结构 span 落在一个 token 内部（字符串、标识符、数字被切开），或整个包含一个值 token。前者正是 L8 要抓的——在 token 内部补一个空格必然改变字符串的值或把一个名字切成两个，`positionFreeSha256` 随之改变或编译失败；在 token 边界补空格对 IR 毫无影响。判官是编译器本身，两引擎已逐字节对齐，所以结论两侧一致。后者由 L6（数字、字面量关键词、词汇条目）与 L7（IR 里出现的全部名字）覆盖；字符串字面量因 L5 禁引号不可能整个落在结构 span 里。
+**各规则抓什么**：`layout_structural_hides_value` 要防的「值 token 与结构 span 重叠」只有两种形态——结构 span 落在一个 token 内部（字符串、标识符、数字被切开），或整个包含一个值 token。前者由 L9 抓：在 token 内部补一个空格必然改变字符串的值或把一个名字切成两个，`positionFreeSha256` 随之改变或编译失败；在 token 边界补空格对 IR 毫无影响。判官是编译器本身，两引擎已逐字节对齐，所以结论两侧一致。后者由 L6（数字、字面量关键词、词汇条目）与 L8（IR 里出现的全部名字）抓；字符串字面量因 L5 禁引号不可能整个落在结构 span 里。L9 **不**判断运算符：`x - 1` 中把 `-` 整个标为结构 span，补空格后 IR 不变，这正是 L7 存在的原因（独立评审给出的反例，已列入向量）。
 
-实测（ts 3.5.0 / aster-cli 1.0.52 的 `compile`，zh-CN + §8 aliasSet + 词汇）：《静夜思》原文与补空格后都得 `55512170…`；改成 `低头 「月光」` 后原文与补空格都得同一哈希（两引擎相同）；en-US 构造例 `Return "a + b".`（结构 span `+`、display `plus`，读者看到 `"a plus b"`）补空格后哈希改变（两引擎相同）——L8 拒绝。
+实测（ts 3.5.0 / aster-cli 1.0.52 的 `compile`，zh-CN + §8 aliasSet + 词汇）：《静夜思》原文与补空格后都得 `55512170…`；改成 `低头 「月光」` 后原文与补空格都得同一哈希（两引擎相同）；en-US 构造例 `Return "a + b".`（结构 span `+`、display `plus`，读者看到 `"a plus b"`）补空格后哈希改变（两引擎相同）——L9 拒绝（同时 L7 也拒绝：`+` 未出现在 display 中）。《静夜思》的结构 span 只有空格与 `。，：` 和换行，L6–L9 都通过；guyong 演示的结构 span（`我曾问`、`心里`、`记着`、`是`、`答一句` 与标点）不含运算符与 IR 名字，同样通过（它用自定义词法表与单字别名，本来就不能作为策略保存，这里只作误拒检查）。
 
-**残余风险（接受）**：一个只含关键词的结构 span 在**改过的**源码里被解析器读成名字（软关键字角色变化）。L7 会抓住它成为 IR 名字的情形；抓不住的只剩「与某个现有名字同形、且角色变化不影响 IR」这种不改变语义的情形。平台保存时仍跑完整的 ts `validatePolicyLayout`（ADR 0058 §7.5 不变），签名包里的排版两套规则都过了（D11）；本地 `run --display` 的结果不签名、先打印 `C'`。
+**残余风险（接受）**：①结构 span 里的非运算符关键词（如 `如果`、`否则`、`返回`）可以显示成别的文字——这是 ADR 0058 允许的排版能力，包里以 `show` 的结构映射（D6）补偿；②一个只含关键词的结构 span 在**改过的**源码里被解析器读成名字（软关键字角色变化）：L8 抓住它成为 IR 名字的情形，抓不住的只剩不改变 IR 的情形。平台保存时仍跑完整的 ts `validatePolicyLayout`（ADR 0058 §7.5 不变），签名包里的排版两套规则都过了（D11）；本地 `run --display` 的结果不签名、先打印 `C'`。
 
-**与 ts `validatePolicyLayout` 的关系**：平台保存与导出（cloud）继续用它，它的词法规则更细；CLI 与 aster-api 用 L1–L8。两套规则都必须通过排版才进包（D11）。CLI 不调用 ts 的 `layout_structural_hides_value`：否则 Node CLI 会拒绝 JRE CLI 接受的包，违背两个 CLI 同义同退出码。
+**与 ts `validatePolicyLayout` 的关系**：平台保存与导出（cloud）继续用它，它的词法规则更细；CLI 与 aster-api 用 L1–L9。两套规则都必须通过排版才进包（D11）。CLI 不调用 ts 的 `layout_structural_hides_value`：否则 Node CLI 会拒绝 JRE CLI 接受的包，违背两个 CLI 同义同退出码。
 
 ---
 
 ## 5. Java 版本（D9）
 
-- **新增 aster-lang-core `aster.core.layout`**（纯 Java，无新依赖）：`PolicyLayout` / `LayoutSpan`、`parse`（严格）/ `serialize` / `toCanonical` / `toDisplay`、`LayoutLimits`、`checkFile`（L1–L6）、`reconstruct`（D7）、`padStructural`（L8 的 `P`）、`structuralNameHits`（L7 的字符串部分）。truffle CLI 与 aster-api 都依赖 core，各自只写编排。随列车 eco-1.0.53。
+- **新增 aster-lang-core `aster.core.layout`**（纯 Java，无新依赖）：`PolicyLayout` / `LayoutSpan`、`parse`（严格）/ `serialize` / `toCanonical` / `toDisplay`、`LayoutLimits`、`checkFile`（L1–L7）、`reconstruct`（D7）、`padStructural`（L9 的 `P`）、`structuralNameHits`（L8 的字符串部分）。truffle CLI 与 aster-api 都依赖 core，各自只写编排。随列车 eco-1.0.53。
 - **ts** 在 `./layout` 增加同名函数（`checkPackageLayout`、`reconstructFromDisplay`、`padStructuralSpans`、`structuralNameHits`），CLI 在 `src/policy-package/` 编排；`validatePolicyLayout` 不变。
-- **共享真相源**：aster-lang-test `conformance/package-v1/vectors/layout.json`（序列化与转义、解析拒绝、上限、L3–L6）、`display-reconstruct.json`（D7 的解个数与 `C'`）、`display-padding.json`（L8 的 `P`）、`literal-keywords.json`（L6(c) 各 locale 的拼写）。core 与 ts 各存逐字节副本并断言 sha256（ADR 0045 / ADR 0060 T3 同法）。
-- **不移植 `value-tokens.ts`**：它依赖 ts 的 canonicalize 改写回找、行内宽松回退、AST 角色探测与探测预算；Java 侧的 ANTLR 解析器给不出同一组中间结果，移植后两侧在边界输入上必然分歧，且分歧无法用向量穷举。L8 把同一问题交给已对齐的编译器。
-- ADR 0058 §7.10「不做 Java 版本」据此修订：Java 版本限于 L1–L8 与反向映射，`validatePolicyLayout` 仍只在 ts。
+- **共享真相源**：aster-lang-test `conformance/package-v1/vectors/layout.json`（序列化与转义、解析拒绝、上限、L3–L6）、`display-reconstruct.json`（D7 的解个数与 `C'`）、`display-padding.json`（L9 的 `P`）、`keyword-spellings.json`（L6(c) 与 L7 用到的各 locale 字面量关键词与运算符拼写）。core 与 ts 各存逐字节副本并断言 sha256（ADR 0045 / ADR 0060 T3 同法）。
+- **不移植 `value-tokens.ts`**：它依赖 ts 的 canonicalize 改写回找、行内宽松回退、AST 角色探测与探测预算；Java 侧的 ANTLR 解析器给不出同一组中间结果，移植后两侧在边界输入上必然分歧，且分歧无法用向量穷举。L9 把同一问题交给已对齐的编译器。
+- ADR 0058 §7.10「不做 Java 版本」据此修订：Java 版本限于 L1–L9 与反向映射，`validatePolicyLayout` 仍只在 ts。
 
 ---
 
@@ -203,15 +211,15 @@ A 包（P3 尚未实施）带自己的 CLI；P3 实施时其 CLI 来自锁文件
 
 ### D11 校验链与「省略而非拒绝」
 
-1. **cloud**（`POST /api/policies/[id]/export/package`）：`loadVersionLayout(version.id)`；`status:'ok'` 时再用 `prepareLayout` 同一校验（`validatePolicyLayout`，版本 locale 的词法表 + 冻结 aliasSet）；通过且开关 `policy_export.package.layout.enabled` 为真 → 请求体带 `layout`（序列化文本）。target=node 时 Worker 复核（`runNodeCheck`）另用 ts 跑 L1–L8，不过则不带 layout。
-2. **aster-api**（签名方）：收到 `layout` → 用 core `aster.core.layout` 跑 L1–L8（L7/L8 用平台编译器与本次导出相同的编译输入）→ 锁文件该 target 的 `packageFormats` 含 `"1.1"` → 写 D1 两个文件、`formatVersion:"1.1"`、`display`。任何一步不过 → 不写排版、`1.0`。**签名的包一定通过 CLI 的 `verify`**：这是本节的不变式，由 aster-api 在签名前跑同一规则保证。
+1. **cloud**（`POST /api/policies/[id]/export/package`）：`loadVersionLayout(version.id)`；`status:'ok'` 时再用 `prepareLayout` 同一校验（`validatePolicyLayout`，版本 locale 的词法表 + 冻结 aliasSet）；通过且开关 `policy_export.package.layout.enabled` 为真 → 请求体带 `layout`（序列化文本）。target=node 时 Worker 复核（`runNodeCheck`）另用 ts 跑 L1–L9，不过则不带 layout。
+2. **aster-api**（签名方）：收到 `layout` → 用 core `aster.core.layout` 跑 L1–L9（L8/L9 用平台编译器与本次导出相同的编译输入）→ 锁文件该 target 的 `packageFormats` 含 `"1.1"` → 写 D1 两个文件、`formatVersion:"1.1"`、`display`。任何一步不过 → 不写排版、`1.0`。**签名的包一定通过 CLI 的 `verify`**：这是本节的不变式，由 aster-api 在签名前跑同一规则保证。
 3. **省略而非拒绝**：排版不是编译输入，排版问题不应阻止导出可执行策略。响应头 `X-Aster-Package-Layout: included | absent | omitted`，`omitted` 时另有 `X-Aster-Package-Layout-Reason`（`layout_inconsistent`、`layout_invalid`、`layout_export_disabled`、`node_display_check_failed`、`display_rules_failed`、`cli_unsupported`）；cloud 原样转发，导出面板在下载完成后显示一行说明。（产品负责人可改为拒绝，见 §11 Q1。）
 4. 排版随版本导出，**与导出者有没有 `structured_authoring` 能力无关**：显示排版对所有有读权限的人可见（ADR 0058 修订 1 A1），导出只是另一种读。
 
 ### D12 接口与锁文件
 
 - aster-api `PackageExportRequest` 增加可选 `layout: string`（≤ 49 152 字节，超出 400 `layout_too_large`）；`check` / `prepare` 不接受它（排版不影响可导出性与探针）。
-- `src/main/resources/export/export-runtimes.lock.json` 每个 target 增加 `packageFormats`（字符串数组），由列车 L4 pin bump 维护；缺省按 `["1.0"]` 读。列车把 CLI 升到 eco-1.0.53 / ts 3.6.0 时同时写入 `"1.1"`——在此之前 aster-api 产出的永远是 1.0，B 包 README 指向的 CLI 版本必然认得包格式（同修订 3 P2-R3 的「锚先于签名」思路）。
+- `src/main/resources/export/export-runtimes.lock.json` 每个 target 增加 `packageFormats`（字符串数组），由列车 L4 pin bump 维护；字段缺失按 `["1.0"]` 读，字段存在但不是由已知格式版本组成的非空数组 → aster-api 启动失败（同修订 3 P2-R2「配置畸形 → 启动失败」）。列车把 CLI 升到 eco-1.0.53 / ts 3.6.0 时同时写入 `"1.1"`——在此之前 aster-api 产出的永远是 1.0，B 包 README 指向的 CLI 版本必然认得包格式（同修订 3 P2-R3 的「锚先于签名」思路）。
 - 审计 `POLICY_EXPORTED` 增加 `layoutSha256`（或 null）与 `layoutOutcome`（`included` / `absent` / `omitted:<reason>`）。
 - 包内 `README.md`（en / zh / de 模板）在有排版时增加一节：`display.aster` 是什么、不参与编译、`aster show` 与 `aster run --display` 的用法与限制。
 
@@ -240,10 +248,12 @@ A 包（P3 尚未实施）带自己的 CLI；P3 实施时其 CLI 来自锁文件
 | 威胁 | 控制 |
 |---|---|
 | 篡改 `display.aster` 让读者看到与执行不同的诗 | 签名覆盖（`files[]`）+ `verify` 的 `display` 检查（L3、L4）+ `show` 先过同样检查；无签名包 `show` 在 stderr 提示未核验 |
-| 签名包里排版本身有欺骗（平台漏判） | 保存时 ts `validatePolicyLayout`、导出时 cloud 再跑一次、aster-api 签名前跑 L1–L8，三道 |
-| `run --display` 借排版夹带改写 | 结构 span 不可改；反向映射唯一才运行；派生排版过 L5–L8；`C'` 先打印；`meta.display` 与 `coreIrSha256:null` 标明不在签名内 |
+| 签名包里排版本身有欺骗（平台漏判） | 保存时 ts `validatePolicyLayout`、导出时 cloud 再跑一次、aster-api 签名前跑 L1–L9，三道；L7 比平台规则更严（运算符不得藏或改写）|
+| 结构关键词显示成别的词（ADR 0058 允许的排版能力） | `show` 在 stderr 打印结构映射（D6）；README 说明 `display.aster` 中哪些文字只是排版 |
+| `run --display` 借排版夹带改写 | 结构 span 不可改；反向映射唯一才运行；派生排版过 L5–L9；`C'` 先打印；`meta.display` 与 `coreIrSha256:null` 标明不在签名内 |
 | 把 `run --display` 当成「运行任意源码」的后门 | 它本就是本地用户在自己机器上运行自己写的文本；能力与 `compile` + 无签名包 `--allow-unsigned` 相同。沙箱不变：JVM `HostAccess.EXPLICIT`、`IOAccess.NONE`；Node 在 Worker 内、无 IO builtin；导出时的闭世界检查 E730–E733 不在 CLI 重跑，IO / workflow 在两引擎中都只能以 `EVAL_ERROR` 失败（ADR 0059 §1、§5.1） |
-| 资源耗尽 | 显示文本 ≤ 24 576 字节、span ≤ 400、解计数到 2 即停；派生源码受 L2 上限；L8 只多一次编译；求值超时规则不变 |
+| 资源耗尽 | 显示文本 ≤ 24 576 字节、span ≤ 400、解计数到 2 即停（状态数有界，见 D7）；`layout.json` 先按 49 152 字节判大小再解析；派生源码受 L2 上限；L9 只多一次编译，编译本身沿用编译端点的解析预算；求值超时规则不变 |
+| 错误信息泄露 | 信封 message 是固定文案（修订 2 R1）；诊断只写本地 stderr。aster-api 省略排版时只回原因码，不回排版内容 |
 | zip-slip / 路径 | 两个固定 ASCII 路径，既有路径规则覆盖 |
 | 字面量宏误导（ADR 0058 §7.7 第 7 条） | `show` 在 stderr 列出触发词与展开值 |
 | 隐私 | 排版只含作者写的文本，与源码同一受众；探针仍不取真实输入（§5.3 不变） |
@@ -265,7 +275,7 @@ A 包（P3 尚未实施）带自己的 CLI；P3 实施时其 CLI 来自锁文件
 |---|---|---|
 | Q1 | 排版过不了校验时：省略排版照常导出，还是整次拒绝 | **省略**并提示原因（D11）。排版不改执行内容，拒绝会让一条已批准、可执行的策略因显示层问题导不出 |
 | Q2 | 导出面板是否提供「不含排版」选项（给仍用旧 CLI 的人得到 1.0 包） | **不提供**。旧 CLI 已明确失败并提示升级；多一个选项多一个可复现维度。真有需要再加 |
-| Q3 | `run --display` 是否随 eco-1.0.53 一起交付 | **是**。它是本需求「改了布局的源码本地运行」的直接答案，也是最终验收的一部分；L8 与反向映射已有实测与明确规则 |
+| Q3 | `run --display` 是否随 eco-1.0.53 一起交付 | **是**。它是本需求「改了布局的源码本地运行」的直接答案，也是最终验收的一部分；L9 与反向映射已有实测与明确规则 |
 | Q4 | `show` 在无排版的包上打印什么 | **规范源码**，stderr 注明无排版（与 ADR 0058 修订 1「有排版先显示排版」同向） |
 | Q5 | 文件名 `display.aster` | **保留**负责人的命名。代价：有人对它跑 `aster compile display.aster` 会得到编译错误；README 与 `show` 的 stderr 说明它不是编译输入 |
 
@@ -283,7 +293,7 @@ A 包（P3 尚未实施）带自己的 CLI；P3 实施时其 CLI 来自锁文件
 | D8 | `run --display` 的 `meta.display`、`coreIrSha256:null`、stderr 先打印 `C'` |
 | D9 | Java 版本放 aster-lang-core `aster.core.layout`；不移植 `value-tokens.ts`；四组共享向量 |
 | D10 | 四个新输出码 |
-| D11 | cloud 全量 ts 校验 + aster-api 签名前 L1–L8；不过则省略排版 |
+| D11 | cloud 全量 ts 校验 + aster-api 签名前 L1–L9；不过则省略排版 |
 | D12 | 请求字段 `layout`；锁文件 `packageFormats`；审计与 README |
 | D13 | 门控不变，新增 cloud 开关与锁文件门 |
 | D14 | 可复现元组加排版；签名配方不变 |
