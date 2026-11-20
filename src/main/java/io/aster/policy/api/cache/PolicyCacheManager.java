@@ -54,6 +54,12 @@ public class PolicyCacheManager {
     private static final String BROADCAST_NAME = "policy_cache_invalidate_broadcast";
 
     /**
+     * 本版本发出的失效消息都带此标记（值为 true）。不带标记的消息来自滚动发布期间仍在运行的旧版本副本：
+     * 旧副本的失效不会推进共享 epoch，收到时由本副本代为推进（issue #484）。
+     */
+    static final String EPOCH_AWARE_FIELD = "epochAware";
+
+    /**
      * 启动时等待首次订阅出结果的上限：与 {@code RedisBroadcastSupervisor} 单次订阅超时同量级，
      * 保留旧实现「启动即订阅」的就绪语义，又不会因 Redis 不可达而无限阻塞启动。
      */
@@ -358,9 +364,15 @@ public class PolicyCacheManager {
         }
         try {
             JsonObject message = new JsonObject(payload);
+            String tenant = normalizeTenant(message.getString("tenantId"));
             Object epoch = message.getValue("epoch");
             if (epoch instanceof Number number) {
-                current.onRemoteEpoch(normalizeTenant(message.getString("tenantId")), number.longValue());
+                current.onRemoteEpoch(tenant, number.longValue());
+            } else if (!Boolean.TRUE.equals(message.getValue(EPOCH_AWARE_FIELD))) {
+                // 旧版本副本发出的失效（滚动发布期间）：它不推进 epoch，由收到的新副本代为推进。
+                // 多个新副本各推进一次只多几次冷读；把旧副本的失败清理消息也当失效同理，只在发布窗口内发生。
+                current.invalidate(tenant).subscribe().with(ignored -> { },
+                    e -> LOG.debugf("代旧版本副本推进 epoch 失败 tenant=%s: %s", tenant, e.toString()));
             }
         } catch (RuntimeException e) {
             LOG.debugf("解析失效消息中的 epoch 失败: %s", payload);
@@ -585,6 +597,7 @@ public class PolicyCacheManager {
             .putNull("policyModule")
             .putNull("policyFunction")
             .put("epoch", epoch)
+            .put(EPOCH_AWARE_FIELD, true)
             .encode();
         reactivePubSub.publish(INVALIDATION_CHANNEL, payload).subscribe().with(
             ignored -> { },
@@ -600,7 +613,8 @@ public class PolicyCacheManager {
             JsonObject json = new JsonObject()
                 .put("tenantId", normalizeTenant(tenantId))
                 .put("policyModule", module)
-                .put("policyFunction", function);
+                .put("policyFunction", function)
+                .put(EPOCH_AWARE_FIELD, true);
             if (hash != null) {
                 json.put("hash", hash);
             }

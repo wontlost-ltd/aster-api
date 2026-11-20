@@ -136,6 +136,25 @@ class PolicyResultEpochIT {
         assertTrue(poisoned.getEpoch() < bumped);
     }
 
+    /**
+     * 滚动发布期间旧版本副本的失效：旧格式消息（无 epoch、无 epochAware 标记）不推进共享 epoch，
+     * 收到它的新副本必须代为推进，否则旧副本的策略变更对新副本无效。
+     */
+    @Test
+    void 旧版本副本的失效消息由新副本代为推进epoch() {
+        PolicyCacheKey poisoned = deployEvaluateAndPoison("epoch-legacy-");
+        await().atMost(Duration.ofSeconds(15)).until(cacheManager::isInvalidationChannelUp);
+
+        String legacy = new JsonObject().put("tenantId", tenant).putNull("policyModule").putNull("policyFunction")
+            .encode();
+        assertTrue(redis.execute("PUBLISH", CHANNEL, legacy).toLong() >= 1);
+
+        String epochKey = cacheManager.epochRedisKey(tenant);
+        await().atMost(Duration.ofSeconds(3))
+            .until(() -> redis.value(Long.class).get(epochKey) > poisoned.getEpoch());
+        await().atMost(Duration.ofSeconds(3)).until(() -> !STALE.equals(evaluate().getResult()));
+    }
+
     /** 本副本发起的失效（生产入口）：返回后立即不再读到旧结果，且共享 epoch 恰好推进一次。 */
     @Test
     void 本副本失效后立即不再读到旧结果() {

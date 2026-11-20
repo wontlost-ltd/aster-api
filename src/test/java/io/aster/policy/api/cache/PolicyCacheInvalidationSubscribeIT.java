@@ -179,11 +179,13 @@ class PolicyCacheInvalidationSubscribeIT {
         return new JsonObject(tenantWide(tenant)).put("epoch", epoch).encode();
     }
 
+    /** 当前版本副本发出的租户级失效（带 epochAware 标记；不带标记会被当成旧版本副本的失效，由本实例代推 epoch 并再广播一次）。 */
     private static String tenantWide(String tenant) {
         return new JsonObject()
             .put("tenantId", tenant)
             .putNull("policyModule")
             .putNull("policyFunction")
+            .put(PolicyCacheManager.EPOCH_AWARE_FIELD, true)
             .encode();
     }
 
