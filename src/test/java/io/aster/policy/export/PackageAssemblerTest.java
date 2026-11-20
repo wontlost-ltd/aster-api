@@ -161,11 +161,11 @@ class PackageAssemblerTest {
         .doesNotContain("npx", "npm i -g")
         .doesNotContain("{{");
     assertThat(new String(PackageReadme.render("zh", d), StandardCharsets.UTF_8)).contains("事实来源：bureau。");
-    PackageReadme.Data pinned = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.5.0", "1.0.52",
-        "3.5.0", List.of());
+    PackageReadme.Data pinned = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.6.0", "1.0.53",
+        "3.6.0", List.of());
     for (String locale : List.of("en", "zh", "de")) {
       assertThat(new String(PackageReadme.render(locale, pinned), StandardCharsets.UTF_8)).as(locale)
-          .contains("https://github.com/aster-cloud/aster-lang-ts/releases/tag/v3.5.0", "aster.mjs.sha256", "node aster.mjs")
+          .contains("https://github.com/aster-cloud/aster-lang-ts/releases/tag/v3.6.0", "aster.mjs.sha256", "node aster.mjs")
           .doesNotContain("npx", "npm i -g", "{{");
     }
   }
