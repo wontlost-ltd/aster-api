@@ -1,6 +1,6 @@
 # package-v1 测试夹具副本
 
-来源：aster-lang-test `conformance/package-v1/`，提交 `c7219e2`（包格式 v1 的唯一真相源，见其 `README.md`）。
+来源：aster-lang-test `conformance/package-v1/`，提交 `99ef78e`（包格式 v1 的唯一真相源，见其 `README.md`）。
 本目录只是测试用副本，**不得手改**：`PackageV1FixtureCopyTest` 按下表校验每个文件的 SHA-256；兄弟检出
 `../aster-lang-test`（或 `ASTER_LANG_TEST_DIR`）存在时另断言与其逐字节相同。上游更新时整份重新复制并更新本表。
 
@@ -93,7 +93,7 @@ cda4e650ed3a632e209650b936d01d11264423c6099a0c48909a9037bd98a280  src/b-alias/fi
 2762330e1f7772511905c89e8e8b402c9615b2535bfae6e9a1e024a4ef35ccae  src/b-alias/policy.aster
 78ba293d6d5524d098129e5616554c467defc764a7d92d158b7d9ad8f1cee3e6  src/b-alias/ts-core.json
 7473c13c7e48930f1d35d54a526dc07573c09a835dbdb55454d350560ec18317  src/b-credit-limit/expected.json
-298f28eca9f1e9e1417f2f31f873ce496771efbb147a7cd5856ad7f4b0ee1516  src/b-credit-limit/fixture.json
+ab5f11c9e2529f9c6483b86018deaf720b94fdb39227fb099de46fe34bb260fa  src/b-credit-limit/fixture.json
 9a4f4f96f620450963b303b4891a059b9265046e6f1d50ebccca183f373799a3  src/b-credit-limit/platform-core.json
 f859871aeb703585f4912a462037ddb9b27ef1896287e67609cca14e7d38a617  src/b-credit-limit/policy.aster
 e955ed17f98222bc0b2e71e5e1dc7c5ec7bc881b22f9c1a617d773eedc19333e  src/b-vocab-de/expected.json
