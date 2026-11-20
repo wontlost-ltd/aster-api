@@ -1,6 +1,6 @@
 # package-v1 测试夹具副本
 
-来源：aster-lang-test `conformance/package-v1/`，提交 `99ef78e`（包格式 v1 的唯一真相源，见其 `README.md`）。
+来源：aster-lang-test `conformance/package-v1/`，提交 `e9e35f4`（包格式 v1 的唯一真相源，见其 `README.md`）。
 本目录只是测试用副本，**不得手改**：`PackageV1FixtureCopyTest` 按下表校验每个文件的 SHA-256；兄弟检出
 `../aster-lang-test`（或 `ASTER_LANG_TEST_DIR`）存在时另断言与其逐字节相同。上游更新时整份重新复制并更新本表。
 
@@ -9,6 +9,31 @@
 ## SHA-256 清单（`shasum -a 256`，路径相对本目录，按路径字节序）
 
 ```
+4b40140efd78538a5be2338cc63eb71bdead92389b93b7337f9e54a391290d9e  display/edits/b-jingyesi/bom-trailing-crlf.txt
+7e8c64c5c371a2d410dec128c99dd8343b1db0498211ff62ae96bde67b6de3ba  display/edits/b-jingyesi/both-sides.txt
+fa4ef73d6b614a7b2709670ca7f06f820711192e53d2ed293a906bf26d402df5  display/edits/b-jingyesi/compile-error.txt
+b6886fb446fdfe8132e44bf238bda3f2894e6673b84ab7aad466cd0dc14178f7  display/edits/b-jingyesi/crlf.txt
+cc28637bd526328b4e0abd0bdad312f38492485b1ff09158bee6b0f606d90921  display/edits/b-jingyesi/entry-renamed.txt
+f2d2cd77a1830f46cbe6d5d298b4545b16b13d1f4119fdcadff9611c672bb339  display/edits/b-jingyesi/first-line-edit.txt
+d7ab82ee27c2b0ea810504570fa098fda5ab313f7ccfaaa49f1e3551f2977e61  display/edits/b-jingyesi/invalid-utf8.txt
+230e19d810de3779ba1ebc590535ebe763332d06da4babffbd8711b7b3fbea35  display/edits/b-jingyesi/last-line-literal.txt
+8a6d5f7b1061fefacb7509d5bf23a3227c8a3a6ecfe51dc9f666772c99b75b98  display/edits/b-jingyesi/oversize.txt
+92f4a984c872fd73d5dc7f26166541f2d54e70f537f688d8cd63334c0319c8c0  display/edits/b-jingyesi/punct-changed.txt
+1bc6ce6f1c18a33cfd052c3c90c8b22b4318c3a2a51a4a734851e0855aad6722  display/edits/b-jingyesi/repeat-prefix.txt
+39031b150c8fa0245c10cdca8f7e9a7a9c58e783a23c58b45b471196fa23d672  display/edits/b-jingyesi/trailing-newline.txt
+f1f0f65237dec7f22ed56bdb3c6d1f5e69f728652ef2979e9de9bc8cddcded92  display/edits/b-jingyesi/unchanged.txt
+de210eb0ac06bb47ab392182cb0de2b6abfea9a0511f82e233661539562753a1  display/packages/b-jingyesi/README.md
+c2c042c3e876339e2622fe37b70046b39ee4000302788917e478c87d7eda0fad  display/packages/b-jingyesi/SHA256SUMS
+18a227c3917385d51b1e58c9aabfbbe80aafca88dee6dfbde08b3de6a7dddf91  display/packages/b-jingyesi/manifest.json
+95d9a38892b36fca184f089122dc67c56a33bb93a765276691cf8f77e112c019  display/packages/b-jingyesi/manifest.sig.json
+8b6819d0d627e48b0d4e96c1b6ffc08ace71e86ab468a2e32b9d5d4a57225180  display/packages/b-jingyesi/policy/compile/alias-set.json
+de510ebaf8e4c4ba6a1b9acbc570df359d127e6d785083df6d6078f0bce235e3  display/packages/b-jingyesi/policy/compile/vocabulary.json
+f1f0f65237dec7f22ed56bdb3c6d1f5e69f728652ef2979e9de9bc8cddcded92  display/packages/b-jingyesi/policy/display/display.aster
+4c22316c10c4298c2d046a7cffa8aaec67f87643f34fa3b8eaebe073ff75a508  display/packages/b-jingyesi/policy/display/layout.json
+7fc880e01a64c7f6fa8054fbb9f1a6b29d82b8d474550c2c8001d8c3aaf98a56  display/packages/b-jingyesi/policy/policy.aster
+b67493cdd3faff72490c252a80d0bbbb4004116435b0c11d7f79be5c6cb82187  display/packages/b-jingyesi/schema/input.json
+3d1718b8ef02f27ac4ddc1959f2673d52f39b5d97ac9d852c58c7a7ceb973f73  display/packages/b-jingyesi/schema/output.json
+d80c1b1c858b7915e5bb04c4bda863879b827e12fa6ffec0f58e260a65d8ccd7  display/packages/b-jingyesi/tests/probes.json
 1267e20e2918f5ef02755da330470b72be91854ae1003a8a39e2ef0914fe2539  keys/test-ed25519.priv.b64u
 364bc64b22b8f6ffd67a0fe52c3bcd2e45bee4e15f35ee57c2fc644d2fdb6cb1  keys/test-jwks.json
 6db57134776149052faad3dbdd017150b369e8001a5a23b4d5023ae901332ead  packages/a-decimal/README.md
@@ -70,6 +95,7 @@ e428ea944e85339bac23bdc05990359b1c818d8451a05704f3fbe08bad816974  packages/b-zh/
 035a451ef9c0d4c1df6f583a134727314791e12a8ae0212fc2061cb66d72d907  packages/b-zh/schema/output.json
 23e50b32b14ed4a838308af07556cc1d074fbf77f95243377b8b9e747544c10d  packages/b-zh/tests/probes.json
 92bb4ff687abf79773d05110834b09029d6eb62342e6e512ba36aa9aef3ae6d1  schema/manifest-1.0.schema.json
+61fdc7bd20d56c019c553c9c0203627219f488c620abe0e99b470ffa6db4548b  schema/manifest-1.1.schema.json
 d2253b12ff6a1e89e50fe3adba1020e8ef1b017cc125fd41cc02b22245a68419  schema/sig-1.0.schema.json
 e197c51746848e726baa70303fe0bf13b2530c0fd47aaf8033a28987838d03ee  src/a-decimal/expected.json
 b4cd909f050d789a11942a3770e4dfbe911d76d001209e6d8acf4398a44cb129  src/a-decimal/fixture.json

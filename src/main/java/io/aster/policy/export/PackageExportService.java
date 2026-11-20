@@ -56,14 +56,16 @@ public class PackageExportService {
   private final ExportRuntimes runtimes;
   private final PackageAssembler assembler;
   private final ToolchainIdentityProvider toolchain;
+  private final PackageLayoutGate layoutGate;
 
   @Inject
   public PackageExportService(PolicyCompiler compiler, ExportRuntimes runtimes, PackageAssembler assembler,
-                              ToolchainIdentityProvider toolchain) {
+                              ToolchainIdentityProvider toolchain, PackageLayoutGate layoutGate) {
     this.compiler = compiler;
     this.runtimes = runtimes;
     this.assembler = assembler;
     this.toolchain = toolchain;
+    this.layoutGate = layoutGate;
   }
 
   /** 两个 target 的导出结论（不跑探针、不签名）。 */
@@ -111,15 +113,26 @@ public class PackageExportService {
    * @throws EntryRequiredException            入口确定不了
    */
   public PackageAssembler.AssembledPackage export(ExportSpec spec, PackageAssembler.NodeCheck nodeCheck) {
+    return export(spec, nodeCheck, null);
+  }
+
+  /** 同上，{@code layout} 为 cloud 送来的显示排版序列化文本（null 表示无），经 {@link PackageLayoutGate} 判定是否随包。 */
+  public PackageAssembler.AssembledPackage export(ExportSpec spec, PackageAssembler.NodeCheck nodeCheck, String layout) {
     PackagePrepared p = prepare(spec);
     if (!p.exportable()) {
       throw new ExportRejectedException(p.diagnostics());
     }
-    return export(spec, p, nodeCheck);
+    return export(spec, p, nodeCheck, layout);
   }
 
-  /** 以已算好的 prepare 结果组装（端点在核对 nodeProbes 后调用，避免重复求值探针）。 */
-  public PackageAssembler.AssembledPackage export(ExportSpec spec, PackagePrepared p, PackageAssembler.NodeCheck nodeCheck) {
+  /**
+   * 以已算好的 prepare 结果组装（端点在核对 nodeProbes 后调用，避免重复求值探针）。排版闸门在签名前、用 prepare 已编译的
+   * 平台 IR 与本次导出相同的编译输入跑 L1–L9（修订 4 D11）；不过则省略排版、组装 1.0 包，结论随结果返回。
+   */
+  public PackageAssembler.AssembledPackage export(ExportSpec spec, PackagePrepared p, PackageAssembler.NodeCheck nodeCheck,
+                                                  String layout) {
+    PackageLayoutGate.LayoutOutcome layoutOutcome =
+        layoutGate.evaluate(layout, spec, p.coreJson(), p.positionFreeSha256());
     CoreModel.Module module = readModule(p.coreJson());
     CoreModel.Func entry = EntrySchemaGenerator.findFunc(module, p.entry());
     String aliasJson = aliasSetJson(spec.aliasSet());
@@ -140,7 +153,7 @@ public class PackageExportService {
         spec.uiLocale(), spec.source().getBytes(StandardCharsets.UTF_8), aliasJson == null ? "null" : aliasJson,
         vocabularyJson(spec.vocabulary()), EntrySchemaGenerator.generate(module, p.entry()), p.probes(), fields,
         runtimes.target("jre").map(ExportRuntimes.Target::cliVersion).orElse(p.runtime().ecosystem()),
-        runtimes.target("node").map(ExportRuntimes.Target::cliVersion).orElse(null));
+        runtimes.target("node").map(ExportRuntimes.Target::cliVersion).orElse(null), layoutOutcome);
     return assembler.assemble(in);
   }
 

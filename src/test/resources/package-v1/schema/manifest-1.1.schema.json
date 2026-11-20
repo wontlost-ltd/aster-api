@@ -1,0 +1,814 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aster-lang.cloud/schema/policy-package/manifest-1.1.json",
+  "title": "Aster policy package manifest, formatVersion 1.1",
+  "description": "aster-policy-package/v1 的 manifest.json 严格 schema，formatVersion 1.1（ADR 0059 修订 4 D2）= 1.0 + 可选顶层成员 display。唯一真相源在 aster-lang-test conformance/package-v1/schema/，aster-lang-ts 与 aster-lang-truffle 各存逐字节副本并以兄弟仓 parity 测试守住。每层 additionalProperties:false；键只允许 ASCII 字母数字与下划线；数字只允许整数。schema 之外的规则（规范字节、formatVersion 先判且按次版本选 schema、display 与 files[] 的对应、Core IR 版本、files[] 与包内文件一致）见 conformance/package-v1/README.md。",
+  "$ref": "#/$defs/Manifest",
+  "$defs": {
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "NonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "Identifier": {
+      "description": "函数名：与两侧 canonicalizer 的完整标识符 token 同一规则（ts canonicalizer.ts `[\\p{L}_][\\p{L}\\p{M}\\p{Nd}_]*`，Java Canonicalizer.isIdentifierPart），覆盖 zh-CN / de-DE / hi-IN 标识符（如 加倍）。CLI 另要求字符串为 NFC。",
+      "type": "string",
+      "pattern": "^[\\p{L}_][\\p{L}\\p{M}\\p{Nd}_]*(?![\\s\\S])"
+    },
+    "StringSet": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/NonEmptyString"
+      },
+      "uniqueItems": true
+    },
+    "PackagePath": {
+      "description": "包根下的相对路径：段只含 [A-Za-z0-9._-]；无 . / .. 段、无以 . 结尾的段、无 Windows 保留名（CON、PRN、AUX、NUL、COM0–9、LPT0–9，大小写不敏感，含扩展名）；不得是三个元文件。大小写不敏感的重复路径由 CLI 判（README「manifest 语义规则」）。",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*(?![\\s\\S])",
+      "not": {
+        "anyOf": [
+          {
+            "type": "string",
+            "pattern": "(^|/)\\.\\.?(/|(?![\\s\\S]))"
+          },
+          {
+            "type": "string",
+            "pattern": "\\.(/|(?![\\s\\S]))"
+          },
+          {
+            "type": "string",
+            "pattern": "(^|/)([cC][oO][nN]|[pP][rR][nN]|[aA][uU][xX]|[nN][uU][lL]|[cC][oO][mM][0-9]|[lL][pP][tT][0-9])(\\.[^/]*)?(/|(?![\\s\\S]))"
+          },
+          {
+            "enum": [
+              "manifest.json",
+              "manifest.sig.json",
+              "SHA256SUMS"
+            ]
+          }
+        ]
+      }
+    },
+    "Entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "function",
+        "default",
+        "inputSchema",
+        "outputSchema"
+      ],
+      "properties": {
+        "function": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "default": {
+          "type": "boolean"
+        },
+        "inputSchema": {
+          "description": "必须恰为 #/$defs/entry.<function>（CLI 判，README「manifest 语义规则」）。",
+          "type": "string",
+          "pattern": "^#/\\$defs/entry\\.[^\\u0000-\\u001f/]+(?![\\s\\S])"
+        },
+        "outputSchema": {
+          "description": "必须恰为 #/$defs/entry.<function>（CLI 判，README「manifest 语义规则」）。",
+          "type": "string",
+          "pattern": "^#/\\$defs/entry\\.[^\\u0000-\\u001f/]+(?![\\s\\S])"
+        }
+      }
+    },
+    "Policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "moduleName",
+        "entries",
+        "ruleId",
+        "profile",
+        "controls"
+      ],
+      "properties": {
+        "moduleName": {
+          "$ref": "#/$defs/ModuleName"
+        },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Entry"
+          },
+          "contains": {
+            "type": "object",
+            "properties": {
+              "default": {
+                "const": true
+              }
+            },
+            "required": [
+              "default"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "ruleId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "controls": {
+          "$ref": "#/$defs/StringSet"
+        }
+      }
+    },
+    "ClaimedRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "policyId",
+        "version",
+        "status",
+        "approvedAt"
+      ],
+      "properties": {
+        "policyId": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "status": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "approvedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Source": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "claimedRef",
+        "sha256",
+        "locale",
+        "allowStructural",
+        "envelopeSha256"
+      ],
+      "properties": {
+        "claimedRef": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/ClaimedRef"
+            }
+          ]
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "locale": {
+          "type": "string",
+          "pattern": "^[a-z]{2,3}-[A-Z]{2}(?![\\s\\S])"
+        },
+        "allowStructural": {
+          "type": "boolean"
+        },
+        "envelopeSha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      }
+    },
+    "CoreIr": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "version",
+        "sha256",
+        "positionFreeSha256",
+        "toolchainId"
+      ],
+      "properties": {
+        "version": {
+          "description": "Core IR 版本。schema 只要求正整数；CLI 不支持的版本（v1 CLI 只支持 2）在 schema 之后以 PKG_UNSUPPORTED_IR 拒绝。",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "positionFreeSha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "toolchainId": {
+          "$ref": "#/$defs/NonEmptyString"
+        }
+      }
+    },
+    "Display": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layoutVersion"
+      ],
+      "properties": {
+        "layoutVersion": {
+          "const": 1
+        }
+      },
+      "description": "显示排版（ADR 0059 修订 4 D1/D2）：存在 ⇔ files[] 同时含 policy/display/layout.json 与 policy/display/display.aster（语义规则，见 README）。layoutVersion 为 layout 载荷的 v（ADR 0058 §7.3），1.1 中恒为 1。两个文件都是签名覆盖的载荷，都不是编译输入。"
+    },
+    "Effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "declared",
+        "io"
+      ],
+      "properties": {
+        "declared": {
+          "$ref": "#/$defs/StringSet"
+        },
+        "io": {
+          "const": false
+        }
+      }
+    },
+    "Governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "enforced",
+        "verdict",
+        "factSources"
+      ],
+      "properties": {
+        "enforced": {
+          "const": false
+        },
+        "verdict": {
+          "type": "boolean"
+        },
+        "factSources": {
+          "$ref": "#/$defs/StringSet"
+        }
+      }
+    },
+    "Cli": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "enum": [
+            "@aster-cloud/aster-lang-ts",
+            "cloud.aster-lang:aster-cli"
+          ]
+        },
+        "version": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      }
+    },
+    "Runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "engine",
+        "cli",
+        "requires",
+        "ecosystem"
+      ],
+      "properties": {
+        "engine": {
+          "enum": [
+            "aster-lang-ts-interpreter",
+            "aster-lang-truffle"
+          ]
+        },
+        "cli": {
+          "$ref": "#/$defs/Cli"
+        },
+        "requires": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+          },
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "node"
+              ],
+              "properties": {
+                "node": {
+                  "$ref": "#/$defs/NonEmptyString"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "java"
+              ],
+              "properties": {
+                "java": {
+                  "$ref": "#/$defs/NonEmptyString"
+                }
+              }
+            }
+          ]
+        },
+        "ecosystem": {
+          "$ref": "#/$defs/NonEmptyString"
+        }
+      }
+    },
+    "NodeCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "checkedBy",
+        "tsVersion",
+        "agreed"
+      ],
+      "properties": {
+        "checkedBy": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "tsVersion": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "agreed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "Tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "probes",
+        "probesSha256",
+        "nodeCheck"
+      ],
+      "properties": {
+        "probes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "probesSha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "nodeCheck": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/NodeCheck"
+            }
+          ]
+        }
+      }
+    },
+    "FileEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/PackagePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "ExportedBy": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "issuer",
+        "tenantId"
+      ],
+      "properties": {
+        "issuer": {
+          "$ref": "#/$defs/NonEmptyString"
+        },
+        "tenantId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_]+(?![\\s\\S])"
+      },
+      "required": [
+        "format",
+        "formatVersion",
+        "target",
+        "mode",
+        "policy",
+        "source",
+        "coreIr",
+        "effects",
+        "governance",
+        "runtime",
+        "tests",
+        "files",
+        "exportedBy"
+      ],
+      "properties": {
+        "format": {
+          "const": "aster-policy-package"
+        },
+        "formatVersion": {
+          "const": "1.1"
+        },
+        "target": {
+          "enum": [
+            "node",
+            "jre"
+          ]
+        },
+        "mode": {
+          "enum": [
+            "a",
+            "b"
+          ]
+        },
+        "policy": {
+          "$ref": "#/$defs/Policy"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "coreIr": {
+          "$ref": "#/$defs/CoreIr"
+        },
+        "display": {
+          "$ref": "#/$defs/Display"
+        },
+        "effects": {
+          "$ref": "#/$defs/Effects"
+        },
+        "governance": {
+          "$ref": "#/$defs/Governance"
+        },
+        "runtime": {
+          "$ref": "#/$defs/Runtime"
+        },
+        "tests": {
+          "$ref": "#/$defs/Tests"
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/FileEntry"
+          },
+          "allOf": [
+            {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "const": "policy/policy.aster"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            },
+            {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "const": "policy/compile/alias-set.json"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            },
+            {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "const": "schema/input.json"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            },
+            {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "const": "schema/output.json"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            },
+            {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "const": "tests/probes.json"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          ],
+          "description": "载荷清单（不含三个元文件）。必含 policy/policy.aster、policy/compile/alias-set.json、schema/input.json、schema/output.json、tests/probes.json；A 另含 compiled/core.json，B 不得含 compiled/ 下的文件。路径唯一、按 UTF-8 字节序升序由 CLI 校验（schema 无法表达）。"
+        },
+        "exportedBy": {
+          "$ref": "#/$defs/ExportedBy"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "a"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "cli": {
+                    "type": "object",
+                    "required": [
+                      "sha256"
+                    ],
+                    "properties": {
+                      "sha256": {}
+                    }
+                  }
+                }
+              },
+              "files": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "const": "compiled/core.json"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ]
+                }
+              }
+            }
+          },
+          "else": {
+            "type": "object",
+            "properties": {
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "cli": {
+                    "not": {
+                      "type": "object",
+                      "required": [
+                        "sha256"
+                      ],
+                      "properties": {
+                        "sha256": {}
+                      }
+                    }
+                  }
+                }
+              },
+              "files": {
+                "not": {
+                  "type": "array",
+                  "contains": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "pattern": "^compiled/"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "const": "node"
+              }
+            },
+            "required": [
+              "target"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "engine": {
+                    "const": "aster-lang-ts-interpreter"
+                  },
+                  "cli": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "const": "@aster-cloud/aster-lang-ts"
+                      }
+                    }
+                  },
+                  "requires": {
+                    "type": "object",
+                    "required": [
+                      "node"
+                    ],
+                    "properties": {
+                      "node": {}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "type": "object",
+            "properties": {
+              "runtime": {
+                "type": "object",
+                "properties": {
+                  "engine": {
+                    "const": "aster-lang-truffle"
+                  },
+                  "cli": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "const": "cloud.aster-lang:aster-cli"
+                      }
+                    }
+                  },
+                  "requires": {
+                    "type": "object",
+                    "required": [
+                      "java"
+                    ],
+                    "properties": {
+                      "java": {}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ModuleName": {
+      "description": "模块名：以 . 连接的 Identifier（如 aster.pilot.credit、块.遮蔽）。CLI 另要求字符串为 NFC。",
+      "type": "string",
+      "pattern": "^[\\p{L}_][\\p{L}\\p{M}\\p{Nd}_]*(\\.[\\p{L}_][\\p{L}\\p{M}\\p{Nd}_]*)*(?![\\s\\S])"
+    }
+  }
+}

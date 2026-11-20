@@ -29,6 +29,8 @@ public class PackageAssembler {
   public static final int MAX_ZIP_BYTES = 1_048_576;
   static final String FORMAT = "aster-policy-package";
   static final String FORMAT_VERSION = "1.0";
+  static final String LAYOUT_PATH = "policy/display/layout.json";
+  static final String DISPLAY_PATH = "policy/display/display.aster";
   static final int CORE_IR_VERSION = 2;
   private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
@@ -58,15 +60,46 @@ public class PackageAssembler {
   public record NodeCheck(String tsVersion, int agreed) {
   }
 
-  /** 组装输入。{@code vocabularyCanonicalJson} 为 null 表示无词汇（不写该文件）；{@code aliasSetCanonicalJson} 无别名时为 {@code "null"}。 */
+  /**
+   * 组装输入。{@code vocabularyCanonicalJson} 为 null 表示无词汇（不写该文件）；{@code aliasSetCanonicalJson} 无别名时为 {@code "null"}。
+   * {@code layout} 为显示排版闸门的结论：只有 {@code included} 时写入 {@code policy/display/*} 并产出 1.1 包（修订 4 D1–D2），
+   * 其余状态与修订 4 之前逐字节相同。
+   */
   public record PackageInputs(String moduleName, String target, String uiLocale, byte[] source,
                               String aliasSetCanonicalJson, String vocabularyCanonicalJson,
                               EntrySchemaGenerator.EntrySchemas schemas, ProbeRunner.ProbesFile probes,
-                              ManifestFields fields, String jreCliVersion, String tsCliVersion) {
+                              ManifestFields fields, String jreCliVersion, String tsCliVersion,
+                              PackageLayoutGate.LayoutOutcome layout) {
+    public PackageInputs {
+      layout = layout == null ? PackageLayoutGate.LayoutOutcome.absent() : layout;
+    }
+
+    /** 不带排版的组装输入。 */
+    public PackageInputs(String moduleName, String target, String uiLocale, byte[] source, String aliasSetCanonicalJson,
+                         String vocabularyCanonicalJson, EntrySchemaGenerator.EntrySchemas schemas,
+                         ProbeRunner.ProbesFile probes, ManifestFields fields, String jreCliVersion, String tsCliVersion) {
+      this(moduleName, target, uiLocale, source, aliasSetCanonicalJson, vocabularyCanonicalJson, schemas, probes, fields,
+          jreCliVersion, tsCliVersion, null);
+    }
+
+    /** 同一输入换一个排版结论。 */
+    public PackageInputs withLayout(PackageLayoutGate.LayoutOutcome outcome) {
+      return new PackageInputs(moduleName, target, uiLocale, source, aliasSetCanonicalJson, vocabularyCanonicalJson,
+          schemas, probes, fields, jreCliVersion, tsCliVersion, outcome);
+    }
   }
 
-  /** 组装结果；{@code kid} 为 null 表示无签名包。 */
-  public record AssembledPackage(byte[] zip, String zipSha256, String manifestSha256, String rootName, String kid) {
+  /** 组装结果；{@code kid} 为 null 表示无签名包；{@code layout} 为写入包的排版结论（响应头与审计用）。 */
+  public record AssembledPackage(byte[] zip, String zipSha256, String manifestSha256, String rootName, String kid,
+                                 PackageLayoutGate.LayoutOutcome layout) {
+    public AssembledPackage {
+      layout = layout == null ? PackageLayoutGate.LayoutOutcome.absent() : layout;
+    }
+
+    /** 不带排版的组装结果。 */
+    public AssembledPackage(byte[] zip, String zipSha256, String manifestSha256, String rootName, String kid) {
+      this(zip, zipSha256, manifestSha256, rootName, kid, null);
+    }
   }
 
   private final BiFunction<byte[], String, PackageSigner.SignOutcome> signer;
@@ -85,7 +118,7 @@ public class PackageAssembler {
     TreeMap<String, byte[]> payload = DeterministicZip.newFileMap();
     payload.put("README.md", PackageReadme.render(in.uiLocale(), new PackageReadme.Data(in.moduleName(),
         f.claimedRef().version(), in.target(), f.entry(), f.cliName(), f.cliVersion(), in.jreCliVersion(),
-        in.tsCliVersion(), f.factSources())));
+        in.tsCliVersion(), f.factSources(), in.layout().isIncluded())));
     payload.put("policy/policy.aster", in.source());
     payload.put("policy/compile/alias-set.json", utf8(in.aliasSetCanonicalJson()));
     if (in.vocabularyCanonicalJson() != null) {
@@ -94,6 +127,10 @@ public class PackageAssembler {
     payload.put("schema/input.json", in.schemas().inputJson());
     payload.put("schema/output.json", in.schemas().outputJson());
     payload.put("tests/probes.json", in.probes().json());
+    if (in.layout().isIncluded()) {
+      payload.put(LAYOUT_PATH, in.layout().layoutJson());
+      payload.put(DISPLAY_PATH, in.layout().displayAster());
+    }
 
     byte[] manifest = JcsCanonicalizer.canonicalize(manifest(in, payload));
     TreeMap<String, byte[]> files = DeterministicZip.newFileMap();
@@ -117,7 +154,7 @@ public class PackageAssembler {
     if (zip.length > MAX_ZIP_BYTES) {
       throw new PackageTooLargeException(zip.length, MAX_ZIP_BYTES);
     }
-    return new AssembledPackage(zip, sha256(zip), sha256(manifest), root, kid);
+    return new AssembledPackage(zip, sha256(zip), sha256(manifest), root, kid, in.layout());
   }
 
   private static ObjectNode manifest(PackageInputs in, TreeMap<String, byte[]> payload) {
@@ -137,8 +174,12 @@ public class PackageAssembler {
     ArrayNode filesNode = m.putArray("files");
     payload.forEach((path, bytes) -> filesNode.addObject().put("path", path).put("sha256", sha256(bytes))
         .put("size", bytes.length));
+    if (in.layout().isIncluded()) {
+      // 修订 4 D2：display 存在 ⇔ files[] 同时含两个 policy/display/* 路径；路径固定，不在 manifest 里另写
+      m.putObject("display").put("layoutVersion", PackageLayoutGate.LAYOUT_VERSION);
+    }
     m.put("format", FORMAT);
-    m.put("formatVersion", FORMAT_VERSION);
+    m.put("formatVersion", in.layout().isIncluded() ? PackageLayoutGate.LAYOUT_FORMAT_VERSION : FORMAT_VERSION);
     ObjectNode governance = m.putObject("governance");
     governance.put("enforced", false);
     governance.set("factSources", strings(f.factSources()));

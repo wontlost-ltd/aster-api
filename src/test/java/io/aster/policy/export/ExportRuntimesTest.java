@@ -15,17 +15,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ExportRuntimesTest {
 
   @Test
-  void lockFileNamesTheEco1053CliAndTs360WithTheExportAnchor() {
+  void lockFileNamesTheEco1053CliAndTs360WithTheExportAnchorAndFormat11() {
     ExportRuntimes.Lock lock = ExportRuntimes.parse(ExportRuntimes.readResource(ExportRuntimes.DEFAULT_RESOURCE));
     assertThat(lock.targets()).containsOnlyKeys("jre", "node");
     ExportRuntimes.Target jre = lock.targets().get("jre");
     assertThat(jre.cliName()).isEqualTo("cloud.aster-lang:aster-cli");
     assertThat(jre.cliVersion()).isEqualTo("1.0.53");
     assertThat(jre.trustAnchorKids()).containsExactly("export-2026-11a");
+    assertThat(jre.packageFormats()).containsExactly("1.0", "1.1");
     ExportRuntimes.Target node = lock.targets().get("node");
     assertThat(node.cliName()).isEqualTo("@aster-cloud/aster-lang-ts");
     assertThat(node.cliVersion()).isEqualTo("3.6.0");
     assertThat(node.trustAnchorKids()).containsExactly("export-2026-11a");
+    assertThat(node.packageFormats()).containsExactly("1.0", "1.1");
     // conformance keys/README.md M4：生产锁文件不得含测试 kid
     assertThat(lock.targets().values()).flatExtracting(ExportRuntimes.Target::trustAnchorKids)
         .noneMatch(kid -> kid.startsWith("test-"));
@@ -55,11 +57,31 @@ class ExportRuntimesTest {
         "{\"formatVersion\":1,\"jre\":{\"cliName\":\"c\",\"cliVersion\":\"1\",\"trustAnchorKids\":\"k\"},\"node\":null}",
         "{\"formatVersion\":1,\"jre\":{\"cliName\":\"\",\"cliVersion\":\"1\",\"trustAnchorKids\":[]},\"node\":null}",
         "{\"formatVersion\":1,\"formatVersion\":1,\"jre\":" + jre + ",\"node\":null}",
-        "{\"formatVersion\":1,\"jre\":null,\"node\":null}");
+        "{\"formatVersion\":1,\"jre\":null,\"node\":null}",
+        // 修订 4 D12：packageFormats 存在时须为非空、无重复、全由已知格式版本组成的字符串数组
+        "{\"formatVersion\":1,\"jre\":{\"cliName\":\"c\",\"cliVersion\":\"1\",\"trustAnchorKids\":[],\"packageFormats\":[]},\"node\":null}",
+        "{\"formatVersion\":1,\"jre\":{\"cliName\":\"c\",\"cliVersion\":\"1\",\"trustAnchorKids\":[],\"packageFormats\":[\"1.9\"]},\"node\":null}",
+        "{\"formatVersion\":1,\"jre\":{\"cliName\":\"c\",\"cliVersion\":\"1\",\"trustAnchorKids\":[],\"packageFormats\":\"1.1\"},\"node\":null}",
+        "{\"formatVersion\":1,\"jre\":{\"cliName\":\"c\",\"cliVersion\":\"1\",\"trustAnchorKids\":[],\"packageFormats\":[\"1.0\",\"1.0\"]},\"node\":null}",
+        "{\"formatVersion\":1,\"jre\":{\"cliName\":\"c\",\"cliVersion\":\"1\",\"trustAnchorKids\":[],\"packageFormats\":[1.1]},\"node\":null}");
     for (String json : bad) {
       assertThatThrownBy(() -> ExportRuntimes.parse(json)).as(json).isInstanceOf(IllegalStateException.class)
           .hasMessageContaining("export-runtimes.lock.json");
     }
+  }
+
+  @Test
+  void missingPackageFormatsDefaultsToFormat10() {
+    String jre = "{\"cliName\":\"c\",\"cliVersion\":\"1\",\"trustAnchorKids\":[]}";
+    ExportRuntimes.Lock lock = ExportRuntimes.parse("{\"formatVersion\":1,\"jre\":" + jre + ",\"node\":null}");
+    ExportRuntimes.Target t = lock.targets().get("jre");
+    assertThat(t.packageFormats()).containsExactly("1.0");
+    assertThat(t.supportsFormat("1.0")).isTrue();
+    assertThat(t.supportsFormat("1.1")).isFalse();
+    ExportRuntimes.Target only11 = ExportRuntimes.parse("{\"formatVersion\":1,\"jre\":{\"cliName\":\"c\",\"cliVersion\":\"1\","
+        + "\"trustAnchorKids\":[],\"packageFormats\":[\"1.1\",\"1.0\"]},\"node\":null}").targets().get("jre");
+    assertThat(only11.packageFormats()).containsExactly("1.1", "1.0");
+    assertThat(only11.supportsFormat("1.1")).isTrue();
   }
 
   @Test

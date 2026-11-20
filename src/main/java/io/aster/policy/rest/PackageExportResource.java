@@ -13,6 +13,7 @@ import io.aster.policy.export.PackageAssembler;
 import io.aster.policy.export.PackageExportCheck;
 import io.aster.policy.export.PackageExportService;
 import io.aster.policy.export.PackageExportUnavailableException;
+import io.aster.policy.export.PackageLayoutGate;
 import io.aster.policy.export.PackagePrepared;
 import io.aster.policy.export.PackageTooLargeException;
 import io.aster.policy.parser.CompileIdentity;
@@ -62,6 +63,11 @@ import java.util.regex.Pattern;
  * <p>{@code prepare} 与导出共用 {@link PackageExportGate}（不等待，占满 503 {@code package_export_busy}）；{@code check} 不占许可、
  * 不写审计。导出在内存中组装完整 zip、签名并同步入链 {@code POLICY_EXPORTED} 之后才返回；签名被拒在组装前 503、不写审计；
  * 入链失败 500 {@code audit_unavailable}，不返回 zip。
+ *
+ * <p>显示排版（ADR 0059 修订 4 D11–D12）：导出请求可带 {@code layout}（&gt; 49 152 字节 400 {@code layout_too_large}），经
+ * {@link io.aster.policy.export.PackageLayoutGate} 判定是否随包；结论写入响应头 {@code X-Aster-Package-Layout}
+ * （{@code included | absent | omitted}，省略时另有 {@code X-Aster-Package-Layout-Reason}）与审计的 {@code layoutSha256}、
+ * {@code layoutOutcome}。排版问题只省略排版，不拒绝导出。
  */
 @Path(PackageExportResource.PATH)
 @Produces(MediaType.APPLICATION_JSON)
@@ -74,6 +80,8 @@ public class PackageExportResource {
   private static final Set<String> UI_LOCALES = Set.of("en", "zh", "de", "hi");
   private static final Pattern CLAIMED_REF_TEXT = Pattern.compile("[A-Za-z0-9._:/-]{1,128}");
   private static final String DEFAULT_LOCALE = "en-US";
+  static final String LAYOUT_HEADER = "X-Aster-Package-Layout";
+  static final String LAYOUT_REASON_HEADER = "X-Aster-Package-Layout-Reason";
 
   @ConfigProperty(name = "aster.export.package.enabled", defaultValue = "false")
   boolean enabled;
@@ -134,8 +142,12 @@ public class PackageExportResource {
     if (node && request.nodeProbes() == null) {
       return error(400, "node_check_incomplete", "target=node requires nodeProbes from the Node-side check");
     }
+    if (request.layout() != null
+        && request.layout().getBytes(StandardCharsets.UTF_8).length > PackageLayoutGate.MAX_LAYOUT_BYTES) {
+      return error(400, "layout_too_large", "layout exceeds " + PackageLayoutGate.MAX_LAYOUT_BYTES + " bytes");
+    }
     PackageExportService.ExportSpec spec = spec(request);
-    return withPermit(() -> prepared(spec, p -> exportPrepared(spec, p, request.nodeProbes())));
+    return withPermit(() -> prepared(spec, p -> exportPrepared(spec, p, request.nodeProbes(), request.layout())));
   }
 
   private Response withPermit(Supplier<Response> body) {
@@ -173,7 +185,7 @@ public class PackageExportResource {
   }
 
   private Response exportPrepared(PackageExportService.ExportSpec spec, PackagePrepared p,
-                                  PackageExportRequest.NodeProbes nodeProbes) {
+                                  PackageExportRequest.NodeProbes nodeProbes, String layout) {
     PackageAssembler.NodeCheck nodeCheck = null;
     if ("node".equals(spec.target())) {
       Response invalid = validateNodeProbes(nodeProbes, p);
@@ -184,7 +196,7 @@ public class PackageExportResource {
     }
     PackageAssembler.AssembledPackage pkg;
     try {
-      pkg = service.export(spec, p, nodeCheck);
+      pkg = service.export(spec, p, nodeCheck, layout);
     } catch (PackageExportUnavailableException e) {
       return error(503, e.code(), "package signing is not available");
     } catch (PackageTooLargeException e) {
@@ -193,13 +205,17 @@ public class PackageExportResource {
     } catch (ExportRejectedException e) {
       return notExportable(e.diagnostics());
     }
-    audit(spec, p, pkg, nodeCheck);
-    return Response.ok(pkg.zip(), "application/zip")
+    audit(spec, p, pkg, nodeCheck, layout);
+    Response.ResponseBuilder ok = Response.ok(pkg.zip(), "application/zip")
         .header("Content-Disposition", contentDisposition(pkg.rootName()))
         .header("X-Aster-Package-Sha256", pkg.zipSha256())
         .header("X-Aster-Package-Signed", Boolean.toString(pkg.kid() != null))
-        .header("Cache-Control", "private, no-store")
-        .build();
+        .header(LAYOUT_HEADER, pkg.layout().status())
+        .header("Cache-Control", "private, no-store");
+    if (pkg.layout().reason() != null) {
+      ok.header(LAYOUT_REASON_HEADER, pkg.layout().reason());
+    }
+    return ok.build();
   }
 
   /** Review Focus 5：cloud 提交的 Node 侧结论必须与平台重算的探针一致，否则不签名。 */
@@ -317,8 +333,8 @@ public class PackageExportResource {
 
   /** 同步入链；失败即整次请求失败（500），zip 不返回。 */
   private void audit(PackageExportService.ExportSpec spec, PackagePrepared p, PackageAssembler.AssembledPackage pkg,
-                     PackageAssembler.NodeCheck nodeCheck) {
-    Map<String, Object> metadata = auditMetadata(spec, p, pkg, nodeCheck);
+                     PackageAssembler.NodeCheck nodeCheck, String layout) {
+    Map<String, Object> metadata = auditMetadata(spec, p, pkg, nodeCheck, layout);
     String module = pkg.rootName().substring(0, pkg.rootName().lastIndexOf("-v"));
     AuditEvent event = new AuditEvent(EventType.POLICY_EXPORTED, java.time.Instant.now(), spec.tenantId(),
         module, p.entry(), null, null, null, identityResolver.performedBy(), true,
@@ -331,8 +347,13 @@ public class PackageExportResource {
     }
   }
 
+  /**
+   * {@code POLICY_EXPORTED} 的元数据。{@code layoutSha256} 为 cloud 送来的排版文本的 sha256（未送为 null），与
+   * {@code layoutOutcome}（{@code included} / {@code absent} / {@code omitted:<reason>}）一起说明排版是否进了包。
+   */
   static Map<String, Object> auditMetadata(PackageExportService.ExportSpec spec, PackagePrepared p,
-                                           PackageAssembler.AssembledPackage pkg, PackageAssembler.NodeCheck nodeCheck) {
+                                           PackageAssembler.AssembledPackage pkg, PackageAssembler.NodeCheck nodeCheck,
+                                           String layout) {
     Map<String, Object> m = new LinkedHashMap<>();
     m.put("target", "package:" + spec.target() + "-b");
     m.put("manifestSha256", pkg.manifestSha256());
@@ -350,6 +371,8 @@ public class PackageExportResource {
         + ",\"version\":" + c.version() + "}");
     m.put("sourceHash", sha256(spec.source()));
     m.put("scopesHash", CompileIdentity.scopesHash(ReplayExecutionCore.buildVocabularyScopes(spec.vocabulary())));
+    m.put("layoutSha256", layout == null ? null : sha256(layout));
+    m.put("layoutOutcome", pkg.layout().auditValue());
     return m;
   }
 

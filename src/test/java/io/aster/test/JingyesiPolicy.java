@@ -37,6 +37,24 @@ public final class JingyesiPolicy {
         "MODULE_DECL", List.of("床前"),
         "RETURN", List.of("低头"));
 
+    /**
+     * cloud {@code JINGYESI_LAYOUT} 的 {@code serializeLayout} 文本（ADR 0059 修订 4 导出随包的 {@code policy/display/layout.json}）：
+     * 四个隐去别名后空格的结构 span 与四个换标点的结构 span。与 {@code src/test/resources/export/jingyesi-layout.json}、
+     * conformance 黄金包 {@code display/packages/b-jingyesi} 的同名文件逐字节相同。
+     */
+    public static final String LAYOUT_JSON = "{\"v\":1,\"spans\":["
+        + "{\"text\":\"床前\"},{\"canonical\":\" \",\"display\":\"\"},{\"text\":\"明月光\"},"
+        + "{\"canonical\":\"。\\n\",\"display\":\"，\\n\"},"
+        + "{\"text\":\"疑是\"},{\"canonical\":\" \",\"display\":\"\"},{\"text\":\"地上霜\"},"
+        + "{\"canonical\":\"，\",\"display\":\"。\\n\"},"
+        + "{\"text\":\"举头\"},{\"canonical\":\" \",\"display\":\"\"},{\"text\":\"望明月\"},"
+        + "{\"canonical\":\"：\\n  \",\"display\":\"，\\n\"},"
+        + "{\"text\":\"低头\"},{\"canonical\":\" \",\"display\":\"\"},{\"text\":\"思故乡\"},"
+        + "{\"canonical\":\"。\\n\",\"display\":\"。\"}]}";
+
+    /** {@code toDisplay(LAYOUT)}：原诗四句，末句不带换行。 */
+    public static final String DISPLAY = "床前明月光，\n疑是地上霜。\n举头望明月，\n低头思故乡。";
+
     /** cloud 合并后发给 aster-api 的 DomainVocabulary：只含两条内嵌词条。每次返回新的可变副本。 */
     public static Map<String, Object> vocabulary() {
         Map<String, Object> v = new LinkedHashMap<>();

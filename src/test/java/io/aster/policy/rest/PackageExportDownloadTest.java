@@ -5,8 +5,10 @@ import io.aster.audit.chain.AuditChainAppender;
 import io.aster.policy.entity.AuditLog;
 import io.aster.policy.export.PackageAssembler;
 import io.aster.policy.export.PackageExportService;
+import io.aster.policy.export.PackageLayoutGate;
 import io.aster.policy.export.PackagePrepared;
 import io.aster.policy.export.ProbeRunner;
+import io.aster.test.JingyesiPolicy;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import io.quarkus.test.junit.mockito.InjectSpy;
@@ -65,6 +67,8 @@ class PackageExportDownloadTest {
     assertThat(r.header("X-Aster-Package-Sha256")).isEqualTo(sha(zip));
     assertThat(r.header("X-Aster-Package-Signed")).isEqualTo("true");
     assertThat(r.header("Cache-Control")).isEqualTo("private, no-store");
+    assertThat(r.header("X-Aster-Package-Layout")).isEqualTo("absent");
+    assertThat(r.header("X-Aster-Package-Layout-Reason")).isNull();
     assertThat(r.header("Content-Disposition")).isEqualTo(
         "attachment; filename=\"aster.pilot.credit-v3-jre-b.zip\"; filename*=UTF-8''aster.pilot.credit-v3-jre-b.zip");
     Map<String, byte[]> files = unzip(zip);
@@ -76,9 +80,11 @@ class PackageExportDownloadTest {
     AuditLog row = exportEvent(tenant);
     @SuppressWarnings("unchecked")
     Map<String, Object> meta = JSON.readValue(row.metadata, Map.class);
-    // 追加器不写值为 null 的键：jre 包的 nodeCheck 因此缺省（node 包见 nodeWithMatchingProbesSucceedsWithNodeCheck）
+    // 追加器不写值为 null 的键：jre 包的 nodeCheck 与未送排版时的 layoutSha256 因此缺省
+    // （node 包见 nodeWithMatchingProbesSucceedsWithNodeCheck，排版见 layoutRequestsSetTheLayoutHeadersAndAudit）
     assertThat(meta.keySet()).containsExactlyInAnyOrder("target", "manifestSha256", "zipSha256", "coreIrSha256",
-        "positionFreeSha256", "cliVersion", "probeCount", "kid", "claimedRef", "sourceHash", "scopesHash");
+        "positionFreeSha256", "cliVersion", "probeCount", "kid", "claimedRef", "sourceHash", "scopesHash", "layoutOutcome");
+    assertThat(meta.get("layoutOutcome")).isEqualTo("absent");
     assertThat(meta.get("target")).isEqualTo("package:jre-b");
     assertThat(meta.get("zipSha256")).isEqualTo(sha(zip));
     assertThat(meta.get("manifestSha256")).isEqualTo(sha(files.get("manifest.json")));
@@ -114,6 +120,69 @@ class PackageExportDownloadTest {
     assertThat(manifest.at("/runtime/cli/name").asText()).isEqualTo("@aster-cloud/aster-lang-ts");
     assertThat(JSON.readTree((String) JSON.readValue(exportEvent(tenant).metadata, Map.class).get("nodeCheck"))
         .get("tsVersion").asText()).isEqualTo("3.6.0");
+  }
+
+  /** 与 cloud 同形的《静夜思》导出请求体（冻结 aliasSet、allowStructural、合并词汇）。 */
+  private static Map<String, Object> jingyesiRequest(String target, String layout) {
+    Map<String, Object> r = request(target, JingyesiPolicy.SOURCE);
+    r.put("locale", JingyesiPolicy.LOCALE);
+    r.put("aliasSet", JingyesiPolicy.ALIAS_SET);
+    r.put("allowStructural", true);
+    r.put("vocabulary", JingyesiPolicy.vocabulary());
+    r.put("entry", JingyesiPolicy.ENTRY);
+    r.put("uiLocale", "zh");
+    if (layout != null) {
+      r.put("layout", layout);
+    }
+    return r;
+  }
+
+  /** ADR 0059 修订 4 D11–D12：排版随包时头为 included、审计记 layoutSha256 与 layoutOutcome；不合规时省略、照常 200。 */
+  @Test
+  void layoutRequestsSetTheLayoutHeadersAndAudit() throws Exception {
+    String tenant = "tenant-pkg-dl-layout";
+    Response r = hmacPost(PATH, jingyesiRequest("jre", JingyesiPolicy.LAYOUT_JSON), tenant);
+    assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
+    assertThat(r.header("X-Aster-Package-Layout")).isEqualTo("included");
+    assertThat(r.header("X-Aster-Package-Layout-Reason")).isNull();
+    Map<String, byte[]> files = unzip(r.asByteArray());
+    assertThat(JSON.readTree(files.get("manifest.json")).get("formatVersion").asText()).isEqualTo("1.1");
+    assertThat(new String(files.get("policy/display/display.aster"), StandardCharsets.UTF_8)).isEqualTo(JingyesiPolicy.DISPLAY);
+    @SuppressWarnings("unchecked")
+    Map<String, Object> meta = JSON.readValue(exportEvent(tenant).metadata, Map.class);
+    assertThat(meta.get("layoutOutcome")).isEqualTo("included");
+    assertThat(meta.get("layoutSha256")).isEqualTo(sha(JingyesiPolicy.LAYOUT_JSON.getBytes(StandardCharsets.UTF_8)));
+
+    String omittedTenant = "tenant-pkg-dl-layout-omitted";
+    String broken = JingyesiPolicy.LAYOUT_JSON.replace("{\"text\":\"明月光\"}", "{\"text\":\"明月光光\"}");
+    Response o = hmacPost(PATH, jingyesiRequest("jre", broken), omittedTenant);
+    assertThat(o.statusCode()).as(o.asString()).isEqualTo(200);
+    assertThat(o.header("X-Aster-Package-Layout")).isEqualTo("omitted");
+    assertThat(o.header("X-Aster-Package-Layout-Reason")).isEqualTo("display_rules_failed");
+    Map<String, byte[]> plain = unzip(o.asByteArray());
+    assertThat(JSON.readTree(plain.get("manifest.json")).get("formatVersion").asText()).isEqualTo("1.0");
+    assertThat(plain).doesNotContainKey("policy/display/layout.json");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> omittedMeta = JSON.readValue(exportEvent(omittedTenant).metadata, Map.class);
+    assertThat(omittedMeta.get("layoutOutcome")).isEqualTo("omitted:display_rules_failed");
+    assertThat(omittedMeta.get("layoutSha256")).isEqualTo(sha(broken.getBytes(StandardCharsets.UTF_8)));
+  }
+
+  /** 修订 4 D12：layout 超过 49 152 字节 → 400 layout_too_large，不导出、不审计；check / prepare 不读 layout。 */
+  @Test
+  void oversizeLayoutIsRejectedBeforeExport() {
+    String tenant = "tenant-pkg-dl-layout-large";
+    String huge = "x".repeat(49_153);
+    Response r = hmacPost(PATH, jingyesiRequest("jre", huge), tenant);
+    assertThat(r.statusCode()).isEqualTo(400);
+    assertThat(r.jsonPath().getString("error")).isEqualTo("layout_too_large");
+    assertThat(exportEvents(tenant)).isZero();
+    Response check = hmacPost(PATH + "/check", jingyesiRequest("jre", huge), tenant);
+    assertThat(check.statusCode()).as(check.asString()).isEqualTo(200);
+    // 恰好 49 152 字节不因长度被拒（随后按规则省略）
+    Response atLimit = hmacPost(PATH, jingyesiRequest("jre", "x".repeat(49_152)), tenant);
+    assertThat(atLimit.statusCode()).as(atLimit.asString()).isEqualTo(200);
+    assertThat(atLimit.header("X-Aster-Package-Layout")).isEqualTo("omitted");
   }
 
   @Test
@@ -172,9 +241,9 @@ class PackageExportDownloadTest {
         new ProbeRunner.ProbesFile(new byte[0], 256, "c".repeat(64)),
         new PackagePrepared.Runtime("@aster-cloud/aster-lang-ts", "9".repeat(64), "1.0.49"));
     PackageAssembler.AssembledPackage pkg = new PackageAssembler.AssembledPackage(new byte[0], "d".repeat(64),
-        "e".repeat(64), "m-v1-node-b", "k".repeat(64));
+        "e".repeat(64), "m-v1-node-b", "k".repeat(64), PackageLayoutGate.LayoutOutcome.omitted("display_rules_failed"));
     Map<String, Object> m = PackageExportResource.auditMetadata(spec, p, pkg,
-        new PackageAssembler.NodeCheck("9".repeat(64), 256));
+        new PackageAssembler.NodeCheck("9".repeat(64), 256), "{}");
     assertThat(JSON.writeValueAsString(m).length()).isLessThan(AuditChainAppender.MAX_METADATA_SIZE);
   }
 

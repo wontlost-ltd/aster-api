@@ -127,10 +127,42 @@ class PackageAssemblerTest {
         in -> new PackageAssembler.PackageInputs(in.moduleName(), in.target(), in.uiLocale(),
             (new String(in.source(), StandardCharsets.UTF_8) + "\n").getBytes(StandardCharsets.UTF_8),
             in.aliasSetCanonicalJson(), in.vocabularyCanonicalJson(), in.schemas(), in.probes(), in.fields(),
-            in.jreCliVersion(), in.tsCliVersion()));
+            in.jreCliVersion(), in.tsCliVersion()),
+        // 修订 4 D14：排版序列化字节进入可复现元组
+        in -> in.withLayout(PackageLayoutGate.LayoutOutcome.included(LAYOUT, DISPLAY)),
+        in -> in.withLayout(PackageLayoutGate.LayoutOutcome.included(
+            "{\"v\":1,\"spans\":[{\"text\":\"x\"}]}".getBytes(StandardCharsets.UTF_8), DISPLAY)));
     for (UnaryOperator<PackageAssembler.PackageInputs> change : changes) {
       assertThat(UNSIGNED.assemble(change.apply(base)).manifestSha256()).isNotEqualTo(h);
     }
+  }
+
+  private static final byte[] LAYOUT = "{\"v\":1,\"spans\":[{\"text\":\"a\"}]}".getBytes(StandardCharsets.UTF_8);
+  private static final byte[] DISPLAY = "a".getBytes(StandardCharsets.UTF_8);
+
+  @Test
+  void includedLayoutWritesTwoPayloadFilesAndFormat11WhileOtherOutcomesStayFormat10() throws Exception {
+    PackageAssembler.PackageInputs base = inputs(fields(3, "tc", null, "1.0.49"), "jre", source(), null);
+    PackageAssembler.AssembledPackage plain = UNSIGNED.assemble(base);
+    assertThat(plain.layout().status()).isEqualTo("absent");
+    for (PackageLayoutGate.LayoutOutcome other : List.of(PackageLayoutGate.LayoutOutcome.absent(),
+        PackageLayoutGate.LayoutOutcome.omitted("cli_unsupported"))) {
+      PackageAssembler.AssembledPackage p = UNSIGNED.assemble(base.withLayout(other));
+      assertThat(p.zip()).as(other.status()).isEqualTo(plain.zip());
+      assertThat(p.layout()).isEqualTo(other);
+    }
+    PackageAssembler.AssembledPackage p = UNSIGNED.assemble(base.withLayout(PackageLayoutGate.LayoutOutcome.included(LAYOUT, DISPLAY)));
+    Map<String, byte[]> files = unzip(p.zip());
+    assertThat(files.get("policy/display/layout.json")).isEqualTo(LAYOUT);
+    assertThat(files.get("policy/display/display.aster")).isEqualTo(DISPLAY);
+    JsonNode m = JSON.readTree(files.get("manifest.json"));
+    assertThat(m.get("formatVersion").asText()).isEqualTo("1.1");
+    assertThat(m.get("display").toString()).isEqualTo("{\"layoutVersion\":1}");
+    assertThat(m.get("files").findValuesAsText("path")).contains("policy/display/display.aster", "policy/display/layout.json");
+    assertThat(JsonSchemas.errors(EntrySchemaGeneratorTest.FIXTURES.resolve("schema/manifest-1.1.schema.json"), m)).isEmpty();
+    // manifest 规范字节：display 按码点序排在 coreIr / effects 之后、exportedBy 之前
+    String text = new String(files.get("manifest.json"), StandardCharsets.UTF_8);
+    assertThat(text.indexOf("\"display\":")).isBetween(text.indexOf("\"coreIr\":"), text.indexOf("\"effects\":"));
   }
 
   private static PackageAssembler.PackageInputs withFields(PackageAssembler.PackageInputs in, PackageAssembler.ManifestFields f) {
@@ -166,7 +198,26 @@ class PackageAssemblerTest {
     for (String locale : List.of("en", "zh", "de")) {
       assertThat(new String(PackageReadme.render(locale, pinned), StandardCharsets.UTF_8)).as(locale)
           .contains("https://github.com/aster-cloud/aster-lang-ts/releases/tag/v3.6.0", "aster.mjs.sha256", "node aster.mjs")
-          .doesNotContain("npx", "npm i -g", "{{");
+          .doesNotContain("npx", "npm i -g", "{{", "display.aster");
     }
+  }
+
+  /** 修订 4 D12：带排版的包 README 末尾多一节显示排版说明（三语，hi 回落 en），不带排版时与之前相同。 */
+  @Test
+  void readmeAppendsTheDisplaySectionOnlyForLayoutPackages() {
+    PackageReadme.Data plain = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.6.0", "1.0.53",
+        "3.6.0", List.of());
+    PackageReadme.Data display = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.6.0", "1.0.53",
+        "3.6.0", List.of(), true);
+    Map<String, String> headings = Map.of("en", "## Display layout", "zh", "## 显示排版", "de", "## Anzeigelayout");
+    for (String locale : List.of("en", "zh", "de")) {
+      String without = new String(PackageReadme.render(locale, plain), StandardCharsets.UTF_8);
+      String with = new String(PackageReadme.render(locale, display), StandardCharsets.UTF_8);
+      assertThat(with).as(locale).startsWith(without + "\n" + headings.get(locale))
+          .contains("policy/display/display.aster", "aster show <package.zip>", "--display poem.txt", "DISPLAY_AMBIGUOUS",
+              "@aster-cloud/aster-lang-ts 3.6.0")
+          .doesNotContain("{{");
+    }
+    assertThat(PackageReadme.render("hi", display)).isEqualTo(PackageReadme.render("en", display));
   }
 }
