@@ -19,7 +19,7 @@
 | 角色怎样到 aster-api | 对账三个调用签名时 `X-User-Role` = 该用户在该租户的**当前**团队角色（个人租户为 `owner`），服务端每次现查、不信客户端；aster-api 的 `Role` 与 cloud `TeamRole` 同名同序，原样下发。其他调用路径不变（仍签 `member`） |
 | 破坏性动作 | 只有「确认」（`OPEN → ACKNOWLEDGED`，不可撤销，入链）。**不做**删除、重新绑定决策、批量确认、撤销确认 |
 | 查询扩展 | `GET …/orphans` 加 `severity=critical|warning|info`（可逗号多选）；列表项加 `ackComment`。无迁移 |
-| 关联决策与收据 | cloud BFF 用既有 `GET /api/v1/guard/decisions/{id}` 与 `GET /api/v1/audit/receipts?decisionIds=`，不新增 aster-api 端点；决策 404 本身就是证据（「本租户无此决策」） |
+| 关联决策与收据 | cloud BFF 用既有 `GET /api/v1/guard/decisions/{id}` 与 `GET /api/v1/audit/receipts?decisionIds=`，不新增 aster-api 端点；决策 404 只说明「本工作区没有这条决策行」，链收据另行展示（`orphan_receipt` 正是「有链事件、无决策行」） |
 | 页面 | `/governance` 加一张跨租户「Guard 对账」摘要卡（客户端加载，不阻塞 SSR）；明细在新页 `/governance/reconciliation`，按租户 |
 
 ---
@@ -70,11 +70,12 @@
 
 ### 3.2 角色怎样签给 aster-api
 
-对账专用的客户端工厂 `createReconciliationClient(tenantId, userId)`：
+对账专用的客户端工厂 `createReconciliationClient(tenantId, userId)`，**每个请求在路由处理函数内调用一次**，结果不缓存、不跨请求复用：
 
 1. 现查 `getTeamMemberRole(userId, tenantId)`（`freshDb`）；个人租户取 `SOLO_TENANT_ROLE`（`owner`）；查不到 → 不建客户端（403）。
 2. 以该角色作 `userRole` 构造 `PolicyApiClient`；签名把它签进 v3 规范串。
 3. 角色**只**由服务端会话 + 现查得出，请求体 / 查询串里的任何角色字段一律忽略。
+4. 工厂**不返回** `PolicyApiClient`，只返回窄接口 `ReconciliationApi { summary, listOrphans, ackOrphan, getDecision }`：带 `admin` / `owner` 签名的客户端被闭包在内，调用方拿不到其他方法（aster-api 还有别的 `ADMIN` 端点，如 `AuditLogResource`、`PolicyAnalyticsResource`，窄接口使它们结构上不可达）。源码扫描测试钉住「全仓只有 `access.ts` 以非缺省角色调用 `createPolicyApiClientForUser`」。
 
 由此 aster-api 的 `@RequireRole` 成为第二道真边界：即使 cloud 的 UI 判定有漏洞，`viewer` 列表、`member` 确认都会在 aster-api 403。其他 cloud→aster-api 路径保持签 `member`，不在本 ADR 范围（扩大到其他路径需各自评估）。
 
@@ -99,11 +100,11 @@ cloud BFF 按 `(tenantId, decisionId)` 组装「决策上下文」，三个来�
 
 | 来源 | 给出 | 404 / 失败 |
 |---|---|---|
-| `GET /api/v1/guard/decisions/{id}` | outcome、原因码、策略地址、`consumedBy`、`result` | 404 → `decision: null`，显示「本工作区没有这个决策」（对 `side_effect_without_decision`、`orphan_receipt` 这正是事实）；失败 → `unavailable` |
-| `GET /api/v1/audit/receipts?decisionIds=` | 链上决策事件、consume 尝试（含权威那条）、结果、审批 | missing / unavailable 如实标注 |
+| `GET /api/v1/guard/decisions/{id}` | outcome、原因码、策略地址、`consumedBy`、`result` | 404 → `not_found`，按 kind 解释：`orphan_receipt` =「链上有决策事件、本工作区无决策行」（同时展示找到的链事件）；`side_effect_without_decision` =「上报方声称的决策 id 在本工作区不存在」（**不**断言它在别处不存在）；其他 kind 出现 404 属异常，如实显示；失败 → `unavailable` |
+| `GET /api/v1/audit/receipts?decisionIds=` | 链上决策事件、consume 尝试（含权威那条）、结果、审批（按租户查 `audit_logs`，不依赖决策行） | missing → `not_found`；请求失败 → `unavailable`；不影响其他两项 |
 | cloud `Execution`（`metadata->>'guardDecisionId'`，且执行所属策略的租户 = 本租户） | 链到 `/policies/{policyId}/logs` | 无匹配则不显示 |
 
-有审批时另链 `/approvals?status=<审批状态>&decisionId=<id>`。**只在当前租户内查**，不尝试其他租户（不泄露他租户决策是否存在，ADR 0054 §10.3）。
+孤儿行的 `decisionId` 来自 UUID 列（`guard_orphan_actions.decision_id`），要么是合法 UUID 要么缺省；无 `decisionId` 的行不查上下文，显示「上报未带决策 id」。有审批时另链 `/approvals?status=<审批状态>&decisionId=<id>`。**只在当前租户内查**，不尝试其他租户（不泄露他租户决策是否存在，ADR 0054 §10.3）。
 
 ### 3.6 不可信文本
 

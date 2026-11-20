@@ -37,9 +37,10 @@
 - aster-api 改动只限 ADR 0061 §3.4：`severity`（`critical | warning | info`，逗号多选，不得重复或空项，与 `kind` 取交集，非法 → 400 `{"error":"invalid_query"}`）与可选字段 `ackComment`。其余响应字节不变（既有测试原样通过）。
 - 角色映射（ADR 0061 §3.2）：只有对账客户端工厂签真实角色（个人租户 `owner`，团队取 `getTeamMemberRole` 的现查值）；**其他所有 cloud→aster-api 调用仍签 `member`**，以测试钉住。角色永不取自请求。
 - 权限：看 = 个人租户本人或团队角色 ≥ `member`；确认 = 个人租户本人或团队角色 ≥ `admin`；判定用 `getRoleLevel`，不新增 `TeamPermission` 常量。
-- 只在当前租户内查决策与执行；决策 404 显示为「本工作区没有这个决策」，绝不尝试其他租户。
+- 只在当前租户内查决策、链收据与执行，绝不尝试其他租户；决策 404 只表示「本工作区无此决策行」，按 kind 措辞（ADR 0061 §3.5），不断言该 id 在别处不存在。
+- 签非 `member` 角色的客户端只经 `ReconciliationApi` 窄接口可达，每请求新建、不缓存（ADR 0061 §3.2）。
 - 上报方可控文本（`detail.*`、`executorId`、`executor`、`source`、`actionName`、`resource*`）只作 React 文本节点；单值超过 256 字符折叠显示；不渲染为链接。
-- BFF 在把上游结果交给 UI 前**总是**按请求的 severity 再过滤一次（旧 api 会忽略 `severity`）。
+- BFF 在把上游结果交给 UI 前**总是**按请求的 severity 再过滤一次（旧 api 会忽略 `severity`）；检测到旧 api 时按 T3 `fillFilteredPage` 续取，至多 5 次上游调用。
 - 确认说明：去首尾空白后 1–1000 字符（cloud 先校验，aster-api 再校验）。
 - 错误响应形状同签发方：`{ error, message, requestId? }`；上游 408 / 5xx / 网络错误 → 502 `upstream_unavailable` 带 `requestId`；上游 400 / 409 按原状态与错误码透传英文文案；上游 404（确认）→ 404 `orphan_not_found`。
 - 跨租户摘要：并发 4、单租户超时 `GUARD_TIMEOUT_MS`，单租户失败只进 `unavailableTenants`；摘要卡在客户端加载，`/governance` 的 SSR 不增加任何 aster-api 调用。
@@ -49,7 +50,7 @@
 
 ## Review Focus
 
-1. **旧 aster-api 忽略 `severity`**：cloud 先于 A1 部署时，选「critical」不得出现 info 行——BFF 二次过滤（T3 `filters by severity even when upstream ignores it`）。
+1. **旧 aster-api 忽略 `severity`**：cloud 先于 A1 部署时，选「critical」不得出现 info 行——BFF 二次过滤并续取（T3 `filters by severity even when upstream ignores it`、`stops after 5 upstream pages`）。
 2. **会话中被降级的管理员**：页面仍显示「确认」按钮，点下去 BFF 现查角色 → 403，且不调用 aster-api；UI 提示并刷新权限（T3 `ack re-reads the role per request`，T7 `ack 403 hides the button`）。
 3. **`side_effect_without_decision` 带他租户的真实 decisionId**：决策上下文只以当前租户签名查询，得到 404 → `decision: null`，无其他租户请求（T4 `never queries another tenant`）。
 4. **确认与自动解除竞态**：对账把行改成 `RESOLVED` 后管理员再确认 → 409 `not_open`，UI 用响应里的 `status` 更新该行并提示，不报通用错误（T3、T7）。
@@ -78,7 +79,7 @@
 
 ## 命令约定
 
-| 记号 | 完整命令（在对应仓库根目录执行） |
+| 记号 | 完整命令（工作目录：`AT` / `AG` 在 aster-api 仓库根；`CU` / `CI` / `CT` / `CALL` 在 aster-cloud 仓库根） |
 |---|---|
 | `AT <tests>` | aster-api：`./gradlew --offline :test --tests '<tests>'`（PG / Redis 用 podman 起，端口避开 :55432 / :6379，环境变量同 `2026-11-14-guard-reconciliation.md` 的「本地测试」） |
 | `AG` | aster-api guard 套件：`./gradlew --offline :test --tests 'io.aster.guard.*' --tests 'io.aster.security.apikey.*' --tests 'io.aster.api.PublicApiContractTest'` |
@@ -152,8 +153,8 @@ cloud      PR-C1 (T2–T4, BFF)  ── 任何时候可合 ──┴──▶ PR
 
 **Files:**
 - Create: `src/lib/guard-reconciliation/kinds.ts`、`query.ts`、`access.ts`
-- Modify: `src/services/policy/guard-types.ts`（新增下列类型）
-- Test: `src/__tests__/lib/guard-reconciliation/kinds.test.ts`、`query.test.ts`、`access.test.ts`
+- Modify: `src/services/policy/guard-types.ts`（新增下列类型）、`src/config/api-versions.ts`（`guardReconciliation`、`guardReconciliationOrphans`、`guardOrphanAck(id: number)`）、`src/services/policy/policy-api.ts`（三个方法）
+- Test: `src/__tests__/lib/guard-reconciliation/kinds.test.ts`、`query.test.ts`、`access.test.ts`、`role-scope.test.ts`、`src/__tests__/services/policy-api-guard-reconciliation.test.ts`
 
 **Interfaces:**
 - Produces（`guard-types.ts`）：
@@ -169,27 +170,31 @@ cloud      PR-C1 (T2–T4, BFF)  ── 任何时候可合 ──┴──▶ PR
   - `interface ReconciliationAccess { role: TeamRole; canView: boolean; canAck: boolean }`
   - `reconciliationAccess(userId: string, tenantId: string): Promise<ReconciliationAccess | null>`（个人租户 → `owner`；团队 → `getTeamMemberRole`；非成员 → null；`canView = level ≥ member`，`canAck = level ≥ admin`）
   - `listReconciliationTenants(userId: string): Promise<{ id: string; name: string; access: ReconciliationAccess }[]>`（个人租户 + `freshDb` 查 `teamMembers`（含 `role` 与团队名），只返回 `canView`）
-  - `createReconciliationClient(tenantId: string, userId: string): Promise<{ client: PolicyApiClient; access: ReconciliationAccess } | null>`（`canView` 为假 → null；否则 `createPolicyApiClientForUser(tenantId, userId, access.role)`）
+  - `interface ReconciliationApi { summary(): Promise<GuardReconciliationSummary>; listOrphans(q: GuardOrphanQuery): Promise<GuardOrphanPage>; ackOrphan(id: number, comment: string): Promise<GuardOrphan>; getDecision(id: string): Promise<GuardDecision> }`——**窄接口**：带非 `member` 角色签名的 `PolicyApiClient` 闭包在内，不对外暴露（ADR 0061 §3.2 第 4 条）。
+  - `createReconciliationClient(tenantId: string, userId: string): Promise<{ api: ReconciliationApi; access: ReconciliationAccess } | null>`（`canView` 为假 → null；否则以 `createPolicyApiClientForUser(tenantId, userId, access.role)` 建客户端并包装）。**每个请求在路由处理函数内调用一次，不缓存、不放模块作用域。**
+- Produces（`PolicyApiClient`，只供 `ReconciliationApi` 包装）：`getGuardReconciliation(): Promise<GuardReconciliationSummary>`；`listGuardOrphans(q: GuardOrphanQuery): Promise<GuardOrphanPage>`（查询串 = `orphanQueryToSearch(q)`）；`ackGuardOrphan(id: number, comment: string): Promise<GuardOrphan>`（`id` 非正整数时本地抛 `PolicyApiError(…, 400, 'invalid_id')`）。均用 `GUARD_TIMEOUT_MS`。
 
 - [ ] **Step 1: 写失败的测试**：
   - `kinds.test.ts`：`ORPHAN_KINDS` 恰为 8 项，字面量与 severity 逐一等于 aster-api `OrphanKind`（critical：前三项 + `consume_on_non_allow` + `result_without_consume`；warning：`consumed_without_result`；info：`allow_unconsumed`、`orphan_receipt`）；`autoResolvable` 恰为 warning 与两个 info；`countsBySeverity({ side_effect_mismatch: 2, allow_unconsumed: 5, bogus: 9 } as never)` → `{ critical: 2, warning: 0, info: 5 }`。
   - `query.test.ts`：空参数 → `DEFAULT_ORPHAN_QUERY`；`severity=all` → `severities: []` 且 `orphanQueryToSearch` 无 `severity`；`severity=info,critical` → 保持给定顺序；非法 `status=open`、`severity=high`、`kind=x`、`limit=0`、`limit=201`、`before=-1`、`before=1e3` → null。
-  - `access.test.ts`（mock `getTeamMemberRole`、`createPolicyApiClientForUser`）：个人租户 → `{ role: 'owner', canView: true, canAck: true }`；团队 `viewer` → `canView: false` 且 `createReconciliationClient` 返回 null、不建客户端；`member` → 可看不可确认；`admin` / `owner` → 都可；非成员 → null；`createReconciliationClient` 把 `access.role` 作第三参数传给 `createPolicyApiClientForUser`；**回归**：`createPolicyApiClientForUser` 的缺省第三参数仍是 `'member'`（ADR 0061 §3.2 范围钉）。
-- [ ] **Step 2:** `CU src/__tests__/lib/guard-reconciliation/` → FAIL。
-- [ ] **Step 3:** 按 Interfaces 实现三文件与类型。
-- [ ] **Step 4:** `CU src/__tests__/lib/guard-reconciliation/` → PASS；`CT` → PASS。
+  - `access.test.ts`（mock `getTeamMemberRole`、`createPolicyApiClientForUser`）：个人租户 → `{ role: 'owner', canView: true, canAck: true }`；团队 `viewer` → `canView: false` 且 `createReconciliationClient` 返回 null、不建客户端；`member` → 可看不可确认；`admin` / `owner` → 都可；非成员 → null；`createReconciliationClient` 把 `access.role` 作第三参数传给 `createPolicyApiClientForUser`；`createReconciliationClient` 的返回值键集恰为 `api`、`access`，`api` 的键集恰为 `summary / listOrphans / ackOrphan / getDecision`；**回归**：`createPolicyApiClientForUser` 的缺省第三参数仍是 `'member'`。
+  - `role-scope.test.ts`（源码扫描，ADR 0061 §3.2 范围钉）：遍历 `src/**/*.{ts,tsx}`（不含 `__tests__`），以非缺省角色调用 `createPolicyApiClientForUser(`（三个及以上实参）或 `new PolicyApiClient(`（第三实参不是字面量 `'member'`）的文件，恰好只有 `src/lib/guard-reconciliation/access.ts`（扫描前先断言能在已知现存调用点上正确数出实参个数，防止正则失效而假通过）。
+  - 客户端：`listGuardOrphans` 发出 `GET /api/v1/guard/reconciliation/orphans?status=OPEN&severity=critical%2Cwarning&limit=50`，签名的 `X-User-Role` 为构造时的角色；`ackGuardOrphan(0, 'x')` 本地 400 不发请求。
+- [ ] **Step 2:** `CU src/__tests__/lib/guard-reconciliation/ src/__tests__/services/policy-api-guard-reconciliation.test.ts` → FAIL。
+- [ ] **Step 3:** 按 Interfaces 实现三文件、类型与客户端方法。
+- [ ] **Step 4:** 同 Step 2 → PASS；`CT` → PASS。
 - [ ] **Step 5:** Commit。
 
-### Task 3: 客户端方法与 BFF 路由（列表、确认、跨租户摘要）（cloud，PR-C1）
+### Task 3: BFF 路由（列表、确认、跨租户摘要）（cloud，PR-C1）
 
 **Files:**
-- Modify: `src/config/api-versions.ts`（`guardReconciliation`、`guardReconciliationOrphans`、`guardOrphanAck(id: number)`）、`src/services/policy/policy-api.ts`（三个方法）、`src/lib/upstream-error-messages.ts`（`invalid_query`、`invalid_ack`、`not_open`、`orphan_not_found`）
+- Modify: `src/lib/upstream-error-messages.ts`（`invalid_query`、`invalid_ack`、`not_open`、`orphan_not_found`）
 - Create: `src/lib/guard-reconciliation/overview.ts`、`src/app/api/guard-reconciliation/_shared.ts`、`route.ts`、`[tenantId]/route.ts`、`[tenantId]/orphans/[orphanId]/ack/route.ts`
-- Test: `src/__tests__/services/policy-api-guard-reconciliation.test.ts`、`src/__tests__/api/guard-reconciliation-routes.test.ts`、`src/__tests__/lib/guard-reconciliation/overview.test.ts`
+- Test: `src/__tests__/api/guard-reconciliation-routes.test.ts`、`src/__tests__/lib/guard-reconciliation/overview.test.ts`
 
 **Interfaces:**
-- Consumes: T2 全部。
-- Produces（`PolicyApiClient`）：`getGuardReconciliation(): Promise<GuardReconciliationSummary>`；`listGuardOrphans(q: GuardOrphanQuery): Promise<GuardOrphanPage>`（查询串 = `orphanQueryToSearch(q)`）；`ackGuardOrphan(id: number, comment: string): Promise<GuardOrphan>`（`id` 非正整数时本地抛 `PolicyApiError(…, 400, 'invalid_id')`）。均用 `GUARD_TIMEOUT_MS`。
+- Consumes: T2 全部（路由只经 `ReconciliationApi` 访问 aster-api）。
+- Produces（`[tenantId]/route.ts` 内的 `fillFilteredPage(api: ReconciliationApi, q: GuardOrphanQuery): Promise<GuardOrphanPage>`）：上游结果按 `q.severities` 再过滤；**仅当**本页出现了未请求的 severity（说明上游是忽略 `severity` 的旧 api）且过滤后不足 `q.limit` 条、上游仍有 `next` 时，以 `before = next` 继续取下一原始页，至多共 5 次上游调用。凑满 `q.limit` 时停在当前原始页内，返回的 `next` = 最后一条**返回项**的 `id`（aster-api 的 `before` 是 `id <` 游标，故不漏行）；未凑满时 `next` = 最后一次上游调用的 `next`（无则省略）。新 api 下恰好 1 次调用、`next` 原样。
 - Produces（`overview.ts`）：`interface ReconciliationTenantSummary { tenantId: string; tenantName: string; canAck: boolean; lastRunAt: string | null; openBySeverity: Record<GuardOrphanSeverity, number>; openTotal: number }`；`listReconciliationOverview(userId: string): Promise<{ tenants: ReconciliationTenantSummary[]; unavailableTenants: string[] }>`（按 critical 降序、再按 openTotal 降序、个人租户优先）。
 - Produces（路由）：
   - `GET /api/guard-reconciliation` → `listReconciliationOverview` 的结果。
@@ -197,17 +202,19 @@ cloud      PR-C1 (T2–T4, BFF)  ── 任何时候可合 ──┴──▶ PR
   - `POST /api/guard-reconciliation/[tenantId]/orphans/[orphanId]/ack`，体 `{ comment }` → 200 `GuardOrphan`；`canAck` 假 → 403；上游 409 → 409 `{ error: 'not_open', status }`。
 
 - [ ] **Step 1: 写失败的测试**：
-  - 客户端：`listGuardOrphans` 发出 `GET /api/v1/guard/reconciliation/orphans?status=OPEN&severity=critical%2Cwarning&limit=50`，签名的 `X-User-Role` 为构造时的角色；`ackGuardOrphan(0, 'x')` 本地 400 不发请求。
   - 路由（mock `access` 与客户端）：
     - `401 without session`；`403 for viewer and non-member, upstream not called`。
     - `400 invalid_query for severity=high, upstream not called`。
-    - `filters by severity even when upstream ignores it`：上游返回 critical + info，请求 `severity=critical` → 只回 critical，`next` 原样保留。
+    - `filters by severity even when upstream ignores it`：上游（模拟旧 api）第一页 2 critical + 48 info 带 `next`，第二页 50 critical 带 `next`；请求 `severity=critical&limit=50` → 回 50 条全为 critical（第一页 2 条 + 第二页前 48 条），上游调用 2 次，`next` = 第 50 条返回项的 `id`；再以该 `next` 请求 → 第二页剩下的 2 条 critical 出现（不漏行）。
+    - `stops after 5 upstream pages`：上游每页全为 info 且一直有 `next` → 恰 5 次调用，`items: []`，`next` = 第 5 页的上游 `next`（UI 可继续加载）。
+    - `new api: single upstream call`：上游只返回请求的 severity → 1 次调用，`next` 原样。
     - `resolves acknowledgedBy via loadTenantMemberProfiles; profile lookup failure degrades to null`。
     - `member cannot ack (403, upstream not called)`；`admin ack passes trimmed comment`；`blank or 1001-char comment → 400 invalid_ack, upstream not called`。
-    - `ack re-reads the role per request`：同一用户两次请求之间角色由 `admin` 改为 `member` → 第二次 403。
+    - `ack re-reads the role per request`：同一用户两次请求之间角色由 `admin` 改为 `member` → 第二次 403、不调用上游；`createReconciliationClient` 被调用 2 次（无缓存）。
+    - `list re-reads the role per request`：两次列表请求之间角色由 `member` 改为 `viewer` → 第二次 403、不调用上游。
     - `upstream 409 not_open → 409 with current status`；`upstream 404 → 404 orphan_not_found`；`upstream 503 / timeout → 502 upstream_unavailable with requestId`。
   - 概览：三个租户，其中一个上游抛错 → 它进 `unavailableTenants`、其余正常；`viewer` 团队不出现；排序符合 Interfaces；并发不超过 4（计数在途 promise）。
-- [ ] **Step 2:** `CU src/__tests__/services/policy-api-guard-reconciliation.test.ts src/__tests__/api/guard-reconciliation-routes.test.ts src/__tests__/lib/guard-reconciliation/overview.test.ts` → FAIL。
+- [ ] **Step 2:** `CU src/__tests__/api/guard-reconciliation-routes.test.ts src/__tests__/lib/guard-reconciliation/overview.test.ts` → FAIL。
 - [ ] **Step 3:** 实现；`_shared.ts` 照 `src/app/api/fact-issuers/_shared.ts` 的结构（错误文案改为对账语境），不复制其签发方专用分支。
 - [ ] **Step 4:** 同 Step 2 → PASS；`CT` → PASS。
 - [ ] **Step 5:** Commit。
@@ -219,17 +226,19 @@ cloud      PR-C1 (T2–T4, BFF)  ── 任何时候可合 ──┴──▶ PR
 - Test: `src/__tests__/lib/guard-reconciliation/decision-context.test.ts`、`src/__tests__/integration/guard-reconciliation-execution-link.integration.test.ts`
 
 **Interfaces:**
-- Consumes: T2 `createReconciliationClient`；既有 `PolicyApiClient.getGuardDecision`、`fetchDecisionReceipts`、`policyTenantId`。
+- Consumes: T2 `createReconciliationClient` / `ReconciliationApi.getDecision`；既有 `fetchDecisionReceipts`（它自签 `member`，不经窄接口）、`policyTenantId`。
 - Produces：
   - `type Part<T> = { state: 'ok'; value: T } | { state: 'not_found' } | { state: 'unavailable' }`
   - `interface DecisionContext { decisionId: string; decision: Part<GuardDecision>; chain: Part<{ decision: ChainReceipt | null; consumes: ChainConsume[]; results: ChainResult[]; approvals: ChainApproval[] }>; execution: { policyId: string; executionId: string } | null; approvalLink: { status: GuardApprovalStatus } | null }`
-  - `loadDecisionContext(tenantId: string, client: PolicyApiClient, decisionId: string): Promise<DecisionContext>`（三个来源并发，互不影响）；`findExecutionForDecision(tenantId: string, decisionId: string): Promise<{ policyId: string; executionId: string } | null>`（按 `metadata->>'guardDecisionId'` 查最新一条，且其策略的 `policyTenantId` = `tenantId`）。
-  - 路由 `GET …/decisions/[decisionId]` → `DecisionContext`；非 UUID → 404 不调用上游；无 `canView` → 403。
+  - `loadDecisionContext(tenantId: string, api: ReconciliationApi, decisionId: string): Promise<DecisionContext>`（三个来源并发，互不影响）；`findExecutionForDecision(tenantId: string, decisionId: string): Promise<{ policyId: string; executionId: string } | null>`（按 `metadata->>'guardDecisionId'` 查最新一条，且其策略的 `policyTenantId` = `tenantId`）。
+  - 路由 `GET …/decisions/[decisionId]` → `DecisionContext`；非 UUID → 400 `invalid_decision_id` 不调用上游（孤儿的 `decisionId` 来自 UUID 列，正常不会发生；UI 按 `unavailable` 显示）；无 `canView` → 403。
 
 - [ ] **Step 1: 写失败的测试**：
   - `decision 404 → decision.state 'not_found', chain still loaded`。
   - `getGuardDecision throws 503 → decision 'unavailable', others ok`。
-  - `chain lookup reports missing → chain 'not_found'; unavailable → 'unavailable'`。
+  - `chain lookup reports missing → chain 'not_found'; unavailable → 'unavailable'`；`fetchDecisionReceipts rejects → chain 'unavailable', decision and execution still returned`。
+  - `orphan_receipt shape`：决策 404 + 链上有决策事件 → `decision.state === 'not_found'` 且 `chain.state === 'ok'`、`chain.value.decision` 非空。
+  - `execution lookup throws → execution null, others ok`。
   - `approvalLink from latest chain approval outcome`（`APPROVED` → `{ status: 'APPROVED' }`；无审批 → null）。
   - `never queries another tenant`：`fetchDecisionReceipts` 与客户端只以入参 `tenantId` 被调用一次。
   - 集成（PG）：两条执行带同一 `guardDecisionId`，一条属本租户策略、一条属他租户 → 只返回本租户那条；无匹配 → null。
@@ -273,7 +282,7 @@ cloud      PR-C1 (T2–T4, BFF)  ── 任何时候可合 ──┴──▶ PR
   - `switching status to ACKNOWLEDGED shows ackComment and acknowledger`。
   - `load more appends with before=next and hides button when next is absent`。
   - `tenant without canAck shows no ack button`。
-  - `decision context states`：ok（outcome、策略地址、consumedBy、result、执行链接、审批链接）/ not_found（「本工作区没有这个决策」）/ unavailable（可重试）。
+  - `decision context states`：ok（outcome、策略地址、consumedBy、result、执行链接、审批链接）/ not_found 按 kind 措辞（`orphan_receipt`：「链上有决策事件，本工作区无决策行」并显示链事件；`side_effect_without_decision`：「上报方声称的决策 id 在本工作区不存在」；其他 kind：「本工作区无此决策行（异常）」）/ unavailable（可重试）。
   - `renders reporter text inertly`：`detail.actionName = '<img src=x onerror=alert(1)>'`、`detail.resourceId = 'javascript:alert(1)'`、10 KB 字符串 → 文本可见（折叠）、`container.querySelector('img')` 为 null、无 `href` 含 `javascript:`。
   - `empty state per filter`；`upstream 502 shows error with requestId`。
 - [ ] **Step 2:** `CU "src/app/[locale]/(dashboard)/governance/reconciliation/"` → FAIL。
@@ -326,5 +335,5 @@ cloud      PR-C1 (T2–T4, BFF)  ── 任何时候可合 ──┴──▶ PR
 
 - 覆盖（cloud#769 四条 + ADR 0061）：列 OPEN、按 kind / severity 过滤 → T1、T2、T3、T6；管理员带说明确认并入链 → T1（`ackComment`）、T3、T7、T8；链到决策与收据 → T4、T6；四语文案 → T5、T6、T7；ADR §3.1 权限 → T2、T3、T7；§3.2 角色签名与范围钉 → T2、T3；§3.3 破坏性边界 → T7；§3.4 → T1，兼容 → T3 二次过滤与 R12；§3.5 → T4；§3.6 → T6；§3.7 → T5、T6。
 - 不在本计划：批量确认、撤销确认、通知、cloud 作为上报方、viewer 可见（ADR 0061 §2）。
-- 类型一致性：`GuardOrphan*`、`GuardReconciliationSummary`（T2）用于 T3–T7；`ReconciliationAccess` / `createReconciliationClient`（T2）用于 T3、T4、T6；`ReconciliationTenantSummary`（T3）用于 T5；`DecisionContext` / `Part`（T4）用于 T6；`parseOrphanQuery` / `orphanQueryToSearch` / `DEFAULT_ORPHAN_QUERY`（T2）用于 T3、T6。
+- 类型一致性：`GuardOrphan*`、`GuardReconciliationSummary`（T2）用于 T3–T7；`ReconciliationAccess` / `ReconciliationApi` / `createReconciliationClient`（T2）用于 T3、T4、T6；`ReconciliationTenantSummary`（T3）用于 T5；`DecisionContext` / `Part`（T4）用于 T6；`parseOrphanQuery` / `orphanQueryToSearch` / `DEFAULT_ORPHAN_QUERY`（T2）用于 T3、T6。
 - 车次门：无引擎改动；A1 随常规 aster-api 发布（发布动作先问用户）。
