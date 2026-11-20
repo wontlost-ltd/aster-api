@@ -4,7 +4,7 @@
 - 日期：2026-11-20
 - 修订对象：[ADR 0056](0056-type-inference-parity.md)，接续[修订 A3](0056-amendment-3-parity-declaration-syntax.md) §7 列出的未处理分歧
 - 相关：aster-cloud/aster-lang-ts#338、#357、#339；aster-cloud/aster-lang-truffle#183
-- 实现落点：第 1、2 节 → `aster-lang-core`、`aster-lang-ts`、`aster-lang-test` 同名分支 `fix/parity-sweep-1053`（随 eco-1.0.53）；第 3 节 → 1.0.54 或之后，另立计划
+- 实现落点：第 1、2 节 → `aster-lang-core`、`aster-lang-ts`、`aster-lang-test` 同名分支 `fix/parity-sweep-1053`（随 eco-1.0.53；§1.1 的 core 一侧工作量较大，另行跟进，见 aster-lang-ts#338）；第 3 节 → 1.0.54 或之后，另立计划
 
 ---
 
@@ -25,7 +25,7 @@ A2 §2、A3 §2 已对 `type` / `use` 按「不区分大小写、不升为硬关
 - 范围：单词关键词、`true` / `false` / `null`、单词运算符（`times`、`plus`、`minus`、`modulo`）、多词运算符（`is greater than` 等）与 `Module` / `It performs` 等句首关键词。
 - 非英语词法表：core 的关键词翻译本来就不区分大小写，zh-CN、hi-IN 没有大小写，结果不变。
 
-这是 core 的放宽，不需要门禁扫描。
+这是 core 的放宽，不需要门禁扫描。core 的实现要逐处改写关键词位置的文法（约 40 个关键词记号），与 §1.2–§2 分开落地。
 
 ### 1.2 裸小写类型名（第 2 项）
 
@@ -53,7 +53,7 @@ A2 §2、A3 §2 已对 `type` / `use` 按「不区分大小写、不升为硬关
 | # | 写法 | 修复前 core / ts | 裁决 |
 |---|---|---|---|
 | 1 | 字符串字面量里的原始换行 | E051 / 接受 | 两引擎都报 **E051**（ts 收紧）；多行文本须写转义 `\n` |
-| 2 | 块头 `:` 之后紧跟空行 | 报错 / 接受 | 两引擎都**接受**（core 放宽）：空行不影响缩进 |
+| 2 | 块头 `:` 之后紧跟空行 | 报错 / 接受 | 两引擎都**接受**（core 放宽）：空行不影响缩进。适用于 ts 已接受的块头（规则体、If / Otherwise）；Match / When / lambda / workflow 的块头两引擎此前都不收空行，维持原状 |
 | 3 | 声明头里位置不对的换行（如 `Rule f given x as Int,` 换行后写 `produce Int:`） | E062 / E055 | 两引擎都报 **E062**（ts 改用 core 的码），报在换行处 |
 
 第 1 项要跑 ts scan（字符串跨行）；第 2 项是放宽；第 3 项只改诊断码。具体正则见实现 PR。
