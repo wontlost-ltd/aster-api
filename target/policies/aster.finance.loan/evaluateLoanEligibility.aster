@@ -1,4 +1,0 @@
-Module M.
-
-Rule p given x as Int, produce Int:
-  Return x multiplied by 3.
