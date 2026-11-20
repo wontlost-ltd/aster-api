@@ -202,10 +202,10 @@ public class InProcessCnlParser {
                                               Map<SemanticTokenKind, List<String>> aliasSet,
                                               NameResolver resolver, ParseBudget budget,
                                               PredictionMode predictionMode) {
-        if (isBlankSource(source)) {
-            throw new CnlParseException(EMPTY_SOURCE_MESSAGE);
-        }
         try {
+            if (isBlankSource(source)) {
+                throw new CnlParseException(EMPTY_SOURCE_MESSAGE);
+            }
             return parseBudgeted(source, locale, scopes, aliasSet, resolver, budget, predictionMode);
         } finally {
             // 本次解析耗时计入请求级额度（aster-api#489），成功与失败一样计
