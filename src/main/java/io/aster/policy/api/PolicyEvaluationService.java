@@ -283,7 +283,10 @@ public class PolicyEvaluationService {
     }
 
     /**
-     * 内部方法：使用已解析的 versionId 评估策略
+     * 内部方法：使用已解析的 versionId 评估策略。
+     *
+     * <p>结果缓存键带租户当前 epoch（issue #484）：租户失效推进 epoch 后旧键不会再被构造出来，漏收的失效广播、
+     * 其他副本遗留在共享 Redis 的条目、失效之后才完成的在途评估回填都读不到。epoch 无法确认时绕过结果缓存。
      */
     private Uni<PolicyEvaluationResult> evaluatePolicyWithVersionId(
             String tenantId,
@@ -291,9 +294,14 @@ public class PolicyEvaluationService {
             String policyFunction,
             String versionId,
             Object[] normalizedContext) {
+        return policyCacheManager.resultEpoch(tenantId).chain(epoch -> epoch.isPresent()
+            ? evaluateCached(new PolicyCacheKey(tenantId, policyModule, policyFunction, versionId,
+                epoch.getAsLong(), normalizedContext), tenantId)
+            : evaluatePolicyWithKey(new PolicyCacheKey(tenantId, policyModule, policyFunction, versionId,
+                normalizedContext)).map(result -> adjustFromCacheFlag(result, false)));
+    }
 
-        final PolicyCacheKey cacheKey = new PolicyCacheKey(tenantId, policyModule, policyFunction, versionId, normalizedContext);
-
+    private Uni<PolicyEvaluationResult> evaluateCached(PolicyCacheKey cacheKey, String tenantId) {
         // 使用底层Caffeine缓存探测命中状态，避免fromCache标记失真
         Cache cache = policyCacheManager.getPolicyResultCache();
         final boolean cacheHit = policyCacheManager.isCacheHit(cacheKey);
@@ -627,11 +635,11 @@ public class PolicyEvaluationService {
      * 使缓存失效（针对特定策略，reactive版本）
      */
     public Uni<Void> invalidateCache(String tenantId, String policyModule, String policyFunction, Object[] context) {
-        Object[] normalizedContext = normalizeContext(tenantId, context);
-        PolicyCacheKey cacheKey = new PolicyCacheKey(tenantId, policyModule, policyFunction, normalizedContext);
         // 策略变更 → 版本解析缓存也要立即失效，避免短 TTL 窗口内继续解析到旧版本。
         invalidateVersionResolution(tenantId, policyModule, policyFunction);
-        return invalidateCacheWithKey(cacheKey);
+        // 结果缓存按租户 epoch 失效：结果键还带版本与 epoch，按入参拼出的单个键匹配不到真实条目，
+        // 只有推进租户 epoch 才能确保该策略（连同同租户其他策略）不再返回旧结果。
+        return policyCacheManager.invalidateTenantResults(tenantId);
     }
 
     /**
@@ -640,6 +648,13 @@ public class PolicyEvaluationService {
     public Uni<Void> invalidateCache(String tenantId, String policyModule, String policyFunction) {
         // 版本解析的失效不依赖结果缓存快照：在途解析尚未产生任何结果缓存键
         invalidateVersionResolution(tenantId, policyModule, policyFunction);
+        // 正确性靠推进租户 epoch（模块 / 函数范围的失效同样推进整个租户，宁可多失效）；
+        // 随后按本副本索引删除旧条目只为及早回收内存。
+        return policyCacheManager.invalidateTenantResults(tenantId)
+            .chain(() -> dropTrackedResults(tenantId, policyModule, policyFunction));
+    }
+
+    private Uni<Void> dropTrackedResults(String tenantId, String policyModule, String policyFunction) {
         Set<PolicyCacheKey> keys = policyCacheManager.snapshotTenantCacheKeys(tenantId);
         if (keys.isEmpty()) {
             return Uni.createFrom().voidItem();
@@ -672,14 +687,6 @@ public class PolicyEvaluationService {
      */
     public Set<PolicyCacheKey> snapshotTenantCacheKeys(String tenantId) {
         return policyCacheManager.snapshotTenantCacheKeys(tenantId);
-    }
-
-    /**
-     * Internal method with cache key for cache invalidation
-     */
-    Uni<Void> invalidateCacheWithKey(PolicyCacheKey cacheKey) {
-        return policyCacheManager.getPolicyResultCache().invalidate(cacheKey)
-            .invoke(() -> policyCacheManager.removeCacheEntry(cacheKey, cacheKey.getTenantId()));
     }
 
     private Object[] normalizeContext(String tenantId, Object[] context) {

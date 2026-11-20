@@ -19,24 +19,31 @@ import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.enterprise.inject.Instance;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
+import io.smallrye.mutiny.Uni;
 import io.vertx.core.Context;
 import io.vertx.core.json.JsonObject;
 
 import java.time.Duration;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 /**
- * 策略缓存管理器，封装生命周期跟踪与租户索引。
+ * 策略缓存管理器，封装生命周期跟踪、租户索引与租户结果缓存 epoch。
+ *
+ * <p>正确性由租户 epoch 保证（issue #484，见 {@link TenantCacheEpochs}）：结果缓存键带租户 epoch，失效 = 推进
+ * epoch。租户索引、逐键删除与失效广播里的键信息只用于回收内存与统计，漏收不再导致陈旧结果。
  */
 @ApplicationScoped
 public class PolicyCacheManager {
@@ -51,6 +58,12 @@ public class PolicyCacheManager {
      * 保留旧实现「启动即订阅」的就绪语义，又不会因 Redis 不可达而无限阻塞启动。
      */
     static final Duration STARTUP_SUBSCRIBE_WAIT = Duration.ofSeconds(6);
+
+    /** epoch 存储读失败后的退避：期间不回源、直接绕过结果缓存，避免 Redis 挂掉时每个请求都等满命令超时。 */
+    static final Duration EPOCH_STORE_FAILURE_BACKOFF = Duration.ofSeconds(1);
+
+    /** 写不进存储的失效（待补发）的重试间隔。 */
+    static final Duration EPOCH_RETRY_INTERVAL = Duration.ofSeconds(1);
 
     @Inject
     @CacheName("policy-results")
@@ -68,6 +81,18 @@ public class PolicyCacheManager {
     @Inject
     PolicyMetrics policyMetrics;
 
+    /** 与 policy-results 的 Redis 键前缀同根（{@code quarkus.cache.redis.prefix}），测试按运行隔离时一并隔离 epoch。 */
+    @ConfigProperty(name = "aster.cache.redis.key-root", defaultValue = "policy-cache")
+    String redisKeyRoot;
+
+    /** 订阅在线时本地 epoch 的可信时长：推送随时更新，此值只兜底静默断开的订阅连接。 */
+    @ConfigProperty(name = "aster.policy.cache.epoch.ttl", defaultValue = "5s")
+    Duration epochTrustedTtl;
+
+    /** 订阅不在线（或取值时不在线）时本地 epoch 的有效时长，过期即回源 Redis。 */
+    @ConfigProperty(name = "aster.policy.cache.epoch.unsubscribed-ttl", defaultValue = "500ms")
+    Duration epochUntrustedTtl;
+
     private CaffeineCache caffeineCacheDelegate;
 
     private com.github.benmanes.caffeine.cache.Cache<PolicyCacheKey, Boolean> cacheLifecycleTracker;
@@ -77,15 +102,13 @@ public class PolicyCacheManager {
     private final ConcurrentHashMap<String, Counter> cacheMissCounters = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Counter> cacheEvictionCounters = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Counter> remoteInvalidationCounters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Counter> epochCounters = new ConcurrentHashMap<>();
     private PubSubCommands<String> pubSubCommands;
+    private io.quarkus.redis.datasource.pubsub.ReactivePubSubCommands<String> reactivePubSub;
     private volatile ResilientRedisSubscriber invalidationSubscriber;
     private ExecutorService invalidationExecutor;
-
-    /**
-     * 启动等待期间为 true：此时 bean 尚未对外可用、本地缓存为空，首次订阅成功无需作废缓存。
-     * 否则异步作废会在启动后才执行，清掉刚开始服务的请求写入的条目。
-     */
-    private final AtomicBoolean startupSubscribePending = new AtomicBoolean();
+    private ScheduledExecutorService epochRetryExecutor;
+    private TenantCacheEpochs epochs;
 
     @PostConstruct
     void initCacheLifecycleTracking() {
@@ -129,6 +152,76 @@ public class PolicyCacheManager {
 
         registerCacheMetrics();
         initRedisInvalidationChannel();
+        initEpochs();
+    }
+
+    /**
+     * 未配置 Redis 时 epoch 只在进程内（单实例，失效即时可见）；配置了 Redis 时存在 Redis，多副本共享，
+     * 并启动待补发失效的定期重试。
+     */
+    private void initEpochs() {
+        if (reactivePubSub == null) {
+            epochs = new TenantCacheEpochs(new RedisEpochStore.InProcess(), () -> true, System::nanoTime,
+                epochTrustedTtl, epochUntrustedTtl, EPOCH_STORE_FAILURE_BACKOFF, (tenant, epoch) -> { });
+            return;
+        }
+        epochs = new TenantCacheEpochs(
+            new RedisEpochStore(redisDataSource.get().getReactive(), redisKeyRoot, RedisEpochStore::timeSeed),
+            this::isInvalidationChannelUp, System::nanoTime,
+            epochTrustedTtl, epochUntrustedTtl, EPOCH_STORE_FAILURE_BACKOFF, this::publishEpoch);
+        epochRetryExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "policy-cache-epoch-retry");
+            thread.setDaemon(true);
+            return thread;
+        });
+        epochRetryExecutor.scheduleWithFixedDelay(this::retryPendingEpochBumps,
+            EPOCH_RETRY_INTERVAL.toMillis(), EPOCH_RETRY_INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * 租户当前结果缓存 epoch，评估读写 policy-results 时放进键里。empty 表示此刻无法确认（Redis 不可用，
+     * 或本副本的失效尚未写进 Redis），调用方必须绕过结果缓存直接执行。
+     *
+     * <p>需要回源 Redis 时结果在 worker 线程上发出，调用方后续的阻塞操作不会落到 Redis 事件循环上。
+     */
+    public Uni<OptionalLong> resultEpoch(String tenantId) {
+        return epochs.current(normalizeTenant(tenantId))
+            .invoke(value -> recordEpochLookup(value.isPresent() ? "ok" : "bypass"));
+    }
+
+    /**
+     * 失效租户全部策略结果：推进租户 epoch 并广播。完成后本副本立即读到新 epoch；其他副本经推送立即、
+     * 漏收时最迟 {@code aster.policy.cache.epoch.ttl} 后回源拿到新 epoch。Redis 写入失败不会让返回的 Uni 失败，
+     * 而是记为待补发：补发成功前本副本对该租户绕过结果缓存。
+     */
+    public Uni<Void> invalidateTenantResults(String tenantId) {
+        return epochs.invalidate(normalizeTenant(tenantId));
+    }
+
+    /** 本地缓存的租户 epoch（不回源）。包级可见供测试断言推送是否已送达。 */
+    OptionalLong cachedEpoch(String tenantId) {
+        return epochs.cached(normalizeTenant(tenantId));
+    }
+
+    /** 丢弃本地全部租户 epoch（等同重启后的空状态）。包级可见供测试模拟副本重启。 */
+    void forgetLocalEpochs() {
+        epochs.onChannelUp();
+    }
+
+    /** 租户 epoch 的 Redis 键。包级可见供测试模拟其他副本推进 epoch。 */
+    String epochRedisKey(String tenantId) {
+        return redisKeyRoot + ":result-epoch:" + normalizeTenant(tenantId);
+    }
+
+    /** 定期重试待补发的失效（epoch 写不进 Redis 的租户），在专用调度线程上阻塞执行。 */
+    private void retryPendingEpochBumps() {
+        try {
+            if (epochs.hasPendingBumps()) {
+                epochs.retryPendingBumps(Duration.ofSeconds(2));
+            }
+        } catch (RuntimeException e) {
+            LOG.debugf("补发租户结果缓存 epoch 异常: %s", e.toString());
+        }
     }
 
     public Cache getPolicyResultCache() {
@@ -197,28 +290,25 @@ public class PolicyCacheManager {
                 return thread;
             });
             pubSubCommands = redisDataSource.get().pubsub(String.class);
+            reactivePubSub = redisDataSource.get().getReactive().pubsub(String.class);
         } catch (Exception e) {
             LOG.warn("初始化 Redis 缓存失效订阅失败", e);
             return;
         }
-        // 只有真正有界等待时（非事件循环线程）bean 才在订阅就绪前不可用；事件循环上的懒加载路径不跳过恢复作废。
-        startupSubscribePending.set(!Context.isOnEventLoopThread());
-        try {
-            subscribeInvalidationChannel();
-        } finally {
-            startupSubscribePending.set(false);
-        }
+        subscribeInvalidationChannel();
     }
 
     /**
      * 订阅交给 {@link RedisBroadcastSupervisor}：先挂处理器再 SUBSCRIBE（无确认丢失竞态），失败或断线后
      * 退避重订阅，并暴露 {@code aster_redis_broadcast_up{channel="policy-cache:invalidate"}}。
      *
-     * <p>每次（重新）订阅成功后作废本实例负责的主缓存条目，补齐 down 期间漏收的失效（见 {@link #resyncAfterSubscribe()}）。
+     * <p>每次（重新）订阅成功后丢弃本地缓存的租户 epoch，下一次评估回源 Redis，补齐 down 期间漏收的推送
+     * （见 {@link #resyncAfterSubscribe()}）。
      *
      * <p>为保留旧实现「启动返回即已订阅」的语义，这里有界等待首次尝试出结果；在事件循环线程上
-     * （懒加载 bean 首次被 reactive 路径触达时）不等待，只异步建立。down 期间本实例只收不到
-     * 跨实例失效，主结果缓存仍按 TTL 过期兜底。重复调用会替换并关闭旧订阅。包级可见供集成测试调用。
+     * （懒加载 bean 首次被 reactive 路径触达时）不等待，只异步建立。down 期间本地 epoch 只按
+     * {@code aster.policy.cache.epoch.unsubscribed-ttl} 短期缓存、频繁回源，跨实例失效照样生效。
+     * 重复调用会替换并关闭旧订阅。包级可见供集成测试调用。
      *
      * @return 返回时订阅是否已建立
      */
@@ -230,14 +320,18 @@ public class PolicyCacheManager {
         if (up) {
             LOG.infof("Redis 分布式缓存失效通道已启用: %s", INVALIDATION_CHANNEL);
         } else {
-            LOG.warnf("Redis 缓存失效订阅尚未建立，后台持续重试（期间跨实例失效退化到 TTL 兜底）: %s",
+            LOG.warnf("Redis 缓存失效订阅尚未建立，后台持续重试（期间租户 epoch 短期缓存、频繁回源）: %s",
                 INVALIDATION_CHANNEL);
         }
         return up;
     }
 
-    /** 订阅回调运行在 Vert.x 事件循环上：只转交单线程执行器（其内可安全 await 主缓存失效）。 */
+    /**
+     * 订阅回调运行在 Vert.x 事件循环上：消息带的新 epoch 当场合并（只是一次 map 合并，越早可见越好），
+     * 其余（按索引回收旧条目）转交单线程执行器（其内可安全 await 主缓存失效）。
+     */
     private void dispatchRemoteInvalidation(String payload) {
+        applyRemoteEpoch(payload);
         try {
             invalidationExecutor.execute(() -> handleRemoteInvalidation(payload));
         } catch (RejectedExecutionException e) {
@@ -246,42 +340,30 @@ public class PolicyCacheManager {
     }
 
     /**
-     * 每次（重新）订阅成功后执行：pub/sub 不持久，订阅建立前 / 断线期间其他实例发出的失效已永久漏收，
-     * 必须作废本实例负责的主缓存条目才能确保不再返回陈旧决策：
-     * <ul>
-     *   <li>本地 Caffeine 后端：整体作废（代价是本实例一次冷缓存）。</li>
-     *   <li>Redis 后端（生产默认，共享缓存）：只作废本实例追踪索引里的键。租户 / 模块范围的失效只覆盖
-     *       源实例自己索引里的键，其他副本写入的共享条目要靠各副本收到广播后按自己的索引删除；
-     *       断线期间漏收则这些条目会被全部副本读到直至 TTL。只删本副本写入的键，不会引发全副本缓存雪崩。</li>
-     * </ul>
-     * 与远程失效同在单线程执行器上执行，保持先后顺序。启动等待内的首次成功跳过（见 startupSubscribePending）。
+     * 每次（重新）订阅成功后执行：pub/sub 不持久，订阅建立前 / 断线期间其他副本推送的新 epoch 可能已漏收，
+     * 丢弃本地全部 epoch，下一次评估回源 Redis 取最新值。只清一张小 map，在订阅调度线程上同步完成；
+     * 结果缓存条目本身无需作废（旧 epoch 的键不会再被读到）。
      */
     private void resyncAfterSubscribe() {
-        if (startupSubscribePending.compareAndSet(true, false)) {
-            return;
-        }
-        try {
-            invalidationExecutor.execute(this::invalidateOwnedResults);
-        } catch (RejectedExecutionException e) {
-            LOG.debug("失效执行器已关闭（停机中），跳过订阅恢复后的缓存作废");
+        TenantCacheEpochs current = epochs;
+        if (current != null) {
+            current.onChannelUp();
         }
     }
 
-    private void invalidateOwnedResults() {
+    private void applyRemoteEpoch(String payload) {
+        TenantCacheEpochs current = epochs;
+        if (current == null || payload == null || payload.isBlank()) {
+            return;
+        }
         try {
-            Set<PolicyCacheKey> tracked = new HashSet<>();
-            tenantCacheIndex.values().forEach(tracked::addAll);
-            // 先摘追踪再作废主缓存：作废之后写入的条目会重新登记索引，不会留下未追踪的活条目。
-            clearAllCache();
-            if (caffeineCacheDelegate != null) {
-                policyResultCache.invalidateAll().await().indefinitely();
-            } else {
-                tracked.forEach(this::invalidateResultCache);
+            JsonObject message = new JsonObject(payload);
+            Object epoch = message.getValue("epoch");
+            if (epoch instanceof Number number) {
+                current.onRemoteEpoch(normalizeTenant(message.getString("tenantId")), number.longValue());
             }
-            LOG.infof("Redis 缓存失效订阅（重新）建立，已作废本实例策略结果缓存以补齐可能漏收的失效: %s（追踪键 %d 个）",
-                INVALIDATION_CHANNEL, tracked.size());
-        } catch (Exception e) {
-            LOG.warnf(e, "订阅恢复后作废策略结果缓存失败: %s", INVALIDATION_CHANNEL);
+        } catch (RuntimeException e) {
+            LOG.debugf("解析失效消息中的 epoch 失败: %s", payload);
         }
     }
 
@@ -489,6 +571,27 @@ public class PolicyCacheManager {
         publishInvalidation(key.getTenantId(), key.getPolicyModule(), key.getPolicyFunction(), key.hashCode());
     }
 
+    /**
+     * 广播租户新 epoch。消息仍带 tenantId 与空的 policyModule / policyFunction：不认识 epoch 的旧版本副本
+     * （滚动发布期间）把它当作租户级失效处理。异步发布，不阻塞调用线程（可能是事件循环）。
+     */
+    private void publishEpoch(String tenantId, long epoch) {
+        recordEpochBump();
+        if (reactivePubSub == null) {
+            return;
+        }
+        String payload = new JsonObject()
+            .put("tenantId", tenantId)
+            .putNull("policyModule")
+            .putNull("policyFunction")
+            .put("epoch", epoch)
+            .encode();
+        reactivePubSub.publish(INVALIDATION_CHANNEL, payload).subscribe().with(
+            ignored -> { },
+            e -> LOG.debugf("广播租户结果缓存 epoch 失败（其他副本最迟按 epoch TTL 回源） tenant=%s: %s",
+                tenantId, e.toString()));
+    }
+
     private void publishInvalidation(String tenantId, String module, String function, Integer hash) {
         if (pubSubCommands == null || tenantId == null) {
             return;
@@ -509,6 +612,9 @@ public class PolicyCacheManager {
 
     @PreDestroy
     void shutdownInvalidationChannel() {
+        if (epochRetryExecutor != null) {
+            epochRetryExecutor.shutdownNow();
+        }
         ResilientRedisSubscriber subscriber = invalidationSubscriber;
         if (subscriber != null) {
             // close 幂等且自行吞掉退订异常（记 debug），与监护者停机时的统一关闭不冲突。
@@ -569,6 +675,27 @@ public class PolicyCacheManager {
                 policyMetrics.recordCacheMiss();
             }
         }
+    }
+
+    private void recordEpochLookup(String result) {
+        if (meterRegistry == null) {
+            return;
+        }
+        incrementCounter(epochCounters, "lookup:" + result, k -> Counter.builder("policy_cache_epoch_lookups_total")
+            .description("策略结果缓存读取租户 epoch 的结果：ok=取到 epoch，bypass=无法确认、绕过结果缓存")
+            .tag("cache_name", CACHE_NAME)
+            .tag("result", result)
+            .register(meterRegistry));
+    }
+
+    private void recordEpochBump() {
+        if (meterRegistry == null) {
+            return;
+        }
+        incrementCounter(epochCounters, "bump", k -> Counter.builder("policy_cache_epoch_bumps_total")
+            .description("租户结果缓存 epoch 推进（失效）成功次数，含补发")
+            .tag("cache_name", CACHE_NAME)
+            .register(meterRegistry));
     }
 
     private void recordEviction(PolicyCacheKey removedKey) {

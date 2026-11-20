@@ -1,7 +1,6 @@
 package io.aster.policy.api.cache;
 
 import io.aster.policy.api.PolicyCacheKey;
-import io.aster.policy.api.model.PolicyEvaluationResult;
 import io.aster.policy.test.RedisEnabledTest;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -18,6 +17,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.HashSet;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -44,12 +44,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>第一个用例把时序做成必然：在粘滞到繁忙 C≠L 的线程上（重新）建立订阅，要求在超时内就绪，
  * 且随后经 Redis 直接 PUBLISH 的失效消息真正经消息路径送达（远程失效计数 +1、租户索引清空）。
- * 第二个用例只踢掉本频道的订阅连接，并在断线窗口内由「另一实例」广播租户级失效（必然漏收），
- * 要求订阅自动恢复、继续接收失效消息，并补齐漏收：本实例写入的主缓存条目被作废。
+ * 第二个用例只踢掉本频道的订阅连接，并在断线窗口内由「另一实例」推进租户 epoch 并广播（必然漏收），
+ * 要求订阅自动恢复、继续接收失效消息，并补齐漏收：恢复后本实例读到的租户 epoch 就是新值（issue #484：
+ * 结果缓存键带 epoch，旧 epoch 的条目随之不可达，见 {@link PolicyResultEpochIT}）。
  * {@link PolicyCacheInvalidationRedisBackedIT} 以 Redis 后端（生产默认）重跑同样的用例。
  *
- * <p>送达断言只认消息路径独有的副作用（远程失效计数），并在注册前排空失效执行器，避免订阅恢复时
- * 排队的缓存作废（同样会清索引）冒充送达。
+ * <p>送达断言只认消息路径独有的副作用（远程失效计数），并在注册前排空失效执行器。
  */
 @QuarkusTest
 @RedisEnabledTest
@@ -111,25 +111,29 @@ class PolicyCacheInvalidationSubscribeIT {
         String connectionId = resubscribeAndFindConnection();
         assertRemoteInvalidationDelivered("before-drop");
 
-        // 本实例走生产路径写入并追踪的条目（写主缓存 + 登记租户索引）。
+        // 本实例此前已取得并缓存该租户的 epoch（订阅在线时取得，可信时长内不回源）。
         String tenant = "tenant-subscribe-it-missed-" + UUID.randomUUID();
-        var key = new PolicyCacheKey(tenant, "aster.it.module", "fn", new Object[]{"{}"});
-        assertEquals("cached", cachedResult(key, "cached"), "断线前结果应已写入主缓存");
-        cacheManager.registerCacheEntry(key, tenant);
+        String epochKey = cacheManager.epochRedisKey(tenant);
+        try {
+            long before = cacheManager.resultEpoch(tenant).await().atMost(Duration.ofSeconds(5)).orElseThrow();
+            assertEquals(OptionalLong.of(before), cacheManager.cachedEpoch(tenant));
 
-        assertEquals(1L, redis.execute("CLIENT", "KILL", "ID", connectionId).toLong(), "应踢掉本频道订阅连接");
-        // 断线窗口内另一实例广播租户级失效：重订阅至少退避 500ms，此刻本频道无订阅者，消息必然漏收。
-        assertEquals(0L, publishRaw(tenantWide(tenant)), "断线窗口内的失效应无人接收（漏收）");
+            assertEquals(1L, redis.execute("CLIENT", "KILL", "ID", connectionId).toLong(), "应踢掉本频道订阅连接");
+            // 断线窗口内另一实例推进 epoch 并广播：重订阅至少退避 500ms，此刻本频道无订阅者，消息必然漏收。
+            long bumped = redis.value(Long.class).incr(epochKey);
+            assertEquals(0L, publishRaw(tenantEpoch(tenant, bumped)), "断线窗口内的失效应无人接收（漏收）");
+            assertEquals(OptionalLong.of(before), cacheManager.cachedEpoch(tenant), "漏收：本地 epoch 未被推送更新");
 
-        // 恢复后：订阅重新就绪，且恢复作废清掉该租户的追踪键（期间没有任何送达的消息能做到这点）。
-        await().atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(100))
-            .until(() -> cacheManager.isInvalidationChannelUp() && publishRaw("probe-" + UUID.randomUUID()) >= 1);
-        await().atMost(Duration.ofSeconds(5))
-            .until(() -> !cacheManager.snapshotTenantCacheKeys(tenant).contains(key));
-        cacheManager.awaitInvalidationQueueIdle(QUEUE_IDLE_TIMEOUT);
-        assertEquals("fresh", cachedResult(key, "fresh"), "漏收的租户级失效应在恢复后被补齐，主缓存条目已作废");
+            // 恢复后：订阅重新就绪，本地 epoch 已被丢弃，下一次读取回源拿到漏收的新 epoch。
+            await().atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(100))
+                .until(() -> cacheManager.isInvalidationChannelUp() && publishRaw("probe-" + UUID.randomUUID()) >= 1);
+            assertEquals(OptionalLong.of(bumped), cacheManager.resultEpoch(tenant).await().atMost(Duration.ofSeconds(5)),
+                "漏收的失效应在恢复后被补齐：读到新 epoch");
 
-        assertRemoteInvalidationDelivered("after-drop");
+            assertRemoteInvalidationDelivered("after-drop");
+        } finally {
+            redis.key().del(epochKey);
+        }
     }
 
     /**
@@ -148,20 +152,11 @@ class PolicyCacheInvalidationSubscribeIT {
         return added.iterator().next();
     }
 
-    /** 经主缓存读取 key：命中返回已缓存值，未命中时以 value 回填并返回 value。两种缓存后端通用。 */
-    private String cachedResult(PolicyCacheKey key, String value) {
-        PolicyEvaluationResult result = cacheManager.getPolicyResultCache()
-            .<PolicyCacheKey, PolicyEvaluationResult>get(key, k -> new PolicyEvaluationResult(value, 1.0, false))
-            .await().atMost(Duration.ofSeconds(5));
-        return String.valueOf(result.getResult());
-    }
-
     /**
      * 注册一个租户缓存键，经 Redis 直接 PUBLISH 租户级失效（模拟另一实例），要求消息经本实例的
      * 订阅送达：远程失效计数只由消息处理路径递增，且租户索引被清掉。
      */
     private void assertRemoteInvalidationDelivered(String label) throws Exception {
-        // 先排空执行器：订阅（重新）建立时排队的缓存作废也会清索引，不能让它冒充送达。
         cacheManager.awaitInvalidationQueueIdle(QUEUE_IDLE_TIMEOUT);
         String tenant = "tenant-subscribe-it-" + label + "-" + UUID.randomUUID();
         var key = new PolicyCacheKey(tenant, "aster.it.module", "fn", new Object[]{"{}"});
@@ -178,6 +173,10 @@ class PolicyCacheInvalidationSubscribeIT {
     private double remoteInvalidations(String tenant) {
         Counter counter = meterRegistry.find("policy_cache_remote_invalidations_total").tag("tenant", tenant).counter();
         return counter == null ? 0.0 : counter.count();
+    }
+
+    private static String tenantEpoch(String tenant, long epoch) {
+        return new JsonObject(tenantWide(tenant)).put("epoch", epoch).encode();
     }
 
     private static String tenantWide(String tenant) {
