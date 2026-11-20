@@ -1,6 +1,6 @@
 # ADR 0061：Guard 对账治理页——孤儿动作的可见性、确认权限与查询扩展
 
-- 状态：**PROPOSED**（2026-11-20）
+- 状态：**ACCEPTED**（2026-11-20，产品负责人采纳，§5 的 Q1–Q7 全部按推荐值裁决）
 - 提出：2026-11-20；来源 wontlost-ltd/aster-cloud#769（aster-api#465 的 cloud 跟进）
 - 相关：ADR 0054 §10（对账契约，R65）、ADR 0042 §4.1（内部 HMAC v3）、ADR 0040 §11 D3（签发方的租户权限先例）、ADR 0041 §2.4（链收据查询）
 - 修订：本 ADR **扩展 ADR 0054 §10.2 的查询端点**（加 `severity` 过滤、列表项加 `ackComment`，均为向后兼容的新增）；§10.2 的其余契约、§10.3 的类别与状态机不变
@@ -52,7 +52,7 @@
 
 **目标**：cloud#769 的四条——按租户列 OPEN 孤儿并按 kind / severity 过滤；管理员带说明确认（写 `GUARD_ORPHAN_ACKNOWLEDGED`）；每条链到它的决策与收据；en / zh / de / hi 文案。
 
-**非目标**：删除孤儿、重新绑定 decisionId、撤销确认、批量确认；租户内通知（邮件 / 站内）；cloud 作为上报方（ADR 0054 §10.5 / ADR 0040 §12.4 ④）；改对账判定或告警；`viewer` 可见。
+**非目标**：删除孤儿、重新绑定 decisionId、撤销确认、批量确认；租户内通知（邮件 / 站内，延期到 aster-cloud#843）；cloud 作为上报方（ADR 0054 §10.5 / ADR 0040 §12.4 ④）；改对账判定或告警；`viewer` 可见。
 
 ---
 
@@ -124,14 +124,14 @@ cloud BFF 按 `(tenantId, decisionId)` 组装「决策上下文」，三个来�
 - 新增文案键约 60 个 × 4 种语言。
 - cloud 维护一份 kind → severity / 是否自动解除 的表；aster-api 新增 kind 时 cloud 测试会失败（有意为之）。
 
-## 5. 待产品负责人确认的问题（括号内为推荐，本 ADR 按推荐写）
+## 5. 产品决策（2026-11-20，产品负责人按推荐值采纳）
 
-| # | 问题 | 推荐 |
+| # | 问题 | 裁决 |
 |---|---|---|
 | Q1 | `viewer` 能否看孤儿 | 否（与 aster-api `MEMBER` 一致；detail 含主机名、资源 id） |
 | Q2 | 谁能确认 | 团队 admin / owner、个人租户本人 |
 | Q3 | 列表缺省过滤 | OPEN + `critical,warning`（cloud from-evidence 的 ALLOW 在 ④ 上线前都会成为 info 类 `allow_unconsumed`，不过滤会淹没 critical） |
 | Q4 | 是否要批量确认 | 否（critical 必须逐条核实；info 类会自动解除） |
-| Q5 | 是否在本期给租户发通知（critical 孤儿） | 否，另开 issue；运维告警已由 `AsterGuardBypassSuspected` 覆盖 |
+| Q5 | 是否在本期给租户发通知（critical 孤儿） | 否，延期到 wontlost-ltd/aster-cloud#843；运维告警已由 `AsterGuardBypassSuspected` 覆盖 |
 | Q6 | 确认是否可撤销 | 否（入链；同一事实 `(tenant, kind, subject)` 永远只有一行，误确认无法重开——因此 UI 二次确认并要求说明） |
 | Q7 | 可自动解除的类别是否允许确认 | 允许，并提示会自动解除 |

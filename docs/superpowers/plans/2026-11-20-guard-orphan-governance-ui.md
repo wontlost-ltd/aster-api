@@ -8,7 +8,7 @@
 
 **Tech Stack:** aster-api：Quarkus、JAX-RS、Panache、JUnit（`@QuarkusTest`）、Gradle。cloud：Next.js（Cloudflare Workers）、Drizzle + Postgres、vitest（unit / integration PG）、React Testing Library、Playwright、next-intl。
 
-**Spec:** `docs/adr/0061-guard-orphan-governance-ui.md`（PROPOSED 2026-11-20）；底层契约 ADR 0054 §10。对应 wontlost-ltd/aster-cloud#769（aster-api#465 的跟进）。
+**Spec:** `docs/adr/0061-guard-orphan-governance-ui.md`（ACCEPTED 2026-11-20，Q1–Q7 按推荐值裁决，见 ADR §5）；底层契约 ADR 0054 §10。对应 wontlost-ltd/aster-cloud#769（aster-api#465 的跟进）。
 
 ## 现状（2026-11-20 核对：aster-api `f34e8584`、aster-cloud `6860eaac`、aster-guard `3d48f86`）
 
@@ -58,7 +58,19 @@
 
 ---
 
-## 裁决（ADR 未定或实施细节；用户可推翻）
+## 产品决策（ADR 0061 §5，2026-11-20 产品负责人采纳）
+
+| # | 裁决 | 落点 |
+|---|---|---|
+| Q1 | `viewer` 看不到孤儿 | T2 `access.test.ts`（viewer → `canView: false`）、T3 403 用例 |
+| Q2 | 确认仅限团队 admin / owner 与个人租户本人 | T2 `canAck`、T3 `member cannot ack`、T7 |
+| Q3 | 列表缺省 OPEN + `critical,warning` | T2 `DEFAULT_ORPHAN_QUERY`、T6 `default query` 用例（= R4） |
+| Q4 | 不做批量确认 | 本计划无批量入口 |
+| Q5 | 租户通知延期 | wontlost-ltd/aster-cloud#843，不在本计划 |
+| Q6 | 确认不可撤销 | T7 对话框的不可撤销警示；无撤销入口 |
+| Q7 | 可自动解除的类别允许确认并提示 | T7 `auto-resolvable kinds show the hint` |
+
+## 裁决（实施细节；用户可推翻）
 
 | # | 问题 | 裁决 | 理由 |
 |---|---|---|---|
@@ -334,7 +346,7 @@ cloud      PR-C1 (T2–T4, BFF)  ── 任何时候可合 ──┴──▶ PR
 ## 自查记录
 
 - 覆盖（cloud#769 四条 + ADR 0061）：列 OPEN、按 kind / severity 过滤 → T1、T2、T3、T6；管理员带说明确认并入链 → T1（`ackComment`）、T3、T7、T8；链到决策与收据 → T4、T6；四语文案 → T5、T6、T7；ADR §3.1 权限 → T2、T3、T7；§3.2 角色签名与范围钉 → T2、T3；§3.3 破坏性边界 → T7；§3.4 → T1，兼容 → T3 二次过滤与 R12；§3.5 → T4；§3.6 → T6；§3.7 → T5、T6。
-- 不在本计划：批量确认、撤销确认、通知、cloud 作为上报方、viewer 可见（ADR 0061 §2）。
+- 不在本计划：批量确认（Q4）、撤销确认（Q6）、通知（Q5 → aster-cloud#843）、cloud 作为上报方、viewer 可见（Q1）（ADR 0061 §2）。
 - 类型一致性：`GuardOrphan*`、`GuardReconciliationSummary`（T2）用于 T3–T7；`ReconciliationAccess` / `ReconciliationApi` / `createReconciliationClient`（T2）用于 T3、T4、T6；`ReconciliationTenantSummary`（T3）用于 T5；`DecisionContext` / `Part`（T4）用于 T6；`parseOrphanQuery` / `orphanQueryToSearch` / `DEFAULT_ORPHAN_QUERY`（T2）用于 T3、T6。
 - 车次门：无引擎改动；A1 随常规 aster-api 发布（发布动作先问用户）。
 - Codex 评审记录：第 1 轮 76 分（退回）——H1 角色「每次现查」没有落到接口（客户端可被缓存）、H2 带 admin 签名的客户端暴露完整 `PolicyApiClient`（aster-api 另有 ADMIN 端点）、H3 决策 404 与「无证据」混为一谈（`orphan_receipt` 有链事件）、M1 旧 api 下二次过滤后的分页游标会漏行、M2 收据失败用例不足、M3 非法 id 的语义、L2 命令工作目录；已逐条修订（每请求新建 + 降级用例、`ReconciliationApi` 窄接口 + 源码扫描测试、按 kind 的 404 措辞、`fillFilteredPage` 续取至多 5 页且凑满时以最后返回项为游标、补三条降级用例、400 `invalid_decision_id`、命令表标明仓库）。第 2 轮 91 分（通过），一条 Low（Review Focus 第 3 条的旧响应形状）已改。
