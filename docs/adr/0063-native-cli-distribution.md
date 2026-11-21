@@ -127,7 +127,7 @@ reachability 元数据（反射、资源）缺一条，原生产物就在运行�
 | Homebrew | tap 仓 `aster-cloud/homebrew-tap`；对它有 `contents: write` 的 fine-grained token | `HOMEBREW_TAP_TOKEN` | 无 brew 渠道，用户从 Release 下载 |
 | npm（若 Q6 选是） | `@aster-cloud` scope 下新包名的发布权（现有 org `NPM_TOKEN`，或为新包配置 trusted publishing） | 既有 secret 或 npm 端配置 | 无 npm 渠道 |
 
-**签名是发布该平台资产的硬前提**：凭据未配置的平台，发布矩阵照常构建、测试，但不进上传集合；被列入上传集合的平台（仓库变量 `NATIVE_RELEASE_TARGETS`，由用户随凭据一起设置）缺凭据或签名失败即让发布失败，不静默降级为未签名。Linux 没有平台签名，只有构建证明，凭据方面不受限制。
+**签名是发布该平台资产的硬前提**：仓库变量 `NATIVE_RELEASE_TARGETS`（由用户随凭据一起设置）列出要发布的目标。所有目标的构建、冒烟与一致性都是发布门，任一失败则原生资产一个都不上传；未列入的目标跳过签名，job 照常成功但不产出上传 artifact；列入的目标缺凭据或签名失败即 job 失败、发布失败，不静默降级为未签名。Linux 没有平台签名，只有构建证明，凭据方面不受限制。
 
 macOS 签名使用 `codesign --options runtime --timestamp`（hardened runtime）。原生镜像不在运行时生成代码，预计不需要任何 entitlement；计划在第一次签名时实测签名后的二进制仍通过一致性门。
 
@@ -138,7 +138,7 @@ macOS 签名使用 `codesign --options runtime --timestamp`（hardened runtime�
 - Truffle 有确定的调用深度上限 **10 000**，与 aster-lang-ts 包格式 CLI 的 `CLI_MAX_CALL_DEPTH` **同值、同计数口径**（入口算第 1 层；每进入一次函数体或 lambda 体加 1，经 `List.map` 等 builtin 回调的也算；程序外壳与 workflow 帧不算）、**同消息**（`Maximum call depth (10000) exceeded`），超限为 `RESOURCE_EXHAUSTED`、退出码 5。实现：truffle#202，边界值逐个对照 ts 3.6.0 实测。
 - CLI 的求值线程（jar 与原生同一份代码）显式使用 **64 MiB** 栈（只是保留的虚拟地址，按需提交），使上限先于真实栈溢出生效。求值深度只由这两项决定。
 - 原生可执行文件另带 `-R:StackSize=2m`：它只设定**未显式给栈的其他线程**（看门狗、关闭、取锚等）的缺省栈字节数，与 JVM 缺省同为 2 MiB；原生帧比 JVM 小，同样字节数下原生能递归更深（spike：约 2 000 层 vs jar 约 1 080 层），所以它不是深度一致性的手段，只是避免这些线程用上原生更浅的缺省值。
-- 效果（实测：macOS arm64 的 jar 与原生、Linux x64 的 jar；Linux / Windows 原生由 T7 的共享夹具在原生门里补证）：1 000–9 999 层的递归由失败变为成功，与 Node 一致；10 000 层起三方一致地失败。`Thread` 的 stackSize 按 JDK 规范只是提示，若某平台忽略它，结果退回到真实栈溢出、仍是 `RESOURCE_EXHAUSTED`，由原生门发现。单帧很大的函数仍可能先撞真实栈，那仍是资源类结果，ADR 0059 §5.3 的承诺边界不变。
+- 效果（实测：macOS arm64 的 jar 与原生、Linux x64 的 jar；Linux / Windows 原生由 T7 的共享夹具补证——夹具进 `a-deep-recursion.cases.json` 后，truffle `native` 矩阵与发布矩阵的 `nativeConformanceTest` 在每个原生目标上都会跑到它，后者是发布门）：1 000–9 999 层的递归由失败变为成功，与 Node 一致；10 000 层起三方一致地失败。`Thread` 的 stackSize 按 JDK 规范只是提示，若某平台忽略它，结果退回到真实栈溢出、仍是 `RESOURCE_EXHAUSTED`，由原生门发现。单帧很大的函数仍可能先撞真实栈，那仍是资源类结果，ADR 0059 §5.3 的承诺边界不变。
 - aster-api 平台经同一个库得到同一上限，但请求线程保持缺省栈，约 1 000 层先溢出，平台结果不变。
 - 共享夹具：aster-lang-test 的 `a-deep-recursion` 宜补 `depth-9999`（成功）与 `depth-10000`（`RESOURCE_EXHAUSTED`）。夹具生成器的 `--verify-engines` 目前在主线程以解释器缺省 `maxCallDepth = 50` 复算成功用例，要先改为按 CLI 上限在 Worker 里复算（计划 T7）。
 

@@ -97,7 +97,8 @@
 
 - [ ] **Step 1:** `tsEval` 改为与 CLI 同口径：`maxCallDepth: 10_000`，深递归用例在 `worker_threads` Worker（`resourceLimits.stackSizeMb = 32`）里求值（与 ts `evaluate-package.ts` 相同）；其余用例结果不变（`--verify-engines` 全绿）。
 - [ ] **Step 2:** `fixture.json` 增加 `depth-9999`（`expect: "ts"`，期望 `9999`）与 `depth-10000`（`expect: {code: "RESOURCE_EXHAUSTED"}`）；修正描述中「JVM 在缺省线程栈约 2 000 层溢出」为 ADR 0063 §7 的现行规则；`node scripts/build-package-fixtures.mjs` 重新生成，`--check` 与 `--verify-engines` 通过。
-- [ ] **Step 3:** 合并顺序：truffle#202 先合入并随列车发布，再合本任务（test 仓的跨 CLI 门用 truffle main 的 jar；在此之前 `depth-9999` 在旧 jar 上会失败）。同名分支 `feat/max-call-depth` 让两边 PR 的 CI 互相取到对方。
+- [ ] **Step 3: 原生覆盖**：夹具进 `packages/a-deep-recursion.cases.json` 后由 `ConformanceCasesTest` 读取，所以 truffle `native` 矩阵（linux-x64、linux-arm64、macos-arm64；T5 之后含 windows-x64）的 `nativeConformanceTest` 与 T6 发布矩阵（发布门）都会在每个原生目标上跑到 `depth-9999` / `depth-10000`；在 PR 里贴出各目标的结果，作为 ADR §7 中 Linux / Windows 原生深度一致性的证据。
+- [ ] **Step 4:** 合并顺序：truffle#202 先合入并随列车发布，再合本任务（test 仓的跨 CLI 门用 truffle main 的 jar；在此之前 `depth-9999` 在旧 jar 上会失败）。同名分支 `feat/max-call-depth` 让两边 PR 的 CI 互相取到对方。
 
 ---
 
@@ -109,7 +110,7 @@
 
 - [ ] **Step 0（尚未完成，是 Q1 的决策输入）:** 在 CI 里对 CE 与 Oracle GraalVM 的 linux-x64 产物各测 10 次 `run`（jingyesi 包）的中位数，写回「CI 基线」，供 Q1 定稿。现有 CE 数据只有构建时长、体积与一致性。
 - [ ] **Step 1:** `release.yml` 新增 `native` 矩阵 job（五个目标；x64 加 `-PnativeMarch=compatibility`；发行版按 Q1），与 `publish` 同受 `require-main-ci-green` 门禁。每个目标：`nativeCompile` → `nativeSmoke` → `nativeConformanceTest` → jingyesi `verify --recompile --probes` 冒烟 → 打包 `aster-<ver>-<os>-<arch>.tar.gz` / `.zip`（含 `LICENSE`、`NOTICE`、第三方许可）→ GNU 格式 `.sha256` → `actions/attest-build-provenance`（`permissions: id-token: write, attestations: write`）→ `actions/upload-artifact`（只存为 workflow artifact，不碰 Release）。
-- [ ] **Step 2: 汇总上传（fail-closed）**：新 job `publish-native`，`needs` 全部原生目标与 `publish`；只在它们都成功时运行，下载 artifact，按 `NATIVE_RELEASE_TARGETS`（仓库变量，列出要发布的目标；签名平台须同时有凭据，见 T8）核对资产齐全，一次性 `gh release upload --clobber`，再下载回读 `sha256sum -c`。任一目标失败则一个原生资产都不上传；发布 run 的结论以 `publish` 与 `publish-native` 都成功为准。jar 的 `publish` 先于原生上传完成这一点不变（jar 是既有渠道，原生失败不回滚 jar，但 run 判失败并告警）。
+- [ ] **Step 2: 汇总上传（fail-closed）**：每个原生目标 job 的构建、冒烟、一致性对所有目标都是门；签名与「产出上传 artifact」两步只对 `NATIVE_RELEASE_TARGETS`（仓库变量，列出要发布的目标；签名平台须同时有凭据，见 T8）里的目标执行，未列入的目标在一致性通过后即以成功结束。新 job `publish-native`，`needs` 全部原生目标与 `publish`；只在它们都成功时运行，下载 artifact，核对恰好覆盖 `NATIVE_RELEASE_TARGETS`，一次性 `gh release upload --clobber`，再下载回读 `sha256sum -c`。任一目标失败则一个原生资产都不上传；发布 run 的结论以 `publish` 与 `publish-native` 都成功为准。jar 的 `publish` 先于原生上传完成这一点不变（jar 是既有渠道，原生失败不回滚 jar，但 run 判失败并告警）。
 - [ ] **Step 3:** 把 `native (linux-x64)` 加进 truffle 分支保护必需检查与 `.github/main-ci-gate.json` 的 `requiredJobs`（ADR 0053 A2：两者必须一致）；其余平台只在发布 run 里跑。
 - [ ] **Step 4:** 用 `dryRun` 列车验证一次（不发布）；需用户确认后才跑真实列车。
 
