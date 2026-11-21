@@ -3,9 +3,9 @@ package io.aster.policy.rest;
 import io.aster.policy.compiler.CompilationResult;
 import io.aster.policy.compiler.PolicyCompiler;
 import io.aster.policy.entity.PolicyVersion;
-import io.aster.policy.parser.InProcessCnlParser;
-import io.aster.policy.parser.ParseBudget;
-import io.aster.policy.parser.ParseBudgetTestHooks;
+import aster.core.embed.InProcessCnlParser;
+import aster.core.embed.ParseBudget;
+import aster.core.embed.ParseBudgetTestHooks;
 import io.aster.policy.test.RedisEnabledTest;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.test.junit.QuarkusTest;
@@ -72,7 +72,7 @@ public class PolicyCompileParseBudgetTest {
 
     /**
      * 慢解析输入：160 条浅规则（约 12KB，在匿名编译端点 16KB 的源码上限之内；不用长表达式，见 replay 同名方法），配合 {@link ParseBudgetTestHooks#slowChecks} 的周期检查停顿，
-     * 在新旧引擎上都稳定超出预算（与 replay 的 InProcessCnlParserParseBudgetTest#slowSource 同形）。
+     * 在新旧引擎上都稳定超出预算（与 core 的 aster.core.embed.PolicySourceCompilerParseBudgetTest#slowSource 同形）。
      * 此前用的 sll-pathological-types.aster 依赖 core 1.0.47 及更早版本的类型预测缺陷，core 1.0.48
      * （aster-lang-core#270）上几毫秒就报语法错误；aster-api 的 pin 由列车只改两处版本号（ADR 0053 修订 A1），
      * 测试必须对 pin 前后的引擎都成立。
@@ -90,7 +90,7 @@ public class PolicyCompileParseBudgetTest {
     static final int SLOW_RULES = 160;
 
 
-    /** 周期检查停顿：见 replay 的 InProcessCnlParserParseBudgetTest#SLOW_STEP。 */
+    /** 周期检查停顿：见 core 的 aster.core.embed.PolicySourceCompilerParseBudgetTest#SLOW_STEP。 */
     static final Duration SLOW_STEP = Duration.ofMillis(100);
 
     /** core#254 报告的形态：result of 成功 / 失败分量交替嵌套。 */

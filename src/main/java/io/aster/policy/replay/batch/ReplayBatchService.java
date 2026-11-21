@@ -991,7 +991,7 @@ public class ReplayBatchService {
 
     private static boolean isTargetCompileFailure(Throwable ex) {
         for (Throwable t = ex; t != null; t = t.getCause() == t ? null : t.getCause()) {
-            if (t instanceof io.aster.policy.parser.InProcessCnlParser.CnlParseException) {
+            if (t instanceof aster.core.embed.InProcessCnlParser.CnlParseException) {
                 return true;
             }
         }

@@ -15,7 +15,7 @@ import io.aster.policy.api.schema.ParameterSchemaExtractor;
 import io.aster.policy.compiler.CompilationResult;
 import io.aster.policy.governance.VerdictView;
 import io.aster.policy.parser.DynamicCnlExecutor;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import io.aster.policy.replay.ReplayExecutorAdapter;
 import io.aster.policy.rest.model.*;
 import io.aster.replay.core.ExecutionPhaseResult;
@@ -940,7 +940,7 @@ public class PolicyEvaluationResource {
                         .build());
             }
             try {
-                ParameterSchemaExtractor.SchemaResult result = io.aster.policy.parser.ParseBudget.withinRequestAllowance(
+                ParameterSchemaExtractor.SchemaResult result = aster.core.embed.ParseBudget.withinRequestAllowance(
                     parseAllowance, () -> ParameterSchemaExtractor.extractSchema(
                         request.source(),
                         request.getFunctionNameOrDefault(),
@@ -1033,7 +1033,7 @@ public class PolicyEvaluationResource {
                 // 领域词汇作用域与执行端（ReplayExecutionCore）同一构建口径（ADR 0051）。
                 aster.core.identifier.VocabularyScopes scopes =
                     io.aster.replay.core.ReplayExecutionCore.buildVocabularyScopes(request.vocabulary());
-                CompilationResult result = io.aster.policy.parser.ParseBudget.withinRequestAllowance(
+                CompilationResult result = aster.core.embed.ParseBudget.withinRequestAllowance(
                     parseAllowance, () -> policyCompiler.compile(
                         request.source(), request.getLocaleOrDefault(), aliasSetJson, scopes, allowStructural));
                 return toCompileResponse(result);

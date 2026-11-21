@@ -2,7 +2,7 @@ package io.aster.policy.governance;
 
 import aster.core.ir.CoreModel;
 import aster.core.typecheck.governance.ControlRegistry;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;

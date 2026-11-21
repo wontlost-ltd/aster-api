@@ -1,6 +1,6 @@
 package io.aster.policy.compiler;
 
-import io.aster.policy.parser.ParseBudget;
+import aster.core.embed.ParseBudget;
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.runtime.StartupEvent;

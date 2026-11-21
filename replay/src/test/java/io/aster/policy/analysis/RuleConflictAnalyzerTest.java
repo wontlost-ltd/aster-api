@@ -1,6 +1,6 @@
 package io.aster.policy.analysis;
 
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

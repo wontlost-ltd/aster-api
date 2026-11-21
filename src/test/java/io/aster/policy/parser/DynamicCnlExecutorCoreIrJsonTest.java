@@ -1,5 +1,6 @@
 package io.aster.policy.parser;
 
+import aster.core.embed.InProcessCnlParser;
 import aster.core.ir.CoreIrJson;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.parser.DynamicCnlExecutor.ExecutionResult;

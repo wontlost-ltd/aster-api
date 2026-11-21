@@ -2,7 +2,7 @@ package io.aster.policy.api.schema;
 
 import aster.core.inference.TypeInference;
 import aster.core.ir.CoreModel;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import org.jboss.logging.Logger;
 
 import java.util.ArrayList;

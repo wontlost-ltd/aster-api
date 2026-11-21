@@ -1,7 +1,7 @@
 package io.aster.policy.governance;
 
 import aster.core.ir.CoreModel;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

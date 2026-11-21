@@ -3,7 +3,7 @@ package io.aster.policy.api;
 import aster.core.ir.CoreIrJson;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 
 import java.util.List;
 

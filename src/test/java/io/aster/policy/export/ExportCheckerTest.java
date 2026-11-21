@@ -2,7 +2,7 @@ package io.aster.policy.export;
 
 import aster.core.ir.CoreModel;
 import aster.core.lowering.CoreLowering;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

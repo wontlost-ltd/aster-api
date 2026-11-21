@@ -1,5 +1,6 @@
 package io.aster.policy.parser;
 
+import aster.core.embed.InProcessCnlParser;
 import aster.core.embed.AliasOverlayLexicon;
 import aster.core.embed.UserAliasValidator;
 import aster.core.identifier.DomainVocabulary;

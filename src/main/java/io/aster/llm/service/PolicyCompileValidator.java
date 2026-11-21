@@ -1,7 +1,7 @@
 package io.aster.llm.service;
 
 import io.aster.llm.model.ValidationResult;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import jakarta.enterprise.context.ApplicationScoped;
 import org.jboss.logging.Logger;
 

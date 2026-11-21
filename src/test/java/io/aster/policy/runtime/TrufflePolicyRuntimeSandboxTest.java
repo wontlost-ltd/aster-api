@@ -183,7 +183,7 @@ class TrufflePolicyRuntimeSandboxTest {
 
         // 正常执行用名称解析后的 Core IR v2 规范字节（与客户端提交的一致），
         // 保证这里的失败只可能来自池问题，而不是手写 IR 的形状不合 v2 schema。
-        String simple = aster.core.ir.CoreIrJson.serialize(io.aster.policy.parser.InProcessCnlParser.parse("""
+        String simple = aster.core.ir.CoreIrJson.serialize(aster.core.embed.InProcessCnlParser.parse("""
             Module test.
 
             Rule evaluate, produce Int:
