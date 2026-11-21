@@ -1,1 +1,1 @@
-{"formatVersion":1,"jre":{"cliName":"cloud.aster-lang:aster-cli","cliVersion":"1.0.53","trustAnchorKids":["export-2026-11a"]},"node":{"cliName":"@aster-cloud/aster-lang-ts","cliVersion":"3.6.0","trustAnchorKids":["export-2026-11a"]}}
+{"formatVersion":1,"jre":{"cliName":"cloud.aster-lang:aster-cli","cliVersion":"1.0.53","packageFormats":["1.0","1.1"],"trustAnchorKids":["export-2026-11a"]},"node":{"cliName":"@aster-cloud/aster-lang-ts","cliVersion":"3.6.0","packageFormats":["1.0","1.1"],"trustAnchorKids":["export-2026-11a"]}}

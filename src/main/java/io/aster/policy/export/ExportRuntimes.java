@@ -22,7 +22,9 @@ import java.util.Set;
 
 /**
  * 导出运行时锁文件（ADR 0059 修订 3 P2-R3）：{@code export/export-runtimes.lock.json} 为每个 target 记一项
- * {@code {cliName, cliVersion, trustAnchorKids}}，{@code node} 可为 {@code null}（该 target 不可导出）。
+ * {@code {cliName, cliVersion, trustAnchorKids, packageFormats?}}，{@code node} 可为 {@code null}（该 target 不可导出）。
+ * {@code packageFormats}（修订 4 D12）是该 CLI 认得的包格式版本，缺省按 {@code ["1.0"]} 读：只有含 {@code "1.1"} 时
+ * 导出才会写入显示排版、产出 1.1 包；字段存在但不是由已知格式版本组成的非空数组 → 启动失败。
  * manifest {@code runtime.cli} 的唯一来源，也是「先发布锚，再签名」的机械检查：签名 kid 必须在该 target 的
  * {@code trustAnchorKids} 中。锁文件在列车发布之后由单独的 PR 更新（可以落后于生态版本，不得领先）。
  *
@@ -40,11 +42,27 @@ public class ExportRuntimes {
       .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
   private static final Set<String> TOP_FIELDS = Set.of("formatVersion", "jre", "node");
   private static final Set<String> TARGET_FIELDS = Set.of("cliName", "cliVersion", "trustAnchorKids");
+  private static final Set<String> OPTIONAL_TARGET_FIELDS = Set.of("packageFormats");
+  /** 本进程能组装的包格式版本（修订 4 D2）；锁文件的 {@code packageFormats} 只能由它们组成。 */
+  public static final List<String> KNOWN_PACKAGE_FORMATS = List.of("1.0", "1.1");
+  /** {@code packageFormats} 缺省值：修订 4 之前的锁文件只声明了 1.0 的 CLI。 */
+  public static final List<String> DEFAULT_PACKAGE_FORMATS = List.of("1.0");
 
-  /** 锁文件中一个 target 的 CLI 坐标与内置信任锚 kid。 */
-  public record Target(String cliName, String cliVersion, List<String> trustAnchorKids) {
+  /** 锁文件中一个 target 的 CLI 坐标、内置信任锚 kid 与该 CLI 认得的包格式版本。 */
+  public record Target(String cliName, String cliVersion, List<String> trustAnchorKids, List<String> packageFormats) {
     public Target {
       trustAnchorKids = List.copyOf(trustAnchorKids);
+      packageFormats = List.copyOf(packageFormats);
+    }
+
+    /** 未声明 {@code packageFormats} 的锁文件项（按 {@code ["1.0"]}）。 */
+    public Target(String cliName, String cliVersion, List<String> trustAnchorKids) {
+      this(cliName, cliVersion, trustAnchorKids, DEFAULT_PACKAGE_FORMATS);
+    }
+
+    /** 该 target 的 CLI 是否认得给定的包格式版本。 */
+    public boolean supportsFormat(String formatVersion) {
+      return packageFormats.contains(formatVersion);
     }
   }
 
@@ -171,7 +189,7 @@ public class ExportRuntimes {
     if (!node.isObject()) {
       throw invalid(name + " 必须是对象或 null");
     }
-    requireExactFields(node, TARGET_FIELDS, name);
+    requireExactFields(node, TARGET_FIELDS, OPTIONAL_TARGET_FIELDS, name);
     String cliName = requireText(node.get("cliName"), name + ".cliName");
     String cliVersion = requireText(node.get("cliVersion"), name + ".cliVersion");
     JsonNode kidsNode = node.get("trustAnchorKids");
@@ -182,7 +200,25 @@ public class ExportRuntimes {
     for (JsonNode kid : kidsNode) {
       kids.add(requireText(kid, name + ".trustAnchorKids[]"));
     }
-    return new Target(cliName, cliVersion, kids);
+    return new Target(cliName, cliVersion, kids, packageFormats(node.get("packageFormats"), name));
+  }
+
+  /** {@code packageFormats}：缺省 {@code ["1.0"]}；存在时须为非空、无重复、全由已知格式版本组成的字符串数组。 */
+  private static List<String> packageFormats(JsonNode node, String name) {
+    if (node == null) {
+      return DEFAULT_PACKAGE_FORMATS;
+    }
+    if (!node.isArray() || node.isEmpty()) {
+      throw invalid(name + ".packageFormats 必须是非空字符串数组");
+    }
+    List<String> formats = new ArrayList<>();
+    for (JsonNode f : node) {
+      if (!f.isTextual() || !KNOWN_PACKAGE_FORMATS.contains(f.textValue()) || formats.contains(f.textValue())) {
+        throw invalid(name + ".packageFormats 只能由不重复的已知包格式版本 " + KNOWN_PACKAGE_FORMATS + " 组成");
+      }
+      formats.add(f.textValue());
+    }
+    return formats;
   }
 
   private static String requireText(JsonNode node, String where) {
@@ -193,9 +229,14 @@ public class ExportRuntimes {
   }
 
   private static void requireExactFields(JsonNode node, Set<String> fields, String where) {
+    requireExactFields(node, fields, Set.of(), where);
+  }
+
+  /** {@code fields} 必须全部出现，{@code optional} 可出现，其余字段一律拒绝。 */
+  private static void requireExactFields(JsonNode node, Set<String> fields, Set<String> optional, String where) {
     for (Iterator<String> it = node.fieldNames(); it.hasNext(); ) {
       String name = it.next();
-      if (!fields.contains(name)) {
+      if (!fields.contains(name) && !optional.contains(name)) {
         throw invalid(where + " 含未知字段: " + name);
       }
     }

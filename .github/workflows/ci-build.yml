@@ -301,7 +301,7 @@ jobs:
         with:
           repository: aster-cloud/aster-lang-test
           path: aster-lang-test
-          ref: 99ef78ed174645f5bae0635cfe79282e17be0614
+          ref: e9e35f497571dd28df4ef813de0aeab239df6ea4
 
       - name: Setup Node.js 24 (package-v1 reference check)
         uses: actions/setup-node@v7

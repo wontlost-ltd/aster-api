@@ -130,6 +130,71 @@ class JreCliGoldenGateTest {
     }
   }
 
+  /**
+   * ADR 0059 修订 4（计划 T6 Step 1）：aster-api 带排版导出的《静夜思》jre 包经 jre CLI 核验——{@code verify --recompile --probes}
+   * 全部检查项（含 {@code display}、{@code display-ir}）通过；{@code show} 打印原诗；{@code run} 得 {@code 静夜思}；
+   * {@code run --display} 对 conformance 的编辑文本给出唯一解 / 歧义的同一结论。签名的 1.1 包一定通过 CLI 的 verify（D11 不变式）。
+   */
+  @Test
+  void layoutPackageVerifiesShowsAndRunsOnTheJreCli() throws Exception {
+    Path jar = requireJar();
+    assumeTrue(jar != null, "未给出 jre CLI jar（-Daster.cli.jar），跳过黄金门");
+    var ring = keys.ring().orElseThrow();
+    Path jwks = tmp.resolve("jwks.json");
+    Files.writeString(jwks, JSON.writeValueAsString(Jwks.render(ring.all(), ring.revision(), Instant.now())));
+    PackageAssembler.AssembledPackage p = service.export(PackageLayoutGateTest.jingyesi("jre"), null,
+        io.aster.test.JingyesiPolicy.LAYOUT_JSON);
+    assertThat(p.layout().status()).isEqualTo("included");
+    Path zip = tmp.resolve(p.rootName() + ".zip");
+    Files.write(zip, p.zip());
+    String pkg = zip.toString();
+    String anchor = jwks.toString();
+
+    Cli verify = cli(jar, null, "verify", pkg, "--recompile", "--probes", "--jwks", anchor);
+    assertThat(verify.exit()).as(verify.stdout() + verify.stderr()).isZero();
+    JsonNode checks = JSON.readTree(verify.stdout()).get("checks");
+    assertThat(checks.findValuesAsText("name"))
+        .containsExactly("schema", "signature", "integrity", "display", "recompile", "display-ir", "probes");
+    assertThat(checks.findValues("ok")).allMatch(JsonNode::asBoolean);
+
+    Cli show = cli(jar, null, "show", pkg, "--jwks", anchor);
+    assertThat(show.exit()).as(show.stderr()).isZero();
+    assertThat(show.stdout()).isEqualTo("床前明月光，\n疑是地上霜。\n举头望明月，\n低头思故乡。\n");
+    assertThat(show.stderr()).contains("思故乡 → 静夜思");
+    Cli canonical = cli(jar, null, "show", pkg, "--canonical", "--jwks", anchor);
+    assertThat(canonical.stdout()).isEqualTo(io.aster.test.JingyesiPolicy.SOURCE + "\n");
+
+    Cli run = cli(jar, "{}", "run", pkg, "--input", "-", "--jwks", anchor);
+    assertThat(run.exit()).as(run.stderr()).isZero();
+    assertThat(JSON.readTree(run.stdout()).get("value").asText()).isEqualTo("静夜思");
+
+    Path edits = EntrySchemaGeneratorTest.FIXTURES.resolve("display/edits/b-jingyesi").toAbsolutePath();
+    Map<String, String> unique = Map.of("unchanged.txt", "静夜思", "trailing-newline.txt", "静夜思", "last-line-literal.txt", "月光");
+    for (Map.Entry<String, String> e : unique.entrySet()) {
+      Cli r = cli(jar, "{}", "run", pkg, "--display", edits.resolve(e.getKey()).toString(), "--input", "-", "--jwks", anchor);
+      assertThat(r.exit()).as(e.getKey() + " " + r.stdout() + r.stderr()).isZero();
+      JsonNode out = JSON.readTree(r.stdout());
+      assertThat(out.get("value").asText()).as(e.getKey()).isEqualTo(e.getValue());
+      assertThat(out.at("/meta/display/matchesPackage").asBoolean()).as(e.getKey()).isEqualTo("静夜思".equals(e.getValue()));
+      assertThat(out.at("/meta/coreIrSha256").isNull()).isTrue();
+    }
+    Cli ambiguous = cli(jar, "{}", "run", pkg, "--display", edits.resolve("repeat-prefix.txt").toString(), "--input", "-",
+        "--jwks", anchor);
+    assertThat(ambiguous.exit()).isEqualTo(2);
+    assertThat(JSON.readTree(ambiguous.stdout()).at("/error/code").asText()).isEqualTo("DISPLAY_AMBIGUOUS");
+  }
+
+  /** CLI jar：CI 要求必须给出（{@code ASTER_EXPORT_GOLDEN_REQUIRE_JAR=1}），本地未给出时返回 null。 */
+  private static Path requireJar() {
+    String jarProp = System.getProperty("aster.cli.jar", "");
+    Path jar = jarProp.isBlank() ? null : Path.of(jarProp).toAbsolutePath();
+    boolean present = jar != null && Files.isRegularFile(jar);
+    if ("1".equals(System.getenv("ASTER_EXPORT_GOLDEN_REQUIRE_JAR"))) {
+      assertThat(present).as("CI 要求黄金门实际执行：-Daster.cli.jar=" + jarProp + " 必须是存在的 jre CLI fat jar").isTrue();
+    }
+    return present ? jar : null;
+  }
+
   /** 各黄金源码的导出请求：fixture 的 default 入口，另按其余入口各导出一次。 */
   private static Map<String, PackageExportService.ExportSpec> specs() throws Exception {
     Map<String, PackageExportService.ExportSpec> out = new LinkedHashMap<>();

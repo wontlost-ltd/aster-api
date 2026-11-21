@@ -1,0 +1,2 @@
+# 包格式 v1 夹具副本按字节签名与哈希（SOURCE.md 记 sha256）：禁止换行符转换，含 CRLF 的编辑文本须原样保留。
+src/test/resources/package-v1/** -text

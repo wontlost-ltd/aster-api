@@ -59,6 +59,27 @@ class PackageConformanceReferenceTest {
       executed++;
     }
     assertThat(executed).isEqualTo(PackageExportServiceTest.GOLDEN_B.size());
+
+    // ADR 0059 修订 4：带排版的 1.1 包另过参照实现的显示排版 L1–L7（与 core 闸门、两个 CLI 同一份规则的第三个实现）
+    for (String target : PackageExportService.TARGETS) {
+      PackageExportService.ExportSpec spec = PackageLayoutGateTest.jingyesi(target);
+      PackageAssembler.NodeCheck nodeCheck = null;
+      if ("node".equals(target)) {
+        PackagePrepared prepared = service.prepare(spec);
+        nodeCheck = new PackageAssembler.NodeCheck(prepared.runtime().cliVersion(), prepared.probes().count());
+      }
+      PackageAssembler.AssembledPackage p = service.export(spec, nodeCheck, io.aster.test.JingyesiPolicy.LAYOUT_JSON);
+      assertThat(p.layout().status()).isEqualTo("included");
+      Path zip = tmp.resolve(p.rootName() + ".zip");
+      Files.write(zip, p.zip());
+      Process proc = new ProcessBuilder("node", driver.toString(), testDir.toAbsolutePath().toString(),
+          zip.toString(), jwks.toString()).redirectErrorStream(true).start();
+      assertThat(proc.waitFor(60, TimeUnit.SECONDS)).isTrue();
+      String out = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+      JsonNode result = JSON.readTree(out);
+      assertThat(result.get("ok").asBoolean()).as("jingyesi " + target + " → " + out).isTrue();
+      assertThat(result.get("display").asBoolean()).as("参照实现实际检查了显示排版").isTrue();
+    }
   }
 
   private static boolean nodeAvailable() {
