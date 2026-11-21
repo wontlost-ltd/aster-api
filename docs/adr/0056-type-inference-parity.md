@@ -4,7 +4,7 @@
 - 提出：2026-11-14；来源 ADR 0055 §6 值层分期类别 V1–V4（aster-cloud/aster-lang-test#195 / #196 / #197 / #198）
 - 前提：沿用 ADR 0055 的前提——项目尚未上线，没有真实用户，上线前数据可清空。因此本 ADR **不做兼容、不做迁移**，推断结果的变化直接生效
 - 相关：ADR 0055（Core IR v2；本 ADR 是其 §6「两引擎推断规则统一（另立 ADR）」与 §7「范围外」一条的落地）、ADR 0045（控制注册表：共享数据放在 aster-lang-locales，副本 + sibling parity 测试）、ADR 0051 R2（类型驱动解析只用显式声明的类型）、ADR 0037（contentHash 不含 origin）
-- 修订：[A1 1.0.48 parity 清扫的语法裁决](0056-amendment-1-parity-sweep-1048.md)（ACCEPTED，2026-11-16）；[A2 签名与类型别名语法](0056-amendment-2-parity-signature-syntax.md)（ACCEPTED，2026-11-16）；[A3 #328 之后余下七处解析分歧](0056-amendment-3-parity-declaration-syntax.md)（ACCEPTED，2026-11-16）；[A4 eco-1.0.53 解析分歧裁决与两项延后裁决](0056-amendment-4-parity-rulings-1053.md)（ACCEPTED，2026-11-20）；[A5 eco-1.0.55 解析分歧裁决](0056-amendment-5-parity-rulings-1055.md)（ACCEPTED，2026-11-22；D1–D5，D3 取代 A4 §2 第 2 项）。A4 §3.2（Int 宽度）的实现方案见 [ADR 0062](0062-int-64-bit-semantics.md)（PROPOSED）
+- 修订：[A1 1.0.48 parity 清扫的语法裁决](0056-amendment-1-parity-sweep-1048.md)（ACCEPTED，2026-11-16）；[A2 签名与类型别名语法](0056-amendment-2-parity-signature-syntax.md)（ACCEPTED，2026-11-16）；[A3 #328 之后余下七处解析分歧](0056-amendment-3-parity-declaration-syntax.md)（ACCEPTED，2026-11-16）；[A4 eco-1.0.53 解析分歧裁决与两项延后裁决](0056-amendment-4-parity-rulings-1053.md)（ACCEPTED，2026-11-20）；[A5 eco-1.0.55 解析分歧裁决](0056-amendment-5-parity-rulings-1055.md)（ACCEPTED，2026-11-22；D1–D5，D3 取代 A4 §2 第 2 项）。A4 §3.2（Int 宽度）的实现方案见 [ADR 0062](0062-int-64-bit-semantics.md)（PROPOSED）；[A6 本地化关键词作名字的解析分歧裁决](0056-amendment-6-keyword-homograph-names.md)（PROPOSED，2026-11-22，随 [ADR 0064](0064-name-escape.md)；K1 结构关键词作名字两引擎都拒绝（产品负责人 2026-11-22 裁决 Q5，G3 先行）、K2 `version` / `type` / `given` 作成员两引擎都接受、K3 非结构类关键词改名保留 IR 并报 W802）
 - 目标：go-live 要求豁免表为空（ADR 0055 §6）。本 ADR 给出四个类别各自唯一的规范规则，两引擎按同一规则实现后逐类删除豁免
 
 ---

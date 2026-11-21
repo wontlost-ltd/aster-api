@@ -4,6 +4,7 @@
 - 日期：2026-11-20
 - 修订对象：[ADR 0059](0059-executable-policy-export.md) §2、§3、§4.1、§6.1、§7、§8，[修订 2](0059-amendment-2-package-format-rulings.md) R3（格式版本检查）；同时修订 [ADR 0058](0058-structured-authoring-capability-and-policy-layout.md) §7.2 读取契约（导出成为 `loadVersionLayout` 的调用方）、§7.4（本地 CLI 的反向映射）、§7.10（出现 Java 版本）
 - 实施计划：`docs/superpowers/plans/2026-11-20-adr0059-a4-display-layout-export.md`
+- 被修订：[修订 5 排版规则 L10——隐藏名字转义的反引号](0059-amendment-5-hidden-escape-delimiters.md)（PROPOSED，2026-11-22；§4 新增 L10、L9 的边界集合 B 去掉转义三元组的内侧边界；D5–D7、D9、D11 相应增补）
 - 列车：引擎与 CLI 改动随 **eco-1.0.53**（aster-lang-core、aster-lang-truffle、aster-lang-ts）
 - 来源：产品负责人 2026-11-20：「除 Guard 外，像《静夜思》这种如何导出修改了布局的源码，并使之能够本地化运行」。负责人选定的方向：包里带 `policy/display/layout.json` 与渲染好的 `display.aster`；二者在签名与 `SHA256SUMS` 覆盖之内，但不是编译输入（ADR 0058 §7.2：layout 不进 envelope）；`verify` 检查往返并按包的 locale、aliasSet、词汇校验；`show` 打印显示文本；可选的 `run --display <file>` 从改过的显示文本还原规范源码，按 ADR 0058 的防显示欺骗规则校验后编译运行
 
