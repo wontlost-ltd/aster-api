@@ -4,6 +4,7 @@
 - 日期：2026-11-20
 - 修订对象：[ADR 0056](0056-type-inference-parity.md)，接续[修订 A3](0056-amendment-3-parity-declaration-syntax.md) §7 列出的未处理分歧
 - 相关：aster-cloud/aster-lang-ts#338、#357、#339；aster-cloud/aster-lang-truffle#183
+- 被修订：[修订 A5](0056-amendment-5-parity-rulings-1055.md)（ACCEPTED，2026-11-22）D3 **取代**本文 §2 第 2 项，并更正其中「Match / When / lambda / workflow 两引擎此前都不收空行」的前提（lambda、When 块与 Step 当时已是 ts 接受、core 拒绝）；§3.2 的实现方案见 [ADR 0062](0062-int-64-bit-semantics.md)（PROPOSED）
 - 实现落点：第 1、2 节 → `aster-lang-core`、`aster-lang-ts`、`aster-lang-test` 同名分支 `fix/parity-sweep-1053`（随 eco-1.0.53；§1.1 的 core 一侧工作量较大，另行跟进，见 aster-lang-ts#338）；第 3 节 → 1.0.54 或之后，另立计划
 
 ---
@@ -58,6 +59,8 @@ A2 §2、A3 §2 已对 `type` / `use` 按「不区分大小写、不升为硬关
 
 第 1 项要跑 ts scan（字符串跨行）；第 2 项是放宽；第 3 项只改诊断码。具体正则见实现 PR。
 
+> 第 2 项已由[修订 A5](0056-amendment-5-parity-rulings-1055.md) D3 取代（2026-11-22）：任何块头之后、块体第一行之前的空行两引擎都接受。本表第 2 项关于 Match / When / lambda / workflow 的说法不准确，以 A5 §3.1 的实测表为准。语句内部（声明头之外）的换行见 A5 D4。
+
 ## 3. 延后实现的两项裁决
 
 ### 3.1 Core IR 列号约定（ts#339）
@@ -72,4 +75,5 @@ A2 §2、A3 §2 已对 `type` / `use` 按「不区分大小写、不升为硬关
 - **语义**：`Int` 是 64 位有符号整数，溢出即**运行时错误**（fail-closed）：不环绕，不静默提升为别的类型。
 - **两引擎**：Truffle 的 Int 运算改用精确运算（`Math.multiplyExact` 等）；`toInt` 一类 builtin 越界时报错，不截断。ts 的 Int 运算结果超出 ±2⁵³ 时报错，或改为 BigInt 实现；具体选哪一种随实现计划定。
 - **验收**：tier1 eval 门补 int32、2⁵³、2⁶³ 三个边界的 case。
+- **实现方案**：见 [ADR 0062](0062-int-64-bit-semantics.md)（PROPOSED，2026-11-22）。
 - **实现**：1.0.54 或之后，另立计划。这是**求值**行为的变化（Truffle 是生产求值器），上线前须扫描生产执行记录中超出 int32 的整数结果。
