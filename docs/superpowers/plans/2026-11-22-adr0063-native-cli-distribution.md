@@ -103,23 +103,23 @@
 
 ## 依赖用户决策或凭据的任务
 
-### Task 6：发布矩阵与必需检查（需要 ADR Q1、Q2、Q4、Q7）
+### Task 6：发布矩阵与必需检查（需要 ADR Q1、Q2、Q4、Q7；签名平台另需 T8）
 
 **Files:** truffle `.github/workflows/release.yml`、`.github/main-ci-gate.json`；分支保护（用户在 GitHub 设置，或授权 `gh api` 修改）
 
-- [ ] **Step 0:** 在 CI 里对 CE 与 Oracle GraalVM 的 linux-x64 产物各测 10 次 `run`（jingyesi 包）的中位数，写回「CI 基线」，供 Q1 定稿。
-- [ ] **Step 1:** `release.yml` 新增 `native` 矩阵 job（五个目标；x64 加 `-PnativeMarch=compatibility`；发行版按 Q1），与 `publish` 同受 `require-main-ci-green` 门禁。每个目标：`nativeCompile` → `nativeSmoke` → `nativeConformanceTest` → jingyesi `verify --recompile --probes` 冒烟 → 打包 `aster-<ver>-<os>-<arch>.tar.gz` / `.zip`（含 `LICENSE`、`NOTICE`、第三方许可）→ GNU 格式 `.sha256` → `actions/attest-build-provenance`（`permissions: id-token: write, attestations: write`）→ `gh release upload --clobber` → 下载回读 `sha256sum -c`。
-- [ ] **Step 2:** fail-closed：任一目标失败则整个发布失败；`publish` 与 `native` 之间不允许出现「jar 已上传、原生缺失」后仍判成功（发布 run 结论以两者都成功为准）。
+- [ ] **Step 0（尚未完成，是 Q1 的决策输入）:** 在 CI 里对 CE 与 Oracle GraalVM 的 linux-x64 产物各测 10 次 `run`（jingyesi 包）的中位数，写回「CI 基线」，供 Q1 定稿。现有 CE 数据只有构建时长、体积与一致性。
+- [ ] **Step 1:** `release.yml` 新增 `native` 矩阵 job（五个目标；x64 加 `-PnativeMarch=compatibility`；发行版按 Q1），与 `publish` 同受 `require-main-ci-green` 门禁。每个目标：`nativeCompile` → `nativeSmoke` → `nativeConformanceTest` → jingyesi `verify --recompile --probes` 冒烟 → 打包 `aster-<ver>-<os>-<arch>.tar.gz` / `.zip`（含 `LICENSE`、`NOTICE`、第三方许可）→ GNU 格式 `.sha256` → `actions/attest-build-provenance`（`permissions: id-token: write, attestations: write`）→ `actions/upload-artifact`（只存为 workflow artifact，不碰 Release）。
+- [ ] **Step 2: 汇总上传（fail-closed）**：新 job `publish-native`，`needs` 全部原生目标与 `publish`；只在它们都成功时运行，下载 artifact，按 `NATIVE_RELEASE_TARGETS`（仓库变量，列出要发布的目标；签名平台须同时有凭据，见 T8）核对资产齐全，一次性 `gh release upload --clobber`，再下载回读 `sha256sum -c`。任一目标失败则一个原生资产都不上传；发布 run 的结论以 `publish` 与 `publish-native` 都成功为准。jar 的 `publish` 先于原生上传完成这一点不变（jar 是既有渠道，原生失败不回滚 jar，但 run 判失败并告警）。
 - [ ] **Step 3:** 把 `native (linux-x64)` 加进 truffle 分支保护必需检查与 `.github/main-ci-gate.json` 的 `requiredJobs`（ADR 0053 A2：两者必须一致）；其余平台只在发布 run 里跑。
 - [ ] **Step 4:** 用 `dryRun` 列车验证一次（不发布）；需用户确认后才跑真实列车。
 
-### Task 8：macOS 签名与公证、Windows 签名（需要 ADR Q3 的凭据）
+### Task 8：macOS 签名与公证、Windows 签名（需要 ADR Q3、Q7 与 §6.3 的凭据）
 
 **Files:** truffle `.github/workflows/release.yml`
 
 - [ ] **Step 1（macOS）:** 用 `APPLE_DEVELOPER_ID_P12_BASE64` / `_PASSWORD` 建临时 keychain；`codesign --force --options runtime --timestamp --sign "Developer ID Application: … (TEAM_ID)" aster`；zip 后 `xcrun notarytool submit --wait --key <p8> --key-id … --issuer …`；`spctl --assess --type execute`（裸可执行文件不能 staple，记录公证 ID）。签名后的二进制重跑 `nativeConformanceTest`。
-- [ ] **Step 2（Windows）:** Azure Trusted Signing（`azure/trusted-signing-action`）或用户给的云 HSM 证书签 `aster.exe` 并加时间戳；`signtool verify /pa`。
-- [ ] **Step 3:** 凭据未配置时 job 明确失败（不静默跳过签名），除非用户选择「先发未签名版本」，此时 Release 说明写明。
+- [ ] **Step 2（Windows）:** Azure Trusted Signing（`azure/trusted-signing-action`，输入取 ADR §6.3 的 `AZURE_*` 变量与 secret）签 `aster.exe` 并加时间戳；`signtool verify /pa`。若用户选 OV / EV 证书，先按服务商定变量名并写回 ADR §6.3，再实现。
+- [ ] **Step 3: 签名是硬前提**：目标在 `NATIVE_RELEASE_TARGETS` 里而凭据缺失或签名失败 → 该目标 job 失败 → `publish-native` 不运行，整个原生资产集不发布。目标不在 `NATIVE_RELEASE_TARGETS` 里 → 照常构建与测试，跳过签名步骤，不进上传集合。没有「未签名发布」的分支。
 
 ### Task 9：Homebrew tap 与 `install.sh`（需要 ADR Q5）
 
@@ -171,6 +171,8 @@ CE 与 Oracle GraalVM 在 linux-x64 上体积相差 +0.3 MB、构建时长相当
 | 仓 | 命令 |
 |---|---|
 | aster-lang-truffle | `GRADLE_OPTS=-Dmaven.repo.local=<隔离仓> ./gradlew build -PexcludeBenchmarks=true`（记执行数）；`GRAALVM_HOME=<graalvm-25> ./gradlew :cli:nativeCompile :cli:nativeSmoke :cli:nativeConformanceTest` |
-| aster-lang-test | `PATH=<java 垫片目录>:$PATH NATIVE_ASTER=<exe> node scripts/package-conformance.mjs --node <aster.mjs> --jar <aster-cli.jar> --concurrency 4 --strict-formats`（T4 之后改 `--native <exe>`）；`node scripts/test-package-v1.mjs`；`node scripts/build-package-fixtures.mjs --check`、`--verify-engines` |
+| aster-lang-test（T4 之前） | `PATH=<java 垫片目录>:$PATH NATIVE_ASTER=<exe> node scripts/package-conformance.mjs --node <aster.mjs> --jar <aster-cli.jar> --concurrency 4 --strict-formats`（垫片把 `java -jar <jar> …` 换成原生可执行文件，见 truffle CI） |
+| aster-lang-test（T4 之后） | `node scripts/package-conformance.mjs --node <aster.mjs> --jar <aster-cli.jar> --native <exe> --concurrency 4 --strict-formats` |
+| aster-lang-test（两者都要） | `node scripts/test-package-v1.mjs`；`node scripts/build-package-fixtures.mjs --check`、`--verify-engines` |
 | aster-lang-ts | 深度边界对照：Worker（`resourceLimits.stackSizeMb = 32`）里 `evaluate(readCoreIr(core), entry, ctx, {maxSteps: Number.MAX_SAFE_INTEGER, maxCallDepth: 10000})` |
 | aster-lang-runtime | `./gradlew publishToMavenLocal`（隔离仓）后在 truffle 跑 `checkGraalvmVersions` |

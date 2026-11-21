@@ -1,6 +1,6 @@
 # ADR 0063：`aster` CLI 的 GraalVM 原生可执行文件——只作安装渠道
 
-- 状态：**PROPOSED**（2026-11-22，待用户采纳；§10 Q1–Q6 是开放决策，附推荐答案）
+- 状态：**PROPOSED**（2026-11-22，待用户采纳；§10 Q1–Q7 是开放决策，附推荐答案）
 - 提出：2026-11-22；来源：用户批准在 native-image spike 之后推进「JRE CLI 的原生发行」
 - 相关：[ADR 0059](0059-executable-policy-export.md)（可执行策略包与通用 CLI；§4.3、§4.4、§5.3、§9、§13 P4、§14）、[修订 1](0059-amendment-1-p0-findings.md) A3（jre-a 18 MiB）/ A4（栈与资源）、[修订 4](0059-amendment-4-display-layout-in-packages.md) D4 / D12（锁文件 `packageFormats`）、[ADR 0053](0053-release-train-artifact-reuse.md) 与[修订 A2](0053-amendment-2-release-requires-main-ci.md)（发布列车、发布前要求 main CI 绿）
 - 修订：本 ADR 替换 ADR 0059 修订 1 A4 中「JVM CLI 在缺省线程栈上求值，不调 `-Xss`」一句（§7）；其余 ADR 0059 条款不变
@@ -102,7 +102,7 @@ reachability 元数据（反射、资源）缺一条，原生产物就在运行�
 
 ### 6.1 构建与资产
 
-- truffle `release.yml` 现有 `publish` job（jar、启动脚本、`.sha256`）不变。新增 `native` 矩阵 job，与 `publish` 同在 tag-push 的发布 run 里、同受 ADR 0053 A2 门禁约束。每个目标：检出兄弟仓 → `./gradlew :cli:nativeCompile`（x64 加 `-PnativeMarch=compatibility`）→ 冒烟（`version`、jingyesi `verify --recompile --probes`）→ 原生一致性 → 签名 / 公证（证书到位后）→ 打包 → 写 `.sha256` → 构建证明 → `gh release upload --clobber` → 下载回读并 `sha256sum -c`（照抄 jar 的回读步骤）。
+- truffle `release.yml` 现有 `publish` job（jar、启动脚本、`.sha256`）不变。新增 `native` 矩阵 job，与 `publish` 同在 tag-push 的发布 run 里、同受 ADR 0053 A2 门禁约束。每个目标：检出兄弟仓 → `./gradlew :cli:nativeCompile`（x64 加 `-PnativeMarch=compatibility`）→ 冒烟（`version`、jingyesi `verify --recompile --probes`）→ 原生一致性 → 签名 / 公证（§6.3）→ 打包 → 写 `.sha256` → 构建证明 → 存为 workflow artifact。全部目标都成功后，由一个汇总 job 一次性 `gh release upload --clobber` 并下载回读 `sha256sum -c`（照抄 jar 的回读步骤）；任一目标失败则一个原生资产都不上传，Release 上不会出现残缺的原生资产集。
 - 资产命名：`aster-<ver>-linux-x64.tar.gz`、`-linux-arm64.tar.gz`、`-macos-arm64.tar.gz`、`-macos-x64.tar.gz`、`-windows-x64.zip`；包内只有 `aster`（或 `aster.exe`）、`LICENSE`、`NOTICE` 与第三方许可文件。
 - 列车：L4 pin bump 不变，原生资产跟随 truffle tag；列车 preflight 不需要新步骤（门禁已覆盖）。
 
@@ -118,13 +118,16 @@ reachability 元数据（反射、资源）缺一条，原生产物就在运行�
 
 | 平台 | 需要什么 | 以什么形式交给 CI | 不提供的后果 |
 |---|---|---|---|
-| macOS | Apple Developer Program（组织账号，99 美元 / 年）下的 **Developer ID Application** 证书；Team ID | `APPLE_DEVELOPER_ID_P12_BASE64`、`APPLE_DEVELOPER_ID_P12_PASSWORD`、`APPLE_TEAM_ID`（仓库或组织 secret） | 只能发 ad-hoc 签名的二进制：浏览器下载的会被 Gatekeeper 拦（需用户手动放行）；Homebrew 安装不受影响 |
-| macOS 公证 | App Store Connect API key（Developer 角色即可）：issuer ID、key ID、`.p8` 私钥 | `APPLE_NOTARY_ISSUER_ID`、`APPLE_NOTARY_KEY_ID`、`APPLE_NOTARY_KEY_P8_BASE64` | 同上。裸可执行文件不能 staple，提交 zip 公证，首次运行时 Gatekeeper 在线核验 |
-| Windows | 二选一：Azure Trusted Signing 账号（需实体身份验证，约 10 美元 / 月）及其 service principal；或 OV / EV 代码签名证书（现行规则下私钥必须在 HSM 或云签名服务里） | Trusted Signing：`AZURE_TENANT_ID`、`AZURE_CLIENT_ID`、`AZURE_CLIENT_SECRET`、endpoint、account、certificate profile 名称；证书：对应云 HSM 的凭据 | 未签名的 `aster.exe` 会被 SmartScreen 警告 |
+| macOS 签名 | Apple Developer Program（组织账号，99 美元 / 年）下的 **Developer ID Application** 证书（导出为带密码的 `.p12`）；Team ID | secret `APPLE_DEVELOPER_ID_P12_BASE64`、`APPLE_DEVELOPER_ID_P12_PASSWORD`；variable `APPLE_TEAM_ID` | macOS 资产不发布（见下方规则） |
+| macOS 公证 | App Store Connect API key（Developer 角色即可）：issuer ID、key ID、`.p8` 私钥 | secret `APPLE_NOTARY_KEY_P8_BASE64`；variable `APPLE_NOTARY_ISSUER_ID`、`APPLE_NOTARY_KEY_ID` | 同上。裸可执行文件不能 staple：提交 zip 公证，首次运行时 Gatekeeper 在线核验 |
+| Windows 签名（推荐 Azure Trusted Signing） | Trusted Signing 账号（需实体身份验证，约 10 美元 / 月）、证书 profile，以及一个被授予该账号签名角色的 service principal | secret `AZURE_CLIENT_SECRET`；variable `AZURE_TENANT_ID`、`AZURE_CLIENT_ID`、`AZURE_TRUSTED_SIGNING_ENDPOINT`（账号所在区域的端点，如 `https://eus.codesigning.azure.net`）、`AZURE_TRUSTED_SIGNING_ACCOUNT`、`AZURE_TRUSTED_SIGNING_PROFILE` | Windows 资产不发布 |
+| Windows 签名（替代：OV / EV 证书） | 现行规则下私钥必须在 HSM 或云签名服务里；凭据形态取决于服务商 | 选这条时由计划 T8 按服务商另定变量名，本 ADR 不预设 | 同上 |
 | Linux | 不需要 | — | — |
 | 全部 | 构建证明：只需 workflow 权限 `id-token: write`、`attestations: write` | 无 secret | — |
 | Homebrew | tap 仓 `aster-cloud/homebrew-tap`；对它有 `contents: write` 的 fine-grained token | `HOMEBREW_TAP_TOKEN` | 无 brew 渠道，用户从 Release 下载 |
 | npm（若 Q6 选是） | `@aster-cloud` scope 下新包名的发布权（现有 org `NPM_TOKEN`，或为新包配置 trusted publishing） | 既有 secret 或 npm 端配置 | 无 npm 渠道 |
+
+**签名是发布该平台资产的硬前提**：凭据未配置的平台，发布矩阵照常构建、测试，但不进上传集合；被列入上传集合的平台（仓库变量 `NATIVE_RELEASE_TARGETS`，由用户随凭据一起设置）缺凭据或签名失败即让发布失败，不静默降级为未签名。Linux 没有平台签名，只有构建证明，凭据方面不受限制。
 
 macOS 签名使用 `codesign --options runtime --timestamp`（hardened runtime）。原生镜像不在运行时生成代码，预计不需要任何 entitlement；计划在第一次签名时实测签名后的二进制仍通过一致性门。
 
@@ -133,8 +136,9 @@ macOS 签名使用 `codesign --options runtime --timestamp`（hardened runtime�
 修订 1 A4 写的是「JVM CLI 在缺省线程栈上求值，不调 `-Xss`」，于是 Truffle 的深递归结果取决于栈大小与帧布局：jar 约 1 000 层、原生约 460 层、Node 恒为 10 000。原生发行把这个差异变成了 jar 与原生之间的静默分歧，一致性门（只测 10 层与 20 000 层）发现不了。新条款：
 
 - Truffle 有确定的调用深度上限 **10 000**，与 aster-lang-ts 包格式 CLI 的 `CLI_MAX_CALL_DEPTH` **同值、同计数口径**（入口算第 1 层；每进入一次函数体或 lambda 体加 1，经 `List.map` 等 builtin 回调的也算；程序外壳与 workflow 帧不算）、**同消息**（`Maximum call depth (10000) exceeded`），超限为 `RESOURCE_EXHAUSTED`、退出码 5。实现：truffle#202，边界值逐个对照 ts 3.6.0 实测。
-- JVM CLI 的求值线程显式使用 **64 MiB** 栈（只是保留的虚拟地址，按需提交），使上限先于真实栈溢出生效；原生可执行文件另以 `-R:StackSize=2m` 让其余线程的缺省栈与 JVM 一致。
-- 效果：1 000–9 999 层的递归在 jar 与原生上由失败变为成功，与 Node 一致；10 000 层以上三方一致地失败。单帧很大的函数仍可能先撞真实栈，那仍是资源类结果，ADR 0059 §5.3 的承诺边界不变。
+- CLI 的求值线程（jar 与原生同一份代码）显式使用 **64 MiB** 栈（只是保留的虚拟地址，按需提交），使上限先于真实栈溢出生效。求值深度只由这两项决定。
+- 原生可执行文件另带 `-R:StackSize=2m`：它只设定**未显式给栈的其他线程**（看门狗、关闭、取锚等）的缺省栈字节数，与 JVM 缺省同为 2 MiB；原生帧比 JVM 小，同样字节数下原生能递归更深（spike：约 2 000 层 vs jar 约 1 080 层），所以它不是深度一致性的手段，只是避免这些线程用上原生更浅的缺省值。
+- 效果（实测：macOS arm64 的 jar 与原生、Linux x64 的 jar；Linux / Windows 原生由 T7 的共享夹具在原生门里补证）：1 000–9 999 层的递归由失败变为成功，与 Node 一致；10 000 层起三方一致地失败。`Thread` 的 stackSize 按 JDK 规范只是提示，若某平台忽略它，结果退回到真实栈溢出、仍是 `RESOURCE_EXHAUSTED`，由原生门发现。单帧很大的函数仍可能先撞真实栈，那仍是资源类结果，ADR 0059 §5.3 的承诺边界不变。
 - aster-api 平台经同一个库得到同一上限，但请求线程保持缺省栈，约 1 000 层先溢出，平台结果不变。
 - 共享夹具：aster-lang-test 的 `a-deep-recursion` 宜补 `depth-9999`（成功）与 `depth-10000`（`RESOURCE_EXHAUSTED`）。夹具生成器的 `--verify-engines` 目前在主线程以解释器缺省 `maxCallDepth = 50` 复算成功用例，要先改为按 CLI 上限在 Worker 里复算（计划 T7）。
 
@@ -156,11 +160,11 @@ macOS 签名使用 `codesign --options runtime --timestamp`（hardened runtime�
 |---|---|---|
 | Q1 | GraalVM CE 还是 Oracle GraalVM（GFTC） | **CE**（§4）；CE 对照已通过一致性、体积相当，发布前补测启动时间，若有实质差距再议 |
 | Q2 | Linux 最低 glibc | **2.34**（`ubuntu-24.04` 构建的实测下限；覆盖 Ubuntu 22.04+、Debian 12+、RHEL / OL 9+）。更老的发行版（RHEL 8、Amazon Linux 2）用 jar；若必须支持，在 `oraclelinux:8` 容器里构建（glibc 2.28），或 x64 用 `--static --libc=musl`（需重测） |
-| Q3 | 是否签名 / 公证 macOS、签名 Windows（§6.3 的证书与凭据） | 是；证书到位前先发 ad-hoc 签名的 macOS 二进制与未签名的 Windows 二进制，Release 说明里注明，Homebrew 渠道不受影响 |
+| Q3 | macOS 是否签名 + 公证（§6.3 的 Apple 证书与 API key） | 是。签名是发布 macOS 资产的硬前提：凭据到位前 macOS 目标只在 CI 构建与测试，不发布（Homebrew formula 先只含 Linux） |
 | Q4 | 是否发 macos-x64 | 发，只要 GitHub 还提供 x64 macOS runner（`macos-15-intel`）；runner 退役时停发，不做交叉方案 |
 | Q5 | Homebrew tap | 建 `aster-cloud/homebrew-tap`，列车最后一步自动发 bump PR |
 | Q6 | npm 平台包 | 暂不做：Homebrew + Release + `install.sh` 已覆盖；npm 上已有 `aster.mjs`。有明确需求时再做（约 1.5–2 人日，每次列车多发 6 个包） |
-| Q7 | Windows | 发 windows-x64（`windows-2025`）；CI 先非阻塞实测，签名见 Q3 |
+| Q7 | Windows 是否发布、用哪种签名 | 发 windows-x64（`windows-2025`），用 Azure Trusted Signing。签名是发布 Windows 资产的硬前提；到位前 CI 非阻塞实测（计划 T5），不发布 |
 
 ## 11. 风险
 
@@ -180,7 +184,7 @@ macOS 签名使用 `codesign --options runtime --timestamp`（hardened runtime�
 | N1 构建与门（进行中） | truffle#201（SDK 对齐、元数据、`nativeCompile`、原生一致性、非阻塞 CI）、truffle#202（深度上限） | 否 |
 | N2 一致性门原生侧 | aster-lang-test `package-conformance.mjs` 原生侧参数、test 仓 gate 加原生；夹具 `depth-9999` / `depth-10000` 与生成器 Worker 复算；runtime 不再泄漏 enforcedPlatform | 否 |
 | N3 发布 | `release.yml` 原生矩阵（五个目标）、打包、`.sha256`、构建证明、回读；原生 job 升为必需检查 | Q1、Q2、Q4、Q7 |
-| N4 签名与渠道 | macOS 签名 + 公证、Windows 签名、Homebrew tap 与自动 bump、`install.sh`；B 包 README 指引 | Q3、Q5（Q6 若做） |
+| N4 签名与渠道 | macOS 签名 + 公证、Windows 签名、Homebrew tap 与自动 bump、`install.sh`；B 包 README 指引 | Q3、Q5、Q7（Q6 若做） |
 
 ## 13. 不选的方案
 
