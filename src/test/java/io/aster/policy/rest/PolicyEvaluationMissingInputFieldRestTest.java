@@ -3,7 +3,7 @@ package io.aster.policy.rest;
 import aster.core.ir.CoreModel;
 import aster.core.lowering.CoreLowering;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import io.aster.security.apikey.InternalCallerSigning;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;

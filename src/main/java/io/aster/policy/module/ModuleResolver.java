@@ -5,7 +5,7 @@ import aster.core.ir.CoreModel;
 import aster.core.module.ModuleGraph;
 import aster.core.module.ModuleKey;
 import io.aster.policy.entity.PolicyVersion;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import io.aster.replay.core.module.ModuleGraphResolver;
 import jakarta.enterprise.context.ApplicationScoped;
 import org.jboss.logging.Logger;

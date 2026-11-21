@@ -309,7 +309,7 @@ class DynamicPolicyExecutionTest {
         artifact.artifactType = "CORE_JSON";
 
         // 预编译产物即 Core IR v2 规范字节（ADR 0055）：由 CNL 经名称解析后序列化，与 PolicyCompiler 写入的形状一致
-        String coreJson = aster.core.ir.CoreIrJson.serialize(io.aster.policy.parser.InProcessCnlParser.parse("""
+        String coreJson = aster.core.ir.CoreIrJson.serialize(aster.core.embed.InProcessCnlParser.parse("""
             Module %s.
 
             Rule %s given amount as Int, term as Int, produce Bool:

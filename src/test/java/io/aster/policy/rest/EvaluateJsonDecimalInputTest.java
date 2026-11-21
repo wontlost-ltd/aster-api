@@ -4,7 +4,7 @@ import aster.core.ir.CoreModel;
 import aster.core.lowering.CoreLowering;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import io.quarkus.test.junit.QuarkusTest;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;

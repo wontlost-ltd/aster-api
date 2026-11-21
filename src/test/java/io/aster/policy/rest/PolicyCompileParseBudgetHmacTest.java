@@ -1,8 +1,8 @@
 package io.aster.policy.rest;
 
 import io.aster.common.JacksonMappers;
-import io.aster.policy.parser.ParseBudget;
-import io.aster.policy.parser.ParseBudgetTestHooks;
+import aster.core.embed.ParseBudget;
+import aster.core.embed.ParseBudgetTestHooks;
 import io.aster.security.apikey.CompileStructuralAliasHmacTest;
 import io.aster.security.apikey.InternalCallerSigning;
 import io.aster.test.PostgresTestResource;

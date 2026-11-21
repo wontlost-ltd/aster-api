@@ -15,7 +15,7 @@ import java.util.Map;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import io.aster.policy.entity.PolicyArtifact;
 import io.aster.policy.entity.PolicyVersion;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import io.aster.policy.repository.PolicySourceRepository;
 import io.quarkus.cache.CacheKey;
 import io.quarkus.cache.CacheResult;

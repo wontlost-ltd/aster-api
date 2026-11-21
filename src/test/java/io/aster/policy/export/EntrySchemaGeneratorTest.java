@@ -4,7 +4,7 @@ import aster.core.ir.CoreIrJson;
 import aster.core.ir.CoreModel;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import aster.core.lowering.CoreLowering;
 import org.junit.jupiter.api.Test;
 

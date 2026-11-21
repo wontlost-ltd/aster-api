@@ -1,5 +1,7 @@
 package io.aster.policy.parser;
 
+import aster.core.embed.InProcessCnlParser;
+import aster.core.embed.ParseBudget;
 import aster.core.ast.Module;
 import aster.core.ast.Decl;
 import aster.core.embed.UserAliasValidator;

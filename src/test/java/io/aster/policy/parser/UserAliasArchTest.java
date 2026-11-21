@@ -1,5 +1,6 @@
 package io.aster.policy.parser;
 
+import aster.core.embed.InProcessCnlParser;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 

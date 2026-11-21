@@ -6,7 +6,7 @@ import aster.core.lowering.CoreLowering;
 import io.aster.audit.PostgresAnalyticsTestProfile;
 import io.aster.policy.entity.PolicyVersion;
 import io.aster.policy.parser.DynamicCnlExecutor;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import io.aster.test.PostgresTestResource;
 import io.quarkus.test.common.QuarkusTestResource;
 import io.quarkus.test.junit.QuarkusTest;

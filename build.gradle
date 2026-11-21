@@ -130,6 +130,8 @@ dependencies {
     runtimeOnly asterLibs.graalvm.compiler
 
     // 测试依赖
+    // core 的测试接缝（ParseBudgetTestHooks：解析预算测试把慢输入变慢），test-fixtures 变体，不进生产 classpath
+    testImplementation testFixtures(asterLibs.core)
     testImplementation 'io.quarkus:quarkus-junit5'
     testImplementation 'io.quarkus:quarkus-junit5-mockito'
     testImplementation 'io.quarkus:quarkus-test-vertx'

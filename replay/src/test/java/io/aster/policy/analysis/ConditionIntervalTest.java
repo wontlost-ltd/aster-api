@@ -1,6 +1,6 @@
 package io.aster.policy.analysis;
 
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import aster.core.ast.Block;
 import aster.core.ast.Decl;
 import aster.core.ast.Expr;

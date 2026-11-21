@@ -1,7 +1,7 @@
 package io.aster.policy.rest;
 
-import io.aster.policy.parser.ParseBudget;
-import io.aster.policy.parser.ParseBudgetTestHooks;
+import aster.core.embed.ParseBudget;
+import aster.core.embed.ParseBudgetTestHooks;
 import io.aster.policy.test.RedisEnabledTest;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.QuarkusTestProfile;

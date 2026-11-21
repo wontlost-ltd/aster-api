@@ -3,7 +3,7 @@ package io.aster.policy.compiler;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.entity.PolicyVersionValidation;
-import io.aster.policy.parser.LegacySyntaxCodes;
+import aster.core.embed.LegacySyntaxCodes;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.transaction.Transactional;

@@ -270,10 +270,10 @@ public class StabilityEnforcement {
      */
     private static CoreModel.Module compileToCore(String source, String locale, String aliasSetJson) {
         Map<SemanticTokenKind, List<String>> aliasSet = io.aster.policy.compiler.PolicyCompiler.parseAliasSetJson(aliasSetJson);
-        io.aster.policy.parser.InProcessCnlParser.ParseResult parseResult =
+        aster.core.embed.InProcessCnlParser.ParseResult parseResult =
             (aliasSet == null || aliasSet.isEmpty())
-                ? io.aster.policy.parser.InProcessCnlParser.parse(source, locale)
-                : io.aster.policy.parser.InProcessCnlParser.parseWithUserAliases(source, locale, null, aliasSet);
+                ? aster.core.embed.InProcessCnlParser.parse(source, locale)
+                : aster.core.embed.InProcessCnlParser.parseWithUserAliases(source, locale, null, aliasSet);
         return parseResult.core();
     }
 

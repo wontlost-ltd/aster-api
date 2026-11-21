@@ -4,7 +4,7 @@ import aster.truffle.trace.TraceAccess;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.aster.policy.api.model.DecisionTrace;
 import io.aster.policy.parser.DynamicCnlExecutor;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import io.aster.policy.replay.ReplayMetadata;
 import io.aster.policy.rest.model.VocabularyBounds;
 import io.aster.replay.core.ExecutionPhaseResult;

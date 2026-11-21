@@ -2,7 +2,7 @@ package io.aster.replay.core;
 
 import aster.truffle.embed.ValueShapeException;
 import io.aster.policy.parser.DynamicCnlExecutor;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 
 /**
  * 执行异常 → 错误类别的**单一事实源**（issue #173）。

@@ -5,7 +5,7 @@ import aster.core.lowering.CoreLowering;
 import aster.truffle.embed.PolyglotValues;
 import io.aster.policy.compiler.CompilationMetadata;
 import aster.truffle.embed.CoreIrEntrySelector;
-import io.aster.policy.parser.InProcessCnlParser;
+import aster.core.embed.InProcessCnlParser;
 import io.aster.replay.core.parser.ReplayMappers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
