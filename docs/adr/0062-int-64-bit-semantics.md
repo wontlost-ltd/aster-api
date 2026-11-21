@@ -60,7 +60,7 @@ ts 不是生产求值器（Truffle 才是）。用 A，分歧只出现在 2⁵³
 
 ### 3.2 Truffle 的溢出处理
 
-- **精确运算并报错（推荐）**：`Math.addExact` / `subtractExact` / `multiplyExact` / `negateExact` / `divideExact`，捕获 `ArithmeticException` 转成 guest 错误。这些方法是 JIT 内建，正常路径几乎没有开销。
+- **精确运算并报错（推荐）**：`Math.addExact` / `subtractExact` / `multiplyExact` / `negateExact` / `divideExact`（`divideExact(long, long)` 自 JDK 18 起提供，唯一会溢出的情形是 `Long.MIN_VALUE / -1`），捕获 `ArithmeticException` 转成 guest 错误。加、减、乘、取负的 `*Exact` 是 JIT 内建，正常路径几乎没有开销。
 - 提升为 `BigInteger`：违反 A4 §3.2「不静默提升」，否决。
 - 保持环绕：违反 A4 §3.2，否决。
 
@@ -78,7 +78,7 @@ ts 不是生产求值器（Truffle 才是）。用 A，分歧只出现在 2⁵³
 
 ### 4.1 Truffle
 
-1. 整数加、减、乘（`numericAdd/Sub/Mul`）、一元取负、`intdiv`（`Long.MIN_VALUE / -1`）、`List.sum` 及其他对整数求和 / 累乘的 builtin 一律用 `Math.*Exact`；溢出抛 `BuiltinException(ErrorMessages.arithmeticIntegerOverflow(op))`。完整 builtin 清单由实施计划逐个列出并各配一条测试。
+1. 整数加、减、乘（`numericAdd/Sub/Mul`）、一元取负、`intdiv`（用 `Math.divideExact`；普通 `/` 在 `Long.MIN_VALUE / -1` 时环绕，必须换掉，且这一边界单独配测试）、`List.sum` 及其他对整数求和 / 累乘的 builtin 一律用 `Math.*Exact`；溢出抛 `BuiltinException(ErrorMessages.arithmeticIntegerOverflow(op))`。完整 builtin 清单由实施计划逐个列出并各配一条测试。
 2. `toInt` 改为：数值先取 long，超出 int32 抛 guest 错误（`Math.toIntExact` 语义），不截断。各调用点的报错文本带上 builtin 名。
 3. `IntE.value` 保持 `int`（§4.4）。
 4. `mod` 的整数路径（long `%`）不会溢出，不改。

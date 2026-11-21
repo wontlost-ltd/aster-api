@@ -105,6 +105,8 @@ ts#362 第 1 项（zh 规范化文本里 ts 保留 「」、Java 换成 `"`）�
 | D4 | 只改 ts 诊断码 | 是 | 否 | 无 | 只有 `changed-codes`（E064 → E063），`newly-failing` 0 |
 | D5 | 无变化 | 否 | 否 | 无 | — |
 
+D2 第三条只查逗号与短语之间的 VT / FF，不查 CR / LF：逗号之后换行、下一行以 `the result is` 开头的写法（`When 1,` ⏎ `the result is 2.`）由行首形式 `^([ \t]*)The result is` 匹配，收紧前后都接受，不会变成失败；只有夹在中间的 VT / FF 会让两种形式都匹配不上。短语**之后**的 CR / LF 由第一、二条覆盖。
+
 表中正则里的 `\|` 是 Markdown 表格转义，实际规则写 `|`。D1–D4 都不改关键词、别名与字面量触发词，不需要 vocab-check 与 `--aliases`。
 
 ## 7. 落地
