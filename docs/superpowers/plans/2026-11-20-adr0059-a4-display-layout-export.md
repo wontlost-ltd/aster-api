@@ -239,4 +239,18 @@
 
 ## 验收结果
 
-（T8 完成后填写。）
+2026-11-22 生产验收（T8），全部通过。环境：生产 aster-api 1.0.54（含 #600、#601）、cloud 含 #847/#848；`policy_export.package.enabled` 已开，
+`policy_export.package.layout.enabled` 于验收时打开；验收策略 `showcase-jingyesi`（2db9808e-4e03-4ad6-b041-b1ef2239605e）v1 于验收时审批
+（个人策略，审计记为自审批）。CLI 均为发布产物：npm `@aster-cloud/aster-lang-ts@3.6.0`、Release `aster-cli-1.0.53.jar`（`.sha256` 核对一致）；
+旧 CLI 为 ts 3.5.0、`aster-cli-1.0.52.jar`（`.sha256` 一致）。
+
+| Step | 结果 |
+|---|---|
+| 1 导出 | JRE B 包 6929 B，`X-Aster-Package-Sha256: 684b96322ebb536f6bdc3ccbe31b5f3362a83fdbde17accc8211e16233746360`；Node B 包 6969 B，`f55d963d9907a2355f5181dbb7127cf0fdb02d2837b78d29ce5c243f9c0c1fad`；两者 `X-Aster-Package-Layout: included`、`X-Aster-Package-Signed: true`，本地计算的 zip SHA-256 与响应头一致；再次导出逐字节相同。包内含 `policy/display/display.aster` 与 `layout.json`（格式 1.1）。**未核对**审计 `POLICY_EXPORTED` 记录：云端 UI 不展示审计链，本次未查 |
+| 2 verify | 两个 CLI × 两个包：`verify --recompile --probes`（内置 SaaS 锚）七项 `schema / signature / integrity / display / recompile / display-ir / probes` 全部 ok，退出码 0；`coreIrSha256 = dc80881aada226c7c489ae26cd42d10c7b30e7fd82983360368f65d1fa477032` |
+| 3 show | stdout = `床前明月光，\n疑是地上霜。\n举头望明月，\n低头思故乡。\n`，stderr 含 `思故乡 → 静夜思`；`--canonical` = 带空格的规范源码 |
+| 4 run | `echo '{}' \| aster run <pkg> --input -` → `ok:true, value:"静夜思"`；两个 CLI 去掉 `meta` 后 stdout 相同，`coreIrSha256` 相同 |
+| 5 run --display | 末句改 `低头「月光」。` → `value:"月光"`、`matchesPackage:false`、`coreIrSha256:null`，stderr 首行为「正在运行由显示文本派生的程序，不在包签名覆盖之内」并打印派生源码；未改的 `show` 输出 → `静夜思`、`matchesPackage:true`；`床前床前明月光` → `DISPLAY_AMBIGUOUS`、退出码 2。两个 CLI × 两个包一致 |
+| 6 旧 CLI | ts 3.5.0 与 aster-cli 1.0.52 对两个包 `verify` → `PKG_UNSUPPORTED_FORMAT`、退出码 4 |
+| 7 | 本节 |
+
