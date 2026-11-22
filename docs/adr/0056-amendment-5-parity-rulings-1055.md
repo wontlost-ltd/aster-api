@@ -5,7 +5,7 @@
 - 修订对象：[ADR 0056](0056-type-inference-parity.md)，接续[修订 A4](0056-amendment-4-parity-rulings-1053.md)；**D3 取代 A4 §2 第 2 项**（并更正该项的前提，见 §3.1）
 - 相关：aster-cloud/aster-lang-ts#380、#357、#362；aster-cloud/aster-lang-core#298
 - 实现落点：D1–D4 → `aster-lang-core`、`aster-lang-ts`、`aster-lang-test` 同名分支，随 **eco-1.0.55**（D1 分支 `fix/parity-380-alias-annotations`，其余分支名见实施 PR）；D5 只留档，无代码
-- 同期另立：truffle#183（Int 64 位）的实现方案见 [ADR 0062](0062-int-64-bit-semantics.md)（PROPOSED），不在本修订
+- 同期另立：truffle#183（Int 64 位）的实现方案见 [ADR 0062](0062-int-64-bit-semantics.md)（ACCEPTED，2026-11-22），不在本修订
 
 本修订的条目编号沿用 Wave C 计划的 D1–D5。所有「修复前」一栏都是 2026-11-22 在**已发布**产物上实测的结果：core / locales / hi 1.0.54、`@aster-cloud/aster-lang-ts` 3.6.0。自 aster-api#601 起 aster-api 不再有解析器副本，core 的改动在下一次 aster-api pin bump 时进入生产。
 

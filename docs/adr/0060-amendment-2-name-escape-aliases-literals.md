@@ -1,6 +1,6 @@
 # ADR 0060 修订 2：名字转义与别名、E808、字面量触发词
 
-- 状态：**PROPOSED**（2026-11-22，随 [ADR 0064](0064-name-escape.md) 一起待产品负责人采纳）
+- 状态：**ACCEPTED**（2026-11-22，随 [ADR 0064](0064-name-escape.md) 一起经产品负责人采纳）
 - 日期：2026-11-22
 - 修订对象：[ADR 0060](0060-cjk-keyword-aliases-and-policy-embedded-vocabulary.md) §5.3 第 2 项（E808 `alias_identifier_collision`）与别名、词汇校验规则；§6.4 内嵌词汇校验；[修订 1](0060-amendment-1-literal-trigger-keyword-precedence.md) R16'（**不改**，本修订只说明转义与它的关系）
 - 相关：ADR 0064 N6、N7、N7a；aster-lang-ts `alias-identifier-guard.ts:1-14`、`shared/error_codes.json` E808

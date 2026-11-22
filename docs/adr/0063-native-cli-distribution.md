@@ -1,6 +1,6 @@
 # ADR 0063：`aster` CLI 的 GraalVM 原生可执行文件——只作安装渠道
 
-- 状态：**PROPOSED**（2026-11-22，待用户采纳；§10 Q1–Q7 是开放决策，附推荐答案）
+- 状态：**ACCEPTED**（2026-11-22，产品负责人采纳；§10 Q1–Q7 均按推荐答案裁决）。**采纳不改变发布阻塞**：各平台资产的发布仍须等用户提供 §6.3 列出的凭据（Apple 签名与公证、Windows 签名、Homebrew tap token 等）
 - 提出：2026-11-22；来源：用户批准在 native-image spike 之后推进「JRE CLI 的原生发行」
 - 相关：[ADR 0059](0059-executable-policy-export.md)（可执行策略包与通用 CLI；§4.3、§4.4、§5.3、§9、§13 P4、§14）、[修订 1](0059-amendment-1-p0-findings.md) A3（jre-a 18 MiB）/ A4（栈与资源）、[修订 4](0059-amendment-4-display-layout-in-packages.md) D4 / D12（锁文件 `packageFormats`）、[ADR 0053](0053-release-train-artifact-reuse.md) 与[修订 A2](0053-amendment-2-release-requires-main-ci.md)（发布列车、发布前要求 main CI 绿）
 - 修订：本 ADR 替换 ADR 0059 修订 1 A4 中「JVM CLI 在缺省线程栈上求值，不调 `-Xss`」一句（§7）；其余 ADR 0059 条款不变
@@ -154,17 +154,19 @@ macOS 签名使用 `codesign --options runtime --timestamp`（hardened runtime�
 
 加入 `truffle-runtime / truffle-compiler` 后 Oracle GraalVM 启用运行时编译，但部分求值检查失败：24 处黑名单违例（`AsterRootNode.execute`、`LambdaRootNode.execute`、`AsterMapValue.readMember` 等在可编译路径上直接调 `HashMap` / `Collection.stream` / `BigDecimal.toPlainString`，没有 `@TruffleBoundary`），以及 `neverPartOfCompilation` 可达。系统性的 PE 卫生估 2–4 人日；而单次 CLI 求值只有几毫秒，JIT 来不及编译进程就结束了，镜像还会显著变大。原生保持仅解释器，与今天 stock JRE 上的 jar（回退解释器）持平。若将来出现长时间求值或批量模式，再单独评估。
 
-## 10. 开放决策（用户）
+## 10. 决策（产品负责人 2026-11-22 采纳，Q1–Q7 均按推荐答案）
 
-| # | 问题 | 推荐 |
+采纳不等于可发布：每个平台的原生资产仍被阻塞，直到用户提供 §6.3 列出的凭据；凭据到位前，对应目标只在 CI 构建与测试（§6.3 `NATIVE_RELEASE_TARGETS` 规则不变）。
+
+| # | 问题 | 决定 |
 |---|---|---|
-| Q1 | GraalVM CE 还是 Oracle GraalVM（GFTC） | **CE**（§4）；CE 对照已通过一致性、体积相当，发布前补测启动时间，若有实质差距再议 |
-| Q2 | Linux 最低 glibc | **2.34**（`ubuntu-24.04` 构建的实测下限；覆盖 Ubuntu 22.04+、Debian 12+、RHEL / OL 9+）。更老的发行版（RHEL 8、Amazon Linux 2）用 jar；若必须支持，在 `oraclelinux:8` 容器里构建（glibc 2.28），或 x64 用 `--static --libc=musl`（需重测） |
-| Q3 | macOS 是否签名 + 公证（§6.3 的 Apple 证书与 API key） | 是。签名是发布 macOS 资产的硬前提：凭据到位前 macOS 目标只在 CI 构建与测试，不发布（Homebrew formula 先只含 Linux） |
-| Q4 | 是否发 macos-x64 | 发，只要 GitHub 还提供 x64 macOS runner（`macos-15-intel`）；runner 退役时停发，不做交叉方案 |
-| Q5 | Homebrew tap | 建 `aster-cloud/homebrew-tap`，列车最后一步自动发 bump PR |
-| Q6 | npm 平台包 | 暂不做：Homebrew + Release + `install.sh` 已覆盖；npm 上已有 `aster.mjs`。有明确需求时再做（约 1.5–2 人日，每次列车多发 6 个包） |
-| Q7 | Windows 是否发布、用哪种签名 | 发 windows-x64（`windows-2025`），用 Azure Trusted Signing。签名是发布 Windows 资产的硬前提；到位前 CI 非阻塞实测（计划 T5），不发布 |
+| Q1 | GraalVM CE 还是 Oracle GraalVM（GFTC） | **决定：GraalVM Community Edition**（§4）；CE 对照已通过一致性、体积相当，发布前补测启动时间，若有实质差距再议 |
+| Q2 | Linux 最低 glibc | **决定：最低 glibc 2.34**（`ubuntu-24.04` 构建的实测下限；覆盖 Ubuntu 22.04+、Debian 12+、RHEL / OL 9+）。更老的发行版（RHEL 8、Amazon Linux 2）用 jar；若必须支持，在 `oraclelinux:8` 容器里构建（glibc 2.28），或 x64 用 `--static --libc=musl`（需重测） |
+| Q3 | macOS 是否签名 + 公证（§6.3 的 Apple 证书与 API key） | **决定：是，签名与公证为必需**。签名是发布 macOS 资产的硬前提：凭据到位前 macOS 目标只在 CI 构建与测试，不发布（Homebrew formula 先只含 Linux） |
+| Q4 | 是否发 macos-x64 | **决定：发 macos-x64**，只要 GitHub 还提供 x64 macOS runner（`macos-15-intel`）；runner 退役时停发，不做交叉方案 |
+| Q5 | Homebrew tap | **决定：建 `aster-cloud/homebrew-tap`，列车最后一步自动发 bump PR** |
+| Q6 | npm 平台包 | **决定：暂不做**：Homebrew + Release + `install.sh` 已覆盖；npm 上已有 `aster.mjs`。有明确需求时再做（约 1.5–2 人日，每次列车多发 6 个包） |
+| Q7 | Windows 是否发布、用哪种签名 | **决定：发 windows-x64（`windows-2025`），用 Azure Trusted Signing**。签名是发布 Windows 资产的硬前提；到位前 CI 非阻塞实测（计划 T5），不发布 |
 
 ## 11. 风险
 
