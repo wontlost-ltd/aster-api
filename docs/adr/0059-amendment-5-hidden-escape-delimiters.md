@@ -1,6 +1,6 @@
 # ADR 0059 修订 5：排版规则 L10——隐藏名字转义的反引号
 
-- 状态：**PROPOSED**（2026-11-22，随 [ADR 0064](0064-name-escape.md) 一起待产品负责人采纳）
+- 状态：**ACCEPTED**（2026-11-22，随 [ADR 0064](0064-name-escape.md) 一起经产品负责人采纳）
 - 日期：2026-11-22
 - 修订对象：[ADR 0059 修订 4](0059-amendment-4-display-layout-in-packages.md) §4（新增 L10；L9 的边界集合 B 去掉转义三元组的内侧边界）、D5（`display` / `display-ir` 检查项增加 L10）、D6（`show` 的 stderr）、D7（派生排版过 L10）、D9（`aster.core.layout` 与 ts `./layout` 新增函数）、D11（aster-api 签名前跑 L1–L10）；同时约束 [ADR 0058](0058-structured-authoring-capability-and-policy-layout.md) §7.5 的 ts `validatePolicyLayout`（细节见 [ADR 0058 修订 3](0058-amendment-3-editor-name-escape.md)）
 - 来源：产品负责人 2026-11-22 裁决 Q3「显示层可以隐藏转义定界符」（诗句保真），并要求严格论证：被隐藏的转义永远不能改变评审者对「执行的是什么」的认识

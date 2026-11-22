@@ -5,7 +5,7 @@
 - 决策者：产品负责人已拍板两项（§3）；本 ADR 补齐威胁模型、规则细节、存储、合并、envelope、执行与分期
 - 相关：ADR 0022（关键词别名，§10「用户空间铁律」、§11.5 Codex 对抗复核 H3）、ADR 0051（按位置解析词汇；§7 envelope 第 5 段）、ADR 0053 及修订 1（发布列车拥有 aster-api 的引擎 pin）、ADR 0058（结构化编写能力与 LayoutMap）、ADR 0059（可执行策略导出包）
 - 修订：本 ADR **修订 ADR 0022 §11.5(A) 的「仅多词」规则**（§5）与 **ADR 0022 的结构词白名单**（加入 `FUNC_PRODUCE`）；其余 ADR 0022 规则不变。不修订 ADR 0058（LayoutMap 规则原样适用）
-- 被修订：[修订 1 字面量触发词与关键词同形时关键词优先；字面量内容放开 `\`、`"` 与弯引号](0060-amendment-1-literal-trigger-keyword-precedence.md)（ACCEPTED，2026-11-20；R16' 取代 R16，新增 R18）；[修订 2 名字转义与别名、E808、字面量触发词](0060-amendment-2-name-escape-aliases-literals.md)（PROPOSED，2026-11-22，随 [ADR 0064](0064-name-escape.md)；X1 E808 跳过转义名、X2 别名与词汇不得含反引号、X3 转义的触发词拼写是名字、X4 转义不解决触发词与关键词的冲突，R16' 不变）
+- 被修订：[修订 1 字面量触发词与关键词同形时关键词优先；字面量内容放开 `\`、`"` 与弯引号](0060-amendment-1-literal-trigger-keyword-precedence.md)（ACCEPTED，2026-11-20；R16' 取代 R16，新增 R18）；[修订 2 名字转义与别名、E808、字面量触发词](0060-amendment-2-name-escape-aliases-literals.md)（ACCEPTED，2026-11-22，随 [ADR 0064](0064-name-escape.md)；X1 E808 跳过转义名、X2 别名与词汇不得含反引号、X3 转义的触发词拼写是名字、X4 转义不解决触发词与关键词的冲突，R16' 不变）
 - 实现仓：`aster-lang-core`（别名校验器，**列车门**）、`aster-lang-ts`（别名校验器移植，**列车门**）、`aster-lang-test`（envelope 共享向量）、`aster-api`（批量 What-If 补别名；列车后的端到端测试）、`aster-cloud`（主：内嵌词汇存储、合并、编辑器、模板）
 - 实施计划：`docs/superpowers/plans/2026-11-20-adr0060-jingyesi-embedded-vocabulary.md`
 

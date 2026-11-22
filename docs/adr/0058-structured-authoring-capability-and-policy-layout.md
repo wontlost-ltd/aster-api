@@ -7,7 +7,7 @@
 - 子 issue：wontlost-ltd/aster-cloud#792（授权模型与管理页）、aster-cloud/aster-lang-ts#333（LSP 与 LayoutMap 包导出）、wontlost-ltd/aster-cloud#793（编辑器标签页）、#794（LayoutMap 视图与存储）、#795（文档）
 - 实现仓：`wontlost-ltd/aster-cloud`（主）、`aster-cloud/aster-lang-ts`（LSP、LayoutMap 包导出）、`aster-dev`（改用包导出）。**aster-api 无代码改动**（理由见 §5.3、§7.2）
 - 范围外：引导流程（cloud#796）、关键词别名面板（ADR 0022 已有）、ADR 0051 的解析语义、让 parser 接受任意排版（ADR 0028）、任意人类文档到 canonical 的变换（ADR 0038）
-- 修订：[修订 1 阅读视图先显示排版](0058-amendment-1-reading-views-display-first.md)（ACCEPTED，2026-11-20；A1 策略详情页默认选中显示排版、取代阶段 2 计划 R16，审批视图 R15 不变；A2 编辑器缺省打开并排视图、显式关闭按浏览器记住；A3 标签顺序不变）；[修订 2 类型别名引导词本地化](0058-amendment-2-localized-type-alias-keyword.md)（ACCEPTED，2026-11-20；新增 lexicon kind `TYPE_ALIAS`，zh `类型`、de `Typ`、hi `प्रकार`，英文 `Type` 永久保留）；[修订 3 编辑器自动插入名字转义；结构 span 如何隐藏转义符](0058-amendment-3-editor-name-escape.md)（PROPOSED，2026-11-22，随 [ADR 0064](0064-name-escape.md)；E1–E8：表单与快速修复自动转义、关键词一侧用结构 span、排版从不携带 token 角色、隐藏转义符只用三元组并受 ADR 0059 修订 5 L10 约束）
+- 修订：[修订 1 阅读视图先显示排版](0058-amendment-1-reading-views-display-first.md)（ACCEPTED，2026-11-20；A1 策略详情页默认选中显示排版、取代阶段 2 计划 R16，审批视图 R15 不变；A2 编辑器缺省打开并排视图、显式关闭按浏览器记住；A3 标签顺序不变）；[修订 2 类型别名引导词本地化](0058-amendment-2-localized-type-alias-keyword.md)（ACCEPTED，2026-11-20；新增 lexicon kind `TYPE_ALIAS`，zh `类型`、de `Typ`、hi `प्रकार`，英文 `Type` 永久保留）；[修订 3 编辑器自动插入名字转义；结构 span 如何隐藏转义符](0058-amendment-3-editor-name-escape.md)（ACCEPTED，2026-11-22，随 [ADR 0064](0064-name-escape.md)；E1–E8：表单与快速修复自动转义、关键词一侧用结构 span、排版从不携带 token 角色、隐藏转义符只用三元组并受 ADR 0059 修订 5 L10 约束）
 
 ---
 
