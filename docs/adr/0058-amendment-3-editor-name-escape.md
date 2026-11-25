@@ -5,7 +5,7 @@
 - 修订对象：[ADR 0058](0058-structured-authoring-capability-and-policy-layout.md) §7.4（怎样创建）、§7.5（保存规则表）、§7.7 第 3、4 条（防显示欺骗）、§8.3（编辑器）
 - 来源：产品负责人 2026-11-22 裁决 Q1 的 (b)「结构化编写编辑器自动插入转义，本地化关键词照旧经结构 span 显示在英文规范关键词之上」与 Q3「显示层可以隐藏转义定界符」
 - 相关：[ADR 0059 修订 5](0059-amendment-5-hidden-escape-delimiters.md)（L10，隐藏转义符的规则与论证）、[ADR 0058 修订 1](0058-amendment-1-reading-views-display-first.md)（R15 审批视图 canonical 优先；详情页默认显示排版）、[修订 2](0058-amendment-2-localized-type-alias-keyword.md)（§8.3 表单经 lexicon 生成源码）
-- 实现落点：`aster-cloud`（`src/lib/structured-authoring/source-builders.ts`、`name-validation.ts`、Monaco 集成、排版视图与 span 编辑器）、`aster-lang-ts`（`./layout` 的 `validatePolicyLayout`、LSP 快速修复）；cloud 改动在 aster-api pin 支持转义之后上线，由开关 `authoring.name_escape.enabled`（缺行 false）控制
+- 实现落点：`aster-cloud`（`src/lib/structured-authoring/source-builders.ts`、`name-validation.ts`、Monaco 集成、排版视图与 span 编辑器）、`aster-lang-ts`（`./layout` 的 `validatePolicyLayout`、LSP 快速修复）；cloud 改动在 aster-api pin 支持转义之后上线，由开关 `authoring.name_escape.enabled`（缺行 false）控制；按 [ADR 0056 修订 A7](0056-amendment-7-wave-d-rulings-1056.md) D5（2026-11-26），该开关在 aster-api 接通 L10b（E6）之前保持关闭，之后按环境打开
 
 ---
 
