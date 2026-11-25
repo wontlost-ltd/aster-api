@@ -101,6 +101,11 @@ unset SEED KEYS_FILE
   （已核：Release 资产 `aster-cli-1.0.53.jar`（sha256 `d113126f…f32cab8`，`.sha256` 校验通过）内 `aster/cli/export-jwks.json`、ts v3.6.0 Release 的 `aster.mjs`
   （sha256 `5fda34f2…45b135`，与 npm `dist/runner/aster.mjs` 逐字节相同、`.sha256` 校验通过）的 `version` 都列出 `export-2026-11a`，公钥 x 与 `/api/v1/exports/keys` 一致）；
   白名单与 v3.6.0 逐字节相同，未变。须先于 cloud 的 ts 3.6.0 PR（wontlost-ltd/aster-cloud#847）部署，两次部署之间 Node 导出 503 `export_runtime_skew`，JRE 导出不受影响。
+- 列车 eco-1.0.55 之后的锁文件：`jre` 为 `1.0.55`、`node` 为 `3.7.0`，`trustAnchorKids` 与 `packageFormats` 不变
+  （已核：Release 资产 `aster-cli-1.0.55.jar`（sha256 `f981b565…78723439`，`.sha256` 校验通过）内 `aster/cli/export-jwks.json`、ts v3.7.0 Release 的 `aster.mjs`
+  （sha256 `3d57083d…0636b8`，与 npm `dist/runner/aster.mjs` 逐字节相同、`.sha256` 校验通过）的 `version` 都列出 `export-2026-11a` 与 `formatVersions ["1.0","1.1"]`，
+  公钥 x 与 `/api/v1/exports/keys` 一致）；白名单与 v3.7.0 逐字节相同，未变。eco-1.0.54 只发了 jre 引擎、没有 ts，锁文件未单独 bump，jre 由 1.0.53 直接到 1.0.55（与生态 pin 持平）。
+  须先于 cloud 的 ts 3.7.0 PR 部署，两次部署之间 Node 导出 503 `export_runtime_skew`，JRE 导出不受影响。
 - **`packageFormats`（修订 4 D12）随列车维护**：每次列车 L4 之后的锁文件 PR，把每个 target 的 `packageFormats` 写成该 `cliVersion` 的 CLI `version` 输出中的 `formatVersions`
   （缺省按 `["1.0"]` 读）。只有含 `"1.1"` 时 aster-api 才把 cloud 送来的显示排版写进包、产出 1.1 包；CLI 不认得的格式版本绝不写入，否则 README 指向的 CLI 会以
   `PKG_UNSUPPORTED_FORMAT` 拒绝该包。字段存在但不是由已知格式版本（`ExportRuntimes.KNOWN_PACKAGE_FORMATS`）组成的非空无重复数组 → 启动失败。
