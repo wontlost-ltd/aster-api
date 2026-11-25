@@ -193,11 +193,11 @@ class PackageAssemblerTest {
         .doesNotContain("npx", "npm i -g")
         .doesNotContain("{{");
     assertThat(new String(PackageReadme.render("zh", d), StandardCharsets.UTF_8)).contains("事实来源：bureau。");
-    PackageReadme.Data pinned = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.6.0", "1.0.53",
-        "3.6.0", List.of());
+    PackageReadme.Data pinned = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.7.0", "1.0.55",
+        "3.7.0", List.of());
     for (String locale : List.of("en", "zh", "de")) {
       assertThat(new String(PackageReadme.render(locale, pinned), StandardCharsets.UTF_8)).as(locale)
-          .contains("https://github.com/aster-cloud/aster-lang-ts/releases/tag/v3.6.0", "aster.mjs.sha256", "node aster.mjs")
+          .contains("https://github.com/aster-cloud/aster-lang-ts/releases/tag/v3.7.0", "aster.mjs.sha256", "node aster.mjs")
           .doesNotContain("npx", "npm i -g", "{{", "display.aster");
     }
   }
@@ -205,17 +205,17 @@ class PackageAssemblerTest {
   /** 修订 4 D12：带排版的包 README 末尾多一节显示排版说明（三语，hi 回落 en），不带排版时与之前相同。 */
   @Test
   void readmeAppendsTheDisplaySectionOnlyForLayoutPackages() {
-    PackageReadme.Data plain = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.6.0", "1.0.53",
-        "3.6.0", List.of());
-    PackageReadme.Data display = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.6.0", "1.0.53",
-        "3.6.0", List.of(), true);
+    PackageReadme.Data plain = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.7.0", "1.0.55",
+        "3.7.0", List.of());
+    PackageReadme.Data display = new PackageReadme.Data("m", 2, "node", "f", "@aster-cloud/aster-lang-ts", "3.7.0", "1.0.55",
+        "3.7.0", List.of(), true);
     Map<String, String> headings = Map.of("en", "## Display layout", "zh", "## 显示排版", "de", "## Anzeigelayout");
     for (String locale : List.of("en", "zh", "de")) {
       String without = new String(PackageReadme.render(locale, plain), StandardCharsets.UTF_8);
       String with = new String(PackageReadme.render(locale, display), StandardCharsets.UTF_8);
       assertThat(with).as(locale).startsWith(without + "\n" + headings.get(locale))
           .contains("policy/display/display.aster", "aster show <package.zip>", "--display poem.txt", "DISPLAY_AMBIGUOUS",
-              "@aster-cloud/aster-lang-ts 3.6.0")
+              "@aster-cloud/aster-lang-ts 3.7.0")
           .doesNotContain("{{");
     }
     assertThat(PackageReadme.render("hi", display)).isEqualTo(PackageReadme.render("en", display));
