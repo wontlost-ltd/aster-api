@@ -9,6 +9,7 @@
   - [ADR 0060 修订 2](0060-amendment-2-name-escape-aliases-literals.md)：转义与别名、E808、字面量触发词
   - [ADR 0056 修订 A6](0056-amendment-6-keyword-homograph-names.md)：结构关键词作名字两引擎都拒绝（Q5 的 parity 裁决）
 - 后续裁决：[ADR 0056 修订 A7](0056-amendment-7-wave-d-rulings-1056.md)（ACCEPTED，2026-11-26）：转义（E1–E3）与 L10（E4）随 eco-1.0.56，A4 §1.1 关键词大小写随 1.0.57 并以转义为每处冲突的出路（D1）；cloud 开关 `authoring.name_escape.enabled` 在 aster-api 接通 L10b（E6）之前保持关闭（D5，§12.2）；两个规范化器今天都把全角 `｀` 折叠成 `` ` ``，E1 必须把 U+FF40 排除在全角折叠之外，`｀` 才能如 Q2 所定保持 E050（A7 §6）
+- 修订：[修订 1](0064-amendment-1-quick-fix-name-positions.md)（ACCEPTED，2026-11-27）：快速修复「用作名字」只改写**每个名字位置**上的出现，读作关键词的出现不动（§6，aster-cloud/aster-lang-ts#404）
 - 实现仓：`aster-lang-core`（词法、规范化器、解析器谓词、E808、`aster.core.layout`）、`aster-lang-ts`（同上 + 格式化器、LSP、`./layout`）、`aster-lang-test`（共享夹具与向量）、`aster-lang-locales` / `aster-lang-hi`（诊断文案）、`aster-cloud`（编辑器）、`aster-api`（只有 pin bump）
 - 分期：§12。诊断与 parity 修正（本 ADR 的 (d) 部分）已作为单独的代码任务进行，不等本 ADR 采纳；转义语法与 L10 在其后同一列车上线
 
@@ -151,7 +152,7 @@ en-US  Return s.`Given`.                         -- 成员 Given
 - **LSP**：
   - 语义 token：转义名按其名字角色着色（变量、字段、类型），并带修饰符 `escaped`；反引号本身按标点着色。不依赖排版，磁盘文件与编辑器结果一致。
   - hover：转义名显示「转义名字：`x`（名字，不是关键词）」。
-  - 快速修复「用作名字」：挂在 §9 的关键词误作名字错误、W802 静默改名警告与 E808 上，把该词改为 `` `x` ``。
+  - 快速修复「用作名字」：挂在 §9 的关键词误作名字错误、W802 静默改名警告与 E808 上，把该词改为 `` `x` ``。改写范围见[修订 1](0064-amendment-1-quick-fix-name-positions.md)：只改写名字位置上的出现。
   - `aster/canonicalPreview`（ADR 0058 §8.2）照常输出，转义名在预览中保留反引号。
 - **补全**：在名字位置补全一个与关键词同形的已声明名字时，插入转义形式。
 
