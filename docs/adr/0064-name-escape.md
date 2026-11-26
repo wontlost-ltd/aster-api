@@ -9,7 +9,7 @@
   - [ADR 0060 修订 2](0060-amendment-2-name-escape-aliases-literals.md)：转义与别名、E808、字面量触发词
   - [ADR 0056 修订 A6](0056-amendment-6-keyword-homograph-names.md)：结构关键词作名字两引擎都拒绝（Q5 的 parity 裁决）
 - 后续裁决：[ADR 0056 修订 A7](0056-amendment-7-wave-d-rulings-1056.md)（ACCEPTED，2026-11-26）：转义（E1–E3）与 L10（E4）随 eco-1.0.56，A4 §1.1 关键词大小写随 1.0.57 并以转义为每处冲突的出路（D1）；cloud 开关 `authoring.name_escape.enabled` 在 aster-api 接通 L10b（E6）之前保持关闭（D5，§12.2）；两个规范化器今天都把全角 `｀` 折叠成 `` ` ``，E1 必须把 U+FF40 排除在全角折叠之外，`｀` 才能如 Q2 所定保持 E050（A7 §6）
-- 修订：[修订 1](0064-amendment-1-quick-fix-name-positions.md)（PROPOSED，2026-11-27）：快速修复「用作名字」只改写**每个名字位置**上的出现，读作关键词的出现不动（§6，aster-cloud/aster-lang-ts#404）
+- 修订：[修订 1](0064-amendment-1-quick-fix-name-positions.md)（ACCEPTED，2026-11-27）：快速修复「用作名字」只改写**每个名字位置**上的出现，读作关键词的出现不动（§6，aster-cloud/aster-lang-ts#404）
 - 实现仓：`aster-lang-core`（词法、规范化器、解析器谓词、E808、`aster.core.layout`）、`aster-lang-ts`（同上 + 格式化器、LSP、`./layout`）、`aster-lang-test`（共享夹具与向量）、`aster-lang-locales` / `aster-lang-hi`（诊断文案）、`aster-cloud`（编辑器）、`aster-api`（只有 pin bump）
 - 分期：§12。诊断与 parity 修正（本 ADR 的 (d) 部分）已作为单独的代码任务进行，不等本 ADR 采纳；转义语法与 L10 在其后同一列车上线
 
