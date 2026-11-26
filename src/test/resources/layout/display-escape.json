@@ -1,0 +1,226 @@
+{
+  "description": "L10 隐藏转义符向量（ADR 0059 修订 5 §6）：layoutText 为 policy/display/layout.json 的 UTF-8 文本，规范源码为其 toCanonical；lexicon / aliasSet / allowStructural / vocabulary 是编译输入。expect 为 ok 或第一条失败的规则：L10a（形状，不编译）、L9（补空格后编译失败或投影哈希改变）、L10b（某个非空子集去掉反引号后编译成另一个程序）；按 L1–L7、L10a、L8–L9、L10b 的次序判定。triples 为 L10a 通过时各三元组的名字（按出现顺序），stripped 给出时第 k 项为子集 {k}（k < 三元组数）与全部去掉的 C⁻(S)。参照实现只判 L10a 与 C⁻(S)，L9 / L10b 由 core 与 ts 用各自的编译器判定。E7（跨行字符串）不再适用：两引擎的字符串都不得跨行（#357）；E8 只能以补空格向量覆盖（见 display-padding.json）；E21 测的是显示面给出切分与标记，由包一致性（show 的 stderr）覆盖。",
+  "version": 1,
+  "cases": [
+    {
+      "id": "E1",
+      "intent": "zh 形参 `如果`（结构关键词）在声明与使用两处，两组都隐藏：每个子集去掉反引号后 如果 出现在名字位置报 E901，编译失败",
+      "lexicon": "zh-CN",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"模块 探针.样例。\\n\\n规则 取值 给定 \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"如果\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" 作为 整数，产出 整数：\\n  返回 \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"如果\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"。\\n\"}]}",
+      "triples": [
+        "如果",
+        "如果"
+      ],
+      "stripped": [
+        "模块 探针.样例。\n\n规则 取值 给定 如果 作为 整数，产出 整数：\n  返回 `如果`。\n",
+        "模块 探针.样例。\n\n规则 取值 给定 `如果` 作为 整数，产出 整数：\n  返回 如果。\n",
+        "模块 探针.样例。\n\n规则 取值 给定 如果 作为 整数，产出 整数：\n  返回 如果。\n"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "E2",
+      "intent": "zh 字段 `版本` 隐藏：C⁻ 编译成字段 version，IR 不同",
+      "lexicon": "zh-CN",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"模块 探针.样例。\\n\\n定义 软件 包含 \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"版本\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" 作为 整数。\\n\"}]}",
+      "triples": [
+        "版本"
+      ],
+      "expect": "L10b"
+    },
+    {
+      "id": "E3",
+      "intent": "en 冗余转义 `count` 两处都隐藏：每个子集的 C⁻ 都是同一 IR",
+      "lexicon": "en-US",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"Module probe.sample.\\n\\nRule f given \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"count\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" as Int, produce Int:\\n  Return \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"count\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\".\\n\"}]}",
+      "triples": [
+        "count",
+        "count"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "E4",
+      "intent": "en 局部变量 `none` 的使用处隐藏：C⁻ 返回空值字面量，能编译且 IR 不同",
+      "lexicon": "en-US",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"Module probe.sample.\\n\\nRule f given x as Int, produce Int:\\n  Let `none` be x.\\n  Return \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"none\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\".\\n\"}]}",
+      "triples": [
+        "none"
+      ],
+      "expect": "L10b"
+    },
+    {
+      "id": "E5",
+      "intent": "词汇字面量 思故乡 → \"静夜思\"；`思故乡` 作局部变量，定义处与使用处都隐藏：子集 {使用处} 的 C⁻ 返回 \"静夜思\"（能编译、IR 不同），子集 {两处} 编译失败——必须穷举子集",
+      "lexicon": "zh-CN",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"模块 探针.样例。\\n\\n规则 甲，产出 文本：\\n  令 \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"思故乡\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" 定义为 「床前」。\\n  返回 \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"思故乡\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"。\\n\"}]}",
+      "vocabulary": {
+        "id": "probe.poem",
+        "name": "静夜思",
+        "locale": "zh-CN",
+        "version": "1.0.0",
+        "structs": [],
+        "fields": [],
+        "functions": [],
+        "enumValues": [],
+        "literals": [
+          {
+            "canonical": "静夜思",
+            "localized": "思故乡",
+            "kind": "literal"
+          }
+        ]
+      },
+      "triples": [
+        "思故乡",
+        "思故乡"
+      ],
+      "expect": "L10b"
+    },
+    {
+      "id": "E6",
+      "intent": "字符串 \"a`b`c\" 里把 b 两侧的反引号做成三元组：L9 在外侧边界补的空格进入字符串，值改变",
+      "lexicon": "zh-CN",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"模块 探针.样例。\\n\\n规则 取值，产出 文本：\\n  返回 \\\"a\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"b\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"c\\\"。\\n\"}]}",
+      "triples": [
+        "b"
+      ],
+      "expect": "L9"
+    },
+    {
+      "id": "E9",
+      "intent": "行首（缩进后）的真转义 `g` 作语句首词并隐藏：o_k 因缩进条件不补空格，C⁻ 同一 IR",
+      "lexicon": "en-US",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"Module probe.sample.\\n\\nRule g given x as Int, produce Int:\\n  Return x.\\n\\nRule f given x as Int, produce Int:\\n  \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"g\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"(x).\\n  Return x.\\n\"}]}",
+      "triples": [
+        "g"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "E10",
+      "intent": "注释里的 `当` 隐藏：整个三元组在注释里，无害",
+      "lexicon": "en-US",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"Module probe.sample.\\n\\n# 床前\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"当\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"明月光\\nRule f given x as Int, produce Int:\\n  Return x.\\n\"}]}",
+      "triples": [
+        "当"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "E11",
+      "intent": "结构 span {canonical:\" `\", display:\"\"}（空格与反引号合并）",
+      "lexicon": "en-US",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"Module probe.sample.\\n\\nRule f given\"},{\"canonical\":\" `\",\"display\":\"\"},{\"text\":\"x\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" as Int, produce Int:\\n  Return \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"x\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\".\\n\"}]}",
+      "expect": "L10a"
+    },
+    {
+      "id": "E12",
+      "intent": "只有一个反引号结构 span（不成对）",
+      "lexicon": "en-US",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"Module probe.sample.\\n\\nRule f given \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"x` as Int, produce Int:\\n  Return x.\\n\"}]}",
+      "expect": "L10a"
+    },
+    {
+      "id": "E13",
+      "intent": "反引号结构 span 的 display 为 \"`\"",
+      "lexicon": "en-US",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"Module probe.sample.\\n\\nRule f given \"},{\"canonical\":\"`\",\"display\":\"`\"},{\"text\":\"x\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" as Int, produce Int:\\n  Return `x`.\\n\"}]}",
+      "expect": "L10a"
+    },
+    {
+      "id": "E13b",
+      "intent": "反引号结构 span 的 display 为 「",
+      "lexicon": "en-US",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"Module probe.sample.\\n\\nRule f given \"},{\"canonical\":\"`\",\"display\":\"「\"},{\"text\":\"x\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" as Int, produce Int:\\n  Return `x`.\\n\"}]}",
+      "expect": "L10a"
+    },
+    {
+      "id": "E14",
+      "intent": "结构 span {canonical:\"如果\", display:\"`如果`\"}（把关键词伪装成转义名）",
+      "lexicon": "zh-CN",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"模块 探针.样例。\\n\\n规则 取值 给定 x 作为 整数，产出 整数：\\n  \"},{\"canonical\":\"如果\",\"display\":\"`如果`\"},{\"text\":\" x 大于 1：\\n    返回 1。\\n  返回 2。\\n\"}]}",
+      "expect": "L10a"
+    },
+    {
+      "id": "E15",
+      "intent": "三元组内容为 a.b（不是单个名字）",
+      "lexicon": "en-US",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"Module probe.sample.\\n\\nRule f given x as Int, produce Text:\\n  Return \\\"\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"a.b\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"\\\".\\n\"}]}",
+      "expect": "L10a"
+    },
+    {
+      "id": "E15b",
+      "intent": "三元组内容为 当 前（含空格）",
+      "lexicon": "en-US",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"Module probe.sample.\\n\\nRule f given x as Int, produce Text:\\n  Return \\\"\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"当 前\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"\\\".\\n\"}]}",
+      "expect": "L10a"
+    },
+    {
+      "id": "E16",
+      "intent": "5 个三元组",
+      "lexicon": "en-US",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"Module probe.sample.\\n\\nRule f given \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"a\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" as Int, \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"b\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" as Int, \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"c\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" as Int, \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"d\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" as Int, \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"e\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" as Int, produce Int:\\n  Return a.\\n\"}]}",
+      "expect": "L10a"
+    },
+    {
+      "id": "E17",
+      "intent": "aliasSet RETURN=低头；`低头` 作名字并隐藏，正文另有别名 低头 作关键词：C⁻ 里 低头 出现在名字位置，编译失败",
+      "lexicon": "zh-CN",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"模块 探针.样例。\\n\\n规则 取值 给定 \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"低头\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" 作为 整数，产出 整数：\\n  低头 \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"低头\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"。\\n\"}]}",
+      "aliasSet": {
+        "RETURN": [
+          "低头"
+        ]
+      },
+      "allowStructural": true,
+      "triples": [
+        "低头",
+        "低头"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "E18",
+      "intent": "限定名 s.`版本` 只隐藏成员这一段：C⁻ 的 s.版本 读作 s.version，字段 版本 下查不到，编译失败（实测；ADR 表中的「拒绝」对应 E20b 的两处都隐藏）",
+      "lexicon": "zh-CN",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"模块 探针.样例。\\n\\n定义 软件 包含 `版本` 作为 整数。\\n\\n规则 取值 给定 s 作为 软件，产出 整数：\\n  返回 s.\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"版本\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"。\\n\"}]}",
+      "triples": [
+        "版本"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "E19",
+      "intent": "隐藏空格与隐藏反引号相邻（床前 `当` 明月光 的诗句排版）：它们是独立的结构 span，L9 只免去内侧边界",
+      "lexicon": "zh-CN",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"模块 探针.样例。\\n\\n定义 明月光 包含 长度 作为 整数。\\n\\n\"},{\"canonical\":\"规则 \",\"display\":\"\"},{\"text\":\"床前\"},{\"canonical\":\" 给定 \",\"display\":\"\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"当\"},{\"canonical\":\"`\",\"display\":\"\"},{\"canonical\":\" 作为 \",\"display\":\"\"},{\"text\":\"明月光，产出 整数：\\n  返回 `当`.长度。\\n\"}]}",
+      "triples": [
+        "当"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "E20a",
+      "intent": "两个三元组都隐藏，另有结构 span {返回 → 还给} 紧邻第二个三元组：三个子集都编译失败",
+      "lexicon": "zh-CN",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"模块 探针.样例。\\n\\n规则 取值 给定 \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"如果\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" 作为 整数，产出 整数：\\n  \"},{\"canonical\":\"返回\",\"display\":\"还给\"},{\"text\":\" \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"如果\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"。\\n\"}]}",
+      "triples": [
+        "如果",
+        "如果"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "E20b",
+      "intent": "字段声明与访问两处 `版本` 都隐藏，结构 span 同 E20a：子集 {两处} 的 C⁻ 编译通过、字段与访问都成了 version，IR 不同",
+      "lexicon": "zh-CN",
+      "layoutText": "{\"v\":1,\"spans\":[{\"text\":\"模块 探针.样例。\\n\\n定义 软件 包含 \"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"版本\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\" 作为 整数。\\n\\n规则 取值 给定 s 作为 软件，产出 整数：\\n  \"},{\"canonical\":\"返回\",\"display\":\"还给\"},{\"text\":\" s.\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"版本\"},{\"canonical\":\"`\",\"display\":\"\"},{\"text\":\"。\\n\"}]}",
+      "triples": [
+        "版本",
+        "版本"
+      ],
+      "expect": "L10b"
+    }
+  ]
+}
