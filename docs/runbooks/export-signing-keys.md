@@ -111,6 +111,9 @@ unset SEED KEYS_FILE
   （sha256 `3a447df6…0dde8e0`，与 npm `dist/runner/aster.mjs` 逐字节相同、`.sha256` 校验通过）的 `version` 都列出 `export-2026-11a` 与 `formatVersions ["1.0","1.1"]`，
   公钥 x 与 eco-1.0.55 已核对生产 `/api/v1/exports/keys` 的值相同）；白名单与 v3.8.0 逐字节相同，未变。jre 与生态 pin（platform 1.0.56）持平。
   须先于 cloud 的 ts 3.8.0 PR 部署，两次部署之间 Node 导出 503 `export_runtime_skew`，JRE 导出不受影响。
+- ts 3.8.2（独立修订发布，aster-lang-ts#404：快速修复只转义名字位置）之后的锁文件：`node` 为 `3.8.2`，`jre` 仍为 `1.0.56`，其余不变
+  （已核：v3.8.2 Release `aster.mjs` 与 `.sha256`、npm 3.8.2 逐字节相同，`version` 的 `trustAnchorKids` / `formatVersions` 未变；`export-builtins.json` 未变）。
+  须先于 cloud 的 ts 3.8.2 PR 部署，两次部署之间 Node 导出 503 `export_runtime_skew`。
 - ts 3.8.1（独立修订发布，aster-lang-ts#401 的 LSP 快速修复）之后的锁文件：`node` 为 `3.8.1`，`jre` 仍为 `1.0.56`，`trustAnchorKids` 与
   `packageFormats` 不变（已核：v3.8.1 Release 的 `aster.mjs` 与 `.sha256` 校验通过、与 npm 3.8.1 的 `dist/runner/aster.mjs` 逐字节相同，`version` 输出
   `trustAnchorKids ["export-2026-11a"]`、`formatVersions ["1.0","1.1"]`；`export-builtins.json` 与 v3.8.1 逐字节相同，未变）。须先于 cloud 的 ts 3.8.1 PR 部署，
