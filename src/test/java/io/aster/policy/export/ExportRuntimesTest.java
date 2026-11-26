@@ -25,7 +25,7 @@ class ExportRuntimesTest {
     assertThat(jre.packageFormats()).containsExactly("1.0", "1.1");
     ExportRuntimes.Target node = lock.targets().get("node");
     assertThat(node.cliName()).isEqualTo("@aster-cloud/aster-lang-ts");
-    assertThat(node.cliVersion()).isEqualTo("3.8.0");
+    assertThat(node.cliVersion()).isEqualTo("3.8.1");
     assertThat(node.trustAnchorKids()).containsExactly("export-2026-11a");
     assertThat(node.packageFormats()).containsExactly("1.0", "1.1");
     // conformance keys/README.md M4：生产锁文件不得含测试 kid

@@ -111,6 +111,10 @@ unset SEED KEYS_FILE
   （sha256 `3a447df6…0dde8e0`，与 npm `dist/runner/aster.mjs` 逐字节相同、`.sha256` 校验通过）的 `version` 都列出 `export-2026-11a` 与 `formatVersions ["1.0","1.1"]`，
   公钥 x 与 eco-1.0.55 已核对生产 `/api/v1/exports/keys` 的值相同）；白名单与 v3.8.0 逐字节相同，未变。jre 与生态 pin（platform 1.0.56）持平。
   须先于 cloud 的 ts 3.8.0 PR 部署，两次部署之间 Node 导出 503 `export_runtime_skew`，JRE 导出不受影响。
+- ts 3.8.1（独立修订发布，aster-lang-ts#401 的 LSP 快速修复）之后的锁文件：`node` 为 `3.8.1`，`jre` 仍为 `1.0.56`，`trustAnchorKids` 与
+  `packageFormats` 不变（已核：v3.8.1 Release 的 `aster.mjs` 与 `.sha256` 校验通过、与 npm 3.8.1 的 `dist/runner/aster.mjs` 逐字节相同，`version` 输出
+  `trustAnchorKids ["export-2026-11a"]`、`formatVersions ["1.0","1.1"]`；`export-builtins.json` 与 v3.8.1 逐字节相同，未变）。须先于 cloud 的 ts 3.8.1 PR 部署，
+  两次部署之间 Node 导出 503 `export_runtime_skew`，JRE 导出不受影响。
 - **`packageFormats`（修订 4 D12）随列车维护**：每次列车 L4 之后的锁文件 PR，把每个 target 的 `packageFormats` 写成该 `cliVersion` 的 CLI `version` 输出中的 `formatVersions`
   （缺省按 `["1.0"]` 读）。只有含 `"1.1"` 时 aster-api 才把 cloud 送来的显示排版写进包、产出 1.1 包；CLI 不认得的格式版本绝不写入，否则 README 指向的 CLI 会以
   `PKG_UNSUPPORTED_FORMAT` 拒绝该包。字段存在但不是由已知格式版本（`ExportRuntimes.KNOWN_PACKAGE_FORMATS`）组成的非空无重复数组 → 启动失败。

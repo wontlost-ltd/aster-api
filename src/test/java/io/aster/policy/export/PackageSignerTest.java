@@ -73,7 +73,7 @@ class PackageSignerTest {
 
   /**
    * 上线形态（A6 锁文件 bump 之后）：仓内锁文件两个 target 的 {@code trustAnchorKids} 都是生产 kid {@code export-2026-11a}
-   * （已发布的 aster-cli 1.0.56 与 ts 3.8.0 内置该锚），生产密钥据此签名；不在锚内的 kid 仍 fail-closed。
+   * （已发布的 aster-cli 1.0.56 与 ts 3.8.1 内置该锚），生产密钥据此签名；不在锚内的 kid 仍 fail-closed。
    */
   @Test
   void productionKidIsAnchoredByShippedLock() {
