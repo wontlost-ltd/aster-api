@@ -184,6 +184,37 @@ class JreCliGoldenGateTest {
     assertThat(JSON.readTree(ambiguous.stdout()).at("/error/code").asText()).isEqualTo("DISPLAY_AMBIGUOUS");
   }
 
+  /**
+   * ADR 0059 修订 5 L10b（ADR 0064 E6）：带隐藏转义符的排版经闸门随包后，jre CLI {@code verify --recompile} 的全部检查项
+   * （含 {@code display} 的 L10a 与 {@code display-ir} 的 L10b）通过；闸门拒绝的 L10b 反例（E4）不随包，导出仍为 1.0。
+   * 证明签名前闸门与 CLI 对同一包得出同一结论（D11 不变式）。
+   */
+  @Test
+  void hiddenEscapeLayoutsVerifyOnTheJreCli() throws Exception {
+    Path jar = requireJar();
+    assumeTrue(jar != null, "未给出 jre CLI jar（-Daster.cli.jar），跳过黄金门");
+    var ring = keys.ring().orElseThrow();
+    Path jwks = tmp.resolve("jwks.json");
+    Files.writeString(jwks, JSON.writeValueAsString(Jwks.render(ring.all(), ring.revision(), Instant.now())));
+    for (String id : List.of("E1", "E3", "E17", "E19", "E20a")) {
+      JsonNode c = PackageLayoutGateHiddenEscapeTest.vectorCase(id);
+      PackageAssembler.AssembledPackage p = service.export(PackageLayoutGateHiddenEscapeTest.spec(c), null,
+          c.path("layoutText").textValue());
+      assertThat(p.layout().status()).as(id).isEqualTo("included");
+      Path zip = tmp.resolve(id + "-" + p.rootName() + ".zip");
+      Files.write(zip, p.zip());
+      Cli verify = cli(jar, null, "verify", zip.toString(), "--recompile", "--jwks", jwks.toString());
+      assertThat(verify.exit()).as(id + " " + verify.stdout() + verify.stderr()).isZero();
+      JsonNode checks = JSON.readTree(verify.stdout()).get("checks");
+      assertThat(checks.findValuesAsText("name")).as(id).contains("display", "display-ir");
+      assertThat(checks.findValues("ok")).as(id).allMatch(JsonNode::asBoolean);
+    }
+    JsonNode e4 = PackageLayoutGateHiddenEscapeTest.vectorCase("E4");
+    PackageAssembler.AssembledPackage rejected = service.export(PackageLayoutGateHiddenEscapeTest.spec(e4), null,
+        e4.path("layoutText").textValue());
+    assertThat(rejected.layout().auditValue()).isEqualTo("omitted:display_rules_failed");
+  }
+
   /** CLI jar：CI 要求必须给出（{@code ASTER_EXPORT_GOLDEN_REQUIRE_JAR=1}），本地未给出时返回 null。 */
   private static Path requireJar() {
     String jarProp = System.getProperty("aster.cli.jar", "");
