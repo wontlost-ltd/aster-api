@@ -137,7 +137,7 @@
 { "tenantId", "maxId", "total", "byKind": { "<critical kind>": n }, "firstDetectedAt", "lastDetectedAt", "runIds": [≤ 8] }
 ```
 
-条件同上，另加 `tenant_id = :tenantId AND id > :afterId`；`runIds` 为这些行的 `first_run_id` 去重后最新的至多 8 个；无匹配时 `total = 0`、`maxId = afterId`。单行响应，不分页。
+条件同上，另加 `tenant_id = :tenantId AND id > :afterId`；`runIds` 为这些行的 `first_run_id` 去重后最新的至多 8 个；无匹配时 `total = 0`、`maxId = afterId`。计数与 `maxId` 必须出自**同一条**查询（同一快照、同一过滤条件），水位才能无缝推进（§3.4.3）。单行响应，不分页。
 
 两个端点共同的约束：
 
