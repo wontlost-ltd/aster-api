@@ -181,11 +181,25 @@ class GuardOrphanFeedResourceTest {
   void invalidQueryIs400() {
     String tooOld = Instant.now().minus(lookback).minus(Duration.ofMinutes(45)).toString();
     signedPost(TENANTS, tenantsBody(tooOld)).then().statusCode(400).body("error", org.hamcrest.Matchers.equalTo("invalid_query"));
-    signedPost(TENANTS, "{\"detectedSince\":\"" + since() + "\",\"limit\":0}").then().statusCode(400);
+    signedPost(TENANTS, "{\"detectedSince\":\"" + since() + "\",\"limit\":0}").then().statusCode(400)
+        .body("error", org.hamcrest.Matchers.equalTo("invalid_query"));
+    for (String scalar : List.of("\"x\"", "5", "null", "true")) {
+      signedPost(TENANTS, scalar).then().statusCode(400).body("error", org.hamcrest.Matchers.equalTo("invalid_query"));
+    }
+    String deep = "[".repeat(1500) + "]".repeat(1500);
+    signedPost(TENANTS, deep).then().statusCode(400).body("error", org.hamcrest.Matchers.equalTo("invalid_query"));
     signedPost(TENANTS, "[]").then().statusCode(400).body("error", org.hamcrest.Matchers.equalTo("invalid_query"));
     signedPost(TENANTS, "not json").then().statusCode(400).body("error", org.hamcrest.Matchers.equalTo("invalid_query"));
-    signedPost(SUMMARY, "{\"tenantId\":\"t\",\"afterId\":-1,\"detectedSince\":\"" + since() + "\"}").then().statusCode(400);
+    signedPost(SUMMARY, "{\"tenantId\":\"t\",\"afterId\":-1,\"detectedSince\":\"" + since() + "\"}").then().statusCode(400)
+        .body("error", org.hamcrest.Matchers.equalTo("invalid_query"));
     signedPost(SUMMARY, "[]").then().statusCode(400).body("error", org.hamcrest.Matchers.equalTo("invalid_query"));
+  }
+
+  @Test
+  void verifyBeforeParse() {
+    Map<String, String> h = new java.util.HashMap<>(v2Headers(TENANTS, "not json"));
+    h.put("X-Aster-Signature", "0".repeat(64));
+    post(TENANTS, h, "not json").then().statusCode(401);
   }
 
   @Test

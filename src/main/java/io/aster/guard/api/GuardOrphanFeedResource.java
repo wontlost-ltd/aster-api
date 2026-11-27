@@ -14,7 +14,6 @@ import jakarta.json.JsonObject;
 import jakarta.json.JsonObjectBuilder;
 import jakarta.json.JsonReader;
 import jakarta.json.JsonStructure;
-import jakarta.json.stream.JsonParsingException;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.POST;
@@ -87,7 +86,9 @@ public class GuardOrphanFeedResource {
     try (JsonReader reader = Json.createReader(new StringReader(body))) {
       JsonStructure s = reader.read();
       return s instanceof JsonObject o ? Optional.of(o) : Optional.empty();
-    } catch (JsonParsingException | IllegalStateException e) {
+    } catch (RuntimeException e) {
+      // 非法 JSON、顶层标量、嵌套过深（解析器抛出的各类运行时异常）一律视为非法查询
+
       return Optional.empty();
     }
   }
