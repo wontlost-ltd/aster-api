@@ -14,6 +14,8 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -163,6 +165,25 @@ final class ReconcileFixture {
     Response r = reportRaw(tenant, "{\"effects\":[" + String.join(",", effects) + "]}");
     assertThat(r.statusCode()).as(r.asString()).isEqualTo(200);
     assertThat(r.jsonPath().getInt("accepted")).as(r.asString()).isEqualTo(effects.length);
+  }
+
+  /** 直接落一行孤儿（severity 取自 kind），不经检测器；返回行 id。 */
+  static long seedOrphan(String tenant, OrphanKind kind, String subject, String status, Instant detectedAt,
+      long firstRunId) {
+    return QuarkusTransaction.requiringNew().call(() -> {
+      GuardOrphanActionEntity o = new GuardOrphanActionEntity();
+      o.tenantId = tenant;
+      o.kind = kind.wire();
+      o.severity = kind.severity();
+      o.subjectKey = subject;
+      o.executorLabel = "other";
+      o.detail = "{\"reason\":\"seeded\"}";
+      o.status = status;
+      o.firstRunId = firstRunId;
+      o.detectedAt = detectedAt.truncatedTo(ChronoUnit.MICROS);
+      o.persist();
+      return o.id;
+    });
   }
 
   static List<GuardOrphanActionEntity> orphans(String tenant) {
