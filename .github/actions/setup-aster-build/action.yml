@@ -203,7 +203,7 @@ runs:
     # Maven Central 限流（429）防护：此后的 Gradle 构建优先走 Central 镜像，缺货回落原仓库（制品逐字节相同），
     # 并加大依赖解析重试（aster-cloud/aster-lang-platform 的 maven-central-mirror）。用 @main 而不是检出的
     # ./aster-lang-platform：后者按 sibling-ref 钉在已发布的 tag 上，旧 tag 里没有这个 action。
-    - uses: aster-cloud/aster-lang-platform/.github/actions/maven-central-mirror@ci/maven-429-resilience
+    - uses: aster-cloud/aster-lang-platform/.github/actions/maven-central-mirror@main
 
     - name: Compute Gradle cache key
       id: gradle-cache-key
