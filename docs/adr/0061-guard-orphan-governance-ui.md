@@ -6,6 +6,7 @@
 - 修订：本 ADR **扩展 ADR 0054 §10.2 的查询端点**（加 `severity` 过滤、列表项加 `ackComment`，均为向后兼容的新增）；§10.2 的其余契约、§10.3 的类别与状态机不变
 - 实现仓：`aster-api`（查询扩展，小）、`aster-cloud`（主：BFF 路由、治理页、文案）
 - 实施计划：`docs/superpowers/plans/2026-11-20-guard-orphan-governance-ui.md`
+- 后续：[ADR 0065](0065-guard-orphan-tenant-notifications.md)（PROPOSED，2026-11-28）：Q5 延期的 critical 孤儿租户通知（aster-cloud#843）
 
 ---
 
