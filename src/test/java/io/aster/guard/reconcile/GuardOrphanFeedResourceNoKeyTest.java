@@ -23,8 +23,16 @@ class GuardOrphanFeedResourceNoKeyTest {
     }
   }
 
+  @jakarta.inject.Inject io.micrometer.core.instrument.MeterRegistry registry;
+
+  private double unauthorizedCount() {
+    io.micrometer.core.instrument.Counter c = registry.find("guard.orphan.feed.requests").tag("outcome", "unauthorized").counter();
+    return c == null ? 0.0 : c.count();
+  }
+
   @Test
   void missingKeyIs403() {
+    double before = unauthorizedCount();
     for (String path : new String[] {"/api/internal/guard/orphan-feed/tenants", "/api/internal/guard/orphan-feed/summary"}) {
       String body = "{}";
       long ts = System.currentTimeMillis() / 1000;
@@ -35,5 +43,6 @@ class GuardOrphanFeedResourceNoKeyTest {
           .header("X-Aster-Nonce", nonce).header("X-Aster-Signature", sig).body(body).post(path)
           .then().statusCode(403);
     }
+    org.assertj.core.api.Assertions.assertThat(unauthorizedCount() - before).isEqualTo(2.0);
   }
 }

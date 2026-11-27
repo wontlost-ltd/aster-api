@@ -53,6 +53,7 @@ class GuardOrphanFeedResourceTest {
   }
 
   @Inject EntityManager em;
+  @Inject io.micrometer.core.instrument.MeterRegistry registry;
   @Inject ApiKeyVerifierService apiKeys;
   @ConfigProperty(name = "aster.guard.reconciliation.lookback") Duration lookback;
 
@@ -115,11 +116,9 @@ class GuardOrphanFeedResourceTest {
         .createNativeQuery("SELECT COUNT(*) FROM audit_logs").getSingleResult()).longValue());
   }
 
-  private static double feedCount(String outcome) {
-    String body = given().get("/q/metrics").then().statusCode(200).extract().asString();
-    String prefix = "guard_orphan_feed_requests_total{outcome=\"" + outcome + "\"";
-    return body.lines().filter(l -> l.startsWith(prefix)).findFirst()
-        .map(l -> Double.parseDouble(l.substring(l.lastIndexOf(' ') + 1))).orElse(0.0);
+  private double feedCount(String outcome) {
+    io.micrometer.core.instrument.Counter c = registry.find("guard.orphan.feed.requests").tag("outcome", outcome).counter();
+    return c == null ? 0.0 : c.count();
   }
 
   @Test
@@ -142,9 +141,17 @@ class GuardOrphanFeedResourceTest {
     assertThat(feedCount("invalid") - before.get("invalid")).isEqualTo(1.0);
     assertThat(feedCount("unauthorized") - before.get("unauthorized")).isEqualTo(1.0);
     assertThat(feedCount("replayed") - before.get("replayed")).isEqualTo(1.0);
-    String metrics = given().get("/q/metrics").then().extract().asString();
-    assertThat(metrics.lines().filter(l -> l.startsWith("guard_orphan_feed_requests_total{")))
-        .allMatch(l -> l.matches("guard_orphan_feed_requests_total\\{outcome=\"[a-z]+\"\\} .*"));
+    registry.find("guard.orphan.feed.requests").counters().forEach(c ->
+        assertThat(c.getId().getTags().stream().map(io.micrometer.core.instrument.Tag::getKey)).contains("outcome")
+            .doesNotContain("tenant", "tenantId"));
+  }
+
+  @Test
+  void prometheusExposesFeedCounterWithoutTenantLabel() {
+    signedPost(TENANTS, tenantsBody(since())).then().statusCode(200);
+    String metrics = given().get("/q/metrics").then().statusCode(200).extract().asString();
+    List<String> lines = metrics.lines().filter(l -> l.startsWith("guard_orphan_feed_requests_total")).toList();
+    assertThat(lines).isNotEmpty().allMatch(l -> l.contains("outcome=\"") && !l.contains("tenant"));
   }
 
   @Test
