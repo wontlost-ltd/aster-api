@@ -20,12 +20,12 @@ class ExportRuntimesTest {
     assertThat(lock.targets()).containsOnlyKeys("jre", "node");
     ExportRuntimes.Target jre = lock.targets().get("jre");
     assertThat(jre.cliName()).isEqualTo("cloud.aster-lang:aster-cli");
-    assertThat(jre.cliVersion()).isEqualTo("1.0.56");
+    assertThat(jre.cliVersion()).isEqualTo("1.0.57");
     assertThat(jre.trustAnchorKids()).containsExactly("export-2026-11a");
     assertThat(jre.packageFormats()).containsExactly("1.0", "1.1");
     ExportRuntimes.Target node = lock.targets().get("node");
     assertThat(node.cliName()).isEqualTo("@aster-cloud/aster-lang-ts");
-    assertThat(node.cliVersion()).isEqualTo("3.8.2");
+    assertThat(node.cliVersion()).isEqualTo("3.9.0");
     assertThat(node.trustAnchorKids()).containsExactly("export-2026-11a");
     assertThat(node.packageFormats()).containsExactly("1.0", "1.1");
     // conformance keys/README.md M4：生产锁文件不得含测试 kid
@@ -88,11 +88,11 @@ class ExportRuntimesTest {
   void lockMayLagTheEngineButNeverLeadIt() {
     ExportRuntimes.Lock lock = ExportRuntimes.parse(ExportRuntimes.readResource(ExportRuntimes.DEFAULT_RESOURCE));
     assertThat(ExportRuntimes.checkEngineVersion(lock, "dev")).isFalse();
-    assertThat(ExportRuntimes.checkEngineVersion(lock, "1.0.56")).isFalse();
-    assertThat(ExportRuntimes.checkEngineVersion(lock, "1.0.57")).as("下一列车后、锁文件 PR 前：落后，只告警").isTrue();
+    assertThat(ExportRuntimes.checkEngineVersion(lock, "1.0.57")).isFalse();
+    assertThat(ExportRuntimes.checkEngineVersion(lock, "1.0.58")).as("下一列车后、锁文件 PR 前：落后，只告警").isTrue();
     assertThat(ExportRuntimes.checkEngineVersion(lock, "1.1.0")).isTrue();
-    assertThatThrownBy(() -> ExportRuntimes.checkEngineVersion(lock, "1.0.55"))
-        .isInstanceOf(IllegalStateException.class).hasMessageContaining("1.0.55");
+    assertThatThrownBy(() -> ExportRuntimes.checkEngineVersion(lock, "1.0.56"))
+        .isInstanceOf(IllegalStateException.class).hasMessageContaining("1.0.56");
   }
 
   @Test
