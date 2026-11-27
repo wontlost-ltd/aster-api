@@ -172,6 +172,6 @@ class PackageExportResourceTest {
         MessageDigest.getInstance("SHA-256").digest(body.get("coreIr").asText().getBytes(StandardCharsets.UTF_8))));
     assertThat(body.get("positionFreeSha256").asText()).hasSize(64);
     assertThat(body.at("/runtime/cliName").asText()).isEqualTo("cloud.aster-lang:aster-cli");
-    assertThat(body.at("/runtime/cliVersion").asText()).isEqualTo("1.0.56");
+    assertThat(body.at("/runtime/cliVersion").asText()).isEqualTo("1.0.57");
   }
 }

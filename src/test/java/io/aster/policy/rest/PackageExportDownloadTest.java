@@ -116,10 +116,10 @@ class PackageExportDownloadTest {
     assertThat(manifest.at("/target").asText()).isEqualTo("node");
     assertThat(manifest.at("/tests/nodeCheck/agreed").asInt()).isEqualTo(prepared.get("probeCount").asInt());
     assertThat(manifest.at("/tests/nodeCheck/checkedBy").asText()).isEqualTo("aster-cloud");
-    assertThat(manifest.at("/tests/nodeCheck/tsVersion").asText()).isEqualTo("3.8.2");
+    assertThat(manifest.at("/tests/nodeCheck/tsVersion").asText()).isEqualTo("3.9.0");
     assertThat(manifest.at("/runtime/cli/name").asText()).isEqualTo("@aster-cloud/aster-lang-ts");
     assertThat(JSON.readTree((String) JSON.readValue(exportEvent(tenant).metadata, Map.class).get("nodeCheck"))
-        .get("tsVersion").asText()).isEqualTo("3.8.2");
+        .get("tsVersion").asText()).isEqualTo("3.9.0");
   }
 
   /** 与 cloud 同形的《静夜思》导出请求体（冻结 aliasSet、allowStructural、合并词汇）。 */
