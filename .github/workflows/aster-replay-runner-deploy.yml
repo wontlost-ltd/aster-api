@@ -175,7 +175,12 @@ jobs:
   # ★ = D-2：对 push+签的 @DIGEST 跑 arm64 corpus parity（全程 docker，不 rebuild）。
   parity-arm64:
     needs: [build, sign]
-    runs-on: ubuntu-latest
+    # ★原生 arm64 托管 runner（public 仓免费），不再在 x64 上经 QEMU 模拟（#617）。runner 的 InProcessCnlParser
+    #   有 2000ms 墙钟预算（ParseBudget.DEFAULT_BUDGET，runner 不覆盖，生产同值）；QEMU 用户态模拟下冷 JVM 里的解析
+    #   本身慢一个数量级（佐证：JVM 起到首行输出约 7s，原生整份约 1.4s），88 字符源码就偶发撞墙、重跑才过。生产节点是真 arm64（OCI Ampere），
+    #   每次 replay 都是新容器 = 冷 JVM，所以在原生 arm64 上用生产预算冷跑才是 parity 该量的东西：不放宽预算、
+    #   不预热（预热会掩盖生产真实的冷启动路径）。
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
     # gen-expected 是 @QuarkusTest，需 postgres+redis。★凭据/镜像逐字对齐 ci.yml build job
@@ -217,7 +222,12 @@ jobs:
           cross-repo-token: ${{ secrets.CROSS_REPO_TOKEN }}
           require-cross-repo-token: "true"
 
-      - uses: docker/setup-qemu-action@v4
+      # 原生 arm64 断言：防 runs-on 被改回 x64 后 docker 经 binfmt/QEMU 静默模拟，parity 又回到墙钟预算的偶发失败。
+      - name: Assert native arm64 runner (no QEMU)
+        run: |
+          set -euo pipefail
+          echo "runner: $(uname -m) / $(nproc) vCPU / $(grep -m1 -E 'model name|CPU part' /proc/cpuinfo || true)"
+          [ "$(uname -m)" = "aarch64" ] || { echo "::error title=parity-arm64 not native::runner 是 $(uname -m)，须在原生 arm64 上跑（#617）"; exit 1; }
       # ★docker login——parity-arm64 是独立 job，docker pull 私有/rate-limited registry 需认证。
       - uses: docker/login-action@v4
         with:
