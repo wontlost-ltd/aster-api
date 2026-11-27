@@ -145,9 +145,9 @@ class GuardOrphanFeedServiceTest {
     assertThat(first.items()).containsExactly(new TenantMax(a, aMax), new TenantMax(b, bMax));
     assertThat(first.next()).isEqualTo(b);
 
-    TenantIndexPage second = service.tenants(new TenantIndexQuery(since(), b, 2));
+    // 共享库中可能有排在 c 之后的其他租户，故第二页只取 1 条，不断言是否还有下一页
+    TenantIndexPage second = service.tenants(new TenantIndexQuery(since(), b, 1));
     assertThat(second.items()).containsExactly(new TenantMax(c, cMax));
-    assertThat(second.next()).isNull();
   }
 
   @Test
@@ -337,6 +337,13 @@ class GuardOrphanFeedServiceTest {
     assertThat(service.parseIndex(body(since).add("afterTenant", "x".repeat(256)).build(), NOW)).isEmpty();
     assertThat(service.parseIndex(body(since).add("afterTenant", "x".repeat(255)).build(), NOW)).isPresent();
     assertThat(service.parseIndex(body(since).add("afterTenant", 5).build(), NOW)).isEmpty();
+  }
+
+  @Test
+  void parseIndexNullAfterTenantIsFirstPage() {
+    String since = NOW.toString();
+    assertThat(service.parseIndex(body(since).addNull("afterTenant").build(), NOW)).get()
+        .extracting(TenantIndexQuery::afterTenant).isNull();
   }
 
   @Test

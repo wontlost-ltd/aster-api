@@ -96,7 +96,7 @@ class GuardOrphanFeedContractTest {
         .isEqualTo(FIXTURE_SHA256);
     assertThat(bytes).isNotEmpty();
     assertThat(bytes[bytes.length - 1]).isEqualTo((byte) '\n');
-    assertThat(new String(bytes, StandardCharsets.UTF_8)).doesNotContain("\r").doesNotStartWith("﻿");
+    assertThat(new String(bytes, StandardCharsets.UTF_8)).doesNotContain("\r").doesNotStartWith("\uFEFF");
   }
 
   @Test

@@ -72,7 +72,8 @@ public class GuardOrphanFeedService {
   public Optional<TenantIndexQuery> parseIndex(JsonObject body, Instant now) {
     Optional<Instant> since = detectedSince(body, now);
     Optional<Integer> limit = optionalInt(body, "limit", 1, MAX_LIMIT, DEFAULT_LIMIT);
-    boolean hasAfter = body.containsKey("afterTenant");
+    // afterTenant 可选：缺省与显式 null 都表示第一页
+    boolean hasAfter = body.containsKey("afterTenant") && !body.isNull("afterTenant");
     Optional<String> after = requiredText(body, "afterTenant");
     if (since.isEmpty() || limit.isEmpty() || (hasAfter && after.isEmpty())) {
       return Optional.empty();
