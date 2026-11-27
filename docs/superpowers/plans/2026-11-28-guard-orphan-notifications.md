@@ -53,7 +53,7 @@ ADR 0065 §1 的实证表全部成立；计划额外依赖的事实：
 - **内容白名单**：载荷只含 `tenantId, tenantName, newTotal, byKind, firstDetectedAt, lastDetectedAt, maxOrphanId, runIds(≤8)`。**绝不**含 `detail`、`executorId`、`executor`、`source`、`actionName`、资源 id、`decisionId`、`subjectKey`（ADR 0061 §3.6）。链接 `/governance/reconciliation?tenant=<encodeURIComponent(tenantId)>&severity=critical`。
 - **鉴权（aster-api）**：v2 canonical `method\npath\nts\nnonce\nsha256(body)`，头 `X-Aster-Timestamp / X-Aster-Nonce / X-Aster-Signature`，key `aster.plan-gate.hmac-key`；缺 key → 403（fail-closed）、签名错 / 缺头 / 时间戳过期 → 401、**v1 一律 401**（不设迁移开关）、nonce 重放 → 409；nonce 命名空间 `guard-orphan-feed`。Bearer API key 与 `InternalCallerFilter` 的 v3 头都不能通过。
 - **鉴权（cloud）**：`ASTER_PLAN_GATE_HMAC_KEY` 缺失时通知源客户端在发请求前抛 `OrphanFeedError(0, 'hmac_not_configured')`（tick 失败、心跳 fail），**绝不**发未签名请求。
-- **通知源契约**：见 ADR 0065 §3.4.2，本计划 T-A2 钉字段；cloud 发送 `now − 7d`；aster-api 以自己的时钟为准，`detectedSince` 早于 `now − lookback` 不超过 5 分钟时**收紧（clamp）到** `now − lookback`，早于更多 → 400（R2）；`limit` 1..500 缺省 500；`afterId ≥ 0`；非法 → 400 `{"error":"invalid_query"}`。响应时间一律 `Instant.toString()`（UTC ISO-8601）。
+- **通知源契约**：见 ADR 0065 §3.4.2，本计划 T-A2 钉字段；cloud 发送 `now − 7d − 5min`；aster-api 以自己的时钟为准，`detectedSince` 早于 `now − lookback` 不超过 10 分钟时**收紧（clamp）到** `now − lookback`，早于更多 → 400（R2）；有效窗口恒为 aster-api 时钟下的 7 天，两侧偏差 ≤ ±5 分钟时既不漏边也不多看；`limit` 1..500 缺省 500；`afterId ≥ 0`；非法 → 400 `{"error":"invalid_query"}`。响应时间一律 `Instant.toString()`（UTC ISO-8601）。
 - **aster-api 无迁移**；cloud 一个迁移（0070，两张表），单独 PR 先行（见「顺序与 PR 划分」）。
 - 新 cloud 文案进 `src/i18n/demo-supplement.ts`（en / zh / de / hi）；两仓代码注释用简体中文；不写「修改说明」式注释。
 - 提交信息结尾 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`；PR 正文结尾 `🤖 Generated with [Claude Code](https://claude.com/claude-code)`，引用 `wontlost-ltd/aster-cloud#843`；aster-cloud PR 正文用简体中文。跨仓改动两仓用同一分支名 `feat/guard-orphan-notify`。
@@ -88,7 +88,7 @@ ADR 0065 §1 的实证表全部成立；计划额外依赖的事实：
 | # | 问题 | 裁决 | 理由 |
 |---|---|---|---|
 | R1 | 共用 v2 校验器的形状 | `io.aster.security.internal.InternalV2SignatureVerifier`（`@ApplicationScoped`），`Optional<Response> verify(Request, Policy)`；拒绝响应的状态码与 body **逐字节沿用** `SnapshotPushResource` 现状；`SnapshotPushResource.canonicalV2 / canonicalV1 / sha256Hex` 保留为委托，既有测试不改 | ADR §6「SnapshotPushResource 既有测试全部不变通过」 |
-| R2 | `detectedSince` 下限的时钟偏差 | cloud 照 ADR 发 `now − 7d`。aster-api：`detectedSince ≥ now − lookback` 原样使用；`now − lookback − PT5M ≤ detectedSince < now − lookback` 时**收紧为** `now − lookback`（不报错）；更早 → 400 `invalid_query`。有效下界因此恒为 `max(detectedSince, now_api − lookback)` | `detected_at` 由 aster-api 时钟写入，以它为准判断「7 天内」最精确：既不漏看窗口边缘（不缩短 Q6 的 7 天），也绝不返回超过 7 天的行（不放宽「更早的不通知」）；5 分钟带宽与签名时间戳窗口一致，只为吸收两侧秒级偏差，超出仍按 ADR 400 |
+| R2 | `detectedSince` 下限的时钟偏差 | cloud 发 `now_cloud − 7d − DETECTED_SINCE_SKEW`（5 min，与签名时间戳窗口同）。aster-api：`detectedSince ≥ now − lookback` 原样使用；`now − lookback − PT10M ≤ detectedSince < now − lookback` 时**收紧为** `now − lookback`（不报错）；更早 → 400 `invalid_query`。偏差在 ±5 分钟内时 cloud 的值恒落在 `[now_api − lookback − 10m, now_api − lookback]`，有效下界恰为 `now_api − lookback` | `detected_at` 由 aster-api 时钟写入，以它为准判断「7 天内」最精确：cloud 时钟快或慢都既不漏看窗口边缘（不缩短 Q6 的 7 天），也绝不返回超过 7 天的行（不放宽「更早的不通知」）；偏差超过 ±5 分钟时签名本身已因时间戳窗口 401，不会静默错窗 |
 | R3 | 比较后写的条件 | `WHERE notifiedThroughId = :afterId`（本 tick 读到并用于 ② 的值），而非 ADR §3.3 字面的 `< maxOrphanId` | 后者在「tick1 推进到 10 后，持旧水位 5 的 tick2 以 maxId 12 再写」时会成功，造成 6–10 被二次通知；期望旧值才能兑现 ADR「并发两个 tick 只有一个能推进」 |
 | R4 | 邮件限频的存储 | 单独表 `GuardOrphanEmailState(tenantId, userId, lastEmailAt)`，PK `(tenantId, userId)`；与水位表在**同一迁移**（0070）里建 | ADR 的 `lastEmailAt` 列在按租户一行的表里无法表达「每收件人每租户」；同迁移避免第二阶段再走一次迁移窗口 |
 | R5 | 「仍未通知的最老新增」怎么测 | 状态表加 `pendingSince`：tenant 在 ① 中超过水位但被安静期 / 租户上限推迟时 `COALESCE(pendingSince, now)`，推进水位时清空；报 `oldestPendingSeconds = now − min(pendingSince)` | 被推迟的租户不调 ②，拿不到 `firstDetectedAt`；首次观察到的时刻比真实检出最多晚 5 分钟，作为观测量足够 |
@@ -223,7 +223,7 @@ cloud      PR-C3 (T-C10–T-C11，邮件第二阶段) ── PR-C2 之后任何�
 - Produces:
   - `public record TenantIndexQuery(Instant detectedSince, String afterTenant /* nullable */, int limit)`；`public record TenantMax(String tenantId, long maxId)`；`public record TenantIndexPage(List<TenantMax> items, String next /* nullable */)`
   - `public record SummaryQuery(String tenantId, long afterId, Instant detectedSince)`；`public record Summary(String tenantId, long maxId, long total, Map<String, Long> byKind /* TreeMap */, Instant firstDetectedAt /* nullable */, Instant lastDetectedAt /* nullable */, List<Long> runIds /* desc, ≤ 8 */)`
-  - `public Optional<TenantIndexQuery> parseIndex(JsonObject body, Instant now)`、`public Optional<SummaryQuery> parseSummary(JsonObject body, Instant now)`：`detectedSince` 必填 ISO-8601 instant、`≥ now − lookback − PT5M` 且 `≤ now + PT5M`；落在 `[now − lookback − PT5M, now − lookback)` 时解析结果中的 `detectedSince` 收紧为 `now − lookback`（R2）；`afterTenant` 可选非空白 ≤ 255；`limit` 可选整数 1..500（缺省 500）；`tenantId` 必填非空白 ≤ 255；`afterId` 必填整数 ≥ 0；未知字段忽略；任何违例 → `Optional.empty()`。`lookback` 注入自 `aster.guard.reconciliation.lookback`。
+  - `public Optional<TenantIndexQuery> parseIndex(JsonObject body, Instant now)`、`public Optional<SummaryQuery> parseSummary(JsonObject body, Instant now)`：`detectedSince` 必填 ISO-8601 instant、`≥ now − lookback − PT10M` 且 `≤ now + PT5M`；落在 `[now − lookback − PT10M, now − lookback)` 时解析结果中的 `detectedSince` 收紧为 `now − lookback`（R2）；`afterTenant` 可选非空白 ≤ 255；`limit` 可选整数 1..500（缺省 500）；`tenantId` 必填非空白 ≤ 255；`afterId` 必填整数 ≥ 0；未知字段忽略；任何违例 → `Optional.empty()`。`lookback` 注入自 `aster.guard.reconciliation.lookback`。
   - `public TenantIndexPage tenants(TenantIndexQuery q)`：
     ```sql
     SELECT tenant_id, MAX(id) FROM guard_orphan_actions
@@ -253,7 +253,7 @@ cloud      PR-C3 (T-C10–T-C11，邮件第二阶段) ── PR-C2 之后任何�
   - `acknowledgedRowsExcluded`：OPEN 行被改成 ACKNOWLEDGED 后 ② 不计、① 不列。
   - `backlogDoesNotStarve`：某租户 600 条 `id ≤ afterId` 的 OPEN critical + 1 条新行 → ② `total=1`；① 中该租户恰一行。
   - `summaryCountsAndMaxIdFromOneStatement`：断言 `GuardOrphanFeedService.SUMMARY_SQL` 常量只含一个 `SELECT … FROM guard_orphan_actions`（防止拆成两条查询）。
-  - `parse*`：`detectedSince` 缺失 / 非 ISO / `now − lookback − 6m` / `now + 6m` → empty；`now − lookback − 4m` → 通过且解析值等于 `now − lookback`（clamp）；`now − lookback + 1s` → 原样；`clampNeverReturnsOlderRows`：`detected_at = now − lookback − 2m` 的行在 `detectedSince = now − lookback − 4m` 时①②都不计；`limit` 0、501、`"5"`、1.5 → empty；`afterId` −1、缺失 → empty；`tenantId` 空白 / 256 字符 → empty。
+  - `parse*`：`detectedSince` 缺失 / 非 ISO / `now − lookback − 11m` / `now + 6m` → empty；`now − lookback − 9m` 与 `− 1m` → 通过且解析值等于 `now − lookback`（clamp）；`now − lookback + 1s` → 原样；`clampNeverReturnsOlderRows`：`detected_at = now − lookback − 2m` 的行在 `detectedSince = now − lookback − 4m` 时①②都不计；`clampKeepsWindowEdge`（模拟 cloud 时钟快 / 慢 ±4 分钟）：`detected_at = now − lookback + 1m` 的行在 `detectedSince = now − lookback − 9m` 与 `− 1m` 时①②都计入；`limit` 0、501、`"5"`、1.5 → empty；`afterId` −1、缺失 → empty；`tenantId` 空白 / 256 字符 → empty。
 - [ ] **Step 2:** `AT 'io.aster.guard.reconcile.GuardOrphanFeedServiceTest'` → FAIL。
 - [ ] **Step 3:** 实现；SQL 以 `static final String INDEX_SQL / SUMMARY_SQL` 常量给出（包级可见）。
 - [ ] **Step 4:** `AT 'io.aster.guard.reconcile.*'` → PASS（`GuardReconciliationResourceTest` 改用上移的夹具后不变通过）。
@@ -280,7 +280,7 @@ cloud      PR-C3 (T-C10–T-C11，邮件第二阶段) ── PR-C2 之后任何�
   - `bearerApiKeyNotAccepted`：带有效 API key 的 `Authorization: Bearer …`、无签名头 → 401。
   - `internalCallerV3HeadersNotAccepted`：用 `InternalCallerSigning` 生成 cloud-bff v3 头（含 `X-Tenant-Id`）→ 401。
   - `signatureBindsBody`：签 `{"tenantId":"a",…}`、发 `{"tenantId":"b",…}` → 401。
-  - `invalidQueryIs400`：`detectedSince` 早于下限、`limit: 0`、body `[]`、body 非 JSON → 400 `{"error":"invalid_query"}`。
+  - `invalidQueryIs400`：`detectedSince` 早于 `now − lookback` 超过 10 分钟、`limit: 0`、body `[]`、body 非 JSON → 400 `{"error":"invalid_query"}`。
   - `tenantsHappyPath` / `summaryHappyPath`：造行后 200，字段值同 T-A2；`responseKeysPinned`：① 项的键集恰为 `{tenantId,maxId}`，② 的键集恰为上面 7 个（`total=0` 时 5 个）；响应文本不含 seed 行 `detail` 里的标记串与 `executor_id`。
   - `noChainWriteNoQuota`：调用前后 `audit_logs` 行数不变。
 - [ ] **Step 2:** `AT 'io.aster.guard.reconcile.GuardOrphanFeedResourceTest'` → FAIL。
@@ -510,6 +510,8 @@ cloud      PR-C3 (T-C10–T-C11，邮件第二阶段) ── PR-C2 之后任何�
 - Produces（`tick.ts`）：
   ```ts
   export const NOTIFY_LOOKBACK_MS = 7 * 24 * 3600_000;
+  /** 时钟偏差余量（R2）：多请求 5 分钟，由 aster-api 按自己的时钟收紧到 7 天，cloud 时钟快 / 慢都不漏边。 */
+  export const DETECTED_SINCE_SKEW_MS = 5 * 60_000;
   export const QUIET_PERIOD_MS = 3600_000;
   export const MAX_TENANTS_PER_TICK = 50;
   export const SUMMARY_CONCURRENCY = 4;
@@ -533,7 +535,7 @@ cloud      PR-C3 (T-C10–T-C11，邮件第二阶段) ── PR-C2 之后任何�
   ```
 - 算法（ADR §3.4.3，含 R3 / R5–R7）：
   1. `inAppEnabled()` 假 → 返回 `ran: false`（其余计数 0、两个秒数 null），不调用任何其他依赖。
-  2. `detectedSince = new Date(now − NOTIFY_LOOKBACK_MS).toISOString()`（时钟偏差由 aster-api 收紧处理，R2）；循环 `feed.tenants({ detectedSince, afterTenant: next })` 直到无 `next`，`pages` 计页数，`tenantsIndexed` 计项数。任一页抛错 → **整个 tick 抛出**（不改状态）。
+  2. `detectedSince = new Date(now − NOTIFY_LOOKBACK_MS − DETECTED_SINCE_SKEW_MS).toISOString()`（aster-api 收紧到其时钟下的 7 天，R2）；循环 `feed.tenants({ detectedSince, afterTenant: next })` 直到无 `next`，`pages` 计页数，`tenantsIndexed` 计项数。任一页抛错 → **整个 tick 抛出**（不改状态）。
   3. `states = loadStates(ids)`；`candidates = items.filter(i => i.maxId > (states.get(i.tenantId)?.notifiedThroughId ?? 0))`；`tenantsWithNew = candidates.length`。
   4. 安静期：`lastNoticeAt && now − lastNoticeAt < QUIET_PERIOD_MS` → 进 `quiet`；其余**按 `(pendingSince ?? now)` 升序、再按 `tenantId` 升序**（先进先出：被推迟过的租户 `pendingSince` 更早，下一 tick 必然排在新出现的租户之前，不会因租户 id 字典序被持续挤到 50 名之外）取前 50 个进 `work`，剩下进 `backlog`。`markPending([...quiet, ...backlog])`；`deferredQuiet` / `deferredBacklog` 计数；`oldestPendingSeconds` = 这些租户的 `pendingSince ?? now` 的最小值到 `now` 的秒数（无则 null）。
   5. `work` 经 `createLimiter(SUMMARY_CONCURRENCY)` 并发处理每个租户（单租户内部失败不影响其他）：
@@ -555,7 +557,7 @@ cloud      PR-C3 (T-C10–T-C11，邮件第二阶段) ── PR-C2 之后任何�
   - `first notice ignores quiet period`：`lastNoticeAt = null` → 立即发。
   - `cap 50 and backlog`：60 个候选（均无 `pendingSince`）→ `summary` 恰 50 次（按 tenantId 升序前 50）、`deferredBacklog=10`、其余 10 个 `markPending`；`summary` 在途峰值 ≤ 4。
   - `backlog is FIFO, not starved by smaller tenant ids`：第一 tick 60 个候选，被推迟的 10 个（id 最大）获得 `pendingSince = t1`；第二 tick 另有 50 个 id 更小的新候选出现 → 第二 tick 的 `work` 含全部那 10 个旧候选（再加 40 个新候选），`summary` 调用顺序以它们开头。
-  - `detectedSince is exactly 7 days`：`feed.tenants` / `feed.summary` 收到的 `detectedSince` = `now − 7d`。
+  - `detectedSince has skew margin`：`feed.tenants` / `feed.summary` 收到的 `detectedSince` = `now − 7d − 5min`。
   - `index failure changes nothing`：① 第二页抛错 → tick 抛错；`summary`、`commit`、`markPending` 均未调用。
   - `single summary failure skips that tenant`：3 个租户中一个 ② 抛错 → 其他两个照常 commit，`summaryFailed=1`。
   - `all acknowledged before summary sends nothing`：② `total=0` → 不 commit，`clearPending` 被调用。
