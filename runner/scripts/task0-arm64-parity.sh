@@ -65,6 +65,16 @@ else
     echo "== 1-2. --no-build：跳过本地构建，直接用外部镜像 ${IMAGE}（${RUNTIME}）=="
 fi
 
+# 毫秒时间戳：bash ≥5 用 EPOCHREALTIME；macOS 自带 bash 3.2 与 BSD date 不支持毫秒，退回秒级。
+now_ms() {
+    if [ -n "${EPOCHREALTIME:-}" ]; then
+        local us="${EPOCHREALTIME/[.,]/}"
+        echo $(( us / 1000 ))
+    else
+        echo $(( $(date +%s) * 1000 ))
+    fi
+}
+
 echo "== 3. 真跑 corpus，逐个 byte-compare（容器内 stock Zulu JRE 25 + Truffle 解释器）=="
 # 只比 5 个 replay-critical 字段（排除 toolchainId）：canonicalInputHash/canonicalOutputHash/
 # canonicalizationVersion/replayabilityStatus/traceHash。jq -S 归一键序，逐字节相等才算 parity。
@@ -74,7 +84,12 @@ for req in "$CORPUS_DIR"/*.req.json; do
     name="$(basename "$req" .req.json)"
 
     # runner 真跑：容器内 stdin JSON → stdout envelope（最后一行完整 JSON）。
-    runner_out="$("$RUNTIME" run --rm -i --platform linux/arm64 "$IMAGE" < "$req" | tail -n 1)"
+    # runner 非 SUCCESS 时 exit≠0；`|| true` 防 set -e + pipefail 在此直接退出，吞掉下面的错误 envelope 诊断。
+    # 逐份记录容器墙钟（含 JVM 冷启动），供判断 runner 慢与真实回归（#617）。
+    started_ms="$(now_ms)"
+    runner_out="$("$RUNTIME" run --rm -i --platform linux/arm64 "$IMAGE" < "$req" | tail -n 1)" || true
+    elapsed_ms=$(( $(now_ms) - started_ms ))
+    echo "⏱ ${name}: 容器墙钟 ${elapsed_ms}ms（含 JVM 冷启动）"
     runner_outcome="$(echo "$runner_out" | jq -r '.outcome // "MISSING"')"
     if [ "$runner_outcome" != "SUCCESS" ]; then
         echo "❌ RUNNER ERROR: ${name}（容器内非 SUCCESS，stock-JRE/Truffle 可能跑不起）"
