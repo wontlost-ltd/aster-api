@@ -189,7 +189,8 @@ runs:
     #       单独：CI verify 实测 292MB；Deploy build-and-test、perf k6 估 ≤330MB（完整依赖图上限）；
     #         aster-replay-runner build 实测 177MB。
     #     每个构建输入哈希约 1.45GB，加共用 wrapper 0.28GB，约 1.7GB（不分组时 10 条约 3.3GB）。
-    #     只在托管 runner 上跑（public 仓 pick-runner 一律走托管），故只有 Linux-X64 一套。
+    #     只在托管 runner 上跑（public 仓 pick-runner 一律走托管）。除 parity-arm64（原生 ubuntu-24.04-arm，#617，
+    #     键前缀 gradle-Linux-ARM64-group-test-，另占约 0.32GB）外都是 Linux-X64。
     #   - main 上构建输入变更约每天一次（过去 14 天 14 次，多为生态 pin bump）。每次产生一套新条目，旧哈希的条目
     #     此后不再命中（精确键命中新哈希；前缀回落只取最新一条），只会闲置：7 天后自动删除，或在超过 10GB 时作为
     #     最久未访问者先被 LRU 淘汰。当前哈希的条目每次运行都被访问，不会被挤掉。
