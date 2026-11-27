@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @QuarkusTest
 @QuarkusTestResource(PostgresTestResource.class)
 @TestProfile(AuditReceiptHmacAuthTest.AuthProfile.class)
-class AuditReceiptHmacAuthTest {
+public class AuditReceiptHmacAuthTest {
 
     /** apikey 鉴权与 HMAC 密钥同时打开；signature 关闭以贴近生产。 */
     public static class AuthProfile implements QuarkusTestProfile {
@@ -43,7 +43,7 @@ class AuditReceiptHmacAuthTest {
         }
     }
 
-    static final String HMAC_KEY = "s2-1a-0-characterization-key-32b!";
+    public static final String HMAC_KEY = "s2-1a-0-characterization-key-32b!";
     static final String PATH = "/api/v1/audit/receipts";
     static final String TENANT = "tenant-receipt-hmac";
     static final String OTHER = "tenant-receipt-hmac-other";

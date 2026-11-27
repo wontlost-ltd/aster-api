@@ -2,11 +2,11 @@ package io.aster.guard.reconcile;
 
 import io.aster.security.apikey.ApiKeyVerifierService;
 import io.aster.security.apikey.ApiKeyVerifyResult;
+import io.aster.security.apikey.AuditReceiptHmacAuthTest;
 import io.aster.security.apikey.InternalCallerSigning;
 import io.aster.security.internal.InternalV2SignatureVerifier;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
@@ -34,23 +34,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** 孤儿通知源内部端点（ADR 0065 §3.4.2）：仅 v2 内部签名可达，响应键集固定且不含明细。 */
 @QuarkusTest
-@TestProfile(GuardOrphanFeedResourceTest.FeedProfile.class)
+// 复用既有 HMAC+apikey 配置档：每多一个 @TestProfile，测试 JVM 就多一次 Quarkus 重启，单元 test 任务的 2g 堆会被撑爆
+@TestProfile(AuditReceiptHmacAuthTest.AuthProfile.class)
 class GuardOrphanFeedResourceTest {
-  static final String HMAC_KEY = "orphan-feed-test-key-32bytes-min!";
+  static final String HMAC_KEY = AuditReceiptHmacAuthTest.HMAC_KEY;
   private static final String TENANTS = "/api/internal/guard/orphan-feed/tenants";
   private static final String SUMMARY = "/api/internal/guard/orphan-feed/summary";
   private static final String BEARER_KEY = "ak_test_orphan_feed_member";
   private static final String MARKER = "SECRET-MARKER-" + UUID.randomUUID();
-
-  public static class FeedProfile implements QuarkusTestProfile {
-    @Override
-    public Map<String, String> getConfigOverrides() {
-      return Map.of(
-          "aster.plan-gate.hmac-key", HMAC_KEY,
-          "aster.security.apikey.enabled", "true",
-          "aster.security.signature.enabled", "false");
-    }
-  }
 
   @Inject EntityManager em;
   @Inject io.micrometer.core.instrument.MeterRegistry registry;

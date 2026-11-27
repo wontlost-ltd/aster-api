@@ -2,26 +2,16 @@ package io.aster.guard.reconcile;
 
 import io.aster.security.internal.InternalV2SignatureVerifier;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
-import io.quarkus.test.junit.TestProfile;
 import io.restassured.http.ContentType;
 import org.junit.jupiter.api.Test;
 
-import java.util.Map;
 import java.util.UUID;
 
 import static io.restassured.RestAssured.given;
 
-/** 未配置 {@code aster.plan-gate.hmac-key} 时两端点 fail-closed（403）。 */
+/** 未配置 {@code aster.plan-gate.hmac-key} 时两端点 fail-closed（403）；默认测试配置即不含该密钥，故不另设配置档。 */
 @QuarkusTest
-@TestProfile(GuardOrphanFeedResourceNoKeyTest.NoKeyProfile.class)
 class GuardOrphanFeedResourceNoKeyTest {
-  public static class NoKeyProfile implements QuarkusTestProfile {
-    @Override
-    public Map<String, String> getConfigOverrides() {
-      return Map.of("aster.plan-gate.hmac-key", "");
-    }
-  }
 
   @jakarta.inject.Inject io.micrometer.core.instrument.MeterRegistry registry;
 

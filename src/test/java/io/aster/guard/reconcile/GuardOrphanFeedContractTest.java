@@ -1,5 +1,6 @@
 package io.aster.guard.reconcile;
 
+import io.aster.security.apikey.AuditReceiptHmacAuthTest;
 import io.aster.security.internal.InternalV2SignatureVerifier;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
@@ -35,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 两仓以 {@link #FIXTURE_SHA256} 钉住同一份内容；修改夹具必须同步更新两侧常量。
  */
 @QuarkusTest
-@TestProfile(GuardOrphanFeedResourceTest.FeedProfile.class)
+@TestProfile(AuditReceiptHmacAuthTest.AuthProfile.class)
 class GuardOrphanFeedContractTest {
   static final String FIXTURE_SHA256 = "182ecd4a383d8d03ce0039aaa6adbd7b38fafb52bfe7ddbbadf4647e34024845";
   private static final Path FIXTURE = Path.of("src/test/resources/guard/orphan-feed-contract.json");
