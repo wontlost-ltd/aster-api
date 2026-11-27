@@ -176,8 +176,8 @@ jobs:
   parity-arm64:
     needs: [build, sign]
     # ★原生 arm64 托管 runner（public 仓免费），不再在 x64 上经 QEMU 模拟（#617）。runner 的 InProcessCnlParser
-    #   有 2000ms 墙钟预算（ParseBudget.DEFAULT_BUDGET，runner 不覆盖，生产同值）；QEMU 用户态模拟让冷 JVM 慢一个
-    #   数量级（JVM 起到首行输出约 7s），第一份 88 字符源码就偶发撞墙、重跑才过。生产节点是真 arm64（OCI Ampere），
+    #   有 2000ms 墙钟预算（ParseBudget.DEFAULT_BUDGET，runner 不覆盖，生产同值）；QEMU 用户态模拟下冷 JVM 里的解析
+    #   本身慢一个数量级（佐证：JVM 起到首行输出约 7s，原生整份约 1.4s），88 字符源码就偶发撞墙、重跑才过。生产节点是真 arm64（OCI Ampere），
     #   每次 replay 都是新容器 = 冷 JVM，所以在原生 arm64 上用生产预算冷跑才是 parity 该量的东西：不放宽预算、
     #   不预热（预热会掩盖生产真实的冷启动路径）。
     runs-on: ubuntu-24.04-arm
