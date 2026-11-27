@@ -1,5 +1,6 @@
 package io.aster.billing.snapshot;
 
+import io.aster.security.internal.InternalV2SignatureVerifier;
 import io.smallrye.common.annotation.Blocking;
 import io.vertx.core.json.JsonObject;
 import jakarta.inject.Inject;
@@ -13,12 +14,6 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
-
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.util.HexFormat;
-import java.util.Optional;
 
 /**
  * Snapshot 推送接收端（cloud → aster-api）
@@ -38,8 +33,8 @@ public class SnapshotPushResource {
     @Inject
     LocalQuotaSnapshotService snapshot;
 
-    @ConfigProperty(name = "aster.plan-gate.hmac-key")
-    Optional<String> hmacKey;
+    @Inject
+    InternalV2SignatureVerifier verifier;
 
     /**
      * 迁移开关：是否仍接受不绑 body/nonce 的 v1 签名。
@@ -50,10 +45,6 @@ public class SnapshotPushResource {
      */
     @ConfigProperty(name = "aster.security.snapshot.accept-legacy-signature", defaultValue = "true")
     boolean acceptLegacySignature;
-
-    /** nonce 一次性校验（复用全局 NonceService，与 InternalCallerFilter 同一套存储）。 */
-    @Inject
-    io.aster.policy.security.NonceService nonceService;
 
     @POST
     @Path("/user/{userId}")
@@ -138,72 +129,10 @@ public class SnapshotPushResource {
      */
     private Response verify(String method, String path, String timestamp,
                             String signature, String nonce, String body) {
-        Response basic = verifyPreconditions(timestamp, signature);
-        if (basic != null) return basic;
-
-        long ts = Long.parseLong(timestamp);
-        String bodySha = sha256Hex(body == null ? "" : body);
-
-        // v2：绑定 nonce + body。nonce 必填才能走 v2。
-        if (nonce != null && !nonce.isBlank()) {
-            String expectedV2 = sign(hmacKey.get(), canonicalV2(method, path, ts, nonce, bodySha));
-            if (!constantTimeEquals(expectedV2, signature)) {
-                return Response.status(401).entity("{\"error\":\"invalid_signature\"}").build();
-            }
-            // 签名通过后才消费 nonce：避免未授权方用伪造签名刷爆 nonce 表。
-            try {
-                nonceService.ensureFresh("snapshot-push", nonce, bodySha);
-            } catch (jakarta.ws.rs.WebApplicationException replay) {
-                return Response.status(409).entity("{\"error\":\"nonce_replay\"}").build();
-            }
-            return null;
-        }
-
-        // v1 legacy：不绑 body、无 nonce，可被替换 body / 重放。仅迁移窗口内接受。
-        if (!acceptLegacySignature) {
-            return Response.status(401)
-                .entity("{\"error\":\"missing_nonce\",\"detail\":\"v2 signature required\"}").build();
-        }
-        String expectedV1 = sign(hmacKey.get(), canonicalV1(method, path, ts));
-        if (!constantTimeEquals(expectedV1, signature)) {
-            return Response.status(401).entity("{\"error\":\"invalid_signature\"}").build();
-        }
-        LOG.warnf("snapshot push accepted LEGACY v1 signature (no body/nonce binding): path=%s"
-            + " — 该调用方尚未升级；升级完成后请置 aster.security.snapshot.accept-legacy-signature=false", path);
-        return null;
-    }
-
-    /** 时间戳/签名头的基础校验（两个版本共用）。 */
-    private Response verifyPreconditions(String timestamp, String signature) {
-        // ★安全审计修复：原为 `if (hmacKey.isEmpty()) return null;`——**缺密钥即关闭鉴权**。
-        // 本端点写入的正是鉴权决策所依赖的数据：pushApiKey 用请求体自带的 tenantId/role
-        // 构造 ApiKeySnapshot(valid=true) 并写入缓存，随后被 ApiKeyVerifierService 当作
-        // 合法验证结果返回。故密钥缺失时放行 = 任何人可自选租户与 ADMIN 角色通过鉴权。
-        //
-        // /api/internal/* 已被 RequestSignatureFilter 与 TenantFilter:124 双双豁免
-        // （后者给出的理由正是「自带 HMAC 验签」——该前提在缺密钥时不成立），
-        // 且 aster.plan-gate.hmac-key 默认值为空、启动时不强制校验，故此路径可由配置到达。
-        //
-        // 与同仓其余校验器对齐为 fail-closed：InternalCallerFilter:295、
-        // AdminHmacVerifier:76、LexiconAdminResource:466、ApiKeyCacheResource:60。
-        if (hmacKey.isEmpty() || hmacKey.get().isBlank()) {
-            LOG.warn("snapshot push called without HMAC key configured; rejecting");
-            return Response.status(403).entity("{\"error\":\"hmac_not_configured\"}").build();
-        }
-        if (timestamp == null || signature == null) {
-            return Response.status(401).entity("missing signature headers").build();
-        }
-        long ts;
-        try {
-            ts = Long.parseLong(timestamp);
-        } catch (NumberFormatException e) {
-            return Response.status(401).entity("invalid timestamp").build();
-        }
-        long now = System.currentTimeMillis() / 1000;
-        if (Math.abs(now - ts) > 300) {
-            return Response.status(401).entity("stale timestamp").build();
-        }
-        return null;
+        return verifier.verify(
+            new InternalV2SignatureVerifier.Request(method, path, timestamp, signature, nonce, body),
+            new InternalV2SignatureVerifier.Policy("snapshot-push", acceptLegacySignature, "snapshot push"))
+            .orElse(null);
     }
 
     /**
@@ -217,40 +146,16 @@ public class SnapshotPushResource {
      * 两侧必须逐字节一致，任何一侧改格式都要同步改另一侧。
      */
     static String canonicalV2(String method, String path, long ts, String nonce, String bodySha) {
-        return method + "\n" + path + "\n" + ts + "\n" + nonce + "\n" + bodySha;
+        return InternalV2SignatureVerifier.canonicalV2(method, path, ts, nonce, bodySha);
     }
 
     /** v1 legacy canonical（不绑 body/nonce）。仅迁移窗口内使用。 */
     static String canonicalV1(String method, String path, long ts) {
-        return method + "\n" + path + "\n" + ts;
+        return InternalV2SignatureVerifier.canonicalV1(method, path, ts);
     }
 
     /** 请求体的 SHA-256 hex，用于把 body 绑进签名。 */
     static String sha256Hex(String body) {
-        try {
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(md.digest(body.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException("SHA-256 failed", e);
-        }
-    }
-
-    private static String sign(String key, String message) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            return HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception e) {
-            throw new RuntimeException("HMAC sign failed", e);
-        }
-    }
-
-    private static boolean constantTimeEquals(String a, String b) {
-        if (a.length() != b.length()) return false;
-        int diff = 0;
-        for (int i = 0; i < a.length(); i++) {
-            diff |= a.charAt(i) ^ b.charAt(i);
-        }
-        return diff == 0;
+        return InternalV2SignatureVerifier.sha256Hex(body);
     }
 }
