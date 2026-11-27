@@ -1,6 +1,6 @@
 # ADR 0051 修订 2：类型别名在 R2 中展开为目标类型（推翻 R20 中「别名视为 UNKNOWN」）
 
-- 状态：**PROPOSED**（2026-11-27，待产品负责人采纳）
+- 状态：**ACCEPTED**（2026-11-27，产品负责人采纳）
 - 日期：2026-11-27
 - 修订对象：[ADR 0051](0051-position-aware-vocabulary-resolution.md) §16 **R20**「别名、包装类型（Option/Maybe/List/TypeApp）与未声明类型名视为 UNKNOWN」中的「别名」
 - 相关：aster-cloud/aster-lang-core#313；实现 aster-lang-core#324、aster-lang-ts#408、aster-lang-test#266（均已合并，2026-11-27，随 eco-1.0.57 发布）；ADR 0056 修订 A7 D1（core#313 列入 1.0.56，可选）；[修订 1](0051-amendment-1-type-alias-rhs-e800.md)（别名右侧按 TYPE 解析）
@@ -48,4 +48,4 @@ R20 修订后的文字：「点号尾段的“不透明”判定为白名单：d
 
 ## 5. 落地
 
-引擎实现已合并（core#324 `a780a6e5`、ts#408 `f50f4d1b`、test#266 `9dedfef1`），随 eco-1.0.57 发布；本修订采纳后，ADR 0051 §16 R20 的原文按 §2 末段替换。
+引擎实现已合并（core#324 `a780a6e5`、ts#408 `f50f4d1b`、test#266 `9dedfef1`），随 eco-1.0.57 发布；ADR 0051 §16 R20 的原文已按 §2 末段替换（2026-11-27）。
