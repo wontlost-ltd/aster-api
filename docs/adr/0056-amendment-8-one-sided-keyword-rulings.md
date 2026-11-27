@@ -9,7 +9,7 @@
   - 第 2 条：`aster-lang-ts` 分支 `fix/411-keyword-case-ts-positions`（与 #411 的大小写部分同一分支）
   - 第 3 条：`aster-lang-ts`、`aster-lang-core`、`aster-lang-test` 同名分支 `fix/follow-core-one-sided`（core 只加共享夹具与测试）
 
-三条裁决都只改 ts。生产编译走 core，core 的行为不变。
+三条裁决都只改 ts 的行为（第 3 条另在 core 加共享夹具与测试、在 aster-lang-test 加样本，不改 core 的行为）。生产编译走 core，core 的行为不变。
 
 ---
 
