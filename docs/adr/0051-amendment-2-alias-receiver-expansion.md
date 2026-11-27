@@ -31,14 +31,14 @@ R20 修订后的文字：「点号尾段的“不透明”判定为白名单：d
 |---|---|---|
 | 别名接收者、本地化 / 规范字段名 | W801，IR 不变 | 无告警，IR 不变 |
 | 别名目标没有、别的 Data 有的字段（`x.y`） | 接受 | **E801**（收紧） |
-| 别名目标是 Map / 标量，`m.alter` | 经词汇改写为别的 Data 的字段 + W801，或 E801 | 点分段原样保留（IR 变，放宽） |
+| 别名目标是 Map / 标量，`m.alter` | 经词汇改写为 `m.age` + W801，或 E801 | 点分段原样保留（IR 变，放宽） |
 | Match 主语为枚举别名，裸名 `When Hoch,` | 绑定（第一臂吞掉所有输入） | 枚举成员（**IR 与运行结果都变**） |
-| 期望类型为枚举别名，本地化成员名 | E802 | 成员（放宽；类型检查器不认识用户别名，可能随后报 E003 / E001） |
+| 期望类型为枚举别名，本地化成员名 | E802 | 成员（放宽） |
 | 别名成环、别名目标是包装类型 | W801 | 不变 |
 
 ## 4. 门禁
 
-既有生产策略可能因此收紧或改变运行结果，合并前已跑生产门禁扫描（2026-11-27，只读导出，扫后删除）：旧 = core / ts main，新 = core#324 / ts#408 分支；115 份源（api-policy-version 3、cloud-policy 41、cloud-policy-version 71）。
+既有生产策略可能因此收紧或改变运行结果。core#324 的 PR 正文写于扫描之前（「未执行」）；合并前由 controller 补跑了生产门禁扫描（2026-11-27，只读导出，扫后删除），结果记录在 [core#324 的评论](https://github.com/aster-cloud/aster-lang-core/pull/324#issuecomment-7208635589)：旧 = core / ts main，新 = core#324 / ts#408 分支；115 份源（api-policy-version 3、cloud-policy 41、cloud-policy-version 71）。
 
 - 预筛：别名声明规则（沿用 core#308）0 命中——生产中没有任何策略声明类型别名；
 - java-gate（含 `--aliases`）PASS，0 项待审，sanity java 111 vs ts 111；ts scan PASS；ts ir-diff OK；
