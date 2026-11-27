@@ -3,6 +3,8 @@ package io.aster.guard.api;
 import io.aster.guard.reconcile.GuardOrphanFeedService;
 import io.aster.guard.reconcile.GuardOrphanFeedService.Summary;
 import io.aster.guard.reconcile.GuardOrphanFeedService.TenantIndexPage;
+import io.aster.guard.reconcile.GuardOrphanMetrics;
+import io.aster.guard.reconcile.GuardOrphanMetrics.FeedOutcome;
 import io.aster.security.internal.InternalV2SignatureVerifier;
 import io.aster.security.internal.InternalV2SignatureVerifier.Policy;
 import io.aster.security.internal.InternalV2SignatureVerifier.Request;
@@ -42,6 +44,7 @@ public class GuardOrphanFeedResource {
 
   @Inject InternalV2SignatureVerifier verifier;
   @Inject GuardOrphanFeedService service;
+  @Inject GuardOrphanMetrics metrics;
 
   @POST
   @Path("/tenants")
@@ -70,13 +73,21 @@ public class GuardOrphanFeedResource {
       Function<JsonObject, Optional<JsonObject>> query) {
     Optional<Response> rejected = verifier.verify(new Request("POST", BASE + suffix, timestamp, signature, nonce, body), POLICY);
     if (rejected.isPresent()) {
+      metrics.recordFeedRequest(rejectedOutcome(rejected.get().getStatus()));
       return rejected.get();
     }
     Optional<JsonObject> result = parseObject(body).flatMap(query);
     if (result.isEmpty()) {
+      metrics.recordFeedRequest(FeedOutcome.INVALID);
       return Response.status(400).entity(INVALID_QUERY).build();
     }
+    metrics.recordFeedRequest(FeedOutcome.OK);
     return Response.ok(result.get().toString()).build();
+  }
+
+  /** 验签拒绝按状态码归类：409 为 nonce 重放，其余（401 / 403）为未授权。 */
+  private static FeedOutcome rejectedOutcome(int status) {
+    return status == 409 ? FeedOutcome.REPLAYED : FeedOutcome.UNAUTHORIZED;
   }
 
   private static Optional<JsonObject> parseObject(String body) {

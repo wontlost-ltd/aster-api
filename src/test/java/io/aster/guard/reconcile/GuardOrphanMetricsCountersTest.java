@@ -37,6 +37,14 @@ class GuardOrphanMetricsCountersTest {
   }
 
   @Test
+  void feedOutcomeLabelsAreFixed() {
+    assertThat(List.of(GuardOrphanMetrics.FeedOutcome.values()).stream().map(GuardOrphanMetrics.FeedOutcome::wire))
+        .containsExactly("ok", "invalid", "unauthorized", "replayed");
+    metrics.recordFeedRequest(GuardOrphanMetrics.FeedOutcome.REPLAYED);
+    assertThat(registry.get("guard.orphan.feed.requests").tag("outcome", "replayed").counter().count()).isEqualTo(1.0);
+  }
+
+  @Test
   void labelsStayBounded() {
     List<OpenCount> rows = List.of(
         new OpenCount("a", "other", "side_effect_mismatch", 1),

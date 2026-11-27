@@ -34,6 +34,7 @@ import java.util.stream.Collectors;
  *   <li>{@code guard.orphan.actions.detected{kind}}（Counter）：新孤儿数，只由检出它的副本累加，{@code sum} 正确。</li>
  *   <li>{@code guard.reconciliation.runs{outcome}}（Counter）：按租户计。</li>
  *   <li>{@code guard.reconciliation.last.success}（Gauge，秒）：本副本最近一次完整跑完租户循环的 epoch 秒，进程内值。</li>
+ *   <li>{@code guard.orphan.feed.requests{outcome}}（Counter）：孤儿通知源端点（ADR 0065）按结果计的请求数，无租户标签。</li>
  * </ul>
  */
 @ApplicationScoped
@@ -41,10 +42,26 @@ public class GuardOrphanMetrics {
   static final String OPEN = "guard.orphan.actions";
   static final String DETECTED = "guard.orphan.actions.detected";
   static final String RUNS = "guard.reconciliation.runs";
+  static final String FEED_REQUESTS = "guard.orphan.feed.requests";
   static final String LAST_SUCCESS = "guard.reconciliation.last.success";
   static final String OTHER_TENANT = "_other";
   static final String OPEN_COUNTS = "SELECT tenant_id, executor_label, kind, count(*) FROM guard_orphan_actions "
       + "WHERE status = 'OPEN' GROUP BY 1, 2, 3";
+
+  /** 通知源请求结果，{@code outcome} 标签取值固定。 */
+  public enum FeedOutcome {
+    OK("ok"), INVALID("invalid"), UNAUTHORIZED("unauthorized"), REPLAYED("replayed");
+
+    private final String wire;
+
+    FeedOutcome(String wire) {
+      this.wire = wire;
+    }
+
+    public String wire() {
+      return wire;
+    }
+  }
 
   /** 一条 OPEN 计数序列。 */
   public record OpenCount(String tenant, String executor, String kind, long count) {}
@@ -82,6 +99,11 @@ public class GuardOrphanMetrics {
 
   public void recordRun(TenantOutcome outcome) {
     Counter.builder(RUNS).description("Guard 对账按租户的执行次数").tag("outcome", outcome.wire())
+        .register(registry).increment();
+  }
+
+  public void recordFeedRequest(FeedOutcome outcome) {
+    Counter.builder(FEED_REQUESTS).description("Guard 孤儿通知源端点按结果的请求数").tag("outcome", outcome.wire())
         .register(registry).increment();
   }
 

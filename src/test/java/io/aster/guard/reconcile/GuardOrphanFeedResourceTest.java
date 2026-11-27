@@ -115,6 +115,38 @@ class GuardOrphanFeedResourceTest {
         .createNativeQuery("SELECT COUNT(*) FROM audit_logs").getSingleResult()).longValue());
   }
 
+  private static double feedCount(String outcome) {
+    String body = given().get("/q/metrics").then().statusCode(200).extract().asString();
+    String prefix = "guard_orphan_feed_requests_total{outcome=\"" + outcome + "\"";
+    return body.lines().filter(l -> l.startsWith(prefix)).findFirst()
+        .map(l -> Double.parseDouble(l.substring(l.lastIndexOf(' ') + 1))).orElse(0.0);
+  }
+
+  @Test
+  void metricsCountEachOutcome() {
+    List<String> outcomes = List.of("ok", "invalid", "unauthorized", "replayed");
+    Map<String, Double> before = new java.util.HashMap<>();
+    outcomes.forEach(o -> before.put(o, feedCount(o)));
+
+    signedPost(TENANTS, tenantsBody(since())).then().statusCode(200);
+    signedPost(TENANTS, "not json").then().statusCode(400);
+    Map<String, String> bad = new java.util.HashMap<>(v2Headers(TENANTS, "{}"));
+    bad.put("X-Aster-Signature", "0".repeat(64));
+    post(TENANTS, bad, "{}").then().statusCode(401);
+    String body = tenantsBody(since());
+    Map<String, String> h = v2Headers(TENANTS, body);
+    post(TENANTS, h, body).then().statusCode(200);
+    post(TENANTS, h, body).then().statusCode(409);
+
+    assertThat(feedCount("ok") - before.get("ok")).isEqualTo(2.0);
+    assertThat(feedCount("invalid") - before.get("invalid")).isEqualTo(1.0);
+    assertThat(feedCount("unauthorized") - before.get("unauthorized")).isEqualTo(1.0);
+    assertThat(feedCount("replayed") - before.get("replayed")).isEqualTo(1.0);
+    String metrics = given().get("/q/metrics").then().extract().asString();
+    assertThat(metrics.lines().filter(l -> l.startsWith("guard_orphan_feed_requests_total{")))
+        .allMatch(l -> l.matches("guard_orphan_feed_requests_total\\{outcome=\"[a-z]+\"\\} .*"));
+  }
+
   @Test
   void badSignatureIs401() {
     for (String path : List.of(TENANTS, SUMMARY)) {
