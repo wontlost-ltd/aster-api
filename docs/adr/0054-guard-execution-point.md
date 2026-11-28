@@ -268,6 +268,8 @@ C 的独立性来自「观测者 ≠ 执行者」：绕过路径能跳过代理�
 - `POST /api/v1/guard/reconciliation/orphans/{id}/ack`，体 `{ "comment": "<1–1000 字符>" }` → 200 同列表项；非 `OPEN` → 409 `{ "error": "not_open", "status": "<当前>" }`；`comment` 不合法 → 400 `invalid_ack`。确认写链事件 `GUARD_ORPHAN_ACKNOWLEDGED`。
 - 查询扩展（向后兼容的新增）：列表加 `severity` 过滤（`critical | warning | info`，逗号多选，与 `kind` 取交集），列表项与确认响应加可选 `ackComment`——见 ADR 0061 §3.4。
 
+cloud 专用的跨租户只读通知源见 ADR 0065 §3.4.2，不属于本节对外契约。
+
 ### 10.3 孤儿类别
 
 租户 `t`，`cutoff = now − aster.guard.result-grace`，`since = now − lookback`（缺省 `P7D`）。`kind` 是固定枚举（snake_case），`severity` 由 kind 决定：

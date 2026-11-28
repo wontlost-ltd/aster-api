@@ -1,0 +1,55 @@
+{
+  "tenantsRequest": {
+    "detectedSince": "2026-11-21T00:00:00Z",
+    "limit": 500
+  },
+  "tenantsResponse": {
+    "items": [
+      {
+        "tenantId": "team-7f3a9c21",
+        "maxId": 57
+      },
+      {
+        "tenantId": "user-0c4e88b1",
+        "maxId": 63
+      }
+    ]
+  },
+  "summaryRequest": {
+    "tenantId": "team-7f3a9c21",
+    "afterId": 41,
+    "detectedSince": "2026-11-21T00:00:00Z"
+  },
+  "summaryResponse": {
+    "tenantId": "team-7f3a9c21",
+    "maxId": 57,
+    "total": 3,
+    "byKind": {
+      "result_without_consume": 1,
+      "side_effect_unconsumed": 2
+    },
+    "firstDetectedAt": "2026-11-27T08:15:30.123456Z",
+    "lastDetectedAt": "2026-11-28T00:00:00Z",
+    "runIds": [
+      118,
+      117
+    ]
+  },
+  "summaryEmptyResponse": {
+    "tenantId": "team-7f3a9c21",
+    "maxId": 41,
+    "total": 0,
+    "byKind": {},
+    "runIds": []
+  },
+  "signing": {
+    "key": "test-key",
+    "method": "POST",
+    "path": "/api/internal/guard/orphan-feed/summary",
+    "ts": 1795000000,
+    "nonce": "00000000-0000-4000-8000-000000000001",
+    "body": "{\"tenantId\":\"team-7f3a9c21\",\"afterId\":41,\"detectedSince\":\"2026-11-21T00:00:00Z\"}",
+    "canonical": "POST\n/api/internal/guard/orphan-feed/summary\n1795000000\n00000000-0000-4000-8000-000000000001\nbcdc7731e75e3d5c480cc36d75e388ecf1ee61f6cc0ac43602a2068d2b51e724",
+    "signature": "db3d85bc237cf3385a05b65e7b740f8e780f9f0ede67f0c3b2cb1c8af4e9f454"
+  }
+}

@@ -8,11 +8,9 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.Test;
 
-import io.quarkus.narayana.jta.QuarkusTransaction;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -58,19 +56,7 @@ class GuardReconciliationResourceTest {
 
   /** 直接落一行 OPEN 孤儿（severity 取自 kind），用于造齐 8 个 kind；返回行 id。 */
   private static long seed(String tenant, OrphanKind kind, String subject) {
-    return QuarkusTransaction.requiringNew().call(() -> {
-      GuardOrphanActionEntity o = new GuardOrphanActionEntity();
-      o.tenantId = tenant;
-      o.kind = kind.wire();
-      o.severity = kind.severity();
-      o.subjectKey = subject;
-      o.executorLabel = "other";
-      o.detail = "{\"reason\":\"seeded\"}";
-      o.firstRunId = 1;
-      o.detectedAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
-      o.persist();
-      return o.id;
-    });
+    return ReconcileFixture.seedOrphan(tenant, kind, subject, GuardOrphanActionEntity.OPEN, Instant.now(), 1);
   }
 
   /** 每个 kind 各一行。 */
